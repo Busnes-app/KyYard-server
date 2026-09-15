@@ -16,8 +16,10 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
 - `Settings` maps `store.ErrNotFound` to `recoveryclient.ErrNotFound`; every other error passes
   through unchanged.
 - `NewSealer` seals the KyRecovery token under the deployment key with label
-  `ky_server_base:setting:kyrecovery_token`, domain-separated so a row copied from another
-  setting will not open.
+  `kyyard-server:setting:kyrecovery_token`, domain-separated so a row copied from another
+  setting will not open. KyYard supports fresh installations; base-project pairing tokens
+  are deliberately rejected. The historical v0.5.0 fixture is checked with its original
+  base sealer only in tests.
 - `Collect` snapshots SQLite with the lib's `SQLiteSnapshot` (`VACUUM INTO`; the store runs in
   WAL mode, so a plain file read misses uncheckpointed commits) and returns
   `ErrNoDatabaseSnapshot` for any other driver, so a capsule without a consistent database is

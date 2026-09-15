@@ -16,7 +16,7 @@
 **/*.log
 **/coverage.out
 **/node_modules
-/ky_server_base
+/kyyard-server
 .claude/
 .codex/
 .superpowers/

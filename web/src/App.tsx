@@ -66,7 +66,7 @@ export const App: React.FC = () => {
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--ink)' }}>
-        Loading {settings?.app_name || 'Busnes.app'}...
+        Loading {settings?.app_name || 'KyYard'}...
       </div>
     );
   }
@@ -74,7 +74,7 @@ export const App: React.FC = () => {
   if (!user) {
     return (
       <Login
-        appName={settings?.app_name || 'Busnes.app'}
+        appName={settings?.app_name || 'KyYard'}
         onSuccess={(u) => {
           setUser(u);
           void loadSettings();
@@ -86,7 +86,7 @@ export const App: React.FC = () => {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <AppHeader
-        appName={settings?.app_name || 'Busnes.app'}
+        appName={settings?.app_name || 'KyYard'}
         activeTab={activeTab}
         onTabChange={(tab) => setActiveTab(tab)}
         user={user}

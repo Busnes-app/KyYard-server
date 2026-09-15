@@ -21,9 +21,9 @@ import (
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/api"
-	"github.com/Busness-app/ky_server_base/internal/auth"
-	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busness-app/kyyard-server/internal/api"
+	"github.com/Busness-app/kyyard-server/internal/auth"
+	"github.com/Busness-app/kyyard-server/internal/store"
 )
 
 // adminDo is adminPost with a method and a JSON body.

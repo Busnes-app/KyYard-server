@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/ky_server_base/internal/backup"
+	"github.com/Busness-app/kyyard-server/internal/backup"
 	"golang.org/x/sys/unix"
 )
 

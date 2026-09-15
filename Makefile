@@ -7,8 +7,8 @@ build-web:
 	@cd web && npm ci && npm run build
 
 build:
-	@echo "==> Compiling ky_server_base binary..."
-	@go build -o ky_server_base ./cmd/server
+	@echo "==> Compiling kyyard-server binary..."
+	@go build -o kyyard-server ./cmd/server
 
 test:
 	@echo "==> Running test suite..."
@@ -46,10 +46,10 @@ ci: tidy-check lint test-race test-web smoke
 	@echo "==> Local CI checks passed"
 
 run: build
-	@./ky_server_base
+	@./kyyard-server
 
 docker-build:
-	@docker build -t ky_server_base .
+	@docker build -t kyyard:local .
 
 clean:
-	@rm -rf ky_server_base web/dist web/node_modules data/ backups/ coverage.out
+	@rm -rf kyyard-server web/dist web/node_modules data/ backups/ coverage.out

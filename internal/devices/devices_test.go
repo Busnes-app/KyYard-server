@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Busness-app/ky_server_base/internal/devices"
-	"github.com/Busness-app/ky_server_base/internal/store"
-	"github.com/Busness-app/ky_server_base/internal/testdb"
+	"github.com/Busness-app/kyyard-server/internal/devices"
+	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busness-app/kyyard-server/internal/testdb"
 )
 
 func TestPairingLifecycle(t *testing.T) {
@@ -17,7 +17,7 @@ func TestPairingLifecycle(t *testing.T) {
 	}
 	defer st.Close()
 
-	svc := devices.NewPairingService(st, "BusnesApp", "http://localhost:8080")
+	svc := devices.NewPairingService(st, "KyYard", "http://localhost:8080")
 
 	// 1. Init
 	initRes, err := svc.InitPairing(ctx, "usr_alice")

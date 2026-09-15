@@ -1,9 +1,10 @@
-**Repo:** KyYard-Server (current checkout still identifies as ky_server_base)
-**Worktree:** /home/yoshi/busness.app/KyYard-Server (branch master)
+**Repo:** Busness-app/kyyard-server
+**PR:** #1 — https://github.com/Busness-app/kyyard-server/pull/1
+**Worktree:** /home/yoshi/busness.app/KyYard-Server (branch feat/kyyard-scaffold)
 
 # KyYard implementation plan
 
-Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md) and local code at `2a31d5c`. Status: planning complete; implementation milestones below are pending. No product PR was created for this planning task.
+Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md) and local code at `2a31d5c`. Status: M0 scaffold implemented and locally verified; PR #1 CI/review pending. Later milestones are pending. Git history starts fresh by user decision; the inherited baseline is recorded on `master` and the rename is on `feat/kyyard-scaffold`.
 
 ## 1. Outcome and scope
 
@@ -17,7 +18,9 @@ Deliver KyYard as one Go control-plane container with an embedded React UI and o
 
 Resolve the handoff's milestone-7 scope tension by splitting it: M7a delivers manual updates in 0.1; M7b delivers automated policy and rollback afterward. M6 must already support deliberate recovery to a prior definition. Reapplying a definition does not promise reversal of data changes.
 
-## 2. Verified starting point and first-step constraints
+## 2. Planning-time starting point and first-step constraints
+
+The observations below describe the original checkout. M0 now has a private product repository, fresh Git history, product names, `/data` packaging, and its own recovery token label.
 
 - Local HEAD is `2a31d5c`; the handoff reviewed `f4ca19a`. Pin the actual scaffold source and inspect intervening changes before implementing; do not reset to the older revision.
 - `origin` still points to `https://github.com/Busness-app/ky_server_base.git`; `go.mod`, packaging, and publishing retain base names. Establish the product repository before any product push or publishing.
@@ -63,11 +66,11 @@ Critical path: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7a → releas
 5. Rebuild and commit `web/dist`. Audit old references in source and generated assets; historical source citations are allowed and listed. Repair stale absolute DOX links as part of the rename.
 6. Retain inherited capabilities in documentation and point to this plan instead of reviving obsolete base implementation text.
 
-**Gate:** full inherited CI and container smoke pass under KyYard names. Bootstrap login/password replacement works using the inherited required configuration. Zero-config production startup is M1, not a hidden requirement of the rename PR. Published-image smoke follows publication; source smoke uses the build overlay and distinct local tag.
+**Gate:** full inherited CI and container smoke pass under KyYard names. Bootstrap login works using the inherited required configuration. Forced password replacement is an identified inherited gap assigned to M1. Zero-config production startup is M1, not a hidden requirement of the rename PR. Published-image smoke follows publication; source smoke uses the build overlay and distinct local tag.
 
 ### M1 — Production-safe first boot
 
-**PR 02: durable bootstrap and key lifecycle.** Reuse the keyfile helper for a persistent session secret and instance identity; inspect helper guarantees before extending it. Define 0700 directory/0600 file handling, exclusive creation, invalid/truncated/symlink failure behavior, restart persistence, and explicit environment override precedence. Keep secret material out of diagnostics and ordinary settings responses. Bootstrap credentials print once; restart preserves keys and does not recreate the administrator.
+**PR 02: durable bootstrap and key lifecycle.** Reuse the keyfile helper for a persistent session secret and instance identity; inspect helper guarantees before extending it. Define 0700 directory/0600 file handling, exclusive creation, invalid/truncated/symlink failure behavior, restart persistence, and explicit environment override precedence. Keep secret material out of diagnostics and ordinary settings responses. Bootstrap credentials print once; restart preserves keys and does not recreate the administrator. Implement forced password replacement end to end: the inherited schema has `must_change_password`, but bootstrap does not set it and no replacement API/UI flow exists. Restrict the initial session to replacement/logout until the password is changed.
 
 **PR 03: one-container onboarding and health.** Default to SQLite and one named `/data` volume, with local sealed backups beneath that volume when configured. Keep advanced options in overlays/UI. Add secret-free liveness/readiness and a working image healthcheck. Define HTTP/TLS scheme, port, advertised URL, CSRF origins, proxy trust, and cookies together; a port number is not evidence of TLS. Show actionable setup guidance for encrypted remote connectivity. Retain the 20-minute graceful stop budget unless the tested budget changes.
 
@@ -198,10 +201,10 @@ Record success/failure, confusing steps and recovery outcomes. Any required docu
 
 ## 8. Handoff and immediate next action
 
-**Done:** read the product handoff, checked actual scaffold/config/storage/API/recovery/frontend contracts, and produced this ordered plan with 22 proposed PR slices and measurable gates. Only planning documentation changed during this task.
+**Done:** M0 product rename, fresh repository history, `/data` packaging, recovery identity isolation, rebuilt embedded frontend and updated DOX/operator docs. Local `make ci`, PostgreSQL race tests, frontend build/dist check, module verification, shellcheck, Compose configuration, npm audit, govulncheck, Docker build and fresh-container credential/restart checks passed. Old base names remain only in historical documents, provenance and the deliberate base-token rejection fixture/test; `ky_server.db` retains its inherited storage name.
 
-**Next:** start PR 01 in an isolated product scaffold from the pinned base revision. Preserve existing local files, establish the KyYard repository identity, complete the rename audit, and prove inherited CI before zero-config/tenancy work. Assign implementers/reviewers when work begins; none are assumed here.
+**Next:** finish PR #1 CI and autonomous review, then M1 persistent production secrets and forced bootstrap password replacement. The isolated scaffold was generated from source revision `2a31d5c`; user-approved fresh history starts at `eeb56a4`. Existing untracked recovery notes and local tool state were preserved. Image publication/attestation waits for a reviewed merge to master.
 
 **Easy to get wrong:** pushing to the base remote; overwriting this nonempty checkout with ky-init; assuming HTTP port 9443 supplies TLS; breaking Secure cookies during onboarding; issuing identity before approval; retrying an unknown destructive operation; leaking Compose environment secrets; claiming rollback reverses volume writes; claiming PostgreSQL backup coverage that does not exist; closing the store while backup/agent work is still active.
 
-The complete file is mirrored to myslop under `kyyard-engineering-plan`. The board expires seven days after its last post; this repository file is the durable copy. Planning is complete; implementation remains available to claim.
+The complete file is mirrored to myslop under `kyyard-engineering-plan`. The board expires seven days after its last post; this repository file is the durable copy. Planning is complete; M0 implementation is claimed.

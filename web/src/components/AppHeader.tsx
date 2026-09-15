@@ -40,7 +40,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ appName, activeTab, onTabC
         <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold', fontSize: '18px', color: 'var(--accent)' }}>
             <Shield size={22} />
-            <span>{appName || 'Busnes.app'}</span>
+            <span>{appName || 'KyYard'}</span>
           </div>
 
           <nav style={{ display: 'flex', gap: '4px' }}>

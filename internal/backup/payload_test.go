@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky_server_base/internal/backup"
-	"github.com/Busness-app/ky_server_base/internal/config"
-	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busness-app/kyyard-server/internal/backup"
+	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busness-app/kyyard-server/internal/store"
 )
 
 // payloadConfig is a real SQLite store in a temp data dir: the collectors snapshot the live

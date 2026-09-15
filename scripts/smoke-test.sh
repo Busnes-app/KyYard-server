@@ -3,7 +3,7 @@
 # and the CLI subcommands. Usage: scripts/smoke-test.sh [path-to-binary]
 set -euo pipefail
 
-BIN="$(cd "$(dirname "$0")/.." && pwd)/${1:-ky_server_base}"
+BIN="$(cd "$(dirname "$0")/.." && pwd)/${1:-kyyard-server}"
 [ -x "$BIN" ] || BIN="${1:?binary not found; build with 'make build'}"
 
 WORK="$(mktemp -d)"
@@ -61,7 +61,7 @@ stop_server() {
 
 echo "==> CLI subcommands"
 check "version exits 0" "$("$BIN" version >/dev/null 2>&1 && echo 0 || echo 1)" "0"
-contains "version prints name" "$("$BIN" version)" "ky_server_base"
+contains "version prints name" "$("$BIN" version)" "kyyard-server"
 
 # The drill seals to a throwaway key and reopens it, so the pipeline runs even unpaired.
 # Whether the suite key is pinned is the status route's report, not the drill's.
