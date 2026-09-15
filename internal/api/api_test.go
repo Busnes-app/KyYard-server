@@ -220,7 +220,7 @@ func TestMFATOTPRefusesReplay(t *testing.T) {
 		raw := crypto.RandomHex(32)
 		_ = st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
 			TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: "usr_mfa", ExpiresAt: time.Now().Add(time.Minute),
-		})
+		}, "")
 		body, _ := json.Marshal(map[string]string{"mfa_token": raw, "code": code})
 		req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -587,7 +587,7 @@ func TestMFAPerAccountWindow(t *testing.T) {
 			TokenHash: crypto.SHA256Hex([]byte(raw)),
 			UserID:    "usr_carol",
 			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
-		}); err != nil {
+		}, passHash); err != nil {
 			t.Fatal(err)
 		}
 

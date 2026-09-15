@@ -353,16 +353,60 @@ type sessionStore struct {
 	store *SQLStore
 }
 
-func (s *sessionStore) CreateSession(ctx context.Context, sess *Session) error {
-	q := s.store.rebind(`
-INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?)
-`)
-	_, err := s.store.db.ExecContext(ctx, q,
-		sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress,
-		sess.CreatedAt, sess.ExpiresAt,
-	)
-	return err
+// withPassword serializes credential-derived grants with password replacement.
+// Updating the same user row takes a write lock on both supported databases.
+func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string, apply func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, s.rebind("UPDATE users SET id = id WHERE id = ? AND password_hash = ? AND status = 'active'"), userID, expectedHash)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
+	}
+	if err := apply(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expectedPasswordHash string) error {
+	return s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt)
+		return err
+	})
+}
+
+func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error {
+	return u.store.withPassword(ctx, userID, oldHash, func(tx *sql.Tx) error {
+		now := time.Now().UTC()
+		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND must_change_password = ? AND sso_provider = 'local'`), newHash, false, now, userID, true)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrNotFound
+		}
+		for _, table := range []string{"sessions", "mfa_challenges", "device_pairings"} {
+			if _, err := tx.ExecContext(ctx, u.store.rebind("DELETE FROM "+table+" WHERE user_id = ?"), userID); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx, u.store.rebind(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`), userID, "auth.password_changed", "user", "forced replacement; sessions revoked", ip, now)
+		return err
+	})
 }
 
 func (s *sessionStore) GetSession(ctx context.Context, tokenHash string) (*Session, error) {
@@ -406,43 +450,44 @@ func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {
 	return err
 }
 
-func (s *sessionStore) CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge) error {
-	q := s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
-	_, err := s.store.db.ExecContext(ctx, q, challenge.TokenHash, challenge.UserID, challenge.ExpiresAt)
-	return err
+func (s *sessionStore) CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error {
+	return s.store.withPassword(ctx, challenge.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES (?, ?, ?)"), challenge.TokenHash, challenge.UserID, challenge.ExpiresAt)
+		return err
+	})
 }
 
-func (s *sessionStore) ConsumeMFAChallenge(ctx context.Context, tokenHash string) (string, error) {
+func (s *sessionStore) ConsumeMFAChallenge(ctx context.Context, tokenHash string) (string, string, error) {
 	tx, err := s.store.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer tx.Rollback()
-	q := s.store.rebind("SELECT user_id, expires_at FROM mfa_challenges WHERE token_hash = ?")
-	var userID string
+	q := s.store.rebind("SELECT m.user_id, m.expires_at, u.password_hash FROM mfa_challenges m JOIN users u ON u.id = m.user_id WHERE m.token_hash = ?")
+	var userID, passwordHash string
 	var expiresAt time.Time
-	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&userID, &expiresAt); err != nil {
+	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&userID, &expiresAt, &passwordHash); err != nil {
 		if errorsIs(err, sql.ErrNoRows) {
-			return "", ErrNotFound
+			return "", "", ErrNotFound
 		}
-		return "", err
+		return "", "", err
 	}
 	if !time.Now().UTC().Before(expiresAt) {
-		return "", ErrSessionExpired
+		return "", "", ErrSessionExpired
 	}
 	deleteQ := s.store.rebind("DELETE FROM mfa_challenges WHERE token_hash = ?")
 	res, err := tx.ExecContext(ctx, deleteQ, tokenHash)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	rows, err := res.RowsAffected()
 	if err != nil || rows != 1 {
-		return "", ErrNotFound
+		return "", "", ErrNotFound
 	}
 	if err := tx.Commit(); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return userID, nil
+	return userID, passwordHash, nil
 }
 
 // ---------------------------------------------------------------------

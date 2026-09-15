@@ -97,7 +97,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			TokenHash: crypto.SHA256Hex([]byte(rawChallenge)),
 			UserID:    user.ID,
 			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
-		}); err != nil {
+		}, user.PasswordHash); err != nil {
 			s.writeError(w, http.StatusInternalServerError, "Failed to start MFA verification")
 			return
 		}
@@ -110,7 +110,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Issue active session
-	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user.ID)
+	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
 		return
@@ -147,7 +147,7 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
+	userID, verifiedHash, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "Invalid or expired MFA transaction")
 		return
@@ -163,7 +163,7 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "User not found")
 		return
 	}
-	if user.Status != "active" || !user.TOTPEnabled {
+	if user.Status != "active" || !user.TOTPEnabled || user.PasswordHash != verifiedHash {
 		s.writeError(w, http.StatusForbidden, "Account is not eligible for MFA login")
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user.ID)
+	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
 		return
@@ -221,7 +221,7 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
+	userID, verifiedHash, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "Invalid or expired MFA transaction")
 		return
@@ -237,7 +237,7 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "User not found")
 		return
 	}
-	if user.Status != "active" || !user.TOTPEnabled {
+	if user.Status != "active" || !user.TOTPEnabled || user.PasswordHash != verifiedHash {
 		s.writeError(w, http.StatusForbidden, "Account is not eligible for MFA login")
 		return
 	}
@@ -253,7 +253,7 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user.ID)
+	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
 		return

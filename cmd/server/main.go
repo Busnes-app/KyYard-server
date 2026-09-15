@@ -94,13 +94,14 @@ func runServer() {
 			log.Fatalf("Failed to hash bootstrap admin password: %v", err)
 		}
 		if err := st.Users().CreateUser(ctx, &store.User{
-			ID:           fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
-			Username:     "admin",
-			DisplayName:  "Administrator",
-			PasswordHash: hash,
-			Role:         "admin",
-			Status:       "active",
-			SSOProvider:  "local",
+			ID:                 fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
+			Username:           "admin",
+			DisplayName:        "Administrator",
+			PasswordHash:       hash,
+			Role:               "admin",
+			Status:             "active",
+			SSOProvider:        "local",
+			MustChangePassword: true,
 		}); err != nil {
 			log.Fatalf("Failed to create bootstrap admin: %v", err)
 		}
@@ -307,13 +308,14 @@ func runInitAdmin(args []string) {
 	}
 
 	user := &store.User{
-		ID:           fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
-		Username:     *username,
-		DisplayName:  "Administrator",
-		PasswordHash: hash,
-		Role:         "admin",
-		Status:       "active",
-		SSOProvider:  "local",
+		ID:                 fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
+		Username:           *username,
+		DisplayName:        "Administrator",
+		PasswordHash:       hash,
+		Role:               "admin",
+		Status:             "active",
+		SSOProvider:        "local",
+		MustChangePassword: true,
 	}
 
 	if err := st.Users().CreateUser(ctx, user); err != nil {
