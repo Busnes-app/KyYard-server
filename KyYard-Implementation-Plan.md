@@ -1,9 +1,9 @@
 **Repo:** KyYard-Server (current checkout still identifies as ky_server_base)
-**Worktree:** /home/yoshi/busness.app/KyYard-Server (branch master)
+**Worktree:** /home/yoshi/busness.app/KyYard-Server (branch feat/kyyard-scaffold)
 
 # KyYard implementation plan
 
-Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md) and local code at `2a31d5c`. Status: planning complete; implementation milestones below are pending. No product PR was created for this planning task.
+Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md) and local code at `2a31d5c`. Status: M0 scaffold implementation in progress; later milestones are pending. Git history starts fresh by user decision; the inherited baseline is recorded on `master` and the rename is on `feat/kyyard-scaffold`.
 
 ## 1. Outcome and scope
 
@@ -17,7 +17,7 @@ Deliver KyYard as one Go control-plane container with an embedded React UI and o
 
 Resolve the handoff's milestone-7 scope tension by splitting it: M7a delivers manual updates in 0.1; M7b delivers automated policy and rollback afterward. M6 must already support deliberate recovery to a prior definition. Reapplying a definition does not promise reversal of data changes.
 
-## 2. Verified starting point and first-step constraints
+## 2. Planning-time starting point and first-step constraints
 
 - Local HEAD is `2a31d5c`; the handoff reviewed `f4ca19a`. Pin the actual scaffold source and inspect intervening changes before implementing; do not reset to the older revision.
 - `origin` still points to `https://github.com/Busness-app/ky_server_base.git`; `go.mod`, packaging, and publishing retain base names. Establish the product repository before any product push or publishing.
@@ -200,8 +200,8 @@ Record success/failure, confusing steps and recovery outcomes. Any required docu
 
 **Done:** read the product handoff, checked actual scaffold/config/storage/API/recovery/frontend contracts, and produced this ordered plan with 22 proposed PR slices and measurable gates. Only planning documentation changed during this task.
 
-**Next:** start PR 01 in an isolated product scaffold from the pinned base revision. Preserve existing local files, establish the KyYard repository identity, complete the rename audit, and prove inherited CI before zero-config/tenancy work. Assign implementers/reviewers when work begins; none are assumed here.
+**Next:** finish verification and review of PR 01. The isolated scaffold was generated from the pinned base revision. Preserve existing local files, establish the KyYard repository identity, complete the rename audit, and prove inherited CI before zero-config/tenancy work. Assign implementers/reviewers when work begins; none are assumed here.
 
 **Easy to get wrong:** pushing to the base remote; overwriting this nonempty checkout with ky-init; assuming HTTP port 9443 supplies TLS; breaking Secure cookies during onboarding; issuing identity before approval; retrying an unknown destructive operation; leaking Compose environment secrets; claiming rollback reverses volume writes; claiming PostgreSQL backup coverage that does not exist; closing the store while backup/agent work is still active.
 
-The complete file is mirrored to myslop under `kyyard-engineering-plan`. The board expires seven days after its last post; this repository file is the durable copy. Planning is complete; implementation remains available to claim.
+The complete file is mirrored to myslop under `kyyard-engineering-plan`. The board expires seven days after its last post; this repository file is the durable copy. Planning is complete; M0 implementation is claimed.

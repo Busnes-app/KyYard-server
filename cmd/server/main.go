@@ -15,11 +15,11 @@ import (
 
 	"github.com/Busness-app/ky-primitives/password"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky_server_base/internal/api"
-	"github.com/Busness-app/ky_server_base/internal/backup"
-	"github.com/Busness-app/ky_server_base/internal/config"
-	"github.com/Busness-app/ky_server_base/internal/crypto"
-	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busness-app/kyyard-server/internal/api"
+	"github.com/Busness-app/kyyard-server/internal/backup"
+	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busness-app/kyyard-server/internal/crypto"
+	"github.com/Busness-app/kyyard-server/internal/store"
 )
 
 // appVersion is what the capsule manifest records for this build.
@@ -44,7 +44,7 @@ func main() {
 			runRestore(os.Args[2:])
 			return
 		case "version":
-			fmt.Println("ky_server_base v1.0.0 (Busnes.app base platform)")
+			fmt.Println("kyyard-server v1.0.0 (KyYard control plane scaffold)")
 			return
 		}
 	}
@@ -123,14 +123,14 @@ func runServer() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("[KY-BASE] %s listening on http://%s (DB: %s)", cfg.Server.AppName, addr, cfg.Database.Driver)
+		log.Printf("[KYYARD] %s listening on http://%s (DB: %s)", cfg.Server.AppName, addr, cfg.Database.Driver)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
 		}
 	}()
 
 	<-stop
-	log.Println("[KY-BASE] Shutting down gracefully...")
+	log.Println("[KYYARD] Shutting down gracefully...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
@@ -142,7 +142,7 @@ func runServer() {
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), backupWaitTimeout)
 	defer waitCancel()
 	waitForBackupWork(waitCtx, backupDone, srv.WaitDetached)
-	log.Println("[KY-BASE] Server stopped")
+	log.Println("[KYYARD] Server stopped")
 }
 
 // waitForBackupWork blocks until the scheduler loop and every detached handler have finished,
@@ -165,17 +165,17 @@ func waitForBackupWork(ctx context.Context, backupDone <-chan struct{}, waitDeta
 	select {
 	case <-backupDone:
 	default:
-		log.Println("[KY-BASE] waiting for the scheduled backup in flight...")
+		log.Println("[KYYARD] waiting for the scheduled backup in flight...")
 		select {
 		case <-backupDone:
 		case <-ctx.Done():
-			log.Printf("[KY-BASE] abandoning a scheduled deposit still running after %s; its receipt may be unrecorded", backupWaitTimeout)
+			log.Printf("[KYYARD] abandoning a scheduled deposit still running after %s; its receipt may be unrecorded", backupWaitTimeout)
 		}
 	}
 	select {
 	case <-handlersDone:
 	case <-ctx.Done():
-		log.Printf("[KY-BASE] abandoning a detached backup handler still running after %s; its writes may be unrecorded", backupWaitTimeout)
+		log.Printf("[KYYARD] abandoning a detached backup handler still running after %s; its writes may be unrecorded", backupWaitTimeout)
 	}
 }
 
@@ -415,7 +415,7 @@ func runRestore(args []string) {
 	target := fs.String("to", "", "empty directory to restore into")
 	service := fs.String("service", "", "expected service name (default: $KY_APP_NAME)")
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: ky_server_base restore -capsule <file.kycap> -to <dir> [-service <name>]\n\n"+
+		fmt.Fprint(os.Stderr, "Usage: kyyard-server restore -capsule <file.kycap> -to <dir> [-service <name>]\n\n"+
 			"Custodian shares are read from stdin, one ky2-... share per line, and never from\n"+
 			"the command line: argv is world-readable and lands in shell history.\n\n")
 		fs.PrintDefaults()

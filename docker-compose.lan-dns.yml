@@ -18,6 +18,6 @@
 #     && printf 'COMPOSE_FILE=%s\nKY_DNS=%s\nKY_BACKUP_ALLOW_PRIVATE_RECOVERY=true\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
 #   docker compose up -d --force-recreate
 services:
-  app:
+  kyyard:
     dns:
       - ${KY_DNS:?set KY_DNS to your LAN DNS server}

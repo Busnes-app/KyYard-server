@@ -1,5 +1,5 @@
 # Binaries
-ky_server_base
+kyyard-server
 *.exe
 *.dll
 *.so

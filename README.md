@@ -1,10 +1,19 @@
-# ky_server_base
+# kyyard-server
 
-The scaffold every Busnes.app server is built from: Go backend, embedded React PWA, SQLite or
-PostgreSQL, local and federated sign-in (KySignOn, OIDC, SAML), SCIM provisioning, and
-disaster recovery through the suite's KyRecovery.
+The simple control plane for your container fleet.
 
-Published image:
+This first slice establishes the KyYard scaffold: Go backend, embedded React PWA,
+SQLite/PostgreSQL, local authentication, MFA, KySignOn/OIDC, SCIM and KyRecovery.
+Container management and agent enrollment are planned in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
+SAML metadata is inherited; SAML login is not yet implemented.
+
+Fresh installations only: KyYard uses its own recovery service identity and token-sealing
+label. Existing base-project databases, pairing tokens and capsules are not a supported
+in-place migration. The SQLite filename `ky_server.db` remains the inherited storage format.
+Container data lives under `/data`, including local capsules under `/data/backups` in Compose.
+Production mode still requires `KY_SESSION_SECRET`; persistent zero-config generation is the next slice.
+
+Published image (available after the first successful master publication):
 
 ```bash
 make ci        # gofmt, vet, race tests, smoke test
@@ -16,7 +25,7 @@ Source install (never paste this into a published-image install: the build overl
 `KY_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
 new checkout; an install from before the published image existed has no such line yet, so run
 this block once and confirm with `docker compose config --images`, which must print
-`ky_server_base:local` rather than the `ghcr.io` name):
+`kyyard:local` rather than the `ghcr.io` name):
 
 ```bash
 make ci        # gofmt, vet, race tests, smoke test
@@ -91,7 +100,7 @@ refused deposit does not remove the local copy.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KY_BACKUP_DIR` | empty (off) | Directory for sealed local copies, `<escaped app name>.<capsule-id>.kycap` at mode 0600 (`Busnes_2eapp.cap-Busnes.app-<n>.kycap` by default: bytes outside `[A-Za-z0-9-]` in the app name are hex-escaped). Pruning removes only this application's own prefix. |
+| `KY_BACKUP_DIR` | empty (off) | Directory for sealed local copies, `<escaped app name>.<capsule-id>.kycap` at mode 0600 (`KyYard.cap-KyYard-<n>.kycap` by default: bytes outside `[A-Za-z0-9-]` in the app name are hex-escaped). Pruning removes only this application's own prefix. |
 | `KY_BACKUP_KEEP` | `7` | Local copies to retain; below 1 refuses startup. |
 | `KY_BACKUP_DEPOSIT_INTERVAL` | `24h` | Default schedule only. The admin screen's setting wins; `0` is off; 15 minutes to 366 days otherwise. |
 | `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on an RFC1918 or CGNAT address behind your own TLS proxy. Loopback, link-local and other reserved ranges stay refused; HTTPS stays required. Logged at startup and on the pairing audit row. |
@@ -115,7 +124,7 @@ already in `.env`; there is no default, the block refuses to guess. An exported 
   && t=$(mktemp ./.env.XXXXXX) && { grep -v -e '^COMPOSE_FILE=' -e '^KY_DNS=' -e '^KY_BACKUP_ALLOW_PRIVATE_RECOVERY=' .env || [ $? -eq 1 ]; } > "$t" \
   && printf 'COMPOSE_FILE=%s\nKY_DNS=%s\nKY_BACKUP_ALLOW_PRIVATE_RECOVERY=true\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
 docker compose up -d --force-recreate
-docker inspect ky_server_base --format '{{.HostConfig.Dns}}'   # must print the resolver you chose
+docker inspect kyyard --format '{{.HostConfig.Dns}}'   # must print the resolver you chose
 ```
 
 Turning it off: remove the resolver and the flag, strip only `docker-compose.lan-dns.yml` from
@@ -132,14 +141,6 @@ docker compose up -d --force-recreate
 `KY_DNS` takes effect only while `docker-compose.lan-dns.yml` is in `COMPOSE_FILE`, but
 `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` persists in `.env` on its own and keeps relaxing destination checks until you
 remove it.
-
-### Upgrading from plaintext local backups
-
-Earlier builds wrote unencrypted backups into `KY_BACKUP_DIR`. The variable keeps its name and
-now means sealed capsules. Retention deliberately never touches files it did not write, so old
-plaintext backups stay where they are: move them out of the directory, keep them until a
-restore from a capsule has been proven, then remove them securely. They are the live
-directory in the clear.
 
 ### Restoring
 

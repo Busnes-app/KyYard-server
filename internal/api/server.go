@@ -10,13 +10,13 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky_server_base/internal/auth"
-	"github.com/Busness-app/ky_server_base/internal/config"
-	"github.com/Busness-app/ky_server_base/internal/devices"
-	"github.com/Busness-app/ky_server_base/internal/scim"
-	"github.com/Busness-app/ky_server_base/internal/sso"
-	"github.com/Busness-app/ky_server_base/internal/store"
-	"github.com/Busness-app/ky_server_base/web"
+	"github.com/Busness-app/kyyard-server/internal/auth"
+	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busness-app/kyyard-server/internal/devices"
+	"github.com/Busness-app/kyyard-server/internal/scim"
+	"github.com/Busness-app/kyyard-server/internal/sso"
+	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busness-app/kyyard-server/web"
 )
 
 // recoveryClient is the KyRecovery client as the handlers use it, narrowed so tests can stand

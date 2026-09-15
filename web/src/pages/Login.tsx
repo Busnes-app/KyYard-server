@@ -120,8 +120,8 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
           >
             <Shield size={32} />
           </div>
-          <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>{appName || 'Busnes.app'}</h1>
-          <p style={{ color: 'var(--ink)', fontSize: '14px', marginTop: '4px' }}>Cloud Mobile First Base Platform</p>
+          <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>{appName || 'KyYard'}</h1>
+          <p style={{ color: 'var(--ink)', fontSize: '14px', marginTop: '4px' }}>The simple control plane for your container fleet.</p>
         </div>
 
         <div className="panel">

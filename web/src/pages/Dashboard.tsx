@@ -54,7 +54,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate
           Welcome, {user?.display_name || user?.username}!
         </h1>
         <p style={{ color: 'var(--ink)', fontSize: '15px' }}>
-          {settings?.app_name || 'Busnes.app'} is initialized on the Ky Server Base platform.
+          {settings?.app_name || 'KyYard'} is ready. Manage sign-in, settings, and recovery below.
         </p>
       </div>
 

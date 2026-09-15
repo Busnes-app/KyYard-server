@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky_server_base/internal/backup"
-	"github.com/Busness-app/ky_server_base/internal/config"
-	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busness-app/kyyard-server/internal/backup"
+	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busness-app/kyyard-server/internal/store"
 )
 
 // sqliteInstance is a fresh SQLite store in a temp data dir, the way every backup adapter
@@ -70,7 +70,7 @@ func TestSealerRoundTripUnderDeploymentKey(t *testing.T) {
 
 // Fixture generated with v0.5.0 StoreRecoveryKey/StorePairing, a synthetic token,
 // and a deployment key of 32 bytes of 0x01. No recovery private key is retained.
-func TestV050PairingLoadsUnchanged(t *testing.T) {
+func TestBaseV050PairingRequiresBaseSealer(t *testing.T) {
 	cfg, st := sqliteInstance(t)
 	raw, err := os.ReadFile("testdata/pairing-v050.json")
 	if err != nil {
@@ -96,6 +96,15 @@ func TestV050PairingLoadsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	sealer, err := backup.NewSealer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recoveryclient.LoadPairing(cfg.Database.DataDir, settings, sealer); err == nil {
+		t.Fatal("KyYard accepted a base-project pairing token")
+	}
+	// Historical fixture: prove its original identity is intact, without making
+	// the product accept another application's encrypted settings.
+	sealer, err = recoveryclient.NewAESGCMSealer(cfg.Security.EncryptionKey, "ky_server_base:setting:kyrecovery_token")
 	if err != nil {
 		t.Fatal(err)
 	}

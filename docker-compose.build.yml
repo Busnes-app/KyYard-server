@@ -9,11 +9,11 @@
 #     && printf 'COMPOSE_FILE=%s\n' "$cf" >> "$t" && mv "$t" .env)
 # Further overlays chain onto the same value, e.g. `:docker-compose.lan-dns.yml`;
 # an explicit `-f` list replaces COMPOSE_FILE entirely, so avoid mixing the two.
-# The result is tagged ky_server_base:local so it never occupies the published name. This
+# The result is tagged kyyard:local so it never occupies the published name. This
 # image also wins over a KY_IMAGE digest pin in .env: a source install always runs its build.
 services:
-  app:
-    image: ky_server_base:local
+  kyyard:
+    image: kyyard:local
     pull_policy: build
     build:
       context: .

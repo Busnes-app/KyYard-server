@@ -1,4 +1,7 @@
-# Restoring a Busnes.app server from a capsule
+# Restoring KyYard from a capsule
+
+This runbook covers KyYard capsules from fresh KyYard installations. Base-project capsules
+and encrypted pairing tokens require their original product; they are not an in-place migration path.
 
 This is the procedure for bringing a server built on this scaffold back from a `.kycap`
 backup after the original is gone. It needs three things, held by three different parties by
@@ -48,10 +51,10 @@ dump, but nothing in it can be decrypted without `encryption.key`.
 ## Before you start
 
 - **Pick the capsule.** In the KyRecovery dashboard, open Capsules, find the newest one for
-  this service (the app name, `Busnes.app` unless `KY_APP_NAME` was set) that is not flagged
+  this service (the app name, `KyYard` unless `KY_APP_NAME` was set) that is not flagged
   corrupt, and note its `capsule_id`, `created_at` and `digest`. You will compare these after
   the restore. From a local backup directory the file is `<escaped app name>.<capsule-id>.kycap`
-  (`Busnes_2eapp.cap-Busnes.app-<n>.kycap` by default); the newest is the one to use unless
+  (`KyYard.cap-KyYard-<n>.kycap` by default); the newest is the one to use unless
   you have a reason.
 - **Gather k custodians.** Each card carries one share, a single line beginning `ky2-`. They
   type or paste it themselves; do not collect the shares in a file, a chat, or an email. Two
@@ -64,10 +67,10 @@ dump, but nothing in it can be decrypted without `encryption.key`.
 With the binary (from a release, or `go build ./cmd/server`):
 
 ```bash
-ky_server_base restore -capsule Busnes_2eapp.cap-XXXXXXXX.kycap -to ./restored
+kyyard-server restore -capsule KyYard.cap-XXXXXXXX.kycap -to ./restored
 ```
 
-`-service` defaults to `KY_APP_NAME`, then `Busnes.app`. Pass it only when the backup was made
+`-service` defaults to `KY_APP_NAME`, then `KyYard`. Pass it only when the backup was made
 under a different app name; the capsule's service name must match or the restore stops before
 reading a share.
 
@@ -82,25 +85,25 @@ in `.env` after the drill: see the README's upgrade note for moving off it.
 
 ```bash
 sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-d=$(docker buildx imagetools inspect ghcr.io/busness-app/ky_server_base:$sha --format '{{.Manifest.Digest}}') \
-  && gh attestation verify "oci://ghcr.io/busness-app/ky_server_base@$d" --repo Busness-app/ky_server_base \
-       --cert-identity https://github.com/Busness-app/ky_server_base/.github/workflows/ci.yml@refs/heads/master \
-  && [ "$(gh attestation verify "oci://ghcr.io/busness-app/ky_server_base@$d" --repo Busness-app/ky_server_base \
-       --cert-identity https://github.com/Busness-app/ky_server_base/.github/workflows/ci.yml@refs/heads/master \
+d=$(docker buildx imagetools inspect ghcr.io/busness-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
+  && gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
+       --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
+  && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
+       --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
        --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
   && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-      && echo "KY_IMAGE=ghcr.io/busness-app/ky_server_base@$d" >> "$t" && mv "$t" .env) \
-  && grep -qxF "KY_IMAGE=ghcr.io/busness-app/ky_server_base@$d" .env
+      && echo "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" >> "$t" && mv "$t" .env) \
+  && grep -qxF "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" .env
 ```
 
 Then, in the same shell (the check compares against `$d`), refuse to go on unless the image in
-effect is exactly that digest. A source install passes on its `ky_server_base:local` build instead,
+effect is exactly that digest. A source install passes on its `kyyard:local` build instead,
 since `docker-compose.build.yml` wins over the pin, which is what a source install wants. The
 two refusal messages are distinct on purpose: a broken invocation is not an unpinned image.
 
 ```bash
 imgs=$(docker compose config --images) || { echo 'refusing: compose could not resolve the image'; false; }
-printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/ky_server_base@$d" || printf '%s\n' "$imgs" | grep -qxF 'ky_server_base:local' \
+printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/kyyard@$d" || printf '%s\n' "$imgs" | grep -qxF 'kyyard:local' \
   || { echo "refusing: image in effect is '$imgs', not the digest verified above"; false; }
 ```
 
@@ -113,9 +116,9 @@ keeps the real server down:
 ```bash
 mkdir -m 700 restored
 docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
-  -v "$PWD/Busnes_2eapp.cap-XXXXXXXX.kycap:/in.kycap:ro" \
+  -v "$PWD/KyYard.cap-XXXXXXXX.kycap:/in.kycap:ro" \
   -v "$PWD/restored:/restored" \
-  app restore -capsule /in.kycap -to /restored
+  kyyard restore -capsule /in.kycap -to /restored
 ```
 
 The bare binary needs none of this: it creates a missing target itself at mode 700.
@@ -136,8 +139,8 @@ Delete it afterwards; a file holding k shares is the suite key in a file.
 On success it prints the authenticated manifest:
 
 ```
-Restored 4 files from capsule cap-Busnes.app-1788605720094118543
-  service:      Busnes.app (v1.0.0)
+Restored 4 files from capsule cap-KyYard-1788605720094118543
+  service:      KyYard (v1.0.0)
   created:      2026-09-05T12:15:20Z
   recovery key: 886ff52c...
   payload hash: 8a053985...
@@ -152,7 +155,7 @@ Failures you may see, and what they mean:
 
 | Message | Meaning |
 |---|---|
-| `capsule is for service "Busnes.app", this instance is "X"` | `-service` or `KY_APP_NAME` names something else. Override `-service` only if the backup was made under a different app name |
+| `capsule is for service "KyYard", this instance is "X"` | `-service` or `KY_APP_NAME` names something else. Override `-service` only if the backup was made under a different app name |
 | `shamir: fewer shares than the threshold requires` | Fewer than k valid lines were read. Check for a missed line or a truncated paste |
 | `restore target directory is not empty` | Use an empty directory. The restore never overwrites |
 | a decrypt or integrity error | Wrong shares (from a different ceremony), a share mistyped, or a damaged file. Re-download and retry with the custodians |

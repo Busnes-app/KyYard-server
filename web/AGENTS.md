@@ -7,6 +7,7 @@ React 19 + TypeScript + Vite PWA frontend embedding KySecurity color tokens (`Pa
 Owns user interface components, service worker caching, PWA installation manifests, and frontend theme switching.
 
 ## Local Contracts
+- Product title, PWA name, and pre-settings fallback name are `KyYard`.
 - Strict TypeScript type safety without unused imports.
 - Dynamic theme selection applies `data-theme` attribute to the root HTML document and persists to `localStorage`.
 - Authenticated state-changing requests use `secureFetch` so the `ky_csrf` cookie is mirrored into `X-CSRF-Token`.

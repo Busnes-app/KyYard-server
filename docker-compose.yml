@@ -1,5 +1,5 @@
 services:
-  app:
+  kyyard:
     # The published, attested image. `pull` moves to the newest one; `up` uses what is
     # present, otherwise pulls. This file never builds: a source build would occupy this
     # name with unattested bytes, so it lives in docker-compose.build.yml under a local tag.
@@ -15,18 +15,18 @@ services:
     # secrets. Re-run with a newer sha to move; delete the KY_IMAGE line to follow :latest
     # again. A source install is unaffected: the build overlay's image wins over this pin.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/ky_server_base:$sha --format '{{.Manifest.Digest}}') \
-    #     && gh attestation verify "oci://ghcr.io/busness-app/ky_server_base@$d" --repo Busness-app/ky_server_base \
-    #          --cert-identity https://github.com/Busness-app/ky_server_base/.github/workflows/ci.yml@refs/heads/master \
-    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/ky_server_base@$d" --repo Busness-app/ky_server_base \
-    #          --cert-identity https://github.com/Busness-app/ky_server_base/.github/workflows/ci.yml@refs/heads/master \
+    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
+    #     && gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
+    #          --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
+    #          --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
     #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
     #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-    #         && echo "KY_IMAGE=ghcr.io/busness-app/ky_server_base@$d" >> "$t" && mv "$t" .env) \
-    #     && grep -qxF "KY_IMAGE=ghcr.io/busness-app/ky_server_base@$d" .env
-    image: ${KY_IMAGE:-ghcr.io/busness-app/ky_server_base:latest}
+    #         && echo "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" >> "$t" && mv "$t" .env) \
+    #     && grep -qxF "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" .env
+    image: ${KY_IMAGE:-ghcr.io/busness-app/kyyard:latest}
     pull_policy: missing
-    container_name: ky_server_base
+    container_name: kyyard
     restart: unless-stopped
     # Covers cmd/server's shutdownTimeout (5s HTTP drain) plus backupWaitTimeout (17m for a
     # deposit already on the wire), so SIGKILL cannot land on a capsule mid-upload.
@@ -36,14 +36,14 @@ services:
     environment:
       - KY_PORT=8080
       - KY_HOST=0.0.0.0
-      - KY_APP_NAME=Busnes.app Base
+      - KY_APP_NAME=KyYard
       - KY_APP_URL=http://localhost:8080
       - KY_DB_DRIVER=sqlite
-      - KY_DATA_DIR=/app/data
+      - KY_DATA_DIR=/data
       # Disaster recovery. Sealed capsules land in KY_BACKUP_DIR (empty = no local copies);
       # the schedule below is only the default the admin screen overrides. KY_DNS lives in
       # docker-compose.lan-dns.yml, never here.
-      - KY_BACKUP_DIR=${KY_BACKUP_DIR-/app/backups}
+      - KY_BACKUP_DIR=${KY_BACKUP_DIR-/data/backups}
       - KY_BACKUP_KEEP=${KY_BACKUP_KEEP:-7}
       - KY_BACKUP_DEPOSIT_INTERVAL=${KY_BACKUP_DEPOSIT_INTERVAL:-24h}
       - KY_BACKUP_ALLOW_PRIVATE_RECOVERY=${KY_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
@@ -54,8 +54,7 @@ services:
       - KY_SSO_ENABLED=true
       - KY_SCIM_ENABLED=true
     volumes:
-      - ./data:/app/data
-      - ./backups:/app/backups
+      - ./data:/data
 
   # Optional PostgreSQL service for enterprise heavy DB mode
   postgres:

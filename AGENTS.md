@@ -84,6 +84,8 @@ When the user requests a durable behavior change, record it here or in the relev
 - Build the KyYard agent with runtime adapters; Portainer backend/agent integration and evaluation are out of scope by user decision.
 
 - Before implementing KyYard product work, read [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md) for product requirements and [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md) for delivery order, design decisions, and acceptance gates.
+- Repository: `Busness-app/kyyard-server`; Go module: `github.com/Busness-app/kyyard-server`; binary: `kyyard-server`; image: `ghcr.io/busness-app/kyyard`; Compose service/container: `kyyard`; display and default recovery service name: `KyYard`. Container persistence is `/data`, including `/data/backups`.
+- Git history starts fresh by user decision. The imported baseline derives from `ky_server_base` revision `2a31d5c`.
 - The root owns these planning documents. Proposed domains in the plan become child DOX boundaries when their implementation lands.
 
 ## Verification
@@ -95,23 +97,23 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `govulncheck` and `npm audit --audit-level=high`
 - `scripts/smoke-test.sh`: runs the built binary and asserts CLI, auth, session, and SPA behavior
 - Docker image build and container HTTP check
-- On a push to `master` that passes every job, `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busness-app/ky_server_base:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `ky_server_base:local`) so every compose command, recovery docs included, uses the local build.
+- On a push to `master` that passes every job, `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busness-app/kyyard:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kyyard:local`) so every compose command, recovery docs included, uses the local build.
 
 Run the same checks locally with `make ci` (`tidy-check lint test-race test-web smoke`); add `make test-postgres` when a Postgres instance is available.
 
 ## Child DOX Index
 
-- [internal/config/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/config/AGENTS.md): Configuration management and environment loader.
-- [internal/store/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
-- [internal/crypto/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
-- [internal/auth/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/auth/AGENTS.md): Authentication, MFA (TOTP), recovery codes, sessions, and CAPTCHA.
-- [internal/sso/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
-- [internal/scim/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
-- [internal/backup/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/backup/AGENTS.md): Product-side adapters over `ky-primitives/recoveryclient`: payload collection, drill checks, settings and sealer glue.
-- [internal/devices/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/devices/AGENTS.md): 90-second ephemeral QR device pairing and push registration.
-- [internal/testdb/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
-- [internal/api/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
-- [web/AGENTS.md](file:///home/yoshi/git/ky_server_base/web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
+- [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
+- [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
+- [internal/crypto/AGENTS.md](internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
+- [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, MFA (TOTP), recovery codes, sessions, and CAPTCHA.
+- [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
+- [internal/scim/AGENTS.md](internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
+- [internal/backup/AGENTS.md](internal/backup/AGENTS.md): Product-side adapters over `ky-primitives/recoveryclient`: payload collection, drill checks, settings and sealer glue.
+- [internal/devices/AGENTS.md](internal/devices/AGENTS.md): 90-second ephemeral QR device pairing and push registration.
+- [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
+- [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
+- [web/AGENTS.md](web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
 
 `cmd/server` owns the scheduler: `backupLoop` builds the `RunConfig` and client once and
 returns with `scheduler disabled: ...` if that fails, because a run that never stamps its

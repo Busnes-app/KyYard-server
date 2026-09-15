@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/totp"
-	"github.com/Busness-app/ky_server_base/internal/auth"
+	"github.com/Busness-app/kyyard-server/internal/auth"
 )
 
 func TestTOTPValidateReturnsCounter(t *testing.T) {
@@ -16,7 +16,7 @@ func TestTOTPValidateReturnsCounter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uri := auth.GenerateTOTPURL("BusnesApp", "alice", secret); !strings.HasPrefix(uri, "otpauth://totp/") {
+	if uri := auth.GenerateTOTPURL("KyYard", "alice", secret); !strings.HasPrefix(uri, "otpauth://totp/") {
 		t.Fatalf("uri %q", uri)
 	}
 	now := time.Now()

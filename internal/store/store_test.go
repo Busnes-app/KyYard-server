@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/ky_server_base/internal/store"
-	"github.com/Busness-app/ky_server_base/internal/testdb"
+	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busness-app/kyyard-server/internal/testdb"
 	"github.com/google/uuid"
 )
 
@@ -124,7 +124,7 @@ func TestSessionStoreLifecycle(t *testing.T) {
 	sess := &store.Session{
 		TokenHash: tokenHash,
 		UserID:    userID,
-		UserAgent: "Mozilla/5.0 BusnesApp",
+		UserAgent: "Mozilla/5.0 KyYard",
 		IPAddress: "127.0.0.1",
 		CreatedAt: time.Now().UTC(),
 		ExpiresAt: time.Now().UTC().Add(1 * time.Hour),

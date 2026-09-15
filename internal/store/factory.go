@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Busness-app/ky_server_base/internal/config"
+	"github.com/Busness-app/kyyard-server/internal/config"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
