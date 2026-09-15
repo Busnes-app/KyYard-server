@@ -49,7 +49,7 @@ run: build
 	@./kyyard-server
 
 docker-build:
-	@docker build -t kyyard-server .
+	@docker build -t kyyard:local .
 
 clean:
 	@rm -rf kyyard-server web/dist web/node_modules data/ backups/ coverage.out

@@ -22,7 +22,7 @@ FROM alpine:3.24
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=backend-builder /app/kyyard-server /app/kyyard-server
-# /data/backups is the optional mount for sealed local capsules; KY_BACKUP_DIR is set by the
+# /data/backups holds sealed local capsules inside the data volume; KY_BACKUP_DIR is set by the
 # operator (compose does), so an image run bare keeps no local copies.
 RUN mkdir -p /data /data/backups
 
