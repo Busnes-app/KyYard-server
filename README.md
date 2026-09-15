@@ -11,7 +11,9 @@ Fresh installations only: KyYard uses its own recovery service identity and toke
 label. Existing base-project databases, pairing tokens and capsules are not a supported
 in-place migration. The SQLite filename `ky_server.db` remains the inherited storage format.
 Container data lives under `/data`, including local capsules under `/data/backups` in Compose.
-Production mode still requires `KY_SESSION_SECRET`; persistent zero-config generation is the next slice.
+Production mode still requires `KY_SESSION_SECRET`. Persistent zero-config generation and
+forced bootstrap password replacement are the next slice; this scaffold does not yet enforce
+password replacement.
 
 Published image (available after the first successful master publication):
 
