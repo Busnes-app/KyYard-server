@@ -209,6 +209,14 @@ CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON mfa_challenges(expires_
 		SQLite:   `ALTER TABLE users ADD COLUMN totp_last_counter INTEGER NOT NULL DEFAULT 0;`,
 		Postgres: `ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_counter BIGINT NOT NULL DEFAULT 0;`,
 	},
+	{
+		Version: 4,
+		Name:    "mfa_credential_snapshot",
+		SQLite: `DELETE FROM mfa_challenges;
+ALTER TABLE mfa_challenges ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';`,
+		Postgres: `DELETE FROM mfa_challenges;
+ALTER TABLE mfa_challenges ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // Run executes all pending migrations for the specified database driver.

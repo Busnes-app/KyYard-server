@@ -92,7 +92,7 @@ func (s *Server) handleKySignOnCallback(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user.ID)
+	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Session creation failed")
 		return

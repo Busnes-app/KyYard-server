@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AppHeader } from './components/AppHeader';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
+import { ChangePassword } from './pages/ChangePassword';
 import { Backup } from './pages/Backup';
 import { SCIMAdmin } from './pages/SCIMAdmin';
 import { Settings } from './pages/Settings';
@@ -10,6 +11,7 @@ import { secureFetch } from './api';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
+  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [settings, setSettings] = useState<any>(null);
@@ -73,14 +75,25 @@ export const App: React.FC = () => {
 
   if (!user) {
     return (
+      <>
+      {notice && <p role="status" style={{ padding: 16 }}>{notice}</p>}
       <Login
         appName={settings?.app_name || 'KyYard'}
         onSuccess={(u) => {
+          setNotice('');
           setUser(u);
           void loadSettings();
         }}
       />
+      </>
     );
+  }
+
+  if (user.must_change_password) {
+    return <ChangePassword onLogout={handleLogout} onComplete={() => {
+      setUser(null);
+      setNotice('Password changed. Sign in with your new password.');
+    }} />;
   }
 
   return (

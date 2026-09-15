@@ -7,6 +7,7 @@ Manages user authentication, password policies, Multi-Factor Authentication (RFC
 Owns session issuance and verification, TOTP token generation/validation, recovery code redemption, and client-side PoW verification.
 
 ## Local Contracts
+- Sessions for `must_change_password` users authenticate only GET `/api/auth/me` and POST `/api/auth/change-password` or `/api/auth/logout`; private settings and product actions fail closed. Session issuance is bound to the verified password hash and serialized with replacement.
 - Passwords require at least 12 characters (`ValidatePassword`).
 - Active sessions are stored with SHA-256 hashed tokens and verified against secure HttpOnly / SameSite cookies or Bearer headers.
 - Session authentication rejects inactive accounts and deletes their presented session.

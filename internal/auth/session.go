@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ const (
 	HeaderCSRF        = "X-CSRF-Token"
 )
 
+var ErrPasswordChangeRequired = errors.New("password change required")
+
 type SessionManager struct {
 	store  store.Store
 	config config.SecurityConfig
@@ -31,7 +34,7 @@ func NewSessionManager(st store.Store, cfg config.SecurityConfig) *SessionManage
 }
 
 // IssueSession creates an active session in the database and writes HttpOnly cookie + CSRF token.
-func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWriter, r *http.Request, userID string) (*store.Session, string, error) {
+func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User) (*store.Session, string, error) {
 	rawToken := crypto.RandomHex(32)
 	tokenHash := crypto.SHA256Hex([]byte(rawToken))
 
@@ -42,14 +45,14 @@ func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWrite
 
 	sess := &store.Session{
 		TokenHash: tokenHash,
-		UserID:    userID,
+		UserID:    user.ID,
 		UserAgent: r.UserAgent(),
 		IPAddress: ClientIP(r, sm.config.TrustedProxies),
 		CreatedAt: time.Now().UTC(),
 		ExpiresAt: time.Now().UTC().Add(ttl),
 	}
 
-	if err := sm.store.Sessions().CreateSession(ctx, sess); err != nil {
+	if err := sm.store.Sessions().CreateSession(ctx, sess, user.PasswordHash); err != nil {
 		return nil, "", err
 	}
 
@@ -117,6 +120,16 @@ func (sm *SessionManager) AuthenticateRequest(r *http.Request) (*store.User, *st
 		return nil, nil, store.ErrNotFound
 	}
 
+	// The password transaction may revoke the session between the two reads.
+	// Recheck after loading the user so an old session cannot inherit a cleared flag.
+	if _, err := sm.store.Sessions().GetSession(r.Context(), tokenHash); err != nil {
+		return nil, nil, err
+	}
+
+	// A restricted session never authorizes product operations or private settings.
+	if user.MustChangePassword && !((r.Method == http.MethodGet && r.URL.Path == "/api/auth/me") || (r.Method == http.MethodPost && (r.URL.Path == "/api/auth/change-password" || r.URL.Path == "/api/auth/logout"))) {
+		return nil, nil, ErrPasswordChangeRequired
+	}
 	return user, sess, nil
 }
 
@@ -131,9 +144,14 @@ func ValidateCSRF(r *http.Request) bool {
 
 // RevokeSession deletes the active session and clears the browser cookies.
 func (sm *SessionManager) RevokeSession(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-	var rawToken string
-	if cookie, err := r.Cookie(SessionCookieName); err == nil {
-		rawToken = cookie.Value
+	rawToken := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		rawToken = ""
+	}
+	if rawToken == "" {
+		if cookie, err := r.Cookie(SessionCookieName); err == nil {
+			rawToken = cookie.Value
+		}
 	}
 
 	if rawToken != "" {
@@ -149,6 +167,7 @@ func (sm *SessionManager) RevokeSession(ctx context.Context, w http.ResponseWrit
 		HttpOnly: true,
 		Secure:   sm.config.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
+		Domain:   sm.config.CookieDomain,
 	})
 
 	http.SetCookie(w, &http.Cookie{
@@ -159,6 +178,7 @@ func (sm *SessionManager) RevokeSession(ctx context.Context, w http.ResponseWrit
 		HttpOnly: false,
 		Secure:   sm.config.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
+		Domain:   sm.config.CookieDomain,
 	})
 
 	return nil

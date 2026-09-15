@@ -34,6 +34,8 @@ type UserStore interface {
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
 	UpdateUser(ctx context.Context, u *User) error
+	ResetAdminPassword(ctx context.Context, userID, newHash string) error
+	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
 	UpdateRecoveryCodes(ctx context.Context, userID, oldHashes, newHashes string) error
 	// SpendTOTPCounter records counter as used. It returns ErrAlreadyExists when counter is
 	// not greater than the stored one, which is how a replayed code inside the skew window fails.
@@ -45,13 +47,13 @@ type UserStore interface {
 
 // SessionStore defines repository operations for active login sessions.
 type SessionStore interface {
-	CreateSession(ctx context.Context, s *Session) error
+	CreateSession(ctx context.Context, s *Session, expectedPasswordHash string) error
 	GetSession(ctx context.Context, tokenHash string) (*Session, error)
 	DeleteSession(ctx context.Context, tokenHash string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
 	CleanExpiredSessions(ctx context.Context) error
-	CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge) error
-	ConsumeMFAChallenge(ctx context.Context, tokenHash string) (string, error)
+	CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error
+	ConsumeMFAChallenge(ctx context.Context, tokenHash string) (userID, passwordHash string, err error)
 }
 
 // DeviceStore handles 90s ephemeral QR pairing sessions and paired push clients.

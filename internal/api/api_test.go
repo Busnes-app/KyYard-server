@@ -220,7 +220,7 @@ func TestMFATOTPRefusesReplay(t *testing.T) {
 		raw := crypto.RandomHex(32)
 		_ = st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
 			TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: "usr_mfa", ExpiresAt: time.Now().Add(time.Minute),
-		})
+		}, "")
 		body, _ := json.Marshal(map[string]string{"mfa_token": raw, "code": code})
 		req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -587,7 +587,7 @@ func TestMFAPerAccountWindow(t *testing.T) {
 			TokenHash: crypto.SHA256Hex([]byte(raw)),
 			UserID:    "usr_carol",
 			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
-		}); err != nil {
+		}, passHash); err != nil {
 			t.Fatal(err)
 		}
 
@@ -965,5 +965,46 @@ func TestDepositOutlivesTheRequest(t *testing.T) {
 	}
 	if !audited {
 		t.Error("no successful admin.backup_run audit record for the acting admin after the request went away")
+	}
+}
+
+func TestMFAChallengeRejectedAfterPasswordRotation(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+	secret, _ := totp.GenerateSecret()
+	enc, _ := crypto.EncryptAESGCM([]byte(secret), cfg.Security.EncryptionKey)
+	if err := st.Users().CreateUser(ctx, &store.User{
+		ID: "usr_mfa", Username: "mfa", Role: "user", Status: "active", SSOProvider: "local",
+		PasswordHash: "old", TOTPEnabled: true, TOTPSecretEnc: enc,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.Code(secret, time.Now())
+
+	post := func() int {
+		raw := crypto.RandomHex(32)
+		if err := st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
+			TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: "usr_mfa", ExpiresAt: time.Now().Add(time.Minute),
+		}, "old"); err != nil {
+			t.Fatal(err)
+		}
+		user, err := st.Users().GetUserByID(ctx, "usr_mfa")
+		if err != nil {
+			t.Fatal(err)
+		}
+		user.PasswordHash = "new"
+		if err := st.Users().UpdateUser(ctx, user); err != nil {
+			t.Fatal(err)
+		}
+
+		body, _ := json.Marshal(map[string]string{"mfa_token": raw, "code": code})
+		req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
+	if got := post(); got != http.StatusForbidden {
+		t.Fatalf("stale challenge: got %d, want 403", got)
 	}
 }

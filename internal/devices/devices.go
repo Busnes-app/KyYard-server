@@ -84,7 +84,7 @@ func (s *PairingService) InitPairing(ctx context.Context, userID string) (*InitP
 }
 
 // VerifyPairing processes code submission from a client device (e.g. mobile app scanning QR or entering PIN).
-func (s *PairingService) VerifyPairing(ctx context.Context, codeOrSecret, deviceName, platform, pushToken string) (*store.DevicePairing, error) {
+func (s *PairingService) VerifyPairing(ctx context.Context, codeOrSecret, deviceName, platform, pushToken string) (*store.DevicePairing, *store.User, error) {
 	var pairing *store.DevicePairing
 	var err error
 
@@ -96,23 +96,28 @@ func (s *PairingService) VerifyPairing(ctx context.Context, codeOrSecret, device
 
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, ErrPairingNotFound
+			return nil, nil, ErrPairingNotFound
 		}
 		if errors.Is(err, store.ErrPairingExpired) {
-			return nil, ErrPairingExpired
+			return nil, nil, ErrPairingExpired
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	if time.Now().UTC().After(pairing.ExpiresAt) {
-		return nil, ErrPairingExpired
+		return nil, nil, ErrPairingExpired
 	}
 
 	if pairing.Status != "pending" {
-		return nil, ErrPairingNotFound
+		return nil, nil, ErrPairingNotFound
+	}
+	// Carry the pre-consumption credential snapshot through session issuance.
+	user, err := s.store.Users().GetUserByID(ctx, pairing.UserID)
+	if err != nil || user.Status != "active" || user.MustChangePassword {
+		return nil, nil, ErrPairingNotFound
 	}
 	if err := s.store.Devices().ConsumePairing(ctx, pairing.Secret, deviceName, platform, pushToken); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	pairing.DeviceName = deviceName
@@ -120,7 +125,7 @@ func (s *PairingService) VerifyPairing(ctx context.Context, codeOrSecret, device
 	pairing.PushToken = pushToken
 	pairing.Status = "consumed"
 
-	return pairing, nil
+	return pairing, user, nil
 }
 
 // PollPairingStatus checks if a pending pairing session has been approved by the device.
