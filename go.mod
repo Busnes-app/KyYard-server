@@ -7,9 +7,9 @@ require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/elimity-com/scim v0.0.0-20260728105928-2641426a1539
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.10.0
-	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sys v0.47.0
+	github.com/jackc/pgx/v5 v5.11.0
+	golang.org/x/oauth2 v0.37.0
+	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.58.0
 )
 
