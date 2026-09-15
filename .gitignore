@@ -1,0 +1,28 @@
+# Binaries
+ky_server_base
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Data & Backups
+/data/
+/backups/
+*.db
+*.db-wal
+*.db-shm
+*.kycap
+
+# Frontend
+web/node_modules/
+
+# Logs & OS
+*.log
+.DS_Store
+.env
+.env.local
+
+# Coverage
+coverage.out
+.env.*
+!.env.example

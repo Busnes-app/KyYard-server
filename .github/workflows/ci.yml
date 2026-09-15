@@ -1,0 +1,283 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A superseded PR run is cancelled. A push to master is not: cancelling it mid-
+# publish could leave a :<sha> tag in GHCR with no attestation behind it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  go:
+    name: Go build, vet & tests (SQLite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go build ./...
+
+      - name: Tests with race detector and coverage
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        run: |
+          go tool cover -func=coverage.out | tail -n 1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage.out
+
+  postgres:
+    name: Go tests (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Same suite, real Postgres: each test gets its own schema (internal/testdb).
+      - name: Tests against PostgreSQL
+        env:
+          KY_TEST_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:5432/ci_test?sslmode=disable
+        run: go test -race -count=1 ./...
+
+  web:
+    name: Frontend typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+        working-directory: web
+
+      - name: Tests
+        run: npm test
+        working-directory: web
+
+      - name: Typecheck and build
+        run: npm run build
+        working-directory: web
+
+      # web/dist is embedded into the Go binary, so a stale commit ships a stale UI.
+      - name: Committed web/dist matches source
+        run: git diff --exit-code -- web/dist
+
+      - name: npm audit
+        run: npm audit --audit-level=high
+        working-directory: web
+
+  security:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  smoke:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: shellcheck scripts/*.sh
+      - run: go build -o ky_server_base ./cmd/server
+      - run: scripts/smoke-test.sh
+
+  docker:
+    name: Docker image build & run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build image
+        run: docker build -t ky_server_base:ci .
+
+      - name: Container serves the app
+        run: |
+          docker run -d --name ky_ci -p 18080:8080 \
+            -e KY_ADMIN_PASSWORD='CiSmokeAdminPass123!' \
+            -e KY_CAPTCHA_PROVIDER=none \
+            ky_server_base:ci
+          trap 'docker logs ky_ci; docker rm -f ky_ci' EXIT
+
+          curl -sf -o /dev/null --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:18080/
+          curl -sf -o /dev/null http://127.0.0.1:18080/api/settings
+          curl -sf -X POST -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \
+            http://127.0.0.1:18080/api/auth/login | grep -q '"authenticated":true'
+
+      # Hand the exact image the checks above ran against to the publish job,
+      # so what gets pushed is what was tested, never a second build.
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          docker save ky_server_base:ci | gzip > tested-image.tar.gz
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tested-image
+          path: tested-image.tar.gz
+          retention-days: 1
+
+  # Publishes the image CI tested: only for pushes to master, only
+  # after every job passed, and with no checkout and no build of its own, so
+  # the pushed bytes are the tested bytes. A pull request from a fork must
+  # never reach this job or write a package.
+  publish:
+    needs: [go, postgres, web, security, smoke, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    # No concurrency group here on purpose: GitHub cancels a *pending* job when a
+    # newer one queues into the same group, which would leave that commit with no
+    # :<sha> image and no attestation. Every commit whose run reaches this job
+    # gets both; a run superseded before it starts publishes nothing.
+    outputs:
+      name: ${{ steps.push.outputs.name }}
+      digest: ${{ steps.push.outputs.digest }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tested-image
+      - run: docker load < tested-image.tar.gz
+
+      - env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      # Name derived, not spelled out: GITHUB_TOKEN can only write the owning
+      # account's namespace, and registries reject a mixed-case name. Only the
+      # commit tag is pushed here; it is what lets an operator pin a known-good
+      # image and roll back to it. :latest moves in the promote job, after the
+      # attestation verifies.
+      - id: push
+        run: |
+          set -euo pipefail
+          name="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker tag ky_server_base:ci "$name:$GITHUB_SHA"
+          docker push "$name:$GITHUB_SHA"
+          digest="$(docker buildx imagetools inspect "$name:$GITHUB_SHA" --format '{{.Manifest.Digest}}')"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # Binds the pushed manifest to this run and commit. Verifying it here, the
+      # way an operator would, proves the attestation is usable and not just present.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NAME: ${{ steps.push.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://$NAME@$DIGEST" --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml@refs/heads/master"
+
+
+  # :latest advances only to an image whose provenance verified above, and only
+  # to the current tip of master. Serialised here, not in publish: a pending
+  # promote cancelled by a newer one queuing is harmless, since a newer run
+  # existing is exactly what makes this commit no longer the tip. Promotion is
+  # by digest and the result is asserted, so :latest is the attested manifest.
+  promote:
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote-master
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NAME: ${{ needs.publish.outputs.name }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tip="$(gh api "repos/$GITHUB_REPOSITORY/branches/master" --jq .commit.sha)"
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "Published \`$NAME@$DIGEST\` as \`:$GITHUB_SHA\` only: master has moved on to $tip" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # --prefer-index=false: with the default, buildx wraps a single manifest in a
+          # new index whose digest the attestation does not cover. Then prove it, the
+          # way an operator would, on the tag they actually deploy.
+          docker buildx imagetools create --prefer-index=false --tag "$NAME:latest" "$NAME@$DIGEST"
+          latest="$(docker buildx imagetools inspect "$NAME:latest" --format '{{.Manifest.Digest}}')"
+          if [ "$latest" != "$DIGEST" ]; then
+            echo "::error:::latest resolves to $latest, attested digest is $DIGEST" >&2
+            exit 1
+          fi
+          gh attestation verify "oci://$NAME:latest" --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml@refs/heads/master"
+          echo "Published \`$NAME@$DIGEST\` as \`:latest\` and \`:$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"

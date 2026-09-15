@@ -1,0 +1,60 @@
+version: 2
+
+# ky-primitives is the suite's shared crypto library, and a bump to it arrives in its
+# own PR: it is reviewed against the capsule and recovery-key contract, not waved
+# through in a batch with x/crypto and action pins. The compat workflow proves the
+# library's default branch still builds this product; Dependabot is what moves the
+# pin to a tagged release once it does. The pattern is a prefix so a /v2 module path
+# or a published submodule stays in this group instead of falling through to `go`.
+#
+# There is deliberately no npm entry. The built frontend (web/dist or frontend/dist) is
+# committed and CI diff-checks it, so a lockfile-only bump can never go green; until the
+# bundle is built in CI instead, the frontend gets advisory-driven security updates only,
+# and whoever merges one rebuilds and commits dist in the same PR.
+#
+# Three days of cooldown on every ecosystem here: a tag that has been out for three days
+# has had three days for someone to find it was yanked. Per the Dependabot options
+# reference ("cooldown": "only available for version updates, not security updates"),
+# a security update is not held back by it — but that path only exists if Dependabot
+# alerts and security updates are enabled in the repository's code security settings,
+# which this file cannot do. Both were enabled on 2026-09-04.
+#
+# Actions are pinned to commit SHAs in the workflows, so the github-actions entry
+# proposes SHA moves and the cooldown genuinely sits between an upstream release and
+# this repo running it; a mutable major tag would bypass both.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      ky-primitives:
+        patterns: ["github.com/Busness-app/ky-primitives*"]
+      go:
+        patterns: ["*"]
+        exclude-patterns: ["github.com/Busness-app/ky-primitives*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: "chore(deps)"

@@ -1,0 +1,24 @@
+# Translated from .gitignore, not copied: Docker matches patterns from the context root, so
+# unanchored ones need **/ to match at any depth. Nothing the working tree accumulates (live
+# data, restored copies, capsules, keys, secrets, build output) may enter the build context.
+.git
+**/.env
+**/.env.local
+/data/
+/backups/
+/restored/
+/old-data/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.kycap
+**/*.key
+**/*.log
+**/coverage.out
+**/node_modules
+/ky_server_base
+.claude/
+.codex/
+.superpowers/
+**/.env.*
+!**/.env.example

@@ -1,0 +1,76 @@
+services:
+  app:
+    # The published, attested image. `pull` moves to the newest one; `up` uses what is
+    # present, otherwise pulls. This file never builds: a source build would occupy this
+    # name with unattested bytes, so it lives in docker-compose.build.yml under a local tag.
+    # Source installs add docker-compose.build.yml to the COMPOSE_FILE chain in .env (other overlays
+    # may sit beside it); Compose reads it before every command. An explicit -f list replaces it
+    # outright, so never mix the two.
+    # To run only what CI attested, pin the commit you chose by digest and verify it first (gh
+    # logged in). Tags are movable, :<commit sha> included, so the digest comes from the tag but
+    # the guarantee comes from the attestation: it must verify against this workflow on master
+    # AND record your commit as its source, or the chain stops. The new .env is staged in this
+    # directory and renamed atomically over the old one only if the filtered copy was written
+    # in full, so a failed check, an unreadable .env or a short write never replaces your
+    # secrets. Re-run with a newer sha to move; delete the KY_IMAGE line to follow :latest
+    # again. A source install is unaffected: the build overlay's image wins over this pin.
+    #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
+    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/ky_server_base:$sha --format '{{.Manifest.Digest}}') \
+    #     && gh attestation verify "oci://ghcr.io/busness-app/ky_server_base@$d" --repo Busness-app/ky_server_base \
+    #          --cert-identity https://github.com/Busness-app/ky_server_base/.github/workflows/ci.yml@refs/heads/master \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/ky_server_base@$d" --repo Busness-app/ky_server_base \
+    #          --cert-identity https://github.com/Busness-app/ky_server_base/.github/workflows/ci.yml@refs/heads/master \
+    #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
+    #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+    #         && echo "KY_IMAGE=ghcr.io/busness-app/ky_server_base@$d" >> "$t" && mv "$t" .env) \
+    #     && grep -qxF "KY_IMAGE=ghcr.io/busness-app/ky_server_base@$d" .env
+    image: ${KY_IMAGE:-ghcr.io/busness-app/ky_server_base:latest}
+    pull_policy: missing
+    container_name: ky_server_base
+    restart: unless-stopped
+    # Covers cmd/server's shutdownTimeout (5s HTTP drain) plus backupWaitTimeout (17m for a
+    # deposit already on the wire), so SIGKILL cannot land on a capsule mid-upload.
+    stop_grace_period: 20m
+    ports:
+      - "8080:8080"
+    environment:
+      - KY_PORT=8080
+      - KY_HOST=0.0.0.0
+      - KY_APP_NAME=Busnes.app Base
+      - KY_APP_URL=http://localhost:8080
+      - KY_DB_DRIVER=sqlite
+      - KY_DATA_DIR=/app/data
+      # Disaster recovery. Sealed capsules land in KY_BACKUP_DIR (empty = no local copies);
+      # the schedule below is only the default the admin screen overrides. KY_DNS lives in
+      # docker-compose.lan-dns.yml, never here.
+      - KY_BACKUP_DIR=${KY_BACKUP_DIR-/app/backups}
+      - KY_BACKUP_KEEP=${KY_BACKUP_KEEP:-7}
+      - KY_BACKUP_DEPOSIT_INTERVAL=${KY_BACKUP_DEPOSIT_INTERVAL:-24h}
+      - KY_BACKUP_ALLOW_PRIVATE_RECOVERY=${KY_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
+      # Set to the reverse proxy container's own address when one fronts this service, e.g.
+      # its address on the Docker network below (never a whole bridge range like 172.16.0.0/12,
+      # which trusts every other container). 0.0.0.0/0 and ::/0 are refused at startup.
+      # - KY_TRUSTED_PROXIES=172.18.0.2/32
+      - KY_SSO_ENABLED=true
+      - KY_SCIM_ENABLED=true
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+
+  # Optional PostgreSQL service for enterprise heavy DB mode
+  postgres:
+    image: postgres:17-alpine
+    container_name: ky_postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: ky_server
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
