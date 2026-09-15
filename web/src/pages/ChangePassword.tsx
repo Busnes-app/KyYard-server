@@ -52,7 +52,7 @@ export function ChangePassword({ onComplete, onLogout }: ChangePasswordProps) {
         <input id="confirm-password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024}
           value={confirmation} onChange={(event) => setConfirmation(event.target.value)} />
         {error && <p role="alert">{error}</p>}
-        <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 16 }}>
           <button type="submit" disabled={busy}>{busy ? 'Changing password…' : 'Change password'}</button>
           <button type="button" className="btn-secondary" disabled={busy} onClick={onLogout}>Sign out</button>
         </div>
