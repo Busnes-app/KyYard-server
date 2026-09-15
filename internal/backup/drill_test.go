@@ -241,7 +241,7 @@ func TestDrillRejectsMalformedRecipes(t *testing.T) {
 func TestDrillRejectsDamagedPayload(t *testing.T) {
 	t.Setenv("KY_PORT", "8080")
 	t.Setenv("KY_DB_DRIVER", "sqlite")
-	for _, kind := range []string{"missing database", "empty database", "corrupt database", "missing environment"} {
+	for _, kind := range []string{"missing database", "empty database", "corrupt database", "missing environment", "corrupt session key", "corrupt instance key"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg, _ := payloadConfig(t)
 			payload, err := backup.Collect(context.Background(), cfg, "test")
@@ -254,6 +254,9 @@ func TestDrillRejectsDamagedPayload(t *testing.T) {
 				os.Unsetenv("KY_DRILL_TEST_MISSING")
 			}
 			for i, f := range payload.Files {
+				if (kind == "corrupt session key" && f.Path == "data/session.key") || (kind == "corrupt instance key" && f.Path == "data/instance.key") {
+					payload.Files[i].Data = []byte("not a valid key")
+				}
 				if f.Path == "data/ky_server.db" {
 					switch kind {
 					case "missing database":
@@ -263,7 +266,9 @@ func TestDrillRejectsDamagedPayload(t *testing.T) {
 					case "corrupt database":
 						payload.Files[i].Data = []byte("not a sqlite database")
 					}
-					break
+					if kind != "corrupt session key" && kind != "corrupt instance key" {
+						break
+					}
 				}
 			}
 			result, err := backup.RunDrill(context.Background(), cfg, payload)

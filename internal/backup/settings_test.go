@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
@@ -28,6 +29,8 @@ func sqliteInstance(t *testing.T) (*config.Config, store.Store) {
 	cfg.Database.DataDir = dir
 	cfg.Database.DSN = filepath.Join(dir, "ky_server.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
 	cfg.Security.EncryptionKey = bytes.Repeat([]byte{1}, 32)
+	cfg.Security.SessionSecret = strings.Repeat("02", 32)
+	cfg.Security.InstanceKey = bytes.Repeat([]byte{3}, 32)
 	st, err := store.Open(context.Background(), cfg.Database)
 	if err != nil {
 		t.Fatal(err)

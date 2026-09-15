@@ -82,12 +82,15 @@ func runServer() {
 	defer st.Close()
 
 	// Ensure default admin user exists if database is empty
-	count, _ := st.Users().CountUsers(ctx)
+	count, err := st.Users().CountUsers(ctx)
+	if err != nil {
+		log.Fatalf("Failed to inspect bootstrap state: %v", err)
+	}
 	if count == 0 {
 		adminPass := os.Getenv("KY_ADMIN_PASSWORD")
-		if adminPass == "" {
+		generated := adminPass == ""
+		if generated {
 			adminPass = crypto.RandomHex(12)
-			log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
 		}
 		hash, err := password.Hash(adminPass)
 		if err != nil {
@@ -104,6 +107,9 @@ func runServer() {
 			MustChangePassword: true,
 		}); err != nil {
 			log.Fatalf("Failed to create bootstrap admin: %v", err)
+		}
+		if generated {
+			log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
 		}
 	}
 

@@ -6,12 +6,9 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/Busness-app/ky-primitives/keyfile"
 )
 
 // Config encapsulates all runtime configuration for kyyard-server.
@@ -48,8 +45,9 @@ type DatabaseConfig struct {
 
 // SecurityConfig holds encryption keys, cookie secrets, and session settings.
 type SecurityConfig struct {
-	SessionSecret string `json:"session_secret"`
+	SessionSecret string `json:"-"`
 	EncryptionKey []byte `json:"-"` // 32 bytes for AES-256-GCM; never serialised
+	InstanceKey   []byte `json:"-"` // 32-byte Ed25519 seed; reserved for control-plane identity
 	CookieSecure  bool   `json:"cookie_secure"`
 	CookieDomain  string `json:"cookie_domain"`
 	SessionTTL    time.Duration
@@ -125,23 +123,20 @@ func LoadFromEnv() (*Config, error) {
 	}
 	dsn := getEnv("KY_DB_DSN", defaultDSN)
 
-	sessionSecret := getEnv("KY_SESSION_SECRET", "")
-	if env == "production" && sessionSecret == "" {
-		return nil, fmt.Errorf("KY_SESSION_SECRET is required in production")
+	if err := secureDataDir(dataDir); err != nil {
+		return nil, fmt.Errorf("data directory: %w", err)
 	}
-	if sessionSecret == "" {
-		sessionSecret = generateRandomHex(32)
-	}
-
-	encryptionKey, ok, err := keyfile.FromEnv("KY_ENCRYPTION_KEY", 32)
+	sessionKey, err := loadKey(dataDir, "session.key", "KY_SESSION_SECRET")
 	if err != nil {
-		return nil, fmt.Errorf("KY_ENCRYPTION_KEY: %w", err)
+		return nil, err
 	}
-	if !ok {
-		encryptionKey, err = keyfile.LoadOrCreate(filepath.Join(dataDir, "encryption.key"), 32)
-		if err != nil {
-			return nil, fmt.Errorf("encryption key: %w", err)
-		}
+	encryptionKey, err := loadKey(dataDir, "encryption.key", "KY_ENCRYPTION_KEY")
+	if err != nil {
+		return nil, err
+	}
+	instanceKey, err := loadKey(dataDir, "instance.key", "")
+	if err != nil {
+		return nil, err
 	}
 
 	depositInterval, err := getEnvDuration("KY_BACKUP_DEPOSIT_INTERVAL", 24*time.Hour)
@@ -181,7 +176,8 @@ func LoadFromEnv() (*Config, error) {
 			ConnMaxLifetime: 15 * time.Minute,
 		},
 		Security: SecurityConfig{
-			SessionSecret:  sessionSecret,
+			SessionSecret:  hex.EncodeToString(sessionKey),
+			InstanceKey:    instanceKey,
 			EncryptionKey:  encryptionKey,
 			CookieSecure:   getEnvBool("KY_COOKIE_SECURE", env == "production"),
 			CookieDomain:   getEnv("KY_COOKIE_DOMAIN", ""),

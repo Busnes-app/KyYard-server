@@ -32,8 +32,10 @@ Everything a fresh server needs to be the old one:
 
 | Path in the capsule | What it is |
 |---|---|
-| `data/ky_server.db` | The whole database: users, sessions, MFA state, devices, SCIM groups, audit log, settings, the sealed KyRecovery token |
+| `data/ky_server.db` | Users, MFA enrolments, devices, SCIM groups, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
 | `data/encryption.key` | 32 bytes. Every TOTP secret and the KyRecovery pairing token are encrypted under it |
+| `data/session.key` | 32-byte proof-of-work challenge key, including the active environment override |
+| `data/instance.key` | 32-byte Ed25519 identity seed; restore preserves the control-plane identity |
 | `data/recovery.pub` | The suite recovery public key, so the restored server comes back pinned (present when the backup had a key) |
 | `config/settings.json` | App name, URL, port, database driver. For your reference when re-deploying; nothing reads it |
 
@@ -44,7 +46,7 @@ The restored directory is the live directory in the clear. Treat it like the run
 collector snapshots SQLite with `VACUUM INTO`; on `KY_DB_DRIVER=postgres` no snapshot is
 possible, so no capsule is made at all and there is nothing here to restore from. Back a
 Postgres deployment up with `pg_dump` on its own schedule, guard that dump as the plaintext of
-everything above, and copy `data/encryption.key` and `data/recovery.pub` separately — the
+everything above, and copy `data/encryption.key`, `data/session.key`, `data/instance.key` and `data/recovery.pub` separately — the
 recovery key pin, the pairing and the schedule are rows in the database and come back with the
 dump, but nothing in it can be decrypted without `encryption.key`.
 
@@ -214,10 +216,12 @@ Keep `KY_APP_URL` and `KY_APP_NAME` identical to the old deployment, from
 `config/settings.json`: the app name is what every capsule is sealed under and what
 KyRecovery pinned for the pairing token.
 
-The restored `encryption.key` is the key; the file form is the one to use. If the old
-deployment supplied `KY_ENCRYPTION_KEY` by environment instead, the environment wins when
-both are present, so either remove that variable so the file is read, or keep supplying the
-same value from wherever the old deployment kept it. Never print a key to a terminal or type
+The restored key files contain the active keys used at backup time. If the old deployment
+supplied `KY_ENCRYPTION_KEY` or `KY_SESSION_SECRET`, the environment wins when both are
+present: remove those overrides to use the restored files or supply the same values.
+Restore preserves `instance.key`; stop the original before starting the restored instance.
+Older capsules lack session/instance keys, so startup generates those keys for them; they
+are not a way to recover an identity that was established later. Never print a key to a terminal or type
 one on a command line: it lands in scrollback, session recordings and shell history. If you
 must produce the hex form, write it straight into the compose project's `.env` with
 `umask 077` and nothing else on stdout.
@@ -242,16 +246,16 @@ as before, and start.
 
 The restore proves the service works. It does not make the restored state current or safe.
 Everything comes back as of the capsule's `created_at`: users, passwords, MFA enrolments,
-paired devices, SCIM state, sessions. Anything you revoked or changed after that moment is
-undone, and a session cookie minted before the capsule still validates against the restored
-server, because sessions are database rows and the capsule brought them back.
+paired devices and SCIM state. Anything you revoked or changed after that moment is
+undone. New capsules exclude sessions, pending MFA challenges and device pairings from
+the snapshot. Older capsules and external database dumps may still contain them.
 
-1. Revoke sessions. There is no per-user control in the UI and no global revoke; sessions
-   are rows in the `sessions` table. Delete them all, once, before anyone signs in:
+1. For an older capsule or external database dump, revoke authentication grants before
+   anyone signs in (also safe to repeat for a new capsule):
 
    ```bash
    docker compose down
-   sudo sqlite3 data/ky_server.db 'DELETE FROM sessions;'
+   sudo sqlite3 data/ky_server.db 'DELETE FROM sessions; DELETE FROM mfa_challenges; DELETE FROM device_pairings;'
    docker compose up -d
    ```
 
@@ -270,9 +274,13 @@ server, because sessions are database rows and the capsule brought them back.
 
    What can be rotated, and how:
 
-   - `KY_SESSION_SECRET` signs the proof-of-work login challenge, nothing durable. Replace it
-     with `openssl rand -hex 32` written straight into `.env`, not echoed, then
-     `docker compose up -d`.
+   - `session.key` signs proof-of-work challenges, not database sessions. With the server
+     stopped and `KY_SESSION_SECRET` unset, remove only `data/session.key`; startup securely
+     generates a replacement. If an override is used, replace that encoded 32-byte value in
+     its secret store instead. Neither action revokes sessions; use the deletion above.
+   - `instance.key` preserves control-plane identity. Do not copy it to another active
+     installation or casually rotate it. Agent identity recovery/rotation is a later
+     protocol milestone; no agents use this key yet.
    - `KY_SCIM_TOKEN` is the SCIM bearer. Replace it the same way and give the new value to the
      identity provider. If it was never set, the server mints a fresh one at every start.
    - The KyRecovery pairing token: ask the KyRecovery admin to revoke this service and pair

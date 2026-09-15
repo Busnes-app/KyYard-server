@@ -399,6 +399,13 @@ func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
 	// A real database one blob past the per-member cap: the collector snapshots with VACUUM
 	// INTO, so the file has to be a database, and zeroblob makes a large one instantly.
 	big := filepath.Join(t.TempDir(), "oversized.db")
+	bigStore, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: big})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bigStore.Close(); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", big)
 	if err != nil {
 		t.Fatal(err)
