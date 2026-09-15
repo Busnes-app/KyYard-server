@@ -137,6 +137,20 @@ LOGIN_BODY="$(curl -s -c "$WORK/cookies" -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"ReplacementSmokePass456!"}' "$BASE/api/auth/login")"
 contains "replacement password signs in" "$LOGIN_BODY" '"authenticated":true'
 contains "replacement clears the restriction" "$LOGIN_BODY" '"must_change_password":false'
+check "init-admin resets the existing admin" \
+  "$(KY_DATA_DIR="$WORK/data" KY_DB_DRIVER=sqlite "$BIN" init-admin -password 'OperatorResetPass789!' >/dev/null 2>&1 && echo 0 || echo 1)" "0"
+check "operator reset revokes the previous session" "$(status -b "$WORK/cookies" "$BASE/api/backup/status")" "401"
+LOGIN_BODY="$(curl -s -c "$WORK/cookies" -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"OperatorResetPass789!"}' "$BASE/api/auth/login")"
+contains "operator reset requires replacement" "$LOGIN_BODY" '"must_change_password":true'
+check "reset login cannot read backup state" "$(status -b "$WORK/cookies" "$BASE/api/backup/status")" "403"
+CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
+check "operator password replacement succeeds" \
+  "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+    -d '{"current_password":"OperatorResetPass789!","new_password":"FinalSmokePassword123!"}' "$BASE/api/auth/change-password")" "200"
+LOGIN_BODY="$(curl -s -c "$WORK/cookies" -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"FinalSmokePassword123!"}' "$BASE/api/auth/login")"
+contains "reset replacement signs in" "$LOGIN_BODY" '"authenticated":true'
 contains "admin settings include db_driver" "$(curl -s -b "$WORK/cookies" "$BASE/api/settings")" '"db_driver"'
 check "deposit CLI refuses without a key" \
   "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" deposit >/dev/null 2>&1 && echo 0 || echo 1)" "1"

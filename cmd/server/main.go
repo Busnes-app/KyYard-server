@@ -297,10 +297,7 @@ func runInitAdmin(args []string) {
 
 	existing, err := st.Users().GetUserByUsername(ctx, *username)
 	if err == nil && existing != nil {
-		existing.PasswordHash = hash
-		existing.Status = "active"
-		existing.Role = "admin"
-		if err := st.Users().UpdateUser(ctx, existing); err != nil {
+		if err := st.Users().ResetAdminPassword(ctx, existing.ID, hash); err != nil {
 			log.Fatalf("Failed to update admin: %v", err)
 		}
 		log.Printf("✓ Admin user %q password successfully reset", *username)

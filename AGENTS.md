@@ -76,7 +76,7 @@ Default section order:
 6. Report any docs intentionally left unchanged and why
 
 ## User Preferences
-- New bootstrap administrators, including `KY_ADMIN_PASSWORD` installations, must replace their password before privileged use. Existing accounts are unchanged unless already marked `must_change_password`.
+- Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically revoke sessions, MFA challenges and device pairings. Untouched existing accounts are not retroactively flagged.
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 

@@ -51,8 +51,9 @@ A digest-pinned install (`KY_IMAGE` in `.env`) gets nothing from `pull`: re-run 
 
 ## First sign-in
 
-Every newly created bootstrap administrator must replace its initial password, including when
-`KY_ADMIN_PASSWORD` supplies it. Sign in, enter the current password and a different password
+Every bootstrap or `init-admin` password must be replaced, including when
+`KY_ADMIN_PASSWORD` supplies it. Operator resets revoke existing sessions, MFA challenges and
+device pairings immediately, reactivate local admins and require replacement at the next login. Sign in, enter the current password and a different password
 of at least 12 characters, then sign in again. Until replacement, the session can only check
 its identity, change the password or sign out; privileged APIs remain blocked. Replacement
 revokes existing sessions, MFA transactions and device pairings atomically. Existing accounts
