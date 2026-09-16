@@ -44,6 +44,8 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusNotFound, "Resource not found in this organization")
 	case errors.Is(err, store.ErrAlreadyExists):
 		s.writeError(w, http.StatusConflict, "Resource already exists")
+	case errors.Is(err, store.ErrLastAdmin):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The organization needs at least one active administrator", "code": "last_administrator"})
 	case errors.Is(err, store.ErrInvalid):
 		s.writeError(w, http.StatusBadRequest, "Invalid tenant input")
 	default:
@@ -70,17 +72,25 @@ func tenantPage(r *http.Request) (int, int, error) {
 	}
 	return offset, limit, nil
 }
+
+// strictJSON rejects unknown fields and trailing documents so clients cannot smuggle scope.
+func strictJSON(r *http.Request, v any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		return store.ErrInvalid
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return store.ErrInvalid
+	}
+	return nil
+}
 func tenantName(r *http.Request) (string, error) {
 	var input struct {
 		Name string `json:"name"`
 	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil {
-		return "", store.ErrInvalid
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return "", store.ErrInvalid
+	if err := strictJSON(r, &input); err != nil {
+		return "", err
 	}
 	return input.Name, nil
 }
@@ -157,4 +167,77 @@ func (s *Server) handleTenantAudit(w http.ResponseWriter, r *http.Request, a sto
 		return
 	}
 	s.writeJSON(w, http.StatusOK, rows)
+}
+func (s *Server) handleMyOrganizations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	user, _, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		if errors.Is(err, auth.ErrPasswordChangeRequired) {
+			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Change your password before continuing", "code": "password_change_required"})
+		} else {
+			s.writeError(w, http.StatusUnauthorized, "Authentication required")
+		}
+		return
+	}
+	orgs, err := s.store.Tenancy().ListMemberOrganizations(r.Context(), user.ID)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, orgs)
+}
+func memberUser(r *http.Request) (string, error) {
+	id := r.PathValue("user")
+	if id == "" || len(id) > 64 {
+		return "", store.ErrInvalid
+	}
+	return id, nil
+}
+func (s *Server) handleTenantMembers(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	offset, limit, err := tenantPage(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	rows, err := s.store.Tenancy().ListMembers(r.Context(), a, offset, limit)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, rows)
+}
+func (s *Server) handlePutMembership(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	userID, err := memberUser(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	var input struct {
+		Role   store.TenantRole `json:"role"`
+		Status string           `json:"status"`
+	}
+	if err := strictJSON(r, &input); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if input.Status == "" {
+		input.Status = "active"
+	}
+	if err := s.store.Tenancy().PutMembership(r.Context(), a, userID, input.Role, input.Status); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) handleRemoveMembership(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	userID, err := memberUser(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if err := s.store.Tenancy().RemoveMembership(r.Context(), a, userID); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -17,15 +17,20 @@ import (
 // lock before the read: a deferred read-then-write transaction would otherwise lose to a
 // concurrent revocation and fail with BUSY_SNAPSHOT instead of waiting behind it.
 func (t *tenancyStore) withTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, true, op)
+	return t.run(ctx, a, action, "", true, op)
+}
+
+// withTenantTarget is withTenant auditing an explicit target (for example a member's user ID).
+func (t *tenancyStore) withTenantTarget(ctx context.Context, a TenantAccess, action permissions.Action, target string, op func(*sql.Tx) error) error {
+	return t.run(ctx, a, action, target, true, op)
 }
 
 // readTenant checks the same live authorization without locks; reads use a snapshot.
 func (t *tenancyStore) readTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, false, op)
+	return t.run(ctx, a, action, "", false, op)
 }
 
-func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, lock bool, op func(*sql.Tx) error) error {
+func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, target string, lock bool, op func(*sql.Tx) error) error {
 	if a.ActorID == "" || a.OrganizationID == "" {
 		return ErrForbidden
 	}
@@ -35,6 +40,9 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 	record := &AuditRecord{UserID: a.ActorID, Action: string(action), Resource: a.OrganizationID, IPAddress: a.IPAddress, Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, CorrelationID: a.CorrelationID, CreatedAt: time.Now().UTC()}
 	if a.EnvironmentID != "" {
 		record.Resource = a.EnvironmentID
+	}
+	if target != "" {
+		record.Resource = target
 	}
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {

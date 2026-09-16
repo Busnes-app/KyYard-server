@@ -113,6 +113,21 @@ type OrganizationMembership struct {
 	Role           TenantRole `json:"role"`
 	Status         string     `json:"status"`
 }
+
+// OrganizationMember is a membership joined with the account it names.
+type OrganizationMember struct {
+	UserID   string     `json:"user_id"`
+	Username string     `json:"username"`
+	Role     TenantRole `json:"role"`
+	Status   string     `json:"status"`
+}
+
+// MemberOrganization is one of the caller's own organizations with the role held there.
+type MemberOrganization struct {
+	ID   string     `json:"id"`
+	Name string     `json:"name"`
+	Role TenantRole `json:"role"`
+}
 type Environment struct {
 	ID             string `json:"id"`
 	OrganizationID string `json:"organization_id"`

@@ -10,6 +10,7 @@ var (
 	ErrInvalid        = errors.New("invalid tenant input")
 	ErrNotFound       = errors.New("record not found")
 	ErrAlreadyExists  = errors.New("record already exists")
+	ErrLastAdmin      = errors.New("organization needs one active administrator")
 	ErrSessionExpired = errors.New("session expired")
 	ErrPairingExpired = errors.New("pairing session expired")
 )
@@ -105,6 +106,11 @@ type TenancyStore interface {
 	UpdateEnvironment(ctx context.Context, access TenantAccess, name string) error
 	RemoveEnvironment(ctx context.Context, access TenantAccess) error
 	ReadAudit(ctx context.Context, access TenantAccess, offset, limit int) ([]AuditRecord, error)
+	ListMembers(ctx context.Context, access TenantAccess, offset, limit int) ([]OrganizationMember, error)
+	PutMembership(ctx context.Context, access TenantAccess, userID string, role TenantRole, status string) error
+	RemoveMembership(ctx context.Context, access TenantAccess, userID string) error
+	// ListMemberOrganizations returns the caller's own active memberships; it is not tenant-scoped.
+	ListMemberOrganizations(ctx context.Context, userID string) ([]MemberOrganization, error)
 
 	Initialize(ctx context.Context) error
 	CreateOrganization(ctx context.Context, organization *Organization) error
