@@ -111,14 +111,16 @@ func (t *tenancyStore) Enroll(ctx context.Context, req EnrollmentRequest) (*Endp
 	return e, nil
 }
 
-const endpointColumns = `e.id,e.organization_id,e.environment_id,e.name,e.runtime,e.state,e.facts,e.created_at,e.approved_at,e.approved_by,e.revoked_at,e.last_seen_at,COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state IN ('approved','pending_review') ORDER BY k.state LIMIT 1),'')`
+const endpointColumns = `e.id,e.organization_id,e.environment_id,e.name,e.runtime,e.state,e.facts,e.created_at,e.approved_at,e.approved_by,e.revoked_at,e.last_seen_at,COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state IN ('approved','pending_review') ORDER BY k.state LIMIT 1),''),COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state='pending_review' AND e.state<>'pending' ORDER BY k.created_at DESC LIMIT 1),'')`
 
 func scanEndpoint(row interface{ Scan(...any) error }) (*Endpoint, error) {
 	var e Endpoint
 	var facts string
-	if err := row.Scan(&e.ID, &e.OrganizationID, &e.EnvironmentID, &e.Name, &e.Runtime, &e.State, &facts, &e.CreatedAt, &e.ApprovedAt, &e.ApprovedBy, &e.RevokedAt, &e.LastSeenAt, &e.Fingerprint); err != nil {
+	if err := row.Scan(&e.ID, &e.OrganizationID, &e.EnvironmentID, &e.Name, &e.Runtime, &e.State, &facts, &e.CreatedAt, &e.ApprovedAt, &e.ApprovedBy, &e.RevokedAt, &e.LastSeenAt, &e.Fingerprint, &e.PendingFingerprint); err != nil {
 		return nil, err
 	}
+	e.Capabilities = []string{}
+	e.Alerts = []EndpointEvent{}
 	e.Facts = map[string]string{}
 	_ = json.Unmarshal([]byte(facts), &e.Facts)
 	// A pending enrollment nobody reviewed in time is shown as expired and cannot be approved.
@@ -126,6 +128,36 @@ func scanEndpoint(row interface{ Scan(...any) error }) (*Endpoint, error) {
 		e.State = "expired"
 	}
 	return &e, nil
+}
+
+// decorate loads capabilities and unacknowledged high-severity events (bounded) for the UI.
+func (t *tenancyStore) decorate(ctx context.Context, tx *sql.Tx, e *Endpoint) error {
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT capability FROM endpoint_capabilities WHERE endpoint_id=? ORDER BY capability`), e.ID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			rows.Close()
+			return err
+		}
+		e.Capabilities = append(e.Capabilities, c)
+	}
+	rows.Close()
+	rows, err = tx.QueryContext(ctx, t.store.rebind(`SELECT id,severity,kind,details,created_at FROM endpoint_events WHERE endpoint_id=? AND severity='high' AND acknowledged_at IS NULL ORDER BY created_at DESC LIMIT 10`), e.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ev EndpointEvent
+		if err := rows.Scan(&ev.ID, &ev.Severity, &ev.Kind, &ev.Details, &ev.CreatedAt); err != nil {
+			return err
+		}
+		e.Alerts = append(e.Alerts, ev)
+	}
+	return rows.Err()
 }
 
 func (t *tenancyStore) ListEndpoints(ctx context.Context, a TenantAccess, offset, limit int) ([]Endpoint, error) {
@@ -146,7 +178,16 @@ func (t *tenancyStore) ListEndpoints(ctx context.Context, a TenantAccess, offset
 			}
 			result = append(result, *e)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+		for i := range result {
+			if err := t.decorate(ctx, tx, &result[i]); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -162,7 +203,10 @@ func (t *tenancyStore) ReadEndpoint(ctx context.Context, a TenantAccess, id stri
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return t.decorate(ctx, tx, e)
 	})
 	if err != nil {
 		return nil, err

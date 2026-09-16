@@ -31,6 +31,8 @@ const (
 	TypeHeartbeat = "heartbeat"
 	TypeInventory = "inventory"
 	TypeApproved  = "enrollment.approved"
+	TypeRotate    = "identity.rotate"  // agent → server: a new key signed by the current one
+	TypeRotated   = "identity.rotated" // server → agent: the operator acknowledged that key
 	TypeError     = "error"
 )
 
@@ -43,6 +45,8 @@ const (
 	CloseShutdown     = "server_shutdown"
 	CloseTimeout      = "heartbeat_timeout"
 	CloseProtocol     = "protocol_error"
+	CloseKeyRetired   = "key_retired"        // switch to the acknowledged key
+	CloseKeyPending   = "key_pending_review" // keep using the approved key
 )
 
 // Challenge is the server's first frame: a fresh nonce and its pinned identity.
@@ -54,9 +58,22 @@ type Challenge struct {
 
 // Auth is the agent's reply, signed under ContextAuth by its endpoint key.
 type Auth struct {
-	EndpointID string `json:"endpoint_id"`
-	Version    int    `json:"version"`
-	Signature  []byte `json:"signature"`
+	EndpointID  string `json:"endpoint_id"`
+	Fingerprint string `json:"fingerprint"` // which of the endpoint's keys signed
+	Version     int    `json:"version"`
+	Signature   []byte `json:"signature"`
+}
+
+// Rotate carries a freshly minted public key and the current key's signature over it.
+type Rotate struct {
+	PublicKey []byte `json:"public_key"`
+	Signature []byte `json:"signature"`
+}
+
+// Rotated names the key that now authenticates (server → agent) or was recorded (ack of Rotate).
+type Rotated struct {
+	Fingerprint string `json:"fingerprint"`
+	Code        string `json:"code,omitempty"`
 }
 
 // Hello is exchanged after authentication. The server's copy states the endpoint state and the

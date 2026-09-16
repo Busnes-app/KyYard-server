@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
 )
 
 // Identity is everything the agent keeps between runs. The enrollment token is never in it.
@@ -20,6 +23,25 @@ type Identity struct {
 	Server              string `json:"server"`
 	// Generation is the last inventory generation sent; it only rises, across restarts too.
 	Generation uint64 `json:"generation"`
+	// A rotated key waits here until the operator acknowledges it; the current key keeps
+	// authenticating meanwhile.
+	PendingPrivateKey  []byte    `json:"pending_private_key,omitempty"`
+	PendingFingerprint string    `json:"pending_fingerprint,omitempty"`
+	RotatedAt          time.Time `json:"rotated_at"`
+}
+
+// Promote makes the acknowledged pending key the current one.
+func (id *Identity) Promote() {
+	if len(id.PendingPrivateKey) == ed25519.PrivateKeySize {
+		id.PrivateKey = id.PendingPrivateKey
+		id.RotatedAt = time.Now().UTC()
+	}
+	id.PendingPrivateKey = nil
+	id.PendingFingerprint = ""
+}
+
+func (id *Identity) fingerprint() string {
+	return protocol.Fingerprint(ed25519.PrivateKey(id.PrivateKey).Public().(ed25519.PublicKey))
 }
 
 func identityPath(dir string) string { return filepath.Join(dir, "identity.json") }

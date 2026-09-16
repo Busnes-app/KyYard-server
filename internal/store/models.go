@@ -149,11 +149,25 @@ type Endpoint struct {
 	State          string            `json:"state"`
 	Facts          map[string]string `json:"facts"`
 	Fingerprint    string            `json:"fingerprint"` // key under review while pending, approved key afterwards
-	CreatedAt      time.Time         `json:"created_at"`
-	ApprovedAt     *time.Time        `json:"approved_at,omitempty"`
-	ApprovedBy     string            `json:"approved_by,omitempty"`
-	RevokedAt      *time.Time        `json:"revoked_at,omitempty"`
-	LastSeenAt     *time.Time        `json:"last_seen_at,omitempty"`
+	// PendingFingerprint is a rotated key awaiting operator acknowledgement, if any.
+	PendingFingerprint string          `json:"pending_fingerprint,omitempty"`
+	Capabilities       []string        `json:"capabilities"`
+	Alerts             []EndpointEvent `json:"alerts"` // unacknowledged high-severity events
+	CreatedAt          time.Time       `json:"created_at"`
+	ApprovedAt         *time.Time      `json:"approved_at,omitempty"`
+	ApprovedBy         string          `json:"approved_by,omitempty"`
+	RevokedAt          *time.Time      `json:"revoked_at,omitempty"`
+	LastSeenAt         *time.Time      `json:"last_seen_at,omitempty"`
+}
+
+// EndpointEvent is a bounded, operator-facing record; high-severity ones surface until acknowledged.
+type EndpointEvent struct {
+	ID             int64      `json:"id"`
+	Severity       string     `json:"severity"`
+	Kind           string     `json:"kind"`
+	Details        string     `json:"details"`
+	CreatedAt      time.Time  `json:"created_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
 }
 
 // EnrollmentToken is returned once; Secret is the raw token and is never stored.

@@ -35,6 +35,22 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
       setBusy(false);
     }
   };
+  const acknowledgeKey = async (e: Endpoint) => {
+    if (!e.pending_fingerprint) return;
+    if (!window.confirm(`"${displayName(e.name)}" offered a new key.\n\nCurrent:  ${e.fingerprint}\nPending:  ${e.pending_fingerprint}\n\nAcknowledge only if the host printed the pending fingerprint. The current key stops working immediately.`)) return;
+    setBusy(true);
+    const err = await tenantWrite(`${base}/endpoints/${encodeURIComponent(e.id)}/keys/${encodeURIComponent(e.pending_fingerprint)}/acknowledge`, 'POST');
+    setBusy(false);
+    setMessage(err);
+    if (!err) endpoints.reload();
+  };
+  const clearAlert = async (e: Endpoint, id: number) => {
+    setBusy(true);
+    const err = await tenantWrite(`${base}/endpoints/${encodeURIComponent(e.id)}/events/${id}/acknowledge`, 'POST');
+    setBusy(false);
+    setMessage(err);
+    if (!err) endpoints.reload();
+  };
   const act = async (e: Endpoint, action: 'approve' | 'reject' | 'revoke') => {
     const name = displayName(e.name);
     const prompts = {
@@ -77,12 +93,21 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
                   <td>{e.name} <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span></td>
                   <td><span className={`badge ${e.state === 'pending' ? 'badge-accent' : terminal(e.state) ? 'badge-danger' : 'badge-success'}`}>{e.state}</span></td>
                   <td>{e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? ''}</span></td>
-                  <td className="font-mono" style={{ fontSize: 11 }} title={e.fingerprint}>{e.fingerprint ? e.fingerprint.slice(0, 16) + '…' : '—'}</td>
+                  <td className="font-mono" style={{ fontSize: 11 }}>
+                    <span title={e.fingerprint}>{e.fingerprint ? e.fingerprint.slice(0, 16) + '…' : '—'}</span>
+                    {e.pending_fingerprint && <div><span className="badge badge-accent">rotation pending</span> <span title={e.pending_fingerprint}>{e.pending_fingerprint.slice(0, 16)}…</span></div>}
+                    {e.alerts.filter((a) => a.kind !== 'rotation_pending').map((a) => (
+                      <div key={a.id} role="alert"><span className="badge badge-danger">{a.kind}</span> {a.details}{' '}
+                        <button className="btn-secondary" disabled={busy} onClick={() => void clearAlert(e, a.id)}>Clear</button>
+                      </div>
+                    ))}
+                  </td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     {e.state === 'pending' && <>
                       <button disabled={busy} onClick={() => void act(e, 'approve')}>Approve</button>{' '}
                       <button className="btn-secondary" disabled={busy} onClick={() => void act(e, 'reject')}>Reject</button>
                     </>}
+                    {e.pending_fingerprint && <><button disabled={busy} onClick={() => void acknowledgeKey(e)}>Acknowledge rotation</button>{' '}</>}
                     {!terminal(e.state) && e.state !== 'pending' && <button className="btn-danger" disabled={busy} onClick={() => void act(e, 'revoke')}>Revoke</button>}
                   </td>
                 </tr>

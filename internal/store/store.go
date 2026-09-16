@@ -6,14 +6,16 @@ import (
 )
 
 var (
-	ErrForbidden      = errors.New("tenant access denied")
-	ErrInvalid        = errors.New("invalid tenant input")
-	ErrNotFound       = errors.New("record not found")
-	ErrAlreadyExists  = errors.New("record already exists")
-	ErrLastAdmin      = errors.New("organization needs one active administrator")
-	ErrInUse          = errors.New("record is still referenced")
-	ErrSessionExpired = errors.New("session expired")
-	ErrPairingExpired = errors.New("pairing session expired")
+	ErrForbidden       = errors.New("tenant access denied")
+	ErrInvalid         = errors.New("invalid tenant input")
+	ErrNotFound        = errors.New("record not found")
+	ErrAlreadyExists   = errors.New("record already exists")
+	ErrLastAdmin       = errors.New("organization needs one active administrator")
+	ErrInUse           = errors.New("record is still referenced")
+	ErrRotationPending = errors.New("a rotated key is already awaiting review")
+	ErrRotationBlocked = errors.New("rotation is blocked until a duplicate connection is cleared")
+	ErrSessionExpired  = errors.New("session expired")
+	ErrPairingExpired  = errors.New("pairing session expired")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
@@ -124,7 +126,12 @@ type TenancyStore interface {
 	RenameEndpoint(ctx context.Context, access TenantAccess, endpointID, name string) error
 
 	// Agent-facing lifecycle: authenticated by endpoint identity, never by a session.
-	AgentIdentity(ctx context.Context, endpointID string) (*AgentIdentity, error)
+	AgentIdentity(ctx context.Context, endpointID, fingerprint string) (*AgentIdentity, error)
+	RotateEndpointKey(ctx context.Context, endpointID string, newPublicKey, signature []byte, ip string) (string, error)
+	AcknowledgeEndpointKey(ctx context.Context, access TenantAccess, endpointID, fingerprint string) error
+	RecordEndpointEvent(ctx context.Context, endpoint *Endpoint, severity, kind, details string) error
+	AcknowledgeEndpointEvent(ctx context.Context, access TenantAccess, endpointID string, eventID int64) error
+	SetEndpointCapabilities(ctx context.Context, endpointID string, capabilities []string) error
 	ReadEndpointRaw(ctx context.Context, endpointID string) (*Endpoint, error)
 	RecordAgentConnect(ctx context.Context, endpoint *Endpoint, ip, result string) error
 	TouchEndpoint(ctx context.Context, endpointID string) error

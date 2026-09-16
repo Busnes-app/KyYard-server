@@ -277,3 +277,96 @@ func TestAgentReconnectsWhenTheControlPlaneGoesSilent(t *testing.T) {
 		t.Fatal("agent did not reconnect after the control plane went silent")
 	}
 }
+
+// Rotation end to end: the agent offers a key, keeps authenticating with the old one until the
+// operator acknowledges, then switches and the old key is dead.
+func TestAgentRotatesKeyOnlyAfterAcknowledgement(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbCfg := testdb.Config(t)
+	dbCfg.DataDir = cfg.Database.DataDir
+	cfg.Database = dbCfg
+	cfg.Captcha.Provider = "none"
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := api.NewServer(cfg, st)
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	hash, _ := password.Hash("SuperSecretPass123!")
+	_ = st.Users().CreateUser(ctx, &store.User{ID: "usr_admin", Username: "admin", PasswordHash: hash, Role: "user", Status: "active", SSOProvider: "local"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_admin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	jar := login(t, httpSrv.URL, "admin", "SuperSecretPass123!")
+	minted := post(t, httpSrv.URL+"/api/organizations/a/environments/env-a/enrollment-tokens", jar, `{"runtime":"docker"}`)
+	var tok struct{ Token string }
+	_ = json.Unmarshal(minted, &tok)
+	dir := filepath.Join(t.TempDir(), "id")
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	id, err := client.Enroll(ctx, httpClient, httpSrv.URL, dir, "host-r", tok.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, _ := ts.ReadEndpointRaw(ctx, id.EndpointID)
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/approve", jar, `{"fingerprint":"`+e.Fingerprint+`"}`)
+	oldFP := e.Fingerprint
+
+	runCtx, stopAgent := context.WithCancel(ctx)
+	defer stopAgent()
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- client.Run(runCtx, id, client.Options{HTTPClient: httpClient, IdentityDir: dir, RotateEvery: 30 * time.Second})
+	}()
+	waitState(t, ctx, ts, id.EndpointID, "active")
+	// The rotated key is recorded as pending and the old key still authenticates.
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		e, _ = ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.PendingFingerprint != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no pending key recorded: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if e.Fingerprint != oldFP || len(e.Alerts) != 1 || e.Alerts[0].Kind != "rotation_pending" {
+		t.Fatalf("pending rotation state: %+v", e)
+	}
+	onDisk, _ := client.LoadIdentity(dir)
+	if onDisk.PendingFingerprint != e.PendingFingerprint || len(onDisk.PendingPrivateKey) == 0 {
+		t.Fatalf("pending key not persisted: %+v", onDisk)
+	}
+	// Operator acknowledges: the agent switches, reconnects with the new key, stays active.
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/keys/"+e.PendingFingerprint+"/acknowledge", jar, "")
+	deadline = time.Now().Add(8 * time.Second)
+	for {
+		onDisk, _ = client.LoadIdentity(dir)
+		e, _ = ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && onDisk.PendingFingerprint == "" && e.Fingerprint != oldFP && e.PendingFingerprint == "" && e.State == "active" && len(e.Alerts) == 0 && e.LastSeenAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent did not switch keys: disk=%+v endpoint=%+v", onDisk, e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stopAgent()
+	if err := <-runErr; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// The old key is retired for good.
+	if _, err := ts.AgentIdentity(ctx, id.EndpointID, oldFP); !errors.Is(err, store.ErrKeyRetired) {
+		t.Fatalf("old key still usable: %v", err)
+	}
+}

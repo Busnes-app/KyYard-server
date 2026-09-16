@@ -176,7 +176,10 @@ Ed25519 identity in `--identity-dir` (default `/var/lib/kyyard-agent`, 0700), pi
 plane's instance fingerprint, and holds one outbound WebSocket to `/api/agent/v1/connect` with a
 30-second heartbeat, reconnecting with backoff. Plaintext `http://` is refused except to loopback.
 It stays `pending` until approved, becomes `active` on its first inventory report, is shown
-`offline` after three missed heartbeats, and exits when revoked. Behind nginx add the standard
+`offline` after three missed heartbeats, and exits when revoked. Every 30 days (`--rotate-every`)
+it offers a new key; the old key keeps working until an administrator acknowledges the new
+fingerprint on the environment screen, and a second live connection for the same endpoint is
+refused, flagged, and blocks rotation until cleared. Behind nginx add the standard
 upgrade block from `scripts/spikes/websocket-proxy/nginx.conf` (`proxy_http_version 1.1`,
 `Upgrade $http_upgrade`, `Connection $connection_upgrade` via the `map`); Caddy needs nothing. Lists accept `offset` (default 0) and
 `limit` (default 50, maximum 200). Browser writes require the existing CSRF token.

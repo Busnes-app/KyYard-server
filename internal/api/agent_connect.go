@@ -26,6 +26,7 @@ const (
 // agentConn is one live socket. The registry holds at most one per endpoint.
 type agentConn struct {
 	endpointID string
+	ip         string
 	conn       *websocket.Conn
 	send       chan protocol.Envelope
 	closed     chan struct{}
@@ -138,9 +139,12 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(agentFrameLimit)
-	c := &agentConn{endpointID: identity.Endpoint.ID, conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	c := &agentConn{endpointID: identity.Endpoint.ID, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
 	if !s.agents.add(c) {
+		// A second live socket is the signature of a copied identity volume: audit it, raise
+		// an operator-facing event, and block rotation until someone looks.
 		_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "denied")
+		_ = s.store.Tenancy().RecordEndpointEvent(ctx, &identity.Endpoint, "high", "duplicate_connection", "from "+s.requestIP(r))
 		conn.Close(websocket.StatusPolicyViolation, protocol.CloseDuplicate)
 		return
 	}
@@ -177,10 +181,19 @@ func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *ht
 	if auth.Version != protocol.Version {
 		return nil, protocol.CloseIncompatible
 	}
-	identity, err := s.store.Tenancy().AgentIdentity(hctx, auth.EndpointID)
+	if len(auth.Fingerprint) != 64 {
+		return nil, protocol.CloseProtocol
+	}
+	identity, err := s.store.Tenancy().AgentIdentity(hctx, auth.EndpointID, auth.Fingerprint)
 	if err != nil {
-		// Unknown and revoked look the same to the caller; a revoked endpoint is audited.
-		if errors.Is(err, store.ErrForbidden) {
+		// A retired or still-pending key is named so a legitimate agent picks the right one;
+		// unknown and revoked look the same and a revoked endpoint is audited.
+		switch {
+		case errors.Is(err, store.ErrKeyRetired):
+			return nil, protocol.CloseKeyRetired
+		case errors.Is(err, store.ErrKeyPendingReview):
+			return nil, protocol.CloseKeyPending
+		case errors.Is(err, store.ErrForbidden):
 			if e, readErr := s.store.Tenancy().ReadEndpointRaw(hctx, auth.EndpointID); readErr == nil {
 				_ = s.store.Tenancy().RecordAgentConnect(hctx, e, s.requestIP(r), "denied")
 			}
@@ -257,7 +270,34 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 			}
 			switch f.Type {
 			case protocol.TypeHello:
-				// Capabilities are recorded with M4; the frame is accepted and ignored for now.
+				var hello protocol.Hello
+				if json.Unmarshal(f.Payload, &hello) == nil && !pending {
+					if err := ts.SetEndpointCapabilities(ctx, c.endpointID, hello.Capabilities); err != nil {
+						log.Printf("agent %s: capabilities: %v", c.endpointID, err)
+					}
+				}
+			case protocol.TypeRotate:
+				if pending {
+					continue
+				}
+				var rot protocol.Rotate
+				if err := json.Unmarshal(f.Payload, &rot); err != nil {
+					c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+					return
+				}
+				fp, err := ts.RotateEndpointKey(ctx, c.endpointID, rot.PublicKey, rot.Signature, c.ip)
+				reply := protocol.Rotated{Fingerprint: fp}
+				switch {
+				case errors.Is(err, store.ErrRotationPending):
+					reply.Code = "rotation_pending"
+				case errors.Is(err, store.ErrRotationBlocked):
+					reply.Code = "rotation_blocked"
+				case err != nil:
+					reply.Code = "rotation_refused"
+				}
+				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeRotate, reply)); err != nil {
+					return
+				}
 			case protocol.TypeHeartbeat:
 				if !pending {
 					_ = ts.TouchEndpoint(ctx, c.endpointID)

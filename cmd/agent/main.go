@@ -25,6 +25,7 @@ func main() {
 	server := flag.String("server", "", "control plane origin, e.g. https://kyyard.example")
 	dir := flag.String("identity-dir", "/var/lib/kyyard-agent", "directory holding the agent identity (0700)")
 	name := flag.String("name", "", "endpoint name to propose at enrollment (default: hostname)")
+	rotate := flag.Duration("rotate-every", 30*24*time.Hour, "offer a new identity key this often (0 disables)")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
@@ -55,7 +56,7 @@ func main() {
 	} else if *server != "" && *server != id.Server {
 		log.Fatalf("identity is enrolled with %s, not %s; remove %s to re-enroll", id.Server, *server, *dir)
 	}
-	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir}); err != nil {
+	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

@@ -1,10 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Endpoints, displayName } from './Endpoints';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.cookie = 'ky_csrf=; Max-Age=0'; });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-const pending = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime: 'docker', state: 'pending', facts: { hostname: 'h1' }, fingerprint: 'ab'.repeat(32), created_at: '2026-09-16T00:00:00Z' };
+const pending = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime: 'docker', state: 'pending', facts: { hostname: 'h1' }, fingerprint: 'ab'.repeat(32), capabilities: [], alerts: [], created_at: '2026-09-16T00:00:00Z' };
 
 it('mints a one-time enrollment command with the socket disclosure', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -72,4 +72,25 @@ it('shows the bare token with the note when no agent image is configured', async
   expect(region.textContent).toContain('raw-token');
   expect(region.textContent).toContain('Set KY_AGENT_IMAGE');
   expect(screen.getByRole('button', { name: 'Copy token' })).toBeTruthy();
+});
+
+it('acknowledges a rotated key with both fingerprints shown and clears a duplicate-connection alert', async () => {
+  const calls: string[] = [];
+  const active = { ...pending, state: 'active', pending_fingerprint: 'cd'.repeat(32), alerts: [{ id: 7, kind: 'rotation_pending', details: '', created_at: '' }, { id: 8, kind: 'duplicate_connection', details: 'from 10.0.0.9', created_at: '' }] };
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'POST') { calls.push(String(input)); return new Response(null, { status: 204 }); }
+    return json([active]);
+  }));
+  let message = '';
+  vi.stubGlobal('confirm', vi.fn((msg: string) => { message = msg; return true; }));
+  document.cookie = 'ky_csrf=csrf-test';
+  render(<Endpoints org="a" env="env-a" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge rotation' }));
+  expect(message).toContain('ab'.repeat(32));
+  expect(message).toContain('cd'.repeat(32));
+  await waitFor(() => expect(calls.length).toBe(1));
+  fireEvent.click(await screen.findByRole('button', { name: 'Clear' }));
+  await waitFor(() => expect(calls.length).toBe(2));
+  expect(calls).toEqual(['/api/organizations/a/endpoints/ep_1/keys/' + 'cd'.repeat(32) + '/acknowledge', '/api/organizations/a/endpoints/ep_1/events/8/acknowledge']);
+  expect(screen.getByRole('alert').textContent).toContain('duplicate_connection');
 });

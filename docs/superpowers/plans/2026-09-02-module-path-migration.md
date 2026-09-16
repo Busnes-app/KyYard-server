@@ -365,7 +365,7 @@ residual `grep` for the bare owner name is what caught both — searching only f
 `github.com/<org>/` would have missed them.
 
 **4. GHCR must be lowercase even though the module path is not.** OCI registries reject a
-mixed-case repository name, so the image namespace is `ghcr.io/busness-app/kydns-server`
+mixed-case repository name, so the image namespace is `ghcr.io/busnes-app/kydns-server`
 while the module is `github.com/Busness-app/kydns-server`. The workflow's own comment
 already said so. **This changes where images publish** and needs the org's package
 permissions to allow it — worth confirming before that workflow next runs.

@@ -18,7 +18,14 @@ type AgentIdentity struct {
 	PublicKey []byte
 }
 
-func (t *tenancyStore) AgentIdentity(ctx context.Context, endpointID string) (*AgentIdentity, error) {
+// Sentinel errors let the handshake tell a retired key (the agent should switch to its
+// acknowledged one) from a key still under review (the agent must keep using its old one).
+var (
+	ErrKeyRetired       = errors.New("key retired")
+	ErrKeyPendingReview = errors.New("key pending review")
+)
+
+func (t *tenancyStore) AgentIdentity(ctx context.Context, endpointID, fingerprint string) (*AgentIdentity, error) {
 	e, err := scanEndpoint(t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.id=?`), endpointID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -26,17 +33,28 @@ func (t *tenancyStore) AgentIdentity(ctx context.Context, endpointID string) (*A
 	if err != nil {
 		return nil, err
 	}
-	wanted := "approved"
-	if e.State == "pending" {
-		wanted = "pending_review"
+	if e.State == "revoked" || e.State == "expired" {
+		return nil, ErrForbidden
 	}
-	var keyHex string
-	err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT public_key FROM endpoint_keys WHERE endpoint_id=? AND state=? ORDER BY created_at DESC LIMIT 1`), endpointID, wanted).Scan(&keyHex)
+	var keyHex, state string
+	var created time.Time
+	err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT public_key,state,created_at FROM endpoint_keys WHERE endpoint_id=? AND fingerprint=?`), endpointID, fingerprint).Scan(&keyHex, &state, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrForbidden
 	}
 	if err != nil {
 		return nil, err
+	}
+	switch {
+	case e.State == "pending" && state == "pending_review":
+		// The enrolled key authenticates the restricted channel until approval.
+	case state == "approved":
+	case state == "pending_review" && time.Since(created) <= pendingKeyLife:
+		return nil, ErrKeyPendingReview
+	case state == "retired" || state == "pending_review":
+		return nil, ErrKeyRetired
+	default:
+		return nil, ErrForbidden
 	}
 	key, err := hex.DecodeString(keyHex)
 	if err != nil {

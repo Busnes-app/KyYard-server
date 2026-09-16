@@ -18,6 +18,8 @@ import (
 	"github.com/coder/websocket"
 )
 
+var errSwitchKey = errors.New("switching keys")
+
 // Errors the loop treats as terminal: reconnecting cannot help.
 var (
 	ErrRevoked         = errors.New("identity revoked by the control plane")
@@ -29,8 +31,10 @@ type Options struct {
 	HTTPClient *http.Client
 	Version    string
 	Log        *log.Logger
-	// IdentityDir is where the rising inventory generation is written back; empty skips it.
+	// IdentityDir is where the rising inventory generation and rotation state are written back.
 	IdentityDir string
+	// RotateEvery is how often the agent offers a new key; zero disables rotation.
+	RotateEvery time.Duration
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -93,6 +97,9 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 		if errors.Is(err, ErrRevoked) || errors.Is(err, ErrInstanceChanged) || errors.Is(err, ErrIncompatible) {
 			return err
 		}
+		if errors.Is(err, errSwitchKey) {
+			continue // reconnect at once with the key the server now expects
+		}
 		if err == nil {
 			delay = time.Second // a clean session resets the backoff
 		} else {
@@ -138,11 +145,21 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		return ErrInstanceChanged
 	}
 	sig := ed25519.Sign(ed25519.PrivateKey(id.PrivateKey), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
-	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Version: protocol.Version, Signature: sig}); err != nil {
+	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Fingerprint: id.fingerprint(), Version: protocol.Version, Signature: sig}); err != nil {
 		return err
 	}
 	f, err = read(hctx, conn)
 	if err != nil {
+		var ce websocket.CloseError
+		if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired {
+			if len(id.PendingPrivateKey) == ed25519.PrivateKeySize {
+				// The operator acknowledged our rotated key while we were away.
+				id.Promote()
+				opts.save(id)
+				return errSwitchKey
+			}
+			return ErrRevoked // nothing left to authenticate with; re-enrollment is the only way back
+		}
 		return closeReason(err)
 	}
 	var hello protocol.Hello
@@ -170,9 +187,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			return err
 		}
 		id.Generation = gen
-		if opts.IdentityDir != "" {
-			if err := SaveIdentity(opts.IdentityDir, id); err != nil {
-				opts.Log.Printf("could not persist inventory generation: %v", err)
+		opts.save(id)
+		if opts.RotateEvery > 0 && id.PendingFingerprint == "" && time.Since(id.RotatedAt) >= opts.RotateEvery {
+			if err := offerRotation(ctx, conn, id, opts); err != nil {
+				return err
 			}
 		}
 	} else {
@@ -222,6 +240,26 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				opts.Log.Printf("approved; reconnecting with full protocol")
 				conn.Close(websocket.StatusNormalClosure, "approved")
 				return nil
+			case protocol.TypeRotate:
+				var ack protocol.Rotated
+				_ = json.Unmarshal(f.Payload, &ack)
+				if ack.Code != "" || ack.Fingerprint != id.PendingFingerprint {
+					opts.Log.Printf("rotation not recorded (%s); keeping the current key", ack.Code)
+					id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+					opts.save(id)
+				} else {
+					opts.Log.Printf("rotation recorded as %s; waiting for operator acknowledgement", ack.Fingerprint)
+				}
+			case protocol.TypeRotated:
+				var done protocol.Rotated
+				_ = json.Unmarshal(f.Payload, &done)
+				if done.Fingerprint == id.PendingFingerprint && id.PendingFingerprint != "" {
+					id.Promote()
+					opts.save(id)
+					opts.Log.Printf("rotation acknowledged; reconnecting with the new key")
+					conn.Close(websocket.StatusNormalClosure, "rotated")
+					return errSwitchKey
+				}
 			case protocol.TypeHeartbeat:
 			case protocol.TypeError:
 				opts.Log.Printf("server error frame: %s", string(f.Payload))
@@ -263,4 +301,28 @@ func read(ctx context.Context, conn *websocket.Conn) (protocol.Envelope, error) 
 		return e, err
 	}
 	return e, json.Unmarshal(raw, &e)
+}
+
+func (o *Options) save(id *Identity) {
+	if o.IdentityDir == "" {
+		return
+	}
+	if err := SaveIdentity(o.IdentityDir, id); err != nil {
+		o.Log.Printf("could not persist identity: %v", err)
+	}
+}
+
+// offerRotation mints a key, keeps it as pending on disk before it is sent (so a crash after
+// the server recorded it cannot lose it), and signs it with the current key.
+func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options) error {
+	pub, priv, err := newKey()
+	if err != nil {
+		return err
+	}
+	current := ed25519.PrivateKey(id.PrivateKey)
+	id.PendingPrivateKey = priv
+	id.PendingFingerprint = protocol.Fingerprint(pub)
+	opts.save(id)
+	sig := ed25519.Sign(current, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(current.Public().(ed25519.PublicKey)), pub))
+	return write(ctx, conn, protocol.TypeRotate, protocol.Rotate{PublicKey: pub, Signature: sig})
 }

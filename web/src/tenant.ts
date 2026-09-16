@@ -4,7 +4,8 @@ import { secureFetch } from './api';
 export interface MemberOrganization { id: string; name: string; role: string }
 export interface Environment { id: string; organization_id: string; name: string }
 export interface Member { user_id: string; username: string; role: string; status: string }
-export interface Endpoint { id: string; environment_id: string; name: string; runtime: string; state: string; facts: Record<string, string>; fingerprint: string; created_at: string; approved_by?: string }
+export interface EndpointAlert { id: number; kind: string; details: string; created_at: string }
+export interface Endpoint { id: string; environment_id: string; name: string; runtime: string; state: string; facts: Record<string, string>; fingerprint: string; pending_fingerprint?: string; capabilities: string[]; alerts: EndpointAlert[]; created_at: string; approved_by?: string }
 export interface EnrollmentToken { id: string; runtime: string; expires_at: string; token: string; command?: string; image?: string; note?: string; disclosure: string }
 export interface AuditRecord { id: number; user_id: string; action: string; resource: string; environment_id: string; correlation_id: string; result: string; created_at: string }
 

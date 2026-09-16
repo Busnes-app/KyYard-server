@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -97,7 +98,7 @@ func connect(t *testing.T, ctx context.Context, base string, ag enrolledAgent, p
 		t.Fatalf("challenge: %+v", ch)
 	}
 	sig := ed25519.Sign(priv, protocol.AuthPreimage(ag.id, challenge.Nonce, u.Host, version))
-	writeEnvelope(t, ctx, c, protocol.TypeAuth, protocol.Auth{EndpointID: ag.id, Version: version, Signature: sig})
+	writeEnvelope(t, ctx, c, protocol.TypeAuth, protocol.Auth{EndpointID: ag.id, Fingerprint: protocol.Fingerprint(priv.Public().(ed25519.PublicKey)), Version: version, Signature: sig})
 	_, raw, err := c.Read(ctx)
 	if err != nil {
 		var ce websocket.CloseError
@@ -301,5 +302,93 @@ func TestAgentConnectLimitsFramesBeforeAuth(t *testing.T) {
 	_ = c.Write(ctx, websocket.MessageText, big)
 	if _, _, err := c.Read(ctx); err == nil {
 		t.Fatal("server answered an oversized pre-auth frame instead of closing")
+	}
+}
+
+func TestAgentRotationOverTheSocket(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleEnvironmentAdmin, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-r")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{"docker.containers"}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 1})
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+
+	// Offer a rotated key: recorded pending, echoed back.
+	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
+	oldPub := ag.priv.Public().(ed25519.PublicKey)
+	sig := ed25519.Sign(ag.priv, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(oldPub), newPub))
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeRotate, protocol.Rotate{PublicKey: newPub, Signature: sig})
+	ack := readEnvelope(t, ctx, sock.conn)
+	var rotated protocol.Rotated
+	_ = json.Unmarshal(ack.Payload, &rotated)
+	if ack.Type != protocol.TypeRotate || rotated.Code != "" || rotated.Fingerprint != protocol.Fingerprint(newPub) {
+		t.Fatalf("rotation ack: %+v %+v", ack, rotated)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeRotate, protocol.Rotate{PublicKey: newPub, Signature: sig})
+	ack = readEnvelope(t, ctx, sock.conn)
+	_ = json.Unmarshal(ack.Payload, &rotated)
+	if rotated.Code != "rotation_pending" {
+		t.Fatalf("second rotation: %+v", rotated)
+	}
+	// The pending key cannot connect yet; it is named so the agent keeps the old one.
+	newAg := ag
+	if _, reason := connect(t, ctx, httpSrv.URL, newAg, newPriv, protocol.Version); reason != protocol.CloseKeyPending {
+		t.Fatalf("pending key connect: %q", reason)
+	}
+	// A pending key with the wrong endpoint state check: list shows both fingerprints and the alert.
+	w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
+	var e store.Endpoint
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	if e.Fingerprint != ag.fp || e.PendingFingerprint != protocol.Fingerprint(newPub) || len(e.Alerts) != 1 || len(e.Capabilities) != 1 {
+		t.Fatalf("endpoint view during rotation: %+v", e)
+	}
+	// Acknowledge: the live socket is told, the old key is retired, the new one connects.
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/keys/"+e.PendingFingerprint+"/acknowledge", "", true); w.Code != 204 {
+		t.Fatalf("acknowledge: %d %s", w.Code, w.Body.String())
+	}
+	notice := readEnvelope(t, ctx, sock.conn)
+	_ = json.Unmarshal(notice.Payload, &rotated)
+	if notice.Type != protocol.TypeRotated || rotated.Fingerprint != e.PendingFingerprint {
+		t.Fatalf("rotated notice: %+v", notice)
+	}
+	sock.conn.Close(websocket.StatusNormalClosure, "rotated")
+	waitFor(t, func() bool { return !s.Connected(ag.id) })
+	if _, reason := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version); reason != protocol.CloseKeyRetired {
+		t.Fatalf("old key after acknowledgement: %q", reason)
+	}
+	sock, reason := connect(t, ctx, httpSrv.URL, ag, newPriv, protocol.Version)
+	if reason != "" {
+		t.Fatalf("new key refused: %q", reason)
+	}
+	// A duplicate connection records an alert and blocks a further rotation.
+	if _, reason := connect(t, ctx, httpSrv.URL, ag, newPriv, protocol.Version); reason != protocol.CloseDuplicate {
+		t.Fatalf("duplicate: %q", reason)
+	}
+	thirdPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeRotate, protocol.Rotate{PublicKey: thirdPub, Signature: ed25519.Sign(newPriv, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(newPub), thirdPub))})
+	ack = readEnvelope(t, ctx, sock.conn)
+	_ = json.Unmarshal(ack.Payload, &rotated)
+	if rotated.Code != "rotation_blocked" {
+		t.Fatalf("rotation after duplicate: %+v", rotated)
+	}
+	w = tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	if len(e.Alerts) != 1 || e.Alerts[0].Kind != "duplicate_connection" {
+		t.Fatalf("duplicate alert: %+v", e.Alerts)
+	}
+	if w := tenantRequest(s, admin, "POST", fmt.Sprintf("/api/organizations/a/endpoints/%s/events/%d/acknowledge", ag.id, e.Alerts[0].ID), "", true); w.Code != 204 {
+		t.Fatalf("event acknowledge: %d", w.Code)
 	}
 }
