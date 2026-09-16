@@ -218,6 +218,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/organizations/{organization}/members/{user}", s.tenantRoute(s.handlePutMembership))
 	s.mux.HandleFunc("DELETE /api/organizations/{organization}/members/{user}", s.tenantRoute(s.handleRemoveMembership))
 	s.mux.HandleFunc("GET /api/organizations", s.handleMyOrganizations)
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/enrollment-tokens", s.tenantRoute(s.handleCreateEnrollmentToken))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints", s.tenantRoute(s.handleTenantEndpoints))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/endpoints", s.tenantRoute(s.handleTenantEndpoints))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleTenantEndpoint))
+	s.mux.HandleFunc("PATCH /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleRenameEndpoint))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/approve", s.tenantRoute(s.handleApproveEndpoint))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/reject", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RejectEndpoint)))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/revoke", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RevokeEndpoint)))
+	s.mux.HandleFunc("POST /api/agent/v1/enroll", s.handleAgentEnroll)
+	s.mux.HandleFunc("/api/agent/", func(w http.ResponseWriter, r *http.Request) {
+		s.writeError(w, http.StatusNotFound, "Agent route not found")
+	})
 	s.mux.HandleFunc("/api/organizations/", func(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "Tenant route not found")
 	})

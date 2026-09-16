@@ -181,6 +181,17 @@ func (t *tenancyStore) UpdateEnvironment(ctx context.Context, a TenantAccess, na
 }
 func (t *tenancyStore) RemoveEnvironment(ctx context.Context, a TenantAccess) error {
 	return t.withTenant(ctx, a, permissions.EnvironmentDelete, func(tx *sql.Tx) error {
+		// Endpoints must be revoked first; revoked ones are history and go with the environment.
+		var live int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM endpoints WHERE organization_id=? AND environment_id=? AND state<>'revoked'`), a.OrganizationID, a.EnvironmentID).Scan(&live); err != nil {
+			return err
+		}
+		if live > 0 {
+			return ErrInUse
+		}
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM endpoints WHERE organization_id=? AND environment_id=?`), a.OrganizationID, a.EnvironmentID); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM environments WHERE organization_id=? AND id=?`), a.OrganizationID, a.EnvironmentID)
 		return tenantChangeResult(result, err)
 	})

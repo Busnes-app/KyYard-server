@@ -12,6 +12,10 @@ const (
 	EnvironmentUpdate Action = "environment.update"
 	EnvironmentDelete Action = "environment.delete"
 	AuditRead         Action = "organization.audit.read"
+	EndpointRead      Action = "endpoint.read"
+	EndpointEnroll    Action = "endpoint.enroll"
+	EndpointUpdate    Action = "endpoint.update"
+	EndpointRevoke    Action = "endpoint.revoke"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -22,16 +26,16 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead:
+		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke:
 			return true
 		}
 	case "environment_admin":
 		switch action {
-		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete:
+		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke:
 			return true
 		}
 	case "operator", "developer", "read_only":
-		return action == OrganizationRead || action == EnvironmentRead
+		return action == OrganizationRead || action == EnvironmentRead || action == EndpointRead
 	}
 	return false
 }

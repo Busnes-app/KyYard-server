@@ -11,6 +11,7 @@ var (
 	ErrNotFound       = errors.New("record not found")
 	ErrAlreadyExists  = errors.New("record already exists")
 	ErrLastAdmin      = errors.New("organization needs one active administrator")
+	ErrInUse          = errors.New("record is still referenced")
 	ErrSessionExpired = errors.New("session expired")
 	ErrPairingExpired = errors.New("pairing session expired")
 )
@@ -111,6 +112,16 @@ type TenancyStore interface {
 	RemoveMembership(ctx context.Context, access TenantAccess, userID string) error
 	// ListMemberOrganizations returns the caller's own active memberships; it is not tenant-scoped.
 	ListMemberOrganizations(ctx context.Context, userID string) ([]MemberOrganization, error)
+
+	CreateEnrollmentToken(ctx context.Context, access TenantAccess, runtime string) (*EnrollmentToken, error)
+	// Enroll is agent-facing: the token, not a session, selects the tenant.
+	Enroll(ctx context.Context, request EnrollmentRequest) (*Endpoint, error)
+	ListEndpoints(ctx context.Context, access TenantAccess, offset, limit int) ([]Endpoint, error)
+	ReadEndpoint(ctx context.Context, access TenantAccess, endpointID string) (*Endpoint, error)
+	ApproveEndpoint(ctx context.Context, access TenantAccess, endpointID, fingerprint string) error
+	RejectEndpoint(ctx context.Context, access TenantAccess, endpointID string) error
+	RevokeEndpoint(ctx context.Context, access TenantAccess, endpointID string) error
+	RenameEndpoint(ctx context.Context, access TenantAccess, endpointID, name string) error
 
 	Initialize(ctx context.Context) error
 	CreateOrganization(ctx context.Context, organization *Organization) error

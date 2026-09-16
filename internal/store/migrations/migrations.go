@@ -313,6 +313,87 @@ ALTER TABLE audit_records ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE audit_records ADD COLUMN result TEXT NOT NULL DEFAULT 'unknown' CHECK (result IN ('unknown','success','denied','failure'));
 CREATE INDEX idx_audit_scope_created ON audit_records(organization_id, created_at, id);
 `},
+	{Version: 7, Name: "endpoints", SQLite: `CREATE TABLE endpoints (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ environment_id TEXT NOT NULL,
+ name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+ runtime TEXT NOT NULL CHECK (runtime IN ('docker','kubernetes')),
+ state TEXT NOT NULL CHECK (state IN ('pending','approved','active','offline','revoked')),
+ facts TEXT NOT NULL DEFAULT '{}',
+ created_at DATETIME NOT NULL,
+ approved_at DATETIME,
+ approved_by TEXT NOT NULL DEFAULT '',
+ revoked_at DATETIME,
+ last_seen_at DATETIME,
+ UNIQUE (organization_id, id),
+ UNIQUE (organization_id, name),
+ FOREIGN KEY (organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE RESTRICT
+);
+CREATE TABLE endpoint_keys (
+ endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+ fingerprint TEXT NOT NULL,
+ public_key TEXT NOT NULL,
+ state TEXT NOT NULL CHECK (state IN ('approved','pending_review','retired')),
+ created_at DATETIME NOT NULL,
+ acknowledged_at DATETIME,
+ retired_at DATETIME,
+ PRIMARY KEY (endpoint_id, fingerprint)
+);
+CREATE TABLE agent_enrollment_tokens (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ runtime TEXT NOT NULL CHECK (runtime IN ('docker','kubernetes')),
+ token_hash TEXT NOT NULL UNIQUE,
+ created_by TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ expires_at DATETIME NOT NULL,
+ consumed_at DATETIME,
+ endpoint_id TEXT NOT NULL DEFAULT '',
+ FOREIGN KEY (organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE CASCADE
+);
+`, Postgres: `CREATE TABLE endpoints (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ environment_id TEXT NOT NULL,
+ name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+ runtime TEXT NOT NULL CHECK (runtime IN ('docker','kubernetes')),
+ state TEXT NOT NULL CHECK (state IN ('pending','approved','active','offline','revoked')),
+ facts TEXT NOT NULL DEFAULT '{}',
+ created_at TIMESTAMPTZ NOT NULL,
+ approved_at TIMESTAMPTZ,
+ approved_by TEXT NOT NULL DEFAULT '',
+ revoked_at TIMESTAMPTZ,
+ last_seen_at TIMESTAMPTZ,
+ UNIQUE (organization_id, id),
+ UNIQUE (organization_id, name),
+ FOREIGN KEY (organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE RESTRICT
+);
+CREATE TABLE endpoint_keys (
+ endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+ fingerprint TEXT NOT NULL,
+ public_key TEXT NOT NULL,
+ state TEXT NOT NULL CHECK (state IN ('approved','pending_review','retired')),
+ created_at TIMESTAMPTZ NOT NULL,
+ acknowledged_at TIMESTAMPTZ,
+ retired_at TIMESTAMPTZ,
+ PRIMARY KEY (endpoint_id, fingerprint)
+);
+CREATE TABLE agent_enrollment_tokens (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ runtime TEXT NOT NULL CHECK (runtime IN ('docker','kubernetes')),
+ token_hash TEXT NOT NULL UNIQUE,
+ created_by TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL,
+ expires_at TIMESTAMPTZ NOT NULL,
+ consumed_at TIMESTAMPTZ,
+ endpoint_id TEXT NOT NULL DEFAULT '',
+ FOREIGN KEY (organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE CASCADE
+);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.
