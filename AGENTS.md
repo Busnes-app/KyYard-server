@@ -102,6 +102,7 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - Frontend vitest suite, then typecheck/build plus a check that committed `web/dist` matches source (it is embedded in the binary)
 - `govulncheck` and `npm audit --audit-level=high`
 - `scripts/smoke-test.sh`: runs the built binary and asserts CLI, auth, session, and SPA behavior
+- `scripts/spikes/websocket-proxy/run.sh`: developer-run, not part of CI. The compatibility spike behind `docs/agent-protocol.md` section 2 (own Go module, needs Docker, binds loopback only); prints `RESULT <proxy> PASS` for Caddy and nginx. Re-run it when the transport decision or proxy guidance changes.
 - Docker image build and container HTTP check
 - On a push to `master` that passes every job, `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busness-app/kyyard:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kyyard:local`) so every compose command, recovery docs included, uses the local build.
 
