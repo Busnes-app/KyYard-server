@@ -23,7 +23,7 @@ master `aa125cf` (`internal/backup`, `internal/api/backup_handlers.go`, `cmd/ser
 
 ## Tasks
 
-1. `go get github.com/Busnes-app/ky-primitives@v0.4.1`; go 1.26.6.
+1. `go get github.com/Busness-app/ky-primitives@v0.4.1`; go 1.26.6.
 2. `internal/store`: add `ErrNotFound`; `GetSetting` returns it on no row (audit callers:
    every existing caller treats "" as unset, so map `ErrNotFound`→"" at those sites or leave
    them on a new `GetSettingOr` helper).

@@ -8,7 +8,7 @@ Hand-off, 2026-09-04. Board folder `kypost-kyrecovery-deposit`. Written before a
 
 ## Where it stands (surveyed 2026-09-04)
 
-- Go module lives at `backend/`, module path `kypost-server/backend` — not importable and not a GitHub path. Fix first: `module github.com/Busnes-app/kypost-server/backend` (or move the module to the repo root), update every import, then everything else.
+- Go module lives at `backend/`, module path `kypost-server/backend` — not importable and not a GitHub path. Fix first: `module github.com/Busness-app/kypost-server/backend` (or move the module to the repo root), update every import, then everything else.
 - `go 1.26.6`, no ky-primitives. Layout `backend/ + frontend/ + worker/ + worker-apns/`. Not a scaffold fork.
 - Passwords: scrypt (`backend/internal/users/users.go:2019,2035,2100`; cost notes in `internal/users/kdf.go`). Move to Argon2id via `ky-primitives/password`. Nothing in the wild.
 - TOTP, push MFA with number match, recovery codes: all local (`internal/totp`, `internal/mfa`, `internal/api/auth_stepup.go`). Adopt `ky-primitives/totp` and `recoverycode`; keep the push MFA, the library has no equivalent.
@@ -29,7 +29,7 @@ SQLite state database, PGP server keys if any, deployment encryption/secret keys
 
 ## Steps common to every port
 
-1. `go get github.com/Busnes-app/ky-primitives@v0.4.1`; `go 1.26.6`.
+1. `go get github.com/Busness-app/ky-primitives@v0.4.1`; `go 1.26.6`.
 2. Bring in the backup package. Keep from kysignon rather than the scaffold: the KyRecovery token sealed under a key derived from the deployment encryption key (never a plaintext settings row); `ErrKeyPinMissing` so a paired instance whose `recovery.pub` vanished is audited, not skipped; redirects refused outright; reserved ranges (CGNAT, 192.0.0.0/24, 198.18.0.0/15, 240.0.0.0/4, 64:ff9b::/96) refused; query/fragment refused on the recovery URL.
 3. Collector: snapshot SQLite through the live handle (`VACUUM INTO`), include every key a restore needs, refuse to seal without them. Non-SQLite drivers refuse with `ErrNoDatabaseSnapshot`.
 4. Routes (admin, CSRF, step-up where the product has it): `POST drill`, `GET export-capsule`, `POST pair-remote`, `POST deposit`, `GET status`. Deposit on `context.WithoutCancel` with a 16-minute write deadline; the acting admin resolved before the upload; every deposit result audited through `Outcome`; an export that cannot be audited refused.

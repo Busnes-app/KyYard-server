@@ -16,10 +16,10 @@ services:
     # again. A source install is unaffected: the build overlay's image wins over this pin.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
     #   d=$(docker buildx imagetools inspect ghcr.io/busnes-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
-    #     && gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/kyyard-server \
-    #          --cert-identity https://github.com/Busnes-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
-    #     && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/kyyard-server \
-    #          --cert-identity https://github.com/Busnes-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
+    #     && gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/KyYard-server \
+    #          --cert-identity https://github.com/Busnes-app/KyYard-server/.github/workflows/ci.yml@refs/heads/master \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/KyYard-server \
+    #          --cert-identity https://github.com/Busnes-app/KyYard-server/.github/workflows/ci.yml@refs/heads/master \
     #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
     #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
     #         && echo "KY_IMAGE=ghcr.io/busnes-app/kyyard@$d" >> "$t" && mv "$t" .env) \

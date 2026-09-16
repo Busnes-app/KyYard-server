@@ -47,7 +47,7 @@ Inside it, each repo's tasks are still independently executable and revertible.
 ## Sequencing
 
 **~~First, and blocking almost everything:~~ Done.** The module path migration ran on
-2026-09-02: all eight repos renamed onto `github.com/Busnes-app/`, each on a
+2026-09-02: all eight repos renamed onto `github.com/Busness-app/`, each on a
 `refactor/module-path` branch, none pushed or merged. See that plan's Outcome section for
 the five things it turned up that were not in the plan.
 
@@ -81,35 +81,35 @@ checked. The corrections, with what proved each:
   up.
 - **The pairing spec drift is not purely additive**, which trips the parent plan's
   escalation gate — but the server's own code resolves it without a human decision.
-- **No `go.mod` followed the move to `github.com/Busnes-app/`.** Four conventions are in
+- **No `go.mod` followed the move to `github.com/Busness-app/`.** Four conventions are in
   use, including one repo claiming another's identity. See below.
 
 ## The module path question is now answered
 
-The suite has moved to `github.com/Busnes-app/`. The remotes went; the module paths did
+The suite has moved to `github.com/Busness-app/`. The remotes went; the module paths did
 not:
 
 ```
 go.mod says                                    origin says
-github.com/Yoshiofthewire/ky_server_base       Busnes-app/ky_server_base
+github.com/Yoshiofthewire/ky_server_base       Busness-app/ky_server_base
 github.com/Yoshiofthewire/ky_server_base       (no origin)          <- gridlock-server
-github.com/Yoshiofthewire/kysignon-server      Busnes-app/kysignon-server
-github.com/yoshiofthewire/kydns-server         Busnes-app/kydns-server
-github.com/yoshiofthewire/kynotes-server       Busnes-app/kynotes-server
-kybookmarks-server                             Busnes-app/kybookmarks-server
-kypassword-server                              Busnes-app/kypassword-server
-kyrecovery-server                              Busnes-app/kyrecovery-server
+github.com/Yoshiofthewire/kysignon-server      Busness-app/kysignon-server
+github.com/yoshiofthewire/kydns-server         Busness-app/kydns-server
+github.com/yoshiofthewire/kynotes-server       Busness-app/kynotes-server
+kybookmarks-server                             Busness-app/kybookmarks-server
+kypassword-server                              Busness-app/kypassword-server
+kyrecovery-server                              Busness-app/kyrecovery-server
 ```
 
 [The module path migration plan](2026-09-02-module-path-migration.md) fixes all eight.
 
-**The casing is settled: `Busnes-app`, capital B, matching the GitHub org.** Taken from
+**The casing is settled: `Busness-app`, capital B, matching the GitHub org.** Taken from
 the API rather than a remote URL, because remote URLs are case-insensitive and prove
 nothing:
 
 ```bash
-gh api orgs/Busnes-app --jq .login          # -> Busnes-app
-gh api orgs/Busnes-app/repos --jq '.[].name'
+gh api orgs/Busness-app --jq .login          # -> Busness-app
+gh api orgs/Busness-app/repos --jq '.[].name'
 ```
 
 Go module paths are case-sensitive — an uppercase letter is escaped as `!b` in the module
@@ -119,7 +119,7 @@ it just cannot be half-applied, which is the state the suite is in today with
 
 **`gridlock-server` is not in the org.** The repo list above returns every other repo in
 the suite and no `gridlock-server`; that repo has no `origin` and exists only on this
-machine. Its module should still declare `github.com/Busnes-app/gridlock-server` — a main
+machine. Its module should still declare `github.com/Busness-app/gridlock-server` — a main
 module's own path is never resolved over the network, so nothing breaks locally — but
 nothing can import it until the repository exists. Creating it is a decision for a human,
 raised in the migration plan rather than acted on.

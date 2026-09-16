@@ -15,7 +15,7 @@
 - **No existing audit record may become unverifiable.** A migration that invalidates a trail destroys the evidence the trail exists to preserve.
 - The shared module has **zero dependencies**. Standard library only.
 - Gates stay green in every repo touched: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`.
-- Module path prefix is `github.com/Busnes-app/`.
+- Module path prefix is `github.com/Busness-app/`.
 
 ---
 
@@ -303,7 +303,7 @@ go test -race -count=1 ./internal/audit/... 2>&1 | tee /tmp/kyrecovery-audit-bef
 - [ ] **Step 2: Add the dependency**
 
 ```bash
-go get github.com/Busnes-app/ky-primitives@v0.2.0
+go get github.com/Busness-app/ky-primitives@v0.2.0
 go mod tidy
 go list -m all | wc -l
 ```
