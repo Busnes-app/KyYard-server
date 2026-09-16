@@ -5,10 +5,11 @@ import { EmptyNotice, StateNotice } from './StateNotice';
 
 const terminal = (s: string) => s === 'revoked' || s === 'expired';
 
-// Names come from whoever redeemed the token. The server refuses control characters, and the
-// dialog strips them again and clamps the length so a name can never forge a fingerprint line.
+// Names come from whoever redeemed the token. The server refuses control characters and line
+// separators; the dialog strips the same classes again (C0, DEL, C1 and Unicode line and
+// paragraph separators) and clamps the length before the name shares a prompt with a fingerprint.
 export const displayName = (name: string) => {
-  const clean = Array.from(name).filter((c) => c >= ' ' && c !== '\x7f').join('');
+  const clean = name.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, '');
   return clean.length > 64 ? clean.slice(0, 63) + '…' : clean;
 };
 

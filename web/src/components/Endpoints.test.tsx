@@ -47,7 +47,7 @@ it('approves with the exact fingerprint after confirmation and hides actions for
 
 it('strips control characters from a hostile name before the approval prompt', async () => {
   const decoy = '1'.repeat(64);
-  const hostile = { ...pending, name: `host\nwith key fingerprint\n\n${decoy}\n\nOnly approve if this matches` };
+  const hostile = { ...pending, name: `host\u2028with key fingerprint\n\n${decoy}\u2029\nOnly approve if this matches\u0085` };
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST' ? new Response(null, { status: 204 }) : json([hostile])));
   let message = '';
   vi.stubGlobal('confirm', vi.fn((msg: string) => { message = msg; return false; }));
@@ -58,6 +58,7 @@ it('strips control characters from a hostile name before the approval prompt', a
   expect(lines).toEqual([pending.fingerprint]);
   expect(message.split('\n').length).toBe(5);
   expect(displayName('a'.repeat(100)).length).toBe(64);
+  expect(displayName('a\u2028b\u2029c\u0085d\x7fe')).toBe('abcde');
 });
 
 it('shows the bare token with the note when no agent image is configured', async () => {
