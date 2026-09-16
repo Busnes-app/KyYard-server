@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Server } from 'lucide-react';
 import { AuditList } from '../components/AuditList';
+import { Endpoints } from '../components/Endpoints';
 import { Link } from '../components/Link';
 import { StateNotice } from '../components/StateNotice';
 import { navigate, orgPath } from '../router';
@@ -22,7 +23,7 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
     if (!err) { setName(''); details.reload(); }
   };
   const remove = async () => {
-    if (!window.confirm(`Delete environment "${details.data?.name ?? env}"? Endpoints and settings in it become unreachable.`)) return;
+    if (!window.confirm(`Delete environment "${details.data?.name ?? env}"? Every endpoint in it must already be revoked.`)) return;
     setBusy(true);
     const err = await tenantWrite(base, 'DELETE');
     setBusy(false);
@@ -48,6 +49,7 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
             </form>
             {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
           </section>
+          <Endpoints org={org} env={env} />
           <AuditList url={`${base}/audit`} />
         </>
       )}
