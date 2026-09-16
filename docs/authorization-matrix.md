@@ -25,7 +25,7 @@ Columns: OA organization admin, EA environment admin, Op operator, Dev developer
 |---|---|---|---|
 | `platform.admin` | backup, recovery pairing, theme, SCIM/SSO configuration, user administration | backup pairing shows a one-time token | backup actions audited today; a generic `platform.admin` denial row is *planned* |
 | `platform.organization.create` / `rename` (*planned*) | creating and renaming organizations; the creator receives no membership | no | success |
-| `platform.tenant.assume` | **proposed:** creates a time-boxed (*proposed* 1 hour) organization-administrator membership with `granted_by=platform` and `expires_at`, visible to that organization's administrators in the members list, audited in both platform and organization scope. Expiry is a platform-scope cleanup that deletes the row directly, not through the guarded `RemoveMembership`; if the platform administrator did not add a lasting administrator meanwhile, the organization returns to the state it was in before. This is the repair route for an organization with no active administrator. It is never implicit and never silent. | no | `platform.tenant.assumed`, `platform.tenant.released` |
+| `platform.tenant.assume` | **proposed:** creates a time-boxed (*proposed* 1 hour) organization-administrator membership with `granted_by=platform` and `expires_at`, visible to that organization's administrators in the members list, audited in both platform and organization scope. The time box is enforced at authorization time: the membership lookup inside `withTenant`/`readTenant` and every other `TenantAccess` resolution treats a row whose `expires_at` has passed as absent, and the members list renders it as expired from the same predicate; the cleanup delete is housekeeping only. Platform-granted rows never count toward the active-administrator quorum (the quorum query filters `granted_by`), so the last lasting administrator cannot be demoted or removed behind a temporary grant, and expiry cleanup re-checks the quorum and warns the platform administrator instead of leaving zero lasting administrators. This is the repair route for an organization with no active administrator. It is never implicit and never silent. | no | `platform.tenant.assumed`, `platform.tenant.released` |
 
 ### Organization and membership (*implemented*)
 
@@ -36,7 +36,7 @@ Columns: OA organization admin, EA environment admin, Op operator, Dev developer
 | `organization.audit.read` | ✓ | – | – | – | – | no | success |
 | `organization.settings.manage` (*planned*, first typed setting) | ✓ | – | – | – | – | no | success |
 
-Last-administrator protection: membership writes serialize per organization and refuse to leave zero active administrators (*implemented*). External deactivation bypasses this and is repaired by `platform.tenant.assume` (*proposed*).
+Last-administrator protection: membership writes serialize per organization and refuse to leave zero active administrators (*implemented*). Only lasting memberships count; platform-granted ones do not (*proposed*, lands with `platform.tenant.assume`). External deactivation bypasses this and is repaired by `platform.tenant.assume` (*proposed*).
 
 ### Environments (*implemented*)
 
@@ -69,7 +69,7 @@ Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.e
 | `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |
 | `container.exec` | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |
 | `image.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
-| `image.pull` | ✓ | ✓ | ✓ | – | – | uses registry credential without revealing it | success/failure |
+| `image.pull` | ✓ | ✓ | ✓ | – | – | uses a registry credential without revealing it, and only when the reference's registry host exactly equals the credential's configured host (`application-schema.md`, Registry) | success/failure |
 | `image.destroy` | ✓ | ✓ | – | – | – | no | success/failure |
 | `volume.read`, `network.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
 | `volume.destroy` | ✓ | – | – | – | – | no | success/failure, separate explicit confirmation naming data loss |
@@ -112,6 +112,7 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Platform access to tenants | explicit, time-boxed, audited assumption; no blanket access | proposed (plan preference) |
 | Repair of an organization with no active administrator | `platform.tenant.assume` | proposed, blocker from PR #10 |
 | Successful reads audited | stop from M4, except logs, exec and one-time disclosures | proposed |
+| Platform grant expiry | enforced in the membership lookup, not by cleanup; excluded from the administrator quorum | proposed |
 | Organization creation | platform administrators, no membership for the creator | proposed |
 | Unmanaged containers | lifecycle by permission, configuration edit needs adoption | proposed (plan default) |
 | Developer scope | deploy plus logs, no exec, no destructive | proposed |
