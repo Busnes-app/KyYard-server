@@ -207,6 +207,46 @@ start_server none
 contains "session survives an ordinary restart" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":true'
 check "restart preserves the replaced admin" \
   "$(status -H 'Content-Type: application/json' -d '{"username":"admin","password":"FinalSmokePassword123!"}' "$BASE/api/auth/login")" "200"
+# Agent lifecycle against the real binaries: enroll from stdin, pending, approve by the exact
+# fingerprint, active through inventory, revocation stops the agent.
+AGENT="$(dirname "$BIN")/kyyard-agent"
+if [ -x "$AGENT" ]; then
+  CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
+  ENV_JSON="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"name":"Smoke"}' "$BASE/api/organizations/org_initial/environments")"
+  ENV_ID="$(printf '%s' "$ENV_JSON" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+  check "environment created for enrollment" "$(test -n "$ENV_ID" && echo yes || echo no)" "yes"
+  TOKEN_JSON="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"runtime":"docker"}' "$BASE/api/organizations/org_initial/environments/$ENV_ID/enrollment-tokens")"
+  TOKEN="$(printf '%s' "$TOKEN_JSON" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+  contains "token response carries the socket disclosure" "$TOKEN_JSON" "root-equivalent"
+  check "token response has no command without KY_AGENT_IMAGE" \
+    "$(if printf '%s' "$TOKEN_JSON" | grep -q '"command"'; then echo command; else echo none; fi)" "none"
+  printf '%s\n' "$TOKEN" | "$AGENT" --server "$BASE" --identity-dir "$WORK/agent" --name smoke-host >"$WORK/agent.log" 2>&1 &
+  AGENT_PID=$!
+  endpoint_state() { curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p'; }
+  wait_state() { for _ in $(seq 1 50); do [ "$(endpoint_state)" = "$1" ] && return 0; sleep 0.2; done; return 1; }
+  wait_state pending || true
+  check "agent enrolls as pending" "$(endpoint_state)" "pending"
+  EP_JSON="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints")"
+  EP_ID="$(printf '%s' "$EP_JSON" | sed -n 's/.*"id":"\(ep_[^"]*\)".*/\1/p')"
+  EP_FP="$(printf '%s' "$EP_JSON" | sed -n 's/.*"fingerprint":"\([0-9a-f]*\)".*/\1/p')"
+  check "identity file is owner-only" "$(stat -c '%a' "$WORK/agent/identity.json")" "600"
+  check "identity file never holds the token" \
+    "$(if grep -q "$TOKEN" "$WORK/agent/identity.json"; then echo leaked; else echo clean; fi)" "clean"
+  check "approval binds the enrolled fingerprint" \
+    "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"fingerprint":"'"$EP_FP"'"}' -X POST "$BASE/api/organizations/org_initial/endpoints/$EP_ID/approve")" "204"
+  wait_state active || true
+  check "agent becomes active after approval" "$(endpoint_state)" "active"
+  check "revoke closes the live agent" \
+    "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/organizations/org_initial/endpoints/$EP_ID/revoke")" "204"
+  AGENT_EXIT=0
+  for _ in $(seq 1 50); do if ! kill -0 "$AGENT_PID" 2>/dev/null; then break; fi; sleep 0.2; done
+  wait "$AGENT_PID" || AGENT_EXIT=$?
+  check "agent exits on revocation" "$AGENT_EXIT" "2"
+  contains "agent log names the revocation" "$(cat "$WORK/agent.log")" "revoked"
+  contains "audit records the agent connection" "$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/audit")" '"action":"agent.connect"'
+else
+  echo "  [skip] kyyard-agent not built; agent lifecycle not exercised"
+fi
 check "logout succeeds" "$(status -b "$WORK/cookies" -c "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/auth/logout")" "200"
 contains "session dead after logout" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":false' 
 stop_server

@@ -396,6 +396,9 @@ CREATE TABLE agent_enrollment_tokens (
  FOREIGN KEY (organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE CASCADE
 );
 `},
+	{Version: 8, Name: "endpoint_inventory", SQLite: `ALTER TABLE endpoints ADD COLUMN inventory_generation INTEGER NOT NULL DEFAULT 0;
+`, Postgres: `ALTER TABLE endpoints ADD COLUMN inventory_generation BIGINT NOT NULL DEFAULT 0;
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

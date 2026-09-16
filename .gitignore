@@ -26,3 +26,4 @@ web/node_modules/
 coverage.out
 .env.*
 !.env.example
+kyyard-agent

@@ -2,12 +2,17 @@ package api
 
 import (
 	"context"
+	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
 	"net/http"
 	"time"
 )
 
 // BeginShutdown makes readiness fail before the listener drains.
-func (s *Server) BeginShutdown() { s.stopping.Store(true) }
+func (s *Server) BeginShutdown() {
+	s.stopping.Store(true)
+	// Agent sockets are hijacked connections http.Server.Shutdown does not know about.
+	s.agents.closeAll(protocol.CloseShutdown)
+}
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

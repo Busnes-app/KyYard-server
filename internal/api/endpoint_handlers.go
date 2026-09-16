@@ -150,6 +150,7 @@ func (s *Server) handleApproveEndpoint(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, err)
 		return
 	}
+	s.agents.notify(id, envelope(protocol.TypeApproved, nil))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -164,6 +165,8 @@ func (s *Server) endpointTransition(op func(context.Context, store.TenantAccess,
 			s.tenantError(w, err)
 			return
 		}
+		// Reject and revoke are terminal: a live socket ends in the same request.
+		s.agents.closeEndpoint(id, protocol.CloseRevoked)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
