@@ -79,6 +79,8 @@ export const App: React.FC = () => {
       {notice && <p role="status" style={{ padding: 16 }}>{notice}</p>}
       <Login
         appName={settings?.app_name || 'KyYard'}
+        ssoEnabled={settings?.sso_enabled === true}
+        appURL={typeof settings?.app_url === 'string' ? settings.app_url : ''}
         onSuccess={(u) => {
           setNotice('');
           setUser(u);

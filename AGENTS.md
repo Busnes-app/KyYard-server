@@ -89,6 +89,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - Git history starts fresh by user decision. The imported baseline derives from `ky_server_base` revision `2a31d5c`.
 - The root owns these planning documents. Proposed domains in the plan become child DOX boundaries when their implementation lands.
 
+- Default Compose is one production container, SQLite, a named `/data` volume and loopback-only HTTP. Existing bind installs must enable `docker-compose.bind.yml`; proxy and PostgreSQL options have separate overlays. README owns setup and transport instructions; `docs/RESTORE.md` restores via the bind overlay while preserving the original named volume. The binary healthcheck probes readiness without loading config or creating keys.
 - First boot persists encryption, session and instance keys; config owns key lifecycle and backup owns restore identity/session semantics. Bootstrap credentials print only after the generated account is saved.
 
 ## Verification

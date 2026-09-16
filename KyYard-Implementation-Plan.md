@@ -1,10 +1,9 @@
 **Repo:** Busness-app/kyyard-server
-**PR:** #4 — https://github.com/Busness-app/kyyard-server/pull/4
-**Worktree:** /home/yoshi/busness.app/kyyard-durable-bootstrap (branch feat/durable-bootstrap)
+**Worktree:** /home/yoshi/busness.app/kyyard-production-onboarding (branch feat/production-onboarding)
 
 # KyYard implementation plan
 
-Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). M0 merged in PR #1; password replacement and security corrections merged in PR #3 (base backport #33 also merged). M1 durable secrets are implemented on `feat/durable-bootstrap`; local CI and PostgreSQL race validation pass; PR #4 CI/review is pending. Later slices remain pending.
+Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). M0 merged in PR #1; password replacement and security corrections merged in PR #3 (base backport #33 also merged). M1 durable secrets merged in PR #4. The onboarding/health slice is implemented on `feat/production-onboarding`; local CI and a fresh-volume browser password-change/restart check pass. PR CI/security review remains pending; M2 tenancy follows after merge.
 
 ## 1. Outcome and scope
 
@@ -22,7 +21,7 @@ Resolve the handoff's milestone-7 scope tension by splitting it: M7a delivers ma
 
 - Fresh product history is intentional. The imported baseline derives from `ky_server_base` revision `2a31d5c`; the handoff reviewed `f4ca19a`. Product identity and `/data` packaging landed in PR #1, and forced password replacement plus its security corrections landed in PR #3.
 - Preserve untracked recovery notes and local tool state in the original checkout. Implement slices in isolated worktrees from current product master; never push product changes to the base remote or run `ky-init.sh` over a nonempty checkout.
-- Durable session/encryption/instance keys are this M1 slice. Production cookies still default to Secure; HTTP onboarding and Compose production defaults require the next slice's coherent transport decision.
+- Durable session/encryption/instance keys landed in PR #4. The onboarding slice uses loopback-only HTTP by default, scheme-derived cookies and an exact advertised browser origin. Remote access requires an HTTPS reverse proxy with explicit peer trust. Agent enrollment remains absent until M3.
 - Preserve the existing 20-minute Compose shutdown grace period and detached backup drain.
 - `internal/backup` snapshots SQLite only and rejects PostgreSQL snapshots. PostgreSQL recovery needs a separate tested implementation before advertising equivalent coverage.
 - `make ci` omits some workflow gates, including frontend build/dist comparison, vulnerability scanning and container/publishing checks. Use the full verification matrix below.
@@ -66,7 +65,7 @@ Critical path: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7a → releas
 
 **PR 02: durable bootstrap and key lifecycle.** Reuse the keyfile helper for a persistent session secret and instance identity; inspect helper guarantees before extending it. Define 0700 directory/0600 file handling, exclusive creation, invalid/truncated/symlink failure behavior, restart persistence, and explicit environment override precedence. Keep secret material out of diagnostics and ordinary settings responses. Bootstrap credentials print once; restart preserves keys and does not recreate the administrator. Forced password replacement landed separately in PR #3: restricted identity/replacement/logout access, atomic revocation, operator-reset enforcement and MFA credential snapshots. Durable keys now use private keyfiles; instance identity is an Ed25519 seed reserved for the protocol milestone. Optional encryption/session overrides accept 32 bytes encoded as hex/base64. Snapshots preserve all active keys and remove session/MFA/pairing grants without affecting the live database.
 
-**PR 03: one-container onboarding and health.** Default to SQLite and one named `/data` volume, with local sealed backups beneath that volume when configured. Keep advanced options in overlays/UI. Add secret-free liveness/readiness and a working image healthcheck. Define HTTP/TLS scheme, port, advertised URL, CSRF origins, proxy trust, and cookies together; a port number is not evidence of TLS. Show actionable setup guidance for encrypted remote connectivity. Retain the 20-minute graceful stop budget unless the tested budget changes.
+**PR 03: one-container onboarding and health.** Default to SQLite and one named `/data` volume, with local sealed backups beneath that volume when configured. Keep advanced options in overlays/UI. Add secret-free liveness/readiness and a working image healthcheck. Define HTTP/TLS scheme, port, advertised URL, CSRF origins, proxy trust, and cookies together; a port number is not evidence of TLS. Show actionable setup guidance for encrypted remote connectivity. Retain the 20-minute graceful stop budget unless the tested budget changes. Implemented: production image, named volume, public liveness/database readiness, side-effect-free binary probe, loopback HTTP and strict HTTPS/proxy configuration, cross-origin write rejection, first-login setup guidance, and optional bind/proxy/PostgreSQL overlays. Existing bind installs must opt into their overlay before upgrade.
 
 Include generated keys in capsule collection, manifest/member reporting, and restore checks. Specify session invalidation and instance-identity behavior on recovery before agents depend on it.
 

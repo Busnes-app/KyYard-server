@@ -159,6 +159,8 @@ jobs:
           trap 'docker logs ky_ci; docker rm -f ky_ci' EXIT
 
           curl -sf -o /dev/null --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:18080/
+          curl -sf http://127.0.0.1:18080/health/ready | grep -q '"status":"ok"'
+          docker exec ky_ci /app/kyyard-server healthcheck
           curl -sf -o /dev/null http://127.0.0.1:18080/api/settings
           curl -sf -X POST -H 'Content-Type: application/json' \
             -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \

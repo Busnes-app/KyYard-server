@@ -32,8 +32,9 @@ services:
     # deposit already on the wire), so SIGKILL cannot land on a capsule mid-upload.
     stop_grace_period: 20m
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
+      - KY_ENV=production
       - KY_PORT=8080
       - KY_HOST=0.0.0.0
       - KY_APP_NAME=KyYard
@@ -47,29 +48,8 @@ services:
       - KY_BACKUP_KEEP=${KY_BACKUP_KEEP:-7}
       - KY_BACKUP_DEPOSIT_INTERVAL=${KY_BACKUP_DEPOSIT_INTERVAL:-24h}
       - KY_BACKUP_ALLOW_PRIVATE_RECOVERY=${KY_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
-      # Set to the reverse proxy container's own address when one fronts this service, e.g.
-      # its address on the Docker network below (never a whole bridge range like 172.16.0.0/12,
-      # which trusts every other container). 0.0.0.0/0 and ::/0 are refused at startup.
-      # - KY_TRUSTED_PROXIES=172.18.0.2/32
-      - KY_SSO_ENABLED=true
-      - KY_SCIM_ENABLED=true
     volumes:
-      - ./data:/data
-
-  # Optional PostgreSQL service for enterprise heavy DB mode
-  postgres:
-    image: postgres:17-alpine
-    container_name: ky_postgres
-    restart: unless-stopped
-    profiles: ["postgres"]
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: ky_server
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+      - kyyard-data:/data
 
 volumes:
-  pgdata:
+  kyyard-data:

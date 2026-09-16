@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -28,6 +30,11 @@ const appVersion = "1.0.0"
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "healthcheck":
+			if err := healthcheck(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "init-admin":
 			runInitAdmin(os.Args[2:])
 			return
@@ -117,7 +124,7 @@ func runServer() {
 	backupDone := make(chan struct{})
 	go backupLoop(ctx, cfg, st, backupDone)
 
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 	httpServer := &http.Server{
 		Addr:         addr,
 		Handler:      srv,
@@ -138,6 +145,7 @@ func runServer() {
 
 	<-stop
 	log.Println("[KYYARD] Shutting down gracefully...")
+	srv.BeginShutdown()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()

@@ -7,6 +7,7 @@ Manages environment and file-based configuration loading, defaults, and type con
 Owns environment variable parsing, configuration validation, default fallbacks, and security key generations.
 
 ## Local Contracts
+- Bare HTTP listens on loopback by default. `KY_APP_URL` must be an origin: HTTP only on localhost/loopback, HTTPS only with an explicit trusted proxy. Cookie Secure follows its scheme in every environment; contradictory overrides fail startup. Default ports and host casing normalize to browser origins. SSO/SCIM default off.
 - `DefaultAppName` is `KyYard`, shared by server branding and the default recovery service identity.
 - `LoadFromEnv() (*Config, error)` must supply safe, valid defaults for all subsystems.
 - Never log plaintext secrets or sensitive tokens.
