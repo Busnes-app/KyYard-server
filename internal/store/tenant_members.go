@@ -49,6 +49,9 @@ func (t *tenancyStore) PutMembership(ctx context.Context, a TenantAccess, userID
 		if userID == "" || len(userID) > 64 || !validTenantRole(role) || (status != "active" && status != "disabled") {
 			return ErrInvalid
 		}
+		if err := t.lockOrganization(ctx, tx, a.OrganizationID); err != nil {
+			return err
+		}
 		var found int
 		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM users WHERE id=?`), userID).Scan(&found)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -66,12 +69,30 @@ func (t *tenancyStore) PutMembership(ctx context.Context, a TenantAccess, userID
 
 func (t *tenancyStore) RemoveMembership(ctx context.Context, a TenantAccess, userID string) error {
 	return t.withTenantTarget(ctx, a, permissions.MembersManage, userID, func(tx *sql.Tx) error {
+		if err := t.lockOrganization(ctx, tx, a.OrganizationID); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM organization_memberships WHERE organization_id=? AND user_id=?`), a.OrganizationID, userID)
 		if err := tenantChangeResult(result, err); err != nil {
 			return err
 		}
 		return t.requireActiveAdmin(ctx, tx, a.OrganizationID)
 	})
+}
+
+// lockOrganization serializes membership changes within one organization so the
+// administrator count below cannot be read by two transactions before either commits.
+// SQLite already holds its single writer lock from withTenant.
+func (t *tenancyStore) lockOrganization(ctx context.Context, tx *sql.Tx, org string) error {
+	if t.store.driver != "postgres" {
+		return nil
+	}
+	var found int
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM organizations WHERE id=? FOR UPDATE`), org).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrForbidden
+	}
+	return err
 }
 
 func (t *tenancyStore) requireActiveAdmin(ctx context.Context, tx *sql.Tx, org string) error {
