@@ -13,7 +13,7 @@
 
 | Store | Time | Size / cardinality | Query bound | UI indication |
 |---|---|---|---|---|
-| Audit records | 365 days for distinct events | repeated identical denials (same actor, action, target, result) within *proposed* 60 seconds collapse into one row with a count; per organization *proposed* 1,000,000 rows or 512 MiB, with an operator alert at 80 %; at the ceiling that organization's mutations are refused with `audit_budget_exhausted` (reads continue) while other organizations and platform operations are unaffected, until an operator raises the budget or prunes | 200 per page | retention window, row count and budget share on the audit screen |
+| Audit records | 365 days for distinct events | denials are budgeted per actor: each member may produce *proposed* 100 denial rows per hour; beyond that, further denials increment a counter on that actor's existing row for the same action instead of inserting, and one `denial_rate_exceeded` row records the episode. Denials against targets that do not resolve inside the organization collapse into one row per `(actor, action, result)` with the target omitted. Per organization *proposed* 1,000,000 rows or 512 MiB, with an operator alert at 80 %; at the ceiling that organization's mutations are refused with `audit_budget_exhausted` (reads continue), except `organization.members.manage` and `platform.tenant.assume`, so an administrator can still remove the offending member; other organizations and platform operations are unaffected | 200 per page | retention window, row count and budget share on the audit screen |
 | Exec session metadata | 365 days (with audit) | one row per session; no contents | 200 per page | listed under audit |
 | Deployment history and events | deployments older than 90 days pruned unless they produced the current or previous revision; 90 days after the application is removed everything goes | 50 revisions per application (oldest non-current pruned), 500 events per deployment | 100 events per page | "older revisions pruned" note |
 | Endpoint events (state changes, errors) | 7 days | 50,000 rows per endpoint | 200 per page | gap markers between reconnects |
@@ -32,7 +32,7 @@ Disk budget: the operator sees the database size and each store's share on the s
 - Streams: bounded buffers with backpressure toward the runtime; when a browser reads slowly the server drops the oldest buffered data and inserts a gap marker rather than growing memory.
 - Inventory: an endpoint reporting faster than *proposed* once per 10 seconds is rate-limited at the agent; the server rejects out-of-order generations without writing.
 - Metrics: samples beyond the per-container cap are dropped oldest-first before insert.
-- Audit: never silently dropped; if the database refuses the audit write the operation fails (existing contract). The per-organization ceiling above turns that fail-closed rule into an organization-local outage rather than an instance-wide one, and denial collapsing keeps a single member from filling it at request rate.
+- Audit: never silently dropped; if the database refuses the audit write the operation fails (existing contract). The per-organization ceiling above turns that fail-closed rule into an organization-local outage rather than an instance-wide one, the per-actor denial budget keeps a single member from filling it at request rate regardless of how many distinct targets they name, and membership management stays writable so the member can be removed.
 
 ## Capacity targets to fix before the M4 soak (proposed)
 
@@ -43,7 +43,7 @@ Disk budget: the operator sees the database size and each store's share on the s
 | Concurrent streams | 16 per endpoint, 8 per user, 64 per instance |
 | Retention disk budget | 2 GiB SQLite default |
 
-The soak runs the fixture at these targets for 24 hours on SQLite, including sustained denied mutations from a read-only member of one organization while another organization keeps writing, verifies the database stays within budget, cleanup keeps up, p95 read latency on list screens stays under 500 ms, and memory stays bounded with slow log clients attached. Numbers that fail are lowered before freeze.
+The soak runs the fixture at these targets for 24 hours on SQLite, including sustained denied mutations from a read-only member against freshly generated target identifiers for the whole run while another organization keeps writing (asserting rows stay under the ceiling, each distinct-target denial adds no row past the per-actor budget, and an administrator can still remove that member at exhaustion), verifies the database stays within budget, cleanup keeps up, p95 read latency on list screens stays under 500 ms, and memory stays bounded with slow log clients attached. Numbers that fail are lowered before freeze.
 
 ## Decisions
 
@@ -51,6 +51,6 @@ The soak runs the fixture at these targets for 24 hours on SQLite, including sus
 |---|---|---|
 | Log bodies in the database | never | required by handoff |
 | Terminal contents | never recorded | required by handoff |
-| Audit retention | 365 days, denial collapsing, per-organization ceiling with organization-local refusal | proposed |
+| Audit retention | 365 days, per-actor denial budget, per-organization ceiling with organization-local refusal that keeps membership management open | proposed |
 | Metrics | 6 h raw at 60 s, 7 d hourly | proposed, soak-gated |
 | Disk budget behaviour | degrade metrics, then stop telemetry, never audit | proposed |
