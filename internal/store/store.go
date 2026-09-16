@@ -6,6 +6,8 @@ import (
 )
 
 var (
+	ErrForbidden      = errors.New("tenant access denied")
+	ErrInvalid        = errors.New("invalid tenant input")
 	ErrNotFound       = errors.New("record not found")
 	ErrAlreadyExists  = errors.New("record already exists")
 	ErrSessionExpired = errors.New("session expired")
@@ -93,9 +95,17 @@ type SettingsStore interface {
 	GetAllSettings(ctx context.Context) (map[string]string, error)
 }
 
-// TenancyStore is a persistence boundary, not authorization. Callers must authorize access;
-// every tenant-owned operation takes the owning organization explicitly.
+// TenancyStore provides authorized operations through TenantAccess. The raw methods
+// below Initialize are trusted persistence helpers for bootstrap and management.
 type TenancyStore interface {
+	ReadOrganization(ctx context.Context, access TenantAccess) (*Organization, error)
+	ReadEnvironment(ctx context.Context, access TenantAccess) (*Environment, error)
+	ListEnvironments(ctx context.Context, access TenantAccess, offset, limit int) ([]Environment, error)
+	AddEnvironment(ctx context.Context, access TenantAccess, name string) (*Environment, error)
+	UpdateEnvironment(ctx context.Context, access TenantAccess, name string) error
+	RemoveEnvironment(ctx context.Context, access TenantAccess) error
+	ReadAudit(ctx context.Context, access TenantAccess, offset, limit int) ([]AuditRecord, error)
+
 	Initialize(ctx context.Context) error
 	CreateOrganization(ctx context.Context, organization *Organization) error
 	GetOrganization(ctx context.Context, organizationID string) (*Organization, error)

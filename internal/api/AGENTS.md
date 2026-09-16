@@ -13,7 +13,7 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
 - POST `/api/auth/change-password` accepts a restricted local session, current password and a different policy-valid new password. Browser CSRF and per-IP/account limits apply. Success revokes all sessions and requires sign-in again; flagged sessions get `password_change_required` on protected routes and public-only settings.
 - All JSON API endpoints return structured errors `{"error": "message"}` upon failure.
 - Non-API routes fall back to serving `web.Handler()` for client-side SPA routing.
-- New routes are unauthenticated only by deliberate choice; privileged ones are registered wrapped in `s.requireAdmin` in `routes()`, so the trust level of every route is readable in one place.
+- New routes are unauthenticated only by deliberate choice; platform routes use `s.requireAdmin` (named `platform.admin` policy); tenant routes use `s.tenantRoute` and store-owned authorization.
 - Backup routes and theme writes are admin-only: capsules and settings carry site data and secrets. The scaffold has no step-up; admin-only plus `TestPrivilegedEndpointsRequireAdmin` is its equivalent for every destructive backup route. Routes are registered with method patterns, and because the SPA catch-all answers any method, tests pin that a wrong method never reaches a backup handler rather than expecting 405.
 
 | Method | Path | Handler | Response |
@@ -34,6 +34,10 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
 - CORS permits only the exact configured `KY_APP_URL` origin and credentialed browser writes require matching CSRF cookie/header tokens.
 - API request bodies are capped at 1 MiB and all responses receive baseline CSP, anti-framing, MIME-sniffing, and referrer-policy headers.
 - `GET /api/settings` tiers its payload: public fields for the login screen, `db_driver`/`scim_enabled` for any session, and `extra_settings` for admins only; KyRecovery tokens are omitted in both sealed and legacy plaintext forms, dropped by the `kyrecovery_token` key prefix rather than by literal key name.
+
+- Tenant namespace is `/api/organizations/{organization}`: GET organization; GET/POST `/environments`; GET/PATCH/DELETE `/environments/{environment}`; GET `/audit` or `/environments/{environment}/audit`. Unknown tenant paths/methods return JSON 404, never SPA content.
+- `tenantRoute` authenticates unrestricted sessions, derives actor/credential snapshot and correlation ID server-side, and sends `X-Request-ID` plus `Cache-Control: no-store`. Handlers pass explicit URL scope to authorized store methods; clients cannot supply actor, organization or arbitrary update fields in JSON. Existing Origin/CSRF/body limits apply.
+- Environment create/update accepts only `{name}`; lists accept nonnegative `offset` and `limit` 1–200 (default 50). Store errors map to generic 400/403/404/409/500 responses. Request parsing/authentication/CSRF failures occur before the transactional tenant audit path.
 
 ## Verification
 - `go test -v ./internal/api/...` (`authz_test.go` pins the per-role exposure of every privileged route; `backup_test.go` the backup routes, on SQLite only because a run snapshots the database)

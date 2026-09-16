@@ -67,15 +67,20 @@ type Group struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// AuditRecord logs security and operational events with tamper-evident structure.
+// AuditRecord records actor (UserID), target (Resource), scope and outcome.
 type AuditRecord struct {
-	ID        int64     `json:"id"`
-	UserID    string    `json:"user_id"`
-	Action    string    `json:"action"` // e.g. "auth.login", "scim.user_created"
-	Resource  string    `json:"resource"`
-	Details   string    `json:"details,omitempty"`
-	IPAddress string    `json:"ip_address"`
-	CreatedAt time.Time `json:"created_at"`
+	Scope          string    `json:"scope"`
+	OrganizationID string    `json:"organization_id"`
+	EnvironmentID  string    `json:"environment_id"`
+	CorrelationID  string    `json:"correlation_id"`
+	Result         string    `json:"result"`
+	ID             int64     `json:"id"`
+	UserID         string    `json:"user_id"`
+	Action         string    `json:"action"` // e.g. "auth.login", "scim.user_created"
+	Resource       string    `json:"resource"`
+	Details        string    `json:"details,omitempty"`
+	IPAddress      string    `json:"ip_address"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // Setting represents a durable server-wide key-value configuration entry.
@@ -117,4 +122,14 @@ type OrganizationGroup struct {
 	ID             string `json:"id"`
 	OrganizationID string `json:"organization_id"`
 	Name           string `json:"name"`
+}
+
+// TenantAccess is server-derived request context. Clients cannot choose ActorID or CorrelationID.
+type TenantAccess struct {
+	CredentialHash string `json:"-"` // Snapshot from session authentication; never serialized or audited.
+	ActorID        string
+	OrganizationID string
+	EnvironmentID  string
+	CorrelationID  string
+	IPAddress      string
 }

@@ -1,0 +1,160 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strconv"
+
+	"github.com/Busness-app/kyyard-server/internal/auth"
+	"github.com/Busness-app/kyyard-server/internal/crypto"
+	"github.com/Busness-app/kyyard-server/internal/store"
+)
+
+// tenantRoute authenticates identity only. The store selects the named action and
+// checks live authorization in the transaction that reads or mutates tenant data.
+func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.TenantAccess)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		correlation := crypto.RandomHex(16)
+		w.Header().Set("X-Request-ID", correlation)
+		w.Header().Set("Cache-Control", "no-store")
+		user, _, err := s.sessions.AuthenticateRequest(r)
+		if err != nil {
+			if errors.Is(err, auth.ErrPasswordChangeRequired) {
+				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Change your password before continuing", "code": "password_change_required"})
+			} else {
+				s.writeError(w, http.StatusUnauthorized, "Authentication required")
+			}
+			return
+		}
+		org, env := r.PathValue("organization"), r.PathValue("environment")
+		if org == "" || len(org) > 64 || len(env) > 64 {
+			s.writeError(w, http.StatusBadRequest, "Invalid tenant scope")
+			return
+		}
+		h(w, r, store.TenantAccess{ActorID: user.ID, CredentialHash: user.PasswordHash, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: s.requestIP(r)})
+	}
+}
+func (s *Server) tenantError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrForbidden):
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Tenant access denied", "code": "tenant_access_denied"})
+	case errors.Is(err, store.ErrNotFound):
+		s.writeError(w, http.StatusNotFound, "Resource not found in this organization")
+	case errors.Is(err, store.ErrAlreadyExists):
+		s.writeError(w, http.StatusConflict, "Resource already exists")
+	case errors.Is(err, store.ErrInvalid):
+		s.writeError(w, http.StatusBadRequest, "Invalid tenant input")
+	default:
+		s.writeError(w, http.StatusInternalServerError, "Tenant operation failed")
+	}
+}
+func tenantPage(r *http.Request) (int, int, error) {
+	offset, limit := 0, 50
+	var err error
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		offset, err = strconv.Atoi(raw)
+		if err != nil {
+			return 0, 0, store.ErrInvalid
+		}
+	}
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil {
+			return 0, 0, store.ErrInvalid
+		}
+	}
+	if offset < 0 || limit < 1 || limit > 200 {
+		return 0, 0, store.ErrInvalid
+	}
+	return offset, limit, nil
+}
+func tenantName(r *http.Request) (string, error) {
+	var input struct {
+		Name string `json:"name"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return "", store.ErrInvalid
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return "", store.ErrInvalid
+	}
+	return input.Name, nil
+}
+func (s *Server) handleTenantOrganization(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	o, err := s.store.Tenancy().ReadOrganization(r.Context(), a)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, o)
+}
+func (s *Server) handleTenantEnvironment(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	e, err := s.store.Tenancy().ReadEnvironment(r.Context(), a)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, e)
+}
+func (s *Server) handleTenantEnvironments(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	offset, limit, err := tenantPage(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	rows, err := s.store.Tenancy().ListEnvironments(r.Context(), a, offset, limit)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, rows)
+}
+func (s *Server) handleCreateEnvironment(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	name, err := tenantName(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	e, err := s.store.Tenancy().AddEnvironment(r.Context(), a, name)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, e)
+}
+func (s *Server) handleUpdateEnvironment(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	name, err := tenantName(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if err := s.store.Tenancy().UpdateEnvironment(r.Context(), a, name); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) handleRemoveEnvironment(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	if err := s.store.Tenancy().RemoveEnvironment(r.Context(), a); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) handleTenantAudit(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	offset, limit, err := tenantPage(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	rows, err := s.store.Tenancy().ReadAudit(r.Context(), a, offset, limit)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, rows)
+}

@@ -90,7 +90,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - The root owns these planning documents. Proposed domains in the plan become child DOX boundaries when their implementation lands.
 
 - Default Compose is one container, SQLite, a named `/data` volume and loopback-only HTTP. It explicitly acknowledges its container-wide plaintext bind alongside the loopback host publish; the bare image fails closed without that acknowledgement or HTTPS configuration. Existing bind installs must enable `docker-compose.bind.yml`; proxy and PostgreSQL options have separate overlays. README owns setup and transport instructions; `docs/RESTORE.md` restores via the bind overlay while preserving the original named volume. The binary healthcheck probes readiness without loading config or creating keys.
-- `cmd/server` calls `Tenancy.Initialize` after account bootstrap and before serving HTTP. Store owns the one-time initial-organization migration and its marker. This schema slice adds no tenant HTTP routes; permission enforcement and scoped audit precede exposing tenant data.
+- `cmd/server` calls `Tenancy.Initialize` after account bootstrap and before serving HTTP. Store owns the one-time initial-organization migration and its marker. Tenant HTTP routes use named permissions and store-owned transactional authorization/audit; platform administration never implies tenant access.
 - First boot persists encryption, session and instance keys; config owns key lifecycle and backup owns restore identity/session semantics. Bootstrap credentials print only after the generated account is saved.
 
 ## Verification
@@ -109,6 +109,7 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 ## Child DOX Index
 
 - [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
+- [internal/permissions/AGENTS.md](internal/permissions/AGENTS.md): Named actions and fixed platform/tenant permission mappings.
 - [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
 - [internal/crypto/AGENTS.md](internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
 - [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, MFA (TOTP), recovery codes, sessions, and CAPTCHA.

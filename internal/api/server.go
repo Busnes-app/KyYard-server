@@ -15,6 +15,7 @@ import (
 	"github.com/Busness-app/kyyard-server/internal/auth"
 	"github.com/Busness-app/kyyard-server/internal/config"
 	"github.com/Busness-app/kyyard-server/internal/devices"
+	"github.com/Busness-app/kyyard-server/internal/permissions"
 	"github.com/Busness-app/kyyard-server/internal/scim"
 	"github.com/Busness-app/kyyard-server/internal/sso"
 	"github.com/Busness-app/kyyard-server/internal/store"
@@ -205,6 +206,18 @@ func (s *Server) requestIP(r *http.Request) string {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /api/organizations/{organization}", s.tenantRoute(s.handleTenantOrganization))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments", s.tenantRoute(s.handleTenantEnvironments))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments", s.tenantRoute(s.handleCreateEnvironment))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}", s.tenantRoute(s.handleTenantEnvironment))
+	s.mux.HandleFunc("PATCH /api/organizations/{organization}/environments/{environment}", s.tenantRoute(s.handleUpdateEnvironment))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}", s.tenantRoute(s.handleRemoveEnvironment))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/audit", s.tenantRoute(s.handleTenantAudit))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/audit", s.tenantRoute(s.handleTenantAudit))
+	s.mux.HandleFunc("/api/organizations/", func(w http.ResponseWriter, r *http.Request) {
+		s.writeError(w, http.StatusNotFound, "Tenant route not found")
+	})
+
 	// Public, secret-free probes; readiness includes the database.
 	s.mux.HandleFunc("/health/live", s.handleHealth)
 	s.mux.HandleFunc("/health/ready", s.handleHealth)
@@ -264,7 +277,7 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 			}
 			return
 		}
-		if user.Role != "admin" {
+		if !permissions.PlatformAllows(user.Role, permissions.PlatformAdmin) {
 			s.writeError(w, http.StatusForbidden, "Administrator role required")
 			return
 		}

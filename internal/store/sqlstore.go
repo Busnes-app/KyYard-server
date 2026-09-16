@@ -802,14 +802,20 @@ type auditStore struct {
 }
 
 func (a *auditStore) LogAudit(ctx context.Context, r *AuditRecord) error {
+	if r.Scope == "" {
+		r.Scope = "platform"
+	}
+	if r.Result == "" {
+		r.Result = "unknown"
+	}
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now().UTC()
 	}
 	q := a.store.rebind(`
-INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at, scope, organization_id, environment_id, correlation_id, result)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
-	_, err := a.store.db.ExecContext(ctx, q, r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt)
+	_, err := a.store.db.ExecContext(ctx, q, r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt, r.Scope, r.OrganizationID, r.EnvironmentID, r.CorrelationID, r.Result)
 	return err
 }
 
@@ -828,7 +834,7 @@ func (a *auditStore) ListAuditRecords(ctx context.Context, offset, limit int) ([
 	}
 
 	q := a.store.rebind(`
-SELECT id, user_id, action, resource, details, ip_address, created_at
+SELECT id, user_id, action, resource, details, ip_address, created_at, scope, organization_id, environment_id, correlation_id, result
 FROM audit_records
 ORDER BY created_at DESC LIMIT ? OFFSET ?
 `)
@@ -841,7 +847,7 @@ ORDER BY created_at DESC LIMIT ? OFFSET ?
 	var records []*AuditRecord
 	for rows.Next() {
 		var r AuditRecord
-		if err := rows.Scan(&r.ID, &r.UserID, &r.Action, &r.Resource, &r.Details, &r.IPAddress, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Action, &r.Resource, &r.Details, &r.IPAddress, &r.CreatedAt, &r.Scope, &r.OrganizationID, &r.EnvironmentID, &r.CorrelationID, &r.Result); err != nil {
 			return nil, 0, err
 		}
 		records = append(records, &r)
