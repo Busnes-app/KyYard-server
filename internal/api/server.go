@@ -214,6 +214,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}", s.tenantRoute(s.handleRemoveEnvironment))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/audit", s.tenantRoute(s.handleTenantAudit))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/audit", s.tenantRoute(s.handleTenantAudit))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/members", s.tenantRoute(s.handleTenantMembers))
+	s.mux.HandleFunc("PUT /api/organizations/{organization}/members/{user}", s.tenantRoute(s.handlePutMembership))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/members/{user}", s.tenantRoute(s.handleRemoveMembership))
+	s.mux.HandleFunc("GET /api/organizations", s.handleMyOrganizations)
 	s.mux.HandleFunc("/api/organizations/", func(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "Tenant route not found")
 	})

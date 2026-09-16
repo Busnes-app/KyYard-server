@@ -132,8 +132,8 @@ claim it. Platform administration remains separate from organization membership.
 
 Membership removal or disabling survives restart and administrator password resets. Legacy
 SCIM groups do not grant organization access. Tenant APIs enforce live membership on every
-operation; platform administrators need explicit membership too. Management screens and
-membership/settings administration follow in the next delivery slice.
+operation; platform administrators need explicit membership too. Membership administration is available through the tenant API;
+management screens and typed settings follow in the next delivery slice.
 
 ### Tenant API
 
@@ -146,16 +146,23 @@ Use `/api/organizations/{organization}` (`org_initial` for the default organizat
 | GET / PATCH / DELETE | `/environments/{environment}` | Read / rename / delete |
 | GET | `/audit` | Organization audit history |
 | GET | `/environments/{environment}/audit` | Environment audit history |
+| GET | `/members` | List memberships (user, username, role, status) |
+| PUT / DELETE | `/members/{user}` | Set role/status for an existing user / remove membership |
+
+`GET /api/organizations` (no suffix) lists the signed-in user's own active organizations and
+roles; it never reveals anyone else's. Membership writes take `{"role":"operator","status":"active"}`
+(status optional). An organization must keep one active administrator, so demoting, disabling or
+removing the last one returns `409` with code `last_administrator`, even for that administrator.
 
 Create/rename takes `{"name":"Production"}`. Lists accept `offset` (default 0) and
 `limit` (default 50, maximum 200). Browser writes require the existing CSRF token.
 Responses include a server-generated `X-Request-ID` for audit correlation.
 
-| Organization membership | Read organization/environments | Manage environments | Read tenant audit |
-|---|---|---|---|
-| Organization administrator | Yes | Yes | Yes |
-| Environment administrator | Yes | Yes | No |
-| Operator / developer / read-only | Yes | No | No |
+| Organization membership | Read organization/environments | Manage environments | Manage members | Read tenant audit |
+|---|---|---|---|---|
+| Organization administrator | Yes | Yes | Yes | Yes |
+| Environment administrator | Yes | Yes | No | No |
+| Operator / developer / read-only | Yes | No | No | No |
 
 These memberships apply throughout their organization; individual environment grants and
 workload permissions arrive with their corresponding APIs. Successful operations and audit
