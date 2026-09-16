@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Busness-app/kyyard-server/internal/permissions"
 	"github.com/google/uuid"
@@ -162,7 +163,8 @@ func validTenantName(name string) bool {
 		return false
 	}
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f {
+		// Control characters (C0, DEL, C1) and Unicode line/paragraph separators all break lines.
+		if unicode.IsControl(r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
 			return false
 		}
 	}

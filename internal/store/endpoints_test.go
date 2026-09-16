@@ -70,6 +70,11 @@ func TestEnrollmentTokenIsSingleUseAndBound(t *testing.T) {
 	if _, err := ts.AddEnvironment(ctx, a, "env\x7fname"); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("control character in environment name accepted: %v", err)
 	}
+	for _, sep := range []string{"\u2028", "\u2029", "\u0085"} {
+		if _, err := ts.Enroll(ctx, key.request(tok.Secret, "host"+sep+strings.Repeat("0", 64))); !errors.Is(err, store.ErrForbidden) {
+			t.Fatalf("line separator %q in name accepted: %v", sep, err)
+		}
+	}
 	// A refused attempt did not consume the token. Two winners are impossible.
 	var wg sync.WaitGroup
 	results := make(chan error, 4)
