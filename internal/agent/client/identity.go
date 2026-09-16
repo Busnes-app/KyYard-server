@@ -80,10 +80,32 @@ func SaveIdentity(dir string, id *Identity) error {
 		return err
 	}
 	tmp := identityPath(dir) + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, identityPath(dir))
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return err
+	}
+	// A rotation offer is announced only after this returns, so the bytes must be on disk,
+	// not in the writeback window a power loss would erase.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, identityPath(dir)); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func newKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {

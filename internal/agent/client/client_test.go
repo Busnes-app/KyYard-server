@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
@@ -22,6 +23,8 @@ import (
 	"github.com/Busness-app/kyyard-server/internal/config"
 	"github.com/Busness-app/kyyard-server/internal/store"
 	"github.com/Busness-app/kyyard-server/internal/testdb"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "modernc.org/sqlite"
 )
 
 func TestConnectURLRefusesPlaintextOffLoopback(t *testing.T) {
@@ -373,6 +376,30 @@ func TestAgentRotatesKeyOnlyAfterAcknowledgement(t *testing.T) {
 }
 
 // Setup shared by the rotation-hardening tests: a real server, an approved agent identity.
+// testDB is the database the approved agent's server uses; tests reach it directly to move
+// timestamps, which is not a product path.
+var testDB config.DatabaseConfig
+
+func backdatePendingKey(t *testing.T, fingerprint string, createdAt time.Time) {
+	t.Helper()
+	driver := testDB.Driver
+	if driver == "postgres" {
+		driver = "pgx"
+	}
+	db, err := sql.Open(driver, testDB.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	q := "UPDATE endpoint_keys SET created_at=? WHERE fingerprint=?"
+	if driver == "pgx" {
+		q = "UPDATE endpoint_keys SET created_at=$1 WHERE fingerprint=$2"
+	}
+	if _, err := db.ExecContext(context.Background(), q, createdAt.UTC(), fingerprint); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func approvedAgent(t *testing.T) (*httptest.Server, store.Store, cookies, *client.Identity, string) {
 	t.Helper()
 	t.Setenv("KY_DATA_DIR", t.TempDir())
@@ -381,6 +408,7 @@ func approvedAgent(t *testing.T) (*httptest.Server, store.Store, cookies, *clien
 		t.Fatal(err)
 	}
 	dbCfg := testdb.Config(t)
+	testDB = dbCfg
 	dbCfg.DataDir = cfg.Database.DataDir
 	cfg.Database = dbCfg
 	cfg.Captcha.Provider = "none"
@@ -491,9 +519,7 @@ func TestExpiredPendingOfferIsReplaced(t *testing.T) {
 	}
 	// Eight days pass without acknowledgement, on both sides.
 	backdate := time.Now().Add(-8 * 24 * time.Hour)
-	if err := st.(*store.SQLStore).BackdatePendingKey(ctx, first, backdate); err != nil {
-		t.Fatal(err)
-	}
+	backdatePendingKey(t, first, backdate)
 	id.PendingSince = backdate
 	id.RotatedAt = time.Time{}
 	if err := client.SaveIdentity(dir, id); err != nil {

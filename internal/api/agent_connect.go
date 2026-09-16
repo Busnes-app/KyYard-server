@@ -48,17 +48,18 @@ type agentRegistry struct {
 	conns map[string]*agentConn
 }
 
-func (r *agentRegistry) add(c *agentConn) bool {
+// add registers c, or returns the incumbent socket that already holds the endpoint.
+func (r *agentRegistry) add(c *agentConn) (incumbent *agentConn) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.conns == nil {
 		r.conns = map[string]*agentConn{}
 	}
-	if _, live := r.conns[c.endpointID]; live {
-		return false
+	if live, ok := r.conns[c.endpointID]; ok {
+		return live
 	}
 	r.conns[c.endpointID] = c
-	return true
+	return nil
 }
 
 func (r *agentRegistry) remove(c *agentConn) {
@@ -140,11 +141,12 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(agentFrameLimit)
 	c := &agentConn{endpointID: identity.Endpoint.ID, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
-	if !s.agents.add(c) {
+	if incumbent := s.agents.add(c); incumbent != nil {
 		// A second live socket is the signature of a copied identity volume: audit it, raise
-		// an operator-facing event, and block rotation until someone looks.
+		// an operator-facing event naming both parties (the refused one is usually the real
+		// host, the holder is the one to doubt), and block rotation until someone looks.
 		_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "denied")
-		_ = s.store.Tenancy().RecordEndpointEvent(ctx, &identity.Endpoint, "high", "duplicate_connection", "from "+s.requestIP(r))
+		_ = s.store.Tenancy().RecordEndpointEvent(ctx, &identity.Endpoint, "high", "duplicate_connection", "refused "+s.requestIP(r)+"; live socket held from "+incumbent.ip)
 		conn.Close(websocket.StatusPolicyViolation, protocol.CloseDuplicate)
 		return
 	}
@@ -245,23 +247,18 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 			if c.reason != protocol.CloseShutdown {
 				return
 			}
-			s.agents.remove(c)
-			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
+			s.markOffline(ctx, c)
 			return
 		case e := <-c.send:
 			if err := s.writeFrame(ctx, c.conn, e); err != nil {
 				return
 			}
 		case <-timer.C:
-			s.agents.remove(c)
-			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
+			s.markOffline(ctx, c)
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseTimeout)
 			return
 		case <-readErr:
-			// Free the slot before touching the database so a reconnecting agent never waits on
-			// the writer lock and reads as a duplicate of itself.
-			s.agents.remove(c)
-			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
+			s.markOffline(ctx, c)
 			return
 		case f := <-frames:
 			if !timer.Stop() {
@@ -273,6 +270,20 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 			}
 		}
 	}
+}
+
+// markOffline ends a session: the slot is freed first so a reconnecting agent never waits on
+// the writer lock and reads as its own duplicate, and the offline write is skipped when a
+// successor already holds the endpoint, so a late write cannot demote a live session. The
+// detached context is bounded.
+func (s *Server) markOffline(ctx context.Context, c *agentConn) {
+	s.agents.remove(c)
+	if s.Connected(c.endpointID) {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_ = s.store.Tenancy().MarkEndpointOffline(wctx, c.endpointID)
 }
 
 // handleAgentFrame applies one received frame and reports whether the session must end. A

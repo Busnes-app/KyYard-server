@@ -403,8 +403,8 @@ func TestAgentRotationOverTheSocket(t *testing.T) {
 	}
 	w = tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
 	_ = json.Unmarshal(w.Body.Bytes(), &e)
-	if len(e.Alerts) != 1 || e.Alerts[0].Kind != "duplicate_connection" {
-		t.Fatalf("duplicate alert: %+v", e.Alerts)
+	if len(e.Alerts) != 1 || e.Alerts[0].Kind != "duplicate_connection" || !strings.Contains(e.Alerts[0].Details, "refused ") || !strings.Contains(e.Alerts[0].Details, "live socket held from ") {
+		t.Fatalf("duplicate alert must name both parties: %+v", e.Alerts)
 	}
 	if w := tenantRequest(s, admin, "POST", fmt.Sprintf("/api/organizations/a/endpoints/%s/events/%d/acknowledge", ag.id, e.Alerts[0].ID), "", true); w.Code != 204 {
 		t.Fatalf("event acknowledge: %d", w.Code)
