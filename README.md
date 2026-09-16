@@ -11,7 +11,8 @@ Fresh installations only: KyYard uses its own recovery service identity and toke
 label. Existing base-project databases, pairing tokens and capsules are not a supported
 in-place migration. The SQLite filename `ky_server.db` remains the inherited storage format.
 Container data lives under `/data`, including local capsules under `/data/backups` in Compose.
-Production mode still requires `KY_SESSION_SECRET`; persistent zero-config generation is the next slice.
+Production mode generates persistent secrets without manual configuration. The next slice adds
+the one-container onboarding, transport defaults and health checks.
 
 Published image (available after the first successful master publication):
 
@@ -59,14 +60,39 @@ its identity, change the password or sign out; privileged APIs remain blocked. R
 revokes existing sessions, MFA transactions and device pairings atomically. Existing accounts
 are not retroactively flagged, since the server cannot infer whether they still use a bootstrap password.
 
+## Persistent keys
+
+First boot creates `KY_DATA_DIR` (default `./data`) privately and creates `encryption.key`,
+`session.key` and `instance.key` as private 0600 files. Each contains 32 random bytes encoded
+as hex. Restarts reuse them; invalid, truncated, symlink or overly permissive files stop
+startup without replacing the key. Keep the directory's ancestors trusted and writable only
+by the deployment owner. A final symlink for the data directory is refused.
+Startup leaves owner-only directory permissions unchanged. If group/other access is present,
+it tightens the directory to 0700 and logs the path and old/new modes; a failure reports
+ownership details. This also changes host bind-mount permissions. Host jobs copying sealed
+backups must run with access as the directory owner, or use `KY_BACKUP_DIR` outside the
+private data directory.
+
+`KY_ENCRYPTION_KEY` and `KY_SESSION_SECRET` are optional overrides: exactly 32 bytes encoded
+as hex or base64. They take precedence without overwriting files. Empty values use the files.
+Older arbitrary-text session-secret overrides must be replaced with this encoded form;
+changing it invalidates pending proof-of-work challenges, not database sessions.
+`instance.key` is the persistent Ed25519 seed reserved for control-plane identity.
+It has no environment override. Never run a restored copy alongside the original instance.
+
+The bootstrap password is printed only after the administrator is saved and only when it
+was generated. An ordinary restart preserves both the account and active sessions.
+
 ## Disaster recovery
 
-Every backup is one `.kycap` capsule: the database snapshot, the deployment's encryption key,
+Every backup is one `.kycap` capsule: the database snapshot, the deployment's encryption, session and instance keys,
 the settings that describe the deployment, and the pinned suite recovery public key. It is
 sealed to the suite recovery key, which only the custodians' cards (k of n, split at the suite
 ceremony) can reconstruct. Nothing on this server, and nothing on KyRecovery, can open one.
 The mechanics are `github.com/Busness-app/ky-primitives/recoveryclient`; this repository
-supplies what it seals and how it checks a drill.
+supplies what it seals and how it checks a drill. New snapshots exclude sessions, pending
+MFA challenges and device pairings so restore requires fresh sign-in; live sessions remain
+untouched. The capsule preserves the instance identity and the active keys, including overrides.
 
 **Capsules are SQLite-only today.** The snapshot is `VACUUM INTO` against the local database
 file; on `KY_DB_DRIVER=postgres` there is no snapshot and every backup refuses with "no
@@ -74,7 +100,8 @@ consistent database snapshot for this driver". A Postgres deployment must back i
 itself, with `pg_dump` on its own schedule and its own retention, and must protect that dump:
 it is the plaintext of everything a capsule would have sealed. Nothing travels in a capsule
 there, because no capsule is made. The recovery key pin, the pairing and the schedule live in
-the database and so ride in the `pg_dump`; `data/encryption.key` and `data/recovery.pub` do
+the database and so ride in the `pg_dump`; `data/encryption.key`, `data/session.key`,
+`data/instance.key` and `data/recovery.pub` do
 not, and you must copy them separately. Without `encryption.key` no TOTP secret and no
 KyRecovery token in that dump can be decrypted.
 

@@ -19,6 +19,8 @@ import (
 // encryptionKeyPath is where a restore drops the key that decrypts users.totp_secret_enc,
 // relative to the restore target: the same <DataDir>/encryption.key config.LoadFromEnv reads.
 const encryptionKeyPath = "data/encryption.key"
+const sessionKeyPath = "data/session.key"
+const instanceKeyPath = "data/instance.key"
 
 // recoveryPubPath is where a restore drops the suite recovery public key, matching the
 // <DataDir>/recovery.pub that recoveryclient.RecoveryKeyPath reads.
@@ -50,14 +52,23 @@ func Collect(ctx context.Context, cfg *config.Config, appVersion string) (recove
 	}, "", "  ")
 	files = append(files, recoveryclient.File{Path: "config/settings.json", Data: cfgJSON, Mode: 0600})
 
-	if len(cfg.Security.EncryptionKey) != 32 {
-		return recoveryclient.Payload{}, fmt.Errorf("backup: encryption key is %d bytes, want 32; refusing to seal a capsule that cannot decrypt what it restores", len(cfg.Security.EncryptionKey))
+	sessionKey, err := hex.DecodeString(cfg.Security.SessionSecret)
+	if err != nil {
+		return recoveryclient.Payload{}, fmt.Errorf("backup: invalid session key encoding")
 	}
-	files = append(files, recoveryclient.File{
-		Path: encryptionKeyPath,
-		Data: []byte(hex.EncodeToString(cfg.Security.EncryptionKey) + "\n"),
-		Mode: 0600,
-	})
+	for _, key := range []struct {
+		path  string
+		value []byte
+	}{
+		{encryptionKeyPath, cfg.Security.EncryptionKey},
+		{sessionKeyPath, sessionKey},
+		{instanceKeyPath, cfg.Security.InstanceKey},
+	} {
+		if len(key.value) != 32 {
+			return recoveryclient.Payload{}, fmt.Errorf("backup: %s must contain 32 bytes", key.path)
+		}
+		files = append(files, recoveryclient.File{Path: key.path, Data: []byte(hex.EncodeToString(key.value) + "\n"), Mode: 0600})
+	}
 
 	if pub, err := os.ReadFile(recoveryclient.RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
 		files = append(files, recoveryclient.File{Path: recoveryPubPath, Data: pub, Mode: 0600})
@@ -102,12 +113,27 @@ func snapshotSQLite(ctx context.Context, dsn, dataDir string) ([]byte, error) {
 	if err := recoveryclient.SQLiteSnapshot(ctx, db, path); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNoDatabaseSnapshot, err)
 	}
+	// Scrub only the snapshot. Restores must not resurrect login or pairing grants.
+	snapshot, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	_, err = snapshot.ExecContext(ctx, `PRAGMA journal_mode=DELETE;
+DELETE FROM sessions; DELETE FROM mfa_challenges; DELETE FROM device_pairings;
+VACUUM;`)
+	closeErr := snapshot.Close()
+	if err != nil {
+		return nil, fmt.Errorf("backup: clear restored authentication grants: %w", err)
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
 	return os.ReadFile(path)
 }
 
 // Members names what a capsule carries, for the screen; it is what Collect would seal now.
 func Members(cfg *config.Config) []string {
-	m := []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath}
+	m := []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath, sessionKeyPath, instanceKeyPath}
 	if _, err := os.Stat(recoveryclient.RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
 		m = append(m, recoveryPubPath)
 	}

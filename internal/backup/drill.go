@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busness-app/ky-primitives/keyfile"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/kyyard-server/internal/config"
 	_ "modernc.org/sqlite"
@@ -37,7 +38,7 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 	if enabled, ok := recipe["check_sqlite_integrity"].(bool); !ok || !enabled {
 		return recipeFailure("check_sqlite_integrity must be true")
 	}
-	for _, name := range []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath} {
+	for _, name := range []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath, sessionKeyPath, instanceKeyPath} {
 		if !slices.Contains(required, name) {
 			return recipeFailure("required_files omits " + name)
 		}
@@ -76,6 +77,14 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 	}
 	if allFound {
 		checks = append(checks, recoveryclient.Check{Name: "Required Files", Passed: true, Message: fmt.Sprintf("All %d required files verified", len(required))})
+	}
+	for _, name := range []string{encryptionKeyPath, sessionKeyPath, instanceKeyPath} {
+		_, err := keyfile.Load(filepath.Join(dir, name), 32)
+		check := recoveryclient.Check{Name: "Key: " + name, Passed: err == nil, Message: "Valid private 32-byte key"}
+		if err != nil {
+			check.Message = "Key missing, malformed or unsafe"
+		}
+		checks = append(checks, check)
 	}
 	for _, name := range sqlitePaths {
 		full, _ := drillPath(dir, name)

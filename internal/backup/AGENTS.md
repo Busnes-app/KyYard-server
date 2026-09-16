@@ -23,12 +23,15 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
 - `Collect` snapshots SQLite with the lib's `SQLiteSnapshot` (`VACUUM INTO`; the store runs in
   WAL mode, so a plain file read misses uncheckpointed commits) and returns
   `ErrNoDatabaseSnapshot` for any other driver, so a capsule without a consistent database is
-  never sealed. It also carries the encryption key (`data/encryption.key`, required — restores
-  a database whose MFA secrets are gone otherwise) and the pinned recovery public key
-  (`data/recovery.pub`, only when paired).
+  never sealed. Only the snapshot is scrubbed of sessions, MFA challenges and device pairings,
+  then vacuumed before sealing; the live grants remain usable. It carries the active encryption,
+  session and instance keys (`data/encryption.key`, `data/session.key`, `data/instance.key`),
+  including active environment overrides, plus `data/recovery.pub` when pinned. Keys are
+  required 32-byte values stored as hex with mode 0600. Restore preserves instance identity;
+  never run a restored clone alongside the source.
 - `Checks(dir, opened)` reads the opened capsule's manifest, normalizes JSON lists and
   fails malformed or incomplete recipes. Required files include all capsule members and
-  the database, settings and encryption key; SQLite integrity and required environment
+  the database, settings and all three private keys; key encoding/permissions, SQLite integrity and required environment
   checks cannot be disabled. File checks accept only clean relative manifest members;
   SQLite opens read-only and missing/empty databases fail.
 - HTTP and CLI call `RunDrill`, which holds an OS advisory lock on `<data dir>/drill.lock`

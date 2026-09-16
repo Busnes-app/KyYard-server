@@ -39,7 +39,11 @@ contains() { # contains <description> <haystack> <needle>
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 start_server() { # start_server <captcha-provider>
-  KY_PORT="$PORT" \
+  KY_ENV=production \
+    KY_SESSION_SECRET='' \
+    KY_ENCRYPTION_KEY='' \
+    KY_COOKIE_SECURE=false \
+    KY_PORT="$PORT" \
     KY_HOST=127.0.0.1 \
     KY_DATA_DIR="$WORK/data" \
     KY_BACKUP_DIR="$WORK/backups" \
@@ -77,7 +81,12 @@ check "init-admin creates admin" \
   "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin -password "$ADMIN_PASS" >/dev/null 2>&1 && echo 0 || echo 1)" "0"
 
 echo "==> HTTP with default PoW captcha"
+ADMIN_PASS=""
 start_server pow
+ADMIN_PASS="$(sed -n 's/.*Username: admin | Password: //p' "$WORK/server.log")"
+check "fresh production boot prints one generated credential" "$(grep -c 'Initial bootstrap:' "$WORK/server.log")" "1"
+check "generated bootstrap password is present" "$(test -n "$ADMIN_PASS" && echo yes || echo no)" "yes"
+KEYS_BEFORE="$(sha256sum "$WORK/data/encryption.key" "$WORK/data/session.key" "$WORK/data/instance.key")"
 check "GET / serves the PWA" "$(status "$BASE/")" "200"
 contains "index.html has react root" "$(curl -s "$BASE/")" 'id="root"'
 check "SPA fallback for unknown route" "$(status "$BASE/settings/deep/link")" "200"
@@ -102,6 +111,8 @@ stop_server
 
 echo "==> HTTP auth flow (captcha disabled)"
 start_server none
+check "restart does not print a bootstrap credential" "$(grep -c 'Initial bootstrap:' "$WORK/server.log" || true)" "0"
+check "all durable keys survive restart" "$(sha256sum "$WORK/data/encryption.key" "$WORK/data/session.key" "$WORK/data/instance.key")" "$KEYS_BEFORE"
 check "wrong password is 401" \
   "$(status -X POST -H 'Content-Type: application/json' -d '{"username":"admin","password":"wrong-password"}' "$BASE/api/auth/login")" "401"
 check "unknown user is 401" \
@@ -190,6 +201,11 @@ check "pairing poll hides the code" \
   "$(if printf '%s' "$PAIR_POLL" | grep -q '"code"'; then echo leaked; else echo hidden; fi)" "hidden"
 check "pairing poll hides the push token" \
   "$(if printf '%s' "$PAIR_POLL" | grep -q '"push_token"'; then echo leaked; else echo hidden; fi)" "hidden"
+stop_server
+start_server none
+contains "session survives an ordinary restart" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":true'
+check "restart preserves the replaced admin" \
+  "$(status -H 'Content-Type: application/json' -d '{"username":"admin","password":"FinalSmokePassword123!"}' "$BASE/api/auth/login")" "200"
 check "logout succeeds" "$(status -b "$WORK/cookies" -c "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/auth/logout")" "200"
 contains "session dead after logout" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":false' 
 stop_server

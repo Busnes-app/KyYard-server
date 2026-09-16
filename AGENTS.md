@@ -89,6 +89,8 @@ When the user requests a durable behavior change, record it here or in the relev
 - Git history starts fresh by user decision. The imported baseline derives from `ky_server_base` revision `2a31d5c`.
 - The root owns these planning documents. Proposed domains in the plan become child DOX boundaries when their implementation lands.
 
+- First boot persists encryption, session and instance keys; config owns key lifecycle and backup owns restore identity/session semantics. Bootstrap credentials print only after the generated account is saved.
+
 ## Verification
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request:
