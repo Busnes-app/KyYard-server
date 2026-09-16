@@ -77,7 +77,7 @@ cd /home/yoshi/busness.app/ky_server_base && git status --short --branch | head 
 cd /home/yoshi/busness.app/gridlock-server && git status --short --branch | head -1
 ```
 
-Expected: scaffold on `master`, clean, with `github.com/Busness-app/ky-primitives v0.4.0`; gridlock on `master`, clean. If either is dirty or the require is missing, stop.
+Expected: scaffold on `master`, clean, with `github.com/Busnes-app/ky-primitives v0.4.0`; gridlock on `master`, clean. If either is dirty or the require is missing, stop.
 
 - [ ] **Step 2: Run the scaffold's init script**
 
@@ -86,7 +86,7 @@ rm -rf /tmp/gridlock-refork
 /home/yoshi/busness.app/ky_server_base/scripts/ky-init.sh gridlock-server /tmp/gridlock-refork
 ```
 
-Expected: the script rsyncs, rewrites `github.com/Busness-app/ky_server_base` → `github.com/Busness-app/gridlock-server` in `*.go`, `go.mod`, `*.md`, renames the container and app name, and finishes `go mod tidy` without network errors. If `go mod tidy` fails to fetch `ky-primitives`, the scaffold plan's Task 8 claim (public module, no `GOPRIVATE`) is wrong; stop and report rather than adding credentials.
+Expected: the script rsyncs, rewrites `github.com/Busnes-app/ky_server_base` → `github.com/Busnes-app/gridlock-server` in `*.go`, `go.mod`, `*.md`, renames the container and app name, and finishes `go mod tidy` without network errors. If `go mod tidy` fails to fetch `ky-primitives`, the scaffold plan's Task 8 claim (public module, no `GOPRIVATE`) is wrong; stop and report rather than adding credentials.
 
 - [ ] **Step 3: Prove the fresh tree builds and passes**
 
@@ -94,7 +94,7 @@ Expected: the script rsyncs, rewrites `github.com/Busness-app/ky_server_base` �
 cd /tmp/gridlock-refork && head -1 go.mod && go build ./... && go test -count=1 ./... 2>&1 | tail -15
 ```
 
-Expected: `module github.com/Busness-app/gridlock-server`; all packages `ok`. This is the scaffold's own test suite under gridlock's name, which is the baseline everything below is added to.
+Expected: `module github.com/Busnes-app/gridlock-server`; all packages `ok`. This is the scaffold's own test suite under gridlock's name, which is the baseline everything below is added to.
 
 - [ ] **Step 4: Record**
 
@@ -134,7 +134,7 @@ cp $G/README.md $T/README.md
 
 - [ ] **Step 3: Fix module paths in the copied files**
 
-The copied files already import `github.com/Busness-app/gridlock-server/...` (gridlock's module), so nothing changes. Confirm:
+The copied files already import `github.com/Busnes-app/gridlock-server/...` (gridlock's module), so nothing changes. Confirm:
 
 ```bash
 grep -rl "ky_server_base" $T --include='*.go' --include='*.md' --include='*.yml' --include='go.mod' | grep -v '^/tmp/gridlock-refork/docs'
@@ -301,7 +301,7 @@ go mod tidy && git diff --exit-code go.mod go.sum
 
 ```bash
 cd /home/yoshi/busness.app/gridlock-server && cp go.mod /tmp/gomod.keep && cp go.sum /tmp/gosum.keep
-go mod edit -replace github.com/Busness-app/ky-primitives=/home/yoshi/busness.app/ky-primitives && go build ./... && go test -count=1 ./... | tail -3
+go mod edit -replace github.com/Busnes-app/ky-primitives=/home/yoshi/busness.app/ky-primitives && go build ./... && go test -count=1 ./... | tail -3
 cp /tmp/gomod.keep go.mod && cp /tmp/gosum.keep go.sum && git diff --exit-code go.mod go.sum
 ```
 

@@ -15,7 +15,7 @@
 - **No behaviour change to any capsule that already exists on disk. Existing backups must still restore.** Copied verbatim from the parent plan; this plan exists because that constraint is at risk.
 - The shared module has **zero dependencies**. Standard library only, forever.
 - Every consuming repo keeps its gates green: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`.
-- Module path prefix is `github.com/Busness-app/`, matching the GitHub org's casing. See [the module path migration plan](2026-09-02-module-path-migration.md).
+- Module path prefix is `github.com/Busnes-app/`, matching the GitHub org's casing. See [the module path migration plan](2026-09-02-module-path-migration.md).
 
 ---
 
@@ -372,7 +372,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/capsule"
 )
 
 // One real capsule from each implementation the suite has shipped. If any of
@@ -492,7 +492,7 @@ writes capsules the unmigrated products can still read.
 
 ### Left open
 
-- **The GitHub repo does not exist.** `github.com/Busness-app/ky-primitives` must be
+- **The GitHub repo does not exist.** `github.com/Busnes-app/ky-primitives` must be
   created before any repo can depend on this.
 - **No product has been migrated onto it.** That is the next plan, and it needs the
   repo published first.

@@ -7,6 +7,9 @@ what differs per product: a `Settings` adapter over `store.SettingsStore`, a `Se
 deployment key, the payload the scaffold seals (`Collect`), and the drill's verification
 checks (`Checks`).
 
+## Dependency version
+Requires `ky-primitives` v0.8.0, the first release tagged under `github.com/Busnes-app` (v0.6.0 and v0.7.0 exist only under the retired owner and cannot be required at the new path). Measured with `git diff v0.6.0 v0.8.0 -- . ':!*_test.go'` in ky-primitives: v0.7.0 added `oidcverify.VerifyLogout` (back-channel logout) and nothing else; v0.8.0 is the module-path rename. `capsule`, `recoverykey`, `shamir`, `password`, `keyfile` and `recoveryclient` differ only in import-path strings, and `KycapFileFormat` is unchanged, so a capsule sealed under v0.6.0 opens under v0.8.0.
+
 ## Ownership
 Owns the settings adapter (`settings.go`), payload collection (`payload.go`), and restore-drill
 checks (`drill.go`) and serialized drill entry point (`run_drill.go`). It holds no private key, no share, and no pairing state of its own — those

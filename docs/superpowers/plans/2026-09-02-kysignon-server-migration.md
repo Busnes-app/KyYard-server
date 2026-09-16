@@ -15,7 +15,7 @@
 - **No behaviour change to any capsule or recovery kit that already exists.** KySignOn's kits are the suite's most valuable artefact and the reason the parent plan gates on compatibility.
 - `go.mod` direct requires go from **three to four**, with **no new indirect entries**. This repo's architecture rests on a small dependency tree; a migration that grows it has failed.
 - Gates stay green: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`, `govulncheck ./...`.
-- Module path prefix is `github.com/Busness-app/`.
+- Module path prefix is `github.com/Busnes-app/`.
 
 ---
 
@@ -52,7 +52,7 @@ cd /home/yoshi/busness.app/kysignon-server
 mkdir -p testdata
 cp /home/yoshi/busness.app/ky_server_base/testdata/shamir-vectors.json testdata/
 cp /home/yoshi/busness.app/ky_server_base/internal/backup/shamir_vectors_test.go internal/backup/
-sed -i 's|github.com/Busness-app/ky_server_base/internal/backup|github.com/Busness-app/kysignon-server/internal/backup|' \
+sed -i 's|github.com/Busnes-app/ky_server_base/internal/backup|github.com/Busnes-app/kysignon-server/internal/backup|' \
   internal/backup/shamir_vectors_test.go
 go test -race -count=1 -run TestShamirGoldenVectors ./internal/backup/...
 ```
@@ -64,7 +64,7 @@ Expected: PASS **before** anything is replaced. The vectors were generated from 
 ```bash
 grep -c "^	" go.mod
 go list -m all | wc -l
-go get github.com/Busness-app/ky-primitives@v0.1.0
+go get github.com/Busnes-app/ky-primitives@v0.1.0
 go mod tidy
 go list -m all | wc -l
 cat go.mod
@@ -78,7 +78,7 @@ Direct requires must be exactly four. The module count must rise by exactly one.
 package backup
 
 import (
-	"github.com/Busness-app/ky-primitives/shamir"
+	"github.com/Busnes-app/ky-primitives/shamir"
 )
 
 // Share is one custodian's key shard in a (k, n) threshold scheme.
@@ -153,7 +153,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kysignon-server/internal/backup"
+	"github.com/Busnes-app/kysignon-server/internal/backup"
 )
 
 // A custodian pasting the same shard twice must be told so, not handed a panic
@@ -274,7 +274,7 @@ git commit -m "refactor(backup): use shared ky-primitives for the capsule format
 **Files:**
 - Modify: `AGENTS.md` (or `internal/backup/AGENTS.md`, matching where this repo keeps package docs)
 
-- [ ] Add a `## Shared primitives` section stating: Shamir and the capsule format come from `github.com/Busness-app/ky-primitives`; the module is dependency-free by contract; **a local reimplementation of either is a defect, not an optimisation**; and the golden vectors in `testdata/` are the compatibility contract, so a change that alters one is a breaking change to every recovery kit already issued.
+- [ ] Add a `## Shared primitives` section stating: Shamir and the capsule format come from `github.com/Busnes-app/ky-primitives`; the module is dependency-free by contract; **a local reimplementation of either is a defect, not an optimisation**; and the golden vectors in `testdata/` are the compatibility contract, so a change that alters one is a breaking change to every recovery kit already issued.
 
 - [ ] Commit:
 

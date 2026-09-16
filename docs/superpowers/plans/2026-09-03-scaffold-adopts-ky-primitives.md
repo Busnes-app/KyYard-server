@@ -1,19 +1,21 @@
 # ky_server_base Adopts ky-primitives v0.4.0 Implementation Plan
 
+> **Retired owner:** `Busness-app` below is the organisation's former name, renamed to `Busnes-app` on 2026-09-16 and no longer held by this project. It is kept as a dated record; do not fetch from it.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The scaffold stops carrying its own crypto and backup primitives and uses `github.com/Busness-app/ky-primitives v0.4.0` for password hashing, TOTP, recovery codes, key files, and capsules sealed to the suite recovery public key.
+**Goal:** The scaffold stops carrying its own crypto and backup primitives and uses `github.com/Busnes-app/ky-primitives v0.4.0` for password hashing, TOTP, recovery codes, key files, and capsules sealed to the suite recovery public key.
 
 **Architecture:** Every product is forked from this scaffold, so it moves first and gridlock is re-forked from it afterwards (companion plan `2026-09-03-gridlock-refork.md`). The product never holds a recovery private key: it receives the suite public key at pairing, stores it with `keyfile.Store`, seals every capsule to it with `capsule.Seal`, and restores with `capsule.Open` only when custodians hand it shares. The restore drill proves the pipeline against a throwaway keypair; the export endpoint hands the operator the sealed `.kycap` itself, not shares.
 
-**Tech Stack:** Go 1.26.6, stdlib, `github.com/Busness-app/ky-primitives v0.4.0` (public module, `golang.org/x/crypto` only), SQLite via `modernc.org/sqlite`, Postgres via `pgx`.
+**Tech Stack:** Go 1.26.6, stdlib, `github.com/Busnes-app/ky-primitives v0.4.0` (public module, `golang.org/x/crypto` only), SQLite via `modernc.org/sqlite`, Postgres via `pgx`.
 
 **Spec:** `/home/yoshi/busness.app/ky-primitives/docs/superpowers/specs/2026-09-02-suite-migration-design.md` (Phase 3, lines 275–311; and "One suite-wide recovery keypair", lines 36–53) and `/home/yoshi/busness.app/ky-primitives/docs/superpowers/specs/2026-09-03-recovery-keypair-design.md` (Part 4, "At pairing, per product" and "Every backup, per product").
 
 ## Global Constraints
 
 - Go floor is `go 1.26.6` in `go.mod`; do not raise it. `crypto/hpke` is stdlib in 1.26, which is why the library needs no KEM dependency.
-- Pin `github.com/Busness-app/ky-primitives v0.4.0` exactly. The module is **public**, so no `GOPRIVATE` is needed (the spec's line 300 assumed otherwise; this plan corrects it).
+- Pin `github.com/Busnes-app/ky-primitives v0.4.0` exactly. The module is **public**, so no `GOPRIVATE` is needed (the spec's line 300 assumed otherwise; this plan corrects it).
 - **Nothing is in the wild.** No installed base of password hashes, TOTP secrets, recovery codes, or capsules exists for this scaffold. Formats change without migration paths. If that is ever found false for a deployment, stop and design one.
 - The product **never** holds `recoverykey.PrivateKey` except transiently in the restore CLI, from shares typed by custodians, and in the drill, from a throwaway `Generate()`.
 - `capsule.Open` proves integrity and binding to this key, not origin or freshness. Anything that acts on a manifest compares `ServiceName` to the configured app name first.
@@ -91,10 +93,10 @@ These are recorded so the executor does not re-decide them and the reviewer can 
 
 ```bash
 cd /home/yoshi/busness.app/ky_server_base
-go get github.com/Busness-app/ky-primitives@v0.4.0
+go get github.com/Busnes-app/ky-primitives@v0.4.0
 ```
 
-Expected: `go.mod` gains `github.com/Busness-app/ky-primitives v0.4.0` and `golang.org/x/crypto` moves to `v0.55.0`. Do not run `go mod tidy` yet; nothing imports it and tidy would drop it.
+Expected: `go.mod` gains `github.com/Busnes-app/ky-primitives v0.4.0` and `golang.org/x/crypto` moves to `v0.55.0`. Do not run `go mod tidy` yet; nothing imports it and tidy would drop it.
 
 - [ ] **Step 2: Write the failing crypto test**
 
@@ -229,7 +231,7 @@ Replace lines 115–121 (the `encryptionKey` block) with:
 	}
 ```
 
-Add imports `"path/filepath"` and `"github.com/Busness-app/ky-primitives/keyfile"`. `EncryptionKey: encryptionKey,` in the struct literal is unchanged.
+Add imports `"path/filepath"` and `"github.com/Busnes-app/ky-primitives/keyfile"`. `EncryptionKey: encryptionKey,` in the struct literal is unchanged.
 
 - [ ] **Step 6: Fix the two callers**
 
@@ -330,7 +332,7 @@ func TestLoginRejectsUnparseableStoredHash(t *testing.T) {
 	}
 ```
 
-  Import `"github.com/Busness-app/ky-primitives/password"`. Keep the `crypto` import; `RandomHex`/`SHA256Hex` are still used.
+  Import `"github.com/Busnes-app/ky-primitives/password"`. Keep the `crypto` import; `RandomHex`/`SHA256Hex` are still used.
 
 - `cmd/server/main.go:65` and `:133`: `crypto.HashPassword(x)` → `password.Hash(x)`; add the import; remove the `crypto` import if it becomes unused.
 - `internal/api/api_test.go:39,133` and `internal/api/authz_test.go:22`: `crypto.HashPassword(...)` → `password.Hash(...)`; fix imports.
@@ -475,7 +477,7 @@ package auth
 import (
 	"time"
 
-	"github.com/Busness-app/ky-primitives/totp"
+	"github.com/Busnes-app/ky-primitives/totp"
 )
 
 // GenerateTOTPSecret returns a fresh base32 RFC 6238 secret.
@@ -526,7 +528,7 @@ func TestTOTPValidateReturnsCounter(t *testing.T) {
 }
 ```
 
-Imports: add `"strings"`, `"time"`, `"github.com/Busness-app/ky-primitives/totp"`.
+Imports: add `"strings"`, `"time"`, `"github.com/Busnes-app/ky-primitives/totp"`.
 
 - [ ] **Step 7: Spend the counter in the handler**
 
@@ -667,7 +669,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
-	"github.com/Busness-app/ky-primitives/recoverycode"
+	"github.com/Busnes-app/ky-primitives/recoverycode"
 )
 
 // digest is the product's recovery-code hash: SHA-256 of the normalised code, hex.
@@ -720,7 +722,7 @@ func RedeemRecoveryCode(candidateCode, hashedJSON string) (string, bool) {
 }
 ```
 
-Confirm `recoverycode.MatchCode` applies `Normalize` before calling `hash` by reading its source in the module cache (`go doc -src github.com/Busness-app/ky-primitives/recoverycode MatchCode`). If it does not, call `digest(recoverycode.Normalize(x))` in the closure instead. The test above catches either way.
+Confirm `recoverycode.MatchCode` applies `Normalize` before calling `hash` by reading its source in the module cache (`go doc -src github.com/Busnes-app/ky-primitives/recoverycode MatchCode`). If it does not, call `digest(recoverycode.Normalize(x))` in the closure instead. The test above catches either way.
 
 - [ ] **Step 4: Run**
 
@@ -784,10 +786,10 @@ import (
 	"io/fs"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/backup"
-	"github.com/Busness-app/ky_server_base/internal/store"
-	"github.com/Busness-app/ky_server_base/internal/testdb"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky_server_base/internal/backup"
+	"github.com/Busnes-app/ky_server_base/internal/store"
+	"github.com/Busnes-app/ky_server_base/internal/testdb"
 )
 
 func openSettings(t *testing.T) store.SettingsStore {
@@ -871,7 +873,7 @@ func TestLoadRecoveryKeyDetectsSwappedFile(t *testing.T) {
 }
 ```
 
-Add `"os"` and `"github.com/Busness-app/ky-primitives/keyfile"` to the imports.
+Add `"os"` and `"github.com/Busnes-app/ky-primitives/keyfile"` to the imports.
 
 - [ ] **Step 2: Run to see them fail**
 
@@ -894,9 +896,9 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/Busness-app/ky-primitives/keyfile"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busnes-app/ky-primitives/keyfile"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky_server_base/internal/store"
 )
 
 var (
@@ -1007,7 +1009,7 @@ func intSetting(ctx context.Context, settings store.SettingsStore, key string) (
 }
 ```
 
-Check how `keyfile.LoadEncoded` reports a missing file (`go doc github.com/Busness-app/ky-primitives/keyfile LoadEncoded`; its `Load` sibling documents the behaviour). If it wraps `fs.ErrNotExist`, the `errors.Is` above works; if it returns its own sentinel for "missing", match that instead. The `TestLoadRecoveryKeyUnpaired` test decides.
+Check how `keyfile.LoadEncoded` reports a missing file (`go doc github.com/Busnes-app/ky-primitives/keyfile LoadEncoded`; its `Load` sibling documents the behaviour). If it wraps `fs.ErrNotExist`, the `errors.Is` above works; if it returns its own sentinel for "missing", match that instead. The `TestLoadRecoveryKeyUnpaired` test decides.
 
 - [ ] **Step 4: Run the key tests**
 
@@ -1061,7 +1063,7 @@ Change the signature to `func (c *KyRecoveryClient) ClaimPairing(ctx context.Con
 	}, nil
 ```
 
-Imports: `"encoding/base64"` is already there; add `"fmt"` if missing and `"github.com/Busness-app/ky-primitives/recoverykey"`.
+Imports: `"encoding/base64"` is already there; add `"fmt"` if missing and `"github.com/Busnes-app/ky-primitives/recoverykey"`.
 
 - [ ] **Step 6: The handler stores it**
 
@@ -1174,9 +1176,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/backup"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky_server_base/internal/backup"
 )
 
 func testKey(t *testing.T) (recoverykey.PrivateKey, backup.RecoveryKey) {
@@ -1289,7 +1291,7 @@ package backup
 import (
 	"os"
 
-	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/capsule"
 )
 
 // BackupFile is one member of a capsule's payload, as the collectors produce it.
@@ -1379,7 +1381,7 @@ func RunRestoreDrill(ctx context.Context, serviceName, appVersion string, files 
 	}
 ```
 
-Then rename the local the rest of the function reads from `recipe` to `recipeMap` (the old code did `recipe := capsule.Manifest.VerificationRecipe`; the sections "Verify Required Files", "SQLite Integrity Checks" and onward keep working against `recipeMap`). Add imports `"github.com/Busness-app/ky-primitives/capsule"` and `"github.com/Busness-app/ky-primitives/recoverykey"`.
+Then rename the local the rest of the function reads from `recipe` to `recipeMap` (the old code did `recipe := capsule.Manifest.VerificationRecipe`; the sections "Verify Required Files", "SQLite Integrity Checks" and onward keep working against `recipeMap`). Add imports `"github.com/Busnes-app/ky-primitives/capsule"` and `"github.com/Busnes-app/ky-primitives/recoverykey"`.
 
 Note the manifest's `VerificationRecipe` comes back through JSON as `map[string]any` with `[]any` slices, which is what the existing recipe code already type-asserts.
 
@@ -1459,7 +1461,7 @@ func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-`m.CapsuleID` is minted by the library as `cap-<service>-<unix>`; confirm it contains no characters needing quoting by reading `go doc -src github.com/Busness-app/ky-primitives/capsule Seal` and, if the service name is user-controlled, sanitise with `strings.Map` to `[A-Za-z0-9._-]`.
+`m.CapsuleID` is minted by the library as `cap-<service>-<unix>`; confirm it contains no characters needing quoting by reading `go doc -src github.com/Busnes-app/ky-primitives/capsule Seal` and, if the service name is user-controlled, sanitise with `strings.Map` to `[A-Za-z0-9._-]`.
 
 `internal/api/server.go:119`: `s.mux.HandleFunc("/api/backup/export-capsule", s.requireAdmin(s.handleExportCapsule))`. Delete the `export-kit` route.
 
@@ -1598,9 +1600,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/backup"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky_server_base/internal/backup"
 )
 
 func sealFixture(t *testing.T, service string) (string, []string) {
@@ -1750,7 +1752,7 @@ func runRestore(args []string) {
 }
 ```
 
-Imports: `"io"`, `"strings"`, `"github.com/Busness-app/ky-primitives/capsule"`, `"github.com/Busness-app/ky-primitives/recoverykey"`, `"github.com/Busness-app/ky-primitives/shamir"`.
+Imports: `"io"`, `"strings"`, `"github.com/Busnes-app/ky-primitives/capsule"`, `"github.com/Busnes-app/ky-primitives/recoverykey"`, `"github.com/Busnes-app/ky-primitives/shamir"`.
 
 `capsule.Open` refuses a non-empty target with `ErrTargetNotEmpty`; that is the containment we want, so do not pre-create or clear anything.
 
@@ -1786,15 +1788,15 @@ MODULE_OLD="$(cd "$BASE_DIR" && go list -m)"
 
 Add `go` to whatever prerequisite check the script has (it already needs `go` for `go mod tidy`, so none is needed beyond the existing `set -euo pipefail`). Run `shellcheck scripts/ky-init.sh` (the `smoke` CI job does).
 
-The spec's line 300 says `go mod tidy` "must now resolve a module under the Busness-app org" and needs `GOPRIVATE`. It does not: `github.com/Busness-app/ky-primitives` is public and resolves through the proxy. Do not add `GOPRIVATE`.
+The spec's line 300 says `go mod tidy` "must now resolve a module under the Busness-app org" and needs `GOPRIVATE`. It does not: `github.com/Busnes-app/ky-primitives` is public and resolves through the proxy. Do not add `GOPRIVATE`.
 
 - [ ] **Step 2: Compat workflow**
 
-Copy `/home/yoshi/busness.app/gridlock-server/.github/workflows/ky-primitives-compat.yml` verbatim into this repo. Read it once: it checks out the consumer to `consumer/` and the library's default branch to `ky-primitives/`, uses `cache: false`, runs `go mod edit -replace github.com/Busness-app/ky-primitives=../ky-primitives`, then `go build ./...` and `go test -count=1 ./...`, and is scheduled plus dispatch, never a merge gate. Nothing in it names gridlock; if it does, fix the name.
+Copy `/home/yoshi/busness.app/gridlock-server/.github/workflows/ky-primitives-compat.yml` verbatim into this repo. Read it once: it checks out the consumer to `consumer/` and the library's default branch to `ky-primitives/`, uses `cache: false`, runs `go mod edit -replace github.com/Busnes-app/ky-primitives=../ky-primitives`, then `go build ./...` and `go test -count=1 ./...`, and is scheduled plus dispatch, never a merge gate. Nothing in it names gridlock; if it does, fix the name.
 
 - [ ] **Step 3: Docs**
 
-- `internal/backup/AGENTS.md`: rewrite the purpose and rules paragraphs. Capsules are `kycap/3` from `github.com/Busness-app/ky-primitives/capsule`, sealed to the suite recovery public key received at pairing (`recovery.pub`, key ID pinned in `server_settings`). This package collects the payload, loads and pins the key, runs the drill against a throwaway key, and exposes the sealed capsule for download. It holds no private key and no shares. Delete the Shamir and Recovery Kit rules.
+- `internal/backup/AGENTS.md`: rewrite the purpose and rules paragraphs. Capsules are `kycap/3` from `github.com/Busnes-app/ky-primitives/capsule`, sealed to the suite recovery public key received at pairing (`recovery.pub`, key ID pinned in `server_settings`). This package collects the payload, loads and pins the key, runs the drill against a throwaway key, and exposes the sealed capsule for download. It holds no private key and no shares. Delete the Shamir and Recovery Kit rules.
 - `IMPLEMENTATION_PLAN.md:10`: "Encrypted backup capsules sealed to the suite recovery key (ky-primitives `capsule`), restore drill verification". `:38-39`: point both items at `ky-primitives`; delete the Shamir line.
 - `AGENTS.md:102`: drop "and Shamir secret splitting".
 
@@ -1822,7 +1824,7 @@ git commit -m "chore: derive the scaffold module path, add the ky-primitives com
 
 - **Deposit to kyrecovery.** `PushBackup` still sends plaintext files to `/api/backup/push` and still has no caller. Plan 5 replaces that endpoint with a capsule deposit and the product side follows it; sealing here is what it will send.
 - **`KY_SESSION_SECRET`** rotating per restart in development. Same shape as the encryption-key bug, different consequence (logout, not data loss). A one-line follow-up with `keyfile`.
-- **Parent plan Task 6** (three-dependency floor). Its allowlist will need `github.com/Busness-app/ky-primitives` added when it runs.
+- **Parent plan Task 6** (three-dependency floor). Its allowlist will need `github.com/Busnes-app/ky-primitives` added when it runs.
 - **`web/` copy for the drill result**'s new "Recovery Key" check row: the page renders whatever checks come back, so no change is required. Verify by loading the page once after Task 6.
 
 ## Self-review

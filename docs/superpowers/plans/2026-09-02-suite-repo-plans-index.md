@@ -1,5 +1,7 @@
 # Suite Repo Plans: Index and Sequencing
 
+> **Retired owner:** `Busness-app` below is the organisation's former name, renamed to `Busnes-app` on 2026-09-16 and no longer held by this project. It is kept as a dated record; do not fetch from it.
+
 The [suite shared primitives plan](2026-09-02-suite-shared-primitives.md) covers nine
 repositories in one document. This index splits the work that remains into plans that
 can each be executed, reviewed and reverted on their own.
@@ -47,7 +49,7 @@ Inside it, each repo's tasks are still independently executable and revertible.
 ## Sequencing
 
 **~~First, and blocking almost everything:~~ Done.** The module path migration ran on
-2026-09-02: all eight repos renamed onto `github.com/Busness-app/`, each on a
+2026-09-02: all eight repos renamed onto `github.com/Busnes-app/`, each on a
 `refactor/module-path` branch, none pushed or merged. See that plan's Outcome section for
 the five things it turned up that were not in the plan.
 
@@ -81,12 +83,12 @@ checked. The corrections, with what proved each:
   up.
 - **The pairing spec drift is not purely additive**, which trips the parent plan's
   escalation gate — but the server's own code resolves it without a human decision.
-- **No `go.mod` followed the move to `github.com/Busness-app/`.** Four conventions are in
+- **No `go.mod` followed the move to `github.com/Busnes-app/`.** Four conventions are in
   use, including one repo claiming another's identity. See below.
 
 ## The module path question is now answered
 
-The suite has moved to `github.com/Busness-app/`. The remotes went; the module paths did
+The suite has moved to `github.com/Busnes-app/`. The remotes went; the module paths did
 not:
 
 ```
@@ -119,7 +121,7 @@ it just cannot be half-applied, which is the state the suite is in today with
 
 **`gridlock-server` is not in the org.** The repo list above returns every other repo in
 the suite and no `gridlock-server`; that repo has no `origin` and exists only on this
-machine. Its module should still declare `github.com/Busness-app/gridlock-server` — a main
+machine. Its module should still declare `github.com/Busnes-app/gridlock-server` — a main
 module's own path is never resolved over the network, so nothing breaks locally — but
 nothing can import it until the repository exists. Creating it is a decision for a human,
 raised in the migration plan rather than acted on.
