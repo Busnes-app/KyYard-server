@@ -156,15 +156,19 @@ func (t *tenancyStore) ListEnvironments(ctx context.Context, a TenantAccess, off
 	return result, nil
 }
 
-// validTenantName refuses control characters: names reach confirmation dialogs and logs, where a
-// newline could forge a line the operator relies on.
+// validTenantName refuses text that could forge or reorder a line in the confirmation dialogs
+// and logs an operator relies on: control characters (C0, DEL, C1), Unicode line and paragraph
+// separators, and bidi embedding/override/isolate controls.
 func validTenantName(name string) bool {
-	if strings.TrimSpace(name) == "" || len(name) > 255 {
+	return strings.TrimSpace(name) != "" && displaySafe(name)
+}
+
+func displaySafe(s string) bool {
+	if len(s) > 255 {
 		return false
 	}
-	for _, r := range name {
-		// Control characters (C0, DEL, C1) and Unicode line/paragraph separators all break lines.
-		if unicode.IsControl(r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
 			return false
 		}
 	}

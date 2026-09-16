@@ -57,11 +57,16 @@ func (t *tenancyStore) Enroll(ctx context.Context, req EnrollmentRequest) (*Endp
 	if !protocol.VerifyEnrollment(req.PublicKey, req.Token, req.Proof) || !validTenantName(req.Name) {
 		return nil, ErrForbidden
 	}
+	// Facts share the review surface with the fingerprint, so values meet the same rule as names.
 	facts := map[string]string{}
 	for k, v := range req.Facts {
-		if factKeys[k] {
-			facts[k] = v
+		if !factKeys[k] {
+			continue
 		}
+		if !displaySafe(v) {
+			return nil, ErrForbidden
+		}
+		facts[k] = v
 	}
 	factsJSON, err := json.Marshal(facts)
 	if err != nil || len(factsJSON) > maxFactsBytes {

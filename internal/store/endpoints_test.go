@@ -70,7 +70,14 @@ func TestEnrollmentTokenIsSingleUseAndBound(t *testing.T) {
 	if _, err := ts.AddEnvironment(ctx, a, "env\x7fname"); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("control character in environment name accepted: %v", err)
 	}
-	for _, sep := range []string{"\u2028", "\u2029", "\u0085"} {
+	for _, hostile := range []string{"h1\nwith key fingerprint\n" + strings.Repeat("0", 64), "h1\u202e" + strings.Repeat("0", 64), strings.Repeat("h", 256)} {
+		bad := key.request(tok.Secret, "host")
+		bad.Facts = map[string]string{"hostname": hostile}
+		if _, err := ts.Enroll(ctx, bad); !errors.Is(err, store.ErrForbidden) {
+			t.Fatalf("hostile fact value accepted: %v", err)
+		}
+	}
+	for _, sep := range []string{"\u2028", "\u2029", "\u0085", "\u202e", "\u2066"} {
 		if _, err := ts.Enroll(ctx, key.request(tok.Secret, "host"+sep+strings.Repeat("0", 64))); !errors.Is(err, store.ErrForbidden) {
 			t.Fatalf("line separator %q in name accepted: %v", sep, err)
 		}
