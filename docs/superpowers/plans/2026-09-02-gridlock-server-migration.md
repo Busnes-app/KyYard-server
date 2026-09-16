@@ -102,7 +102,7 @@ Expected: PASS, **before** anything is replaced. This proves the vectors describ
 
 ```bash
 go list -m all | wc -l > /tmp/gridlock-modcount-before.txt
-go get github.com/Busness-app/ky-primitives@v0.1.0
+go get github.com/Busnes-app/ky-primitives@v0.1.0
 go mod tidy
 go list -m all | wc -l
 ```
@@ -117,7 +117,7 @@ Replace the body of `internal/backup/shamir.go` with delegation. `SplitSecret` a
 package backup
 
 import (
-	"github.com/Busness-app/ky-primitives/shamir"
+	"github.com/Busnes-app/ky-primitives/shamir"
 )
 
 // Share is one custodian's key shard in a (k, n) threshold scheme.

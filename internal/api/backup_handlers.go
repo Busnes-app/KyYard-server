@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/backup"
 	"github.com/Busnes-app/kyyard-server/internal/store"
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
 )
 
 // appVersion is what the capsule manifest records for this build.

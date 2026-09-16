@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/devices"
@@ -19,7 +20,6 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busnes-app/kyyard-server/web"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
 )
 
 // recoveryClient is the KyRecovery client as the handlers use it, narrowed so tests can stand

@@ -1,7 +1,7 @@
 # Backup
 
 ## Purpose
-Adapts the scaffold to `github.com/Busness-app/ky-primitives/recoveryclient`, which owns the
+Adapts the scaffold to `github.com/Busnes-app/ky-primitives/recoveryclient`, which owns the
 KyRecovery pairing, sealing, deposit, restore and drill contract. This package supplies only
 what differs per product: a `Settings` adapter over `store.SettingsStore`, a `Sealer` under the
 deployment key, the payload the scaffold seals (`Collect`), and the drill's verification

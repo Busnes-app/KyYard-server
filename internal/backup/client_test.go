@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
 )
 
 // The scaffold builds the lib client from KY_BACKUP_ALLOW_PRIVATE_RECOVERY alone. Pin the

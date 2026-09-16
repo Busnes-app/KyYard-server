@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/store"
-	"github.com/Busness-app/ky-primitives/password"
 )
 
 func TestForcedPasswordReplacement(t *testing.T) {

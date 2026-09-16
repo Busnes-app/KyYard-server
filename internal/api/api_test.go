@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/capsule"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +19,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/keyfile"
+	"github.com/Busnes-app/ky-primitives/password"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky-primitives/totp"
 	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/backup"
@@ -26,11 +31,6 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busnes-app/kyyard-server/internal/testdb"
-	"github.com/Busness-app/ky-primitives/keyfile"
-	"github.com/Busness-app/ky-primitives/password"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky-primitives/totp"
 )
 
 func setupTestServer(t *testing.T) (*api.Server, store.Store, *config.Config) {

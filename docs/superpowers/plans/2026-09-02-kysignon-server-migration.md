@@ -64,7 +64,7 @@ Expected: PASS **before** anything is replaced. The vectors were generated from 
 ```bash
 grep -c "^	" go.mod
 go list -m all | wc -l
-go get github.com/Busness-app/ky-primitives@v0.1.0
+go get github.com/Busnes-app/ky-primitives@v0.1.0
 go mod tidy
 go list -m all | wc -l
 cat go.mod
@@ -78,7 +78,7 @@ Direct requires must be exactly four. The module count must rise by exactly one.
 package backup
 
 import (
-	"github.com/Busness-app/ky-primitives/shamir"
+	"github.com/Busnes-app/ky-primitives/shamir"
 )
 
 // Share is one custodian's key shard in a (k, n) threshold scheme.
@@ -274,7 +274,7 @@ git commit -m "refactor(backup): use shared ky-primitives for the capsule format
 **Files:**
 - Modify: `AGENTS.md` (or `internal/backup/AGENTS.md`, matching where this repo keeps package docs)
 
-- [ ] Add a `## Shared primitives` section stating: Shamir and the capsule format come from `github.com/Busness-app/ky-primitives`; the module is dependency-free by contract; **a local reimplementation of either is a defect, not an optimisation**; and the golden vectors in `testdata/` are the compatibility contract, so a change that alters one is a breaking change to every recovery kit already issued.
+- [ ] Add a `## Shared primitives` section stating: Shamir and the capsule format come from `github.com/Busnes-app/ky-primitives`; the module is dependency-free by contract; **a local reimplementation of either is a defect, not an optimisation**; and the golden vectors in `testdata/` are the compatibility contract, so a change that alters one is a breaking change to every recovery kit already issued.
 
 - [ ] Commit:
 

@@ -153,7 +153,7 @@ git commit -m "docs: establish Shamir interoperability across suite implementati
 > eight existing repos onto it — none of them followed the org move.
 
 **Files:**
-- Create: a new repository `github.com/Busness-app/ky-primitives` with `go.mod`, `shamir/`, `capsule/`, `auditchain/`, `testdata/`
+- Create: a new repository `github.com/Busnes-app/ky-primitives` with `go.mod`, `shamir/`, `capsule/`, `auditchain/`, `testdata/`
 - Depends on: Task 1's verdict and vectors
 
 **Interfaces produced:**
@@ -164,7 +164,7 @@ git commit -m "docs: establish Shamir interoperability across suite implementati
 - [ ] **Step 1: Initialise with an empty require block**
 
 ```
-module github.com/Busness-app/ky-primitives
+module github.com/Busnes-app/ky-primitives
 
 go 1.26
 ```
@@ -216,7 +216,7 @@ Do this repo first: it has the most demanding dependency constraint, the most va
 - [ ] **Step 1: Add the dependency and check the cost**
 
 ```bash
-go get github.com/Busness-app/ky-primitives@v0.1.0
+go get github.com/Busnes-app/ky-primitives@v0.1.0
 go mod tidy
 ```
 

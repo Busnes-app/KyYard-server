@@ -223,7 +223,7 @@ Every backup is one `.kycap` capsule: the database snapshot, the deployment's en
 the settings that describe the deployment, and the pinned suite recovery public key. It is
 sealed to the suite recovery key, which only the custodians' cards (k of n, split at the suite
 ceremony) can reconstruct. Nothing on this server, and nothing on KyRecovery, can open one.
-The mechanics are `github.com/Busness-app/ky-primitives/recoveryclient`; this repository
+The mechanics are `github.com/Busnes-app/ky-primitives/recoveryclient`; this repository
 supplies what it seals and how it checks a drill. New snapshots exclude sessions, pending
 MFA challenges and device pairings so restore requires fresh sign-in; live sessions remain
 untouched. The capsule preserves the instance identity and the active keys, including overrides.

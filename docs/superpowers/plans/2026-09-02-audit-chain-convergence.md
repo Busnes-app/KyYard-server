@@ -303,7 +303,7 @@ go test -race -count=1 ./internal/audit/... 2>&1 | tee /tmp/kyrecovery-audit-bef
 - [ ] **Step 2: Add the dependency**
 
 ```bash
-go get github.com/Busness-app/ky-primitives@v0.2.0
+go get github.com/Busnes-app/ky-primitives@v0.2.0
 go mod tidy
 go list -m all | wc -l
 ```

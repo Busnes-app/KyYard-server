@@ -77,7 +77,7 @@ cd /home/yoshi/busness.app/ky_server_base && git status --short --branch | head 
 cd /home/yoshi/busness.app/gridlock-server && git status --short --branch | head -1
 ```
 
-Expected: scaffold on `master`, clean, with `github.com/Busness-app/ky-primitives v0.4.0`; gridlock on `master`, clean. If either is dirty or the require is missing, stop.
+Expected: scaffold on `master`, clean, with `github.com/Busnes-app/ky-primitives v0.4.0`; gridlock on `master`, clean. If either is dirty or the require is missing, stop.
 
 - [ ] **Step 2: Run the scaffold's init script**
 
@@ -301,7 +301,7 @@ go mod tidy && git diff --exit-code go.mod go.sum
 
 ```bash
 cd /home/yoshi/busness.app/gridlock-server && cp go.mod /tmp/gomod.keep && cp go.sum /tmp/gosum.keep
-go mod edit -replace github.com/Busness-app/ky-primitives=/home/yoshi/busness.app/ky-primitives && go build ./... && go test -count=1 ./... | tail -3
+go mod edit -replace github.com/Busnes-app/ky-primitives=/home/yoshi/busness.app/ky-primitives && go build ./... && go test -count=1 ./... | tail -3
 cp /tmp/gomod.keep go.mod && cp /tmp/gosum.keep go.sum && git diff --exit-code go.mod go.sum
 ```
 

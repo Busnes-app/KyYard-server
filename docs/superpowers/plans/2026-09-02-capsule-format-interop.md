@@ -372,7 +372,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/capsule"
 )
 
 // One real capsule from each implementation the suite has shipped. If any of
@@ -492,7 +492,7 @@ writes capsules the unmigrated products can still read.
 
 ### Left open
 
-- **The GitHub repo does not exist.** `github.com/Busness-app/ky-primitives` must be
+- **The GitHub repo does not exist.** `github.com/Busnes-app/ky-primitives` must be
   created before any repo can depend on this.
 - **No product has been migrated onto it.** That is the next plan, and it needs the
   repo published first.

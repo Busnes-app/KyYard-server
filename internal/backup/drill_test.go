@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/backup"
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
 )
 
 func TestChecksFailsOnAScratchDirMissingTheDatabase(t *testing.T) {
