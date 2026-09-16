@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busness-app/kyyard-server/internal/config"
@@ -66,7 +67,7 @@ func TestMarkOfflineSkipsWhenASuccessorHoldsTheEndpoint(t *testing.T) {
 	if s.agents.add(second) != nil {
 		t.Fatal("second add")
 	}
-	if ok, err := ts.AcceptInventory(ctx, e.ID, 5); err != nil || !ok {
+	if ok, err := ts.AcceptInventory(ctx, e.ID, 5, time.Now(), nil); err != nil || !ok {
 		t.Fatalf("inventory: %v %v", ok, err)
 	}
 	s.markOffline(ctx, first) // the predecessor's late write
