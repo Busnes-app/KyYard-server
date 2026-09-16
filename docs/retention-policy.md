@@ -1,0 +1,56 @@
+# KyYard retention policy
+
+**Status:** draft proposal for review (M3 PR 07). Every number is *proposed* and must be confirmed by the SQLite fixture soak before it is frozen (M4 gate). Unlimited retention never ships; a limit the soak rejects is lowered, not removed.
+
+## Principles
+
+- The control-plane database holds bounded, low-cardinality state. Container log bodies, terminal contents and raw high-frequency metrics do not live in it.
+- Every bounded store has a time limit, a byte or row limit, and a query bound; whichever trips first wins.
+- Cleanup is a periodic job on the control plane (*proposed* every minute) that deletes in bounded batches (*proposed* 5,000 rows per store per pass, about 7 million rows a day) so a large backlog never holds the writer lock; the soak verifies deletion keeps ahead of insertion at the capacity targets.
+- The UI distinguishes missing data from zero, shows gaps explicitly, and shows the retention window on every history view.
+
+## Limits (proposed)
+
+| Store | Time | Size / cardinality | Query bound | UI indication |
+|---|---|---|---|---|
+| Audit records | 365 days | deliberately no row cap: dropping audit early would hide abuse; growth is bounded by members' mutation rate once successful reads stop being audited (`authorization-matrix.md`); the settings screen shows row count and share of the budget | 200 per page | retention window on the audit screen |
+| Exec session metadata | 365 days (with audit) | one row per session; no contents | 200 per page | listed under audit |
+| Deployment history and events | deployments older than 90 days pruned unless they produced the current or previous revision; 90 days after the application is removed everything goes | 50 revisions per application (oldest non-current pruned), 500 events per deployment | 100 events per page | "older revisions pruned" note |
+| Endpoint events (state changes, errors) | 7 days | 50,000 rows per endpoint | 200 per page | gap markers between reconnects |
+| Metrics samples (CPU, memory, network, restarts) | 6 hours at 60 s; hourly roll-ups for 7 days | per container: 360 raw samples, 168 roll-ups (about 1.3 million rows at the capacity targets) | 6 h raw or 7 d roll-up per request | "no data" versus "0" rendered differently |
+| Inventory snapshots | current generation only; previous kept until the next accepted one | one per endpoint | n/a | observed-at age and offline state |
+| Container logs | never stored; streamed on demand | per request 10,000 lines or 4 MiB, whichever first; follow buffer 1 MiB per stream with explicit gap markers | 10,000 lines | truncation and gap markers inline |
+| Agent dedupe records (on the agent) | 24 hours | 10,000 entries | n/a | n/a |
+| Agent queued metrics while disconnected | 5 minutes | dropped beyond | n/a | gap in the chart |
+| Enrollment tokens | 15 minutes unconsumed; consumed tokens deleted after 24 hours | n/a | n/a | expired shown once, then gone |
+| Sessions, MFA challenges, device pairings | inherited from the base | | | |
+
+Disk budget: the operator sees the database size and each store's share on the settings screen. At *proposed* 80 % of a configured budget (default 2 GiB for SQLite) the control plane halves metric retention and warns; at 95 % it stops accepting metrics and events (commands and audit continue) and shows the reason.
+
+## Overload behaviour
+
+- Streams: bounded buffers with backpressure toward the runtime; when a browser reads slowly the server drops the oldest buffered data and inserts a gap marker rather than growing memory.
+- Inventory: an endpoint reporting faster than *proposed* once per 10 seconds is rate-limited at the agent; the server rejects out-of-order generations without writing.
+- Metrics: samples beyond the per-container cap are dropped oldest-first before insert.
+- Audit: never dropped; if the database refuses the audit write the operation fails (existing contract).
+
+## Capacity targets to fix before the M4 soak (proposed)
+
+| Target | Value |
+|---|---|
+| Endpoints per instance | 25 |
+| Containers per endpoint | 100 |
+| Concurrent streams | 16 per endpoint, 8 per user, 64 per instance |
+| Retention disk budget | 2 GiB SQLite default |
+
+The soak runs the fixture at these targets for 24 hours on SQLite, verifies the database stays within budget, cleanup keeps up, p95 read latency on list screens stays under 500 ms, and memory stays bounded with slow log clients attached. Numbers that fail are lowered before freeze.
+
+## Decisions
+
+| Decision | Proposed | Status |
+|---|---|---|
+| Log bodies in the database | never | required by handoff |
+| Terminal contents | never recorded | required by handoff |
+| Audit retention | 365 days | proposed |
+| Metrics | 6 h raw at 60 s, 7 d hourly | proposed, soak-gated |
+| Disk budget behaviour | degrade metrics, then stop telemetry, never audit | proposed |

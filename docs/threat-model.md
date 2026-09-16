@@ -1,0 +1,63 @@
+# KyYard threat model
+
+**Status:** draft proposal for review (M3 PR 07). Each mitigation names the test or operating constraint that proves it; items marked *planned* have no test yet and block the milestone that introduces the asset.
+
+## Assets
+
+| Asset | Where | Why it matters |
+|---|---|---|
+| Host authority through the Docker socket | every enrolled endpoint | root-equivalent on that host |
+| Agent identities and enrollment tokens | `endpoint_agents`, `agent_enrollment_tokens`, agent identity volume | impersonating an endpoint or enrolling a rogue one |
+| Control-plane keys | `/data` (encryption, session, instance identity) | decrypting secrets, forging sessions, cloning the instance |
+| Registry credentials and Compose secrets | `registry_credentials`, the organization secret store (revisions hold references only), agent memory during a command | supply-chain and data access |
+| Tenant data and desired state | organization-scoped tables | cross-tenant read or write |
+| Exec and log streams | live sockets | interactive host access, data exfiltration |
+| Audit records | `audit_records` | accountability; tampering or displacement hides abuse |
+| Control-plane backups | sealed capsules | full instance clone |
+
+## Trust boundaries
+
+1. Browser ↔ control plane: session cookie, CSRF token, Origin check, CSP. Never reused for agents.
+2. Agent ↔ control plane: TLS plus per-connection challenge-response on an Ed25519 identity. Never reused for browsers.
+3. Control plane ↔ runtime: the agent holds the socket; the control plane holds authorization. Neither trusts the other's claims about tenancy.
+4. Control plane ↔ registries and KyRecovery: outbound only, credentials scoped per use.
+5. Organization ↔ organization: every product row carries `organization_id`; every product query is scoped in the same transaction that authorizes it.
+
+## Threats and mitigations
+
+| Threat | Mitigation | Proof |
+|---|---|---|
+| Rogue host enrolls with a leaked token | Token is single use, 15 min, hashed at rest, bound to one organization/environment/runtime; enrollment lands in `pending` and needs a human to approve the reviewed fingerprint | protocol test 1–3; UI approval step |
+| Replayed connection handshake | Server nonce per connection signed by the agent key under a distinct context string; nonce never reused | protocol test 12 |
+| Impersonated endpoint | Identity bound to the reviewed public key and every later rotation is audited with its fingerprint; wrong key fails the challenge; tenant binding checked on every command; a second live connection for one endpoint is refused and recorded | protocol tests 2, 4, 13 |
+| Compromised agent | Agent holds no tenant policy, users, desired state or long-lived credentials; commands are scoped and deadlined; the agent can only affect its own host and the resources the control plane names; revocation is immediate and needs no restart | protocol tests 8, 11; agent code review rule "no secret persisted" |
+| Compromised control plane | Out of scope for containment: it is the root of authority. Mitigations are reducing blast radius (per-use registry credentials, no stored plaintext secrets, keys in `/data` with 0600) and detection (audit of every privileged action, instance identity in backups) | key-permission tests in `internal/config`; audit tests |
+| Stale or replayed commands after restore or reconnect | Deadlines on every command; dedupe store on the agent; restore marks in-flight commands `unknown` and never re-dispatches them | protocol tests 5, 6, 11 |
+| Docker socket presented as sandboxed | Enrollment command, UI and README state that the socket is host-equivalent; a socket proxy is a later hardening, not implied now | copy review; README |
+| Registry credential leakage | Encrypted at rest; delivered only inside the authorizing command; scrubbed from results, events, inspect, previews, diffs, audit and logs; never persisted by the agent | redaction tests per resource API (M4–M7); protocol section 8 |
+| Exec stream abuse | Own permission (`container.exec`), target confirmation, short-lived stream grant, Origin check, idle and absolute timeouts, immediate close on revocation, session metadata audited, contents not recorded | protocol test 8; `container.exec` authorization tests (*planned*, M5) |
+| Tenant escape through IDs in URLs or bodies | Scope from URL only; strict JSON; every store method takes `TenantAccess`; composite foreign keys; non-members get no audit row; cross-tenant tests run on SQLite locally and on PostgreSQL in the CI workflow's PostgreSQL job (`make ci` alone is SQLite) | `TestTenantRoutesEnforceScopeAndAudit`, `TestScopedAuthorizationAndAudit`, `TestNonMemberDenialLeavesNoTenantAudit` |
+| Tenant escape through federation | SSO/SCIM/webhook write global accounts only; no group grants membership | `TestExternalIdentityNeverGrantsTenantAccess` (PR #10) |
+| Audit displacement or growth | Audit rows only for members; bounded pagination; successful reads stop being audited when the read APIs land (`authorization-matrix.md`); retention in `retention-policy.md` | `TestNonMemberDenialLeavesNoTenantAudit`; retention soak (*planned*) |
+| Certificate trust | Agent verifies the server chain against the system store or a pinned CA supplied at enrollment; no insecure flag exists; the control plane never claims TLS it does not provide | agent config tests (*planned*); M1 transport contract |
+| Cloned instance from a restored backup | Instance identity key travels with the capsule; two live instances with one identity would both be accepted by agents. Mitigation: restore runbook requires the source to be stopped, restore marks non-revoked identities `offline`, and the operator may rotate the instance key; agents pin the instance key fingerprint at enrollment and stop with `instance_changed` when it differs, so a rotated clone cannot silently take the fleet | `docs/RESTORE.md` step (*planned*); protocol test 11 |
+| Backup rollback reviving revoked authority | Snapshots exclude sessions, MFA challenges and pairings; restore revokes password grants; revoked agent identities remain revoked because revocation is a row state that the capsule carries; a capsule older than a revocation is a known risk stated in the runbook | `TestRestorePreservesKeysAndRevokesOnlySnapshotGrants`; runbook text |
+| Last administrator lockout | Membership changes serialize per organization and refuse to leave zero active administrators; platform repair path is a design decision in `authorization-matrix.md` | `TestLastAdminGuardSurvivesConcurrentDemotion` |
+| Browser CSRF/session used to drive agents | Agent routes never accept session cookies; browser routes never accept agent signatures; distinct middleware and namespaces (`/api/agent/v1` vs `/api/organizations`) | route tests (*planned* with PR 08) |
+| Denial of service through streams or inventory | Per-endpoint and per-user stream caps, bounded buffers with explicit gaps, inventory generations, metric sampling limits | retention soak (*planned*) |
+
+## Operating constraints
+
+- Run the agent only on hosts whose operators accept host-equivalent access from the control plane.
+- Keep `/data` on a filesystem that honours 0700/0600; the server tightens loose modes, refuses symlinked key files, and logs what it changed.
+- Stop the original instance before restoring its capsule elsewhere.
+- Rotate registry credentials after any suspected agent compromise; revoke the agent first.
+- Forward-only migrations: recover into a separate compatible installation from a verified backup rather than downgrading a binary.
+
+## Decisions
+
+| Decision | Proposed | Status |
+|---|---|---|
+| Docker socket proxy | Not in 0.1; disclosure instead | proposed |
+| Cloned-identity handling | Restore marks identities offline; operator-confirmed instance key rotation forces re-approval | proposed |
+| Compromised control plane | Blast-radius reduction and audit only; no containment claim | proposed |
