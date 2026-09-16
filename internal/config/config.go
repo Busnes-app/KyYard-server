@@ -31,7 +31,6 @@ type ServerConfig struct {
 	AppName      string        `json:"app_name"`
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`
-	Environment  string        `json:"environment"`
 }
 
 // DatabaseConfig holds connection settings for pluggable storage (SQLite, PostgreSQL, MySQL).
@@ -113,7 +112,6 @@ func LoadFromEnv() (*Config, error) {
 	host := getEnv("KY_HOST", "127.0.0.1")
 	appURL := getEnv("KY_APP_URL", fmt.Sprintf("http://localhost:%d", port))
 	appName := getEnv("KY_APP_NAME", DefaultAppName)
-	env := getEnv("KY_ENV", "development")
 
 	if portErr != nil || port < 1 || port > 65535 {
 		return nil, fmt.Errorf("KY_PORT: must be between 1 and 65535")
@@ -147,6 +145,10 @@ func LoadFromEnv() (*Config, error) {
 	appURL = advertised.String()
 	secure := advertised.Scheme == "https"
 	if !secure {
+		bind, err := netip.ParseAddr(host)
+		if (err != nil || !bind.IsLoopback()) && !getEnvBool("KY_ALLOW_PLAINTEXT_BIND", false) {
+			return nil, fmt.Errorf("KY_HOST: plaintext outside a literal loopback address requires KY_ALLOW_PLAINTEXT_BIND=true; keep the published port on loopback or configure an HTTPS reverse proxy")
+		}
 		addr, _ := netip.ParseAddr(advertised.Hostname())
 		if advertised.Hostname() != "localhost" && !addr.IsLoopback() {
 			return nil, fmt.Errorf("KY_APP_URL: HTTP is only for localhost or loopback; remote access requires HTTPS through a reverse proxy and KY_TRUSTED_PROXIES")
@@ -204,7 +206,6 @@ func LoadFromEnv() (*Config, error) {
 			AppName:      appName,
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
-			Environment:  env,
 		},
 		Database: DatabaseConfig{
 			Driver:          driver,

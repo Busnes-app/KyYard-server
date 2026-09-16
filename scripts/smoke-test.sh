@@ -39,8 +39,7 @@ contains() { # contains <description> <haystack> <needle>
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 start_server() { # start_server <captcha-provider>
-  KY_ENV=production \
-    KY_SESSION_SECRET='' \
+  KY_SESSION_SECRET='' \
     KY_ENCRYPTION_KEY='' \
     KY_PORT="$PORT" \
     KY_HOST=127.0.0.1 \

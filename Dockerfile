@@ -26,7 +26,6 @@ COPY --from=backend-builder /app/kyyard-server /app/kyyard-server
 # operator (compose does), so an image run bare keeps no local copies.
 RUN mkdir -p /data /data/backups
 
-ENV KY_ENV=production
 ENV KY_PORT=8080
 ENV KY_HOST=0.0.0.0
 ENV KY_DATA_DIR=/data

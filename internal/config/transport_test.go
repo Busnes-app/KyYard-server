@@ -10,7 +10,7 @@ func TestTransportConfiguration(t *testing.T) {
 		name, url, proxy, cookie string
 		secure, invalid          bool
 	}{
-		{name: "production loopback", url: "http://localhost:8080"},
+		{name: "default loopback", url: "http://localhost:8080"},
 		{name: "IPv4 loopback", url: "http://127.0.0.1:8080"},
 		{name: "IPv6 loopback", url: "http://[::1]:8080"},
 		{name: "HTTPS", url: "https://yard.example.com", proxy: "127.0.0.1", secure: true},
@@ -28,7 +28,11 @@ func TestTransportConfiguration(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("KY_DATA_DIR", t.TempDir())
-			t.Setenv("KY_ENV", "production")
+			t.Setenv("KY_HOST", "127.0.0.1")
+			if tc.secure {
+				t.Setenv("KY_HOST", "0.0.0.0")
+			}
+			t.Setenv("KY_ALLOW_PLAINTEXT_BIND", "false")
 			t.Setenv("KY_APP_URL", tc.url)
 			t.Setenv("KY_TRUSTED_PROXIES", tc.proxy)
 			t.Setenv("KY_COOKIE_SECURE", tc.cookie)
@@ -59,5 +63,28 @@ func TestAdvertisedOriginNormalization(t *testing.T) {
 	}
 	if cfg.Server.AppURL != "https://yard.example.com" {
 		t.Fatalf("non-browser origin: %s", cfg.Server.AppURL)
+	}
+}
+
+func TestPlaintextBindRequiresAcknowledgement(t *testing.T) {
+	for _, tc := range []struct {
+		host, allow string
+		invalid     bool
+	}{
+		{"127.0.0.1", "", false}, {"::1", "", false},
+		{"0.0.0.0", "", true}, {"::", "", true}, {"192.168.1.2", "", true},
+		{"localhost", "", true}, {"0.0.0.0", "false", true},
+		{"0.0.0.0", "true", false}, {"::", "true", false},
+	} {
+		t.Run(tc.host+tc.allow, func(t *testing.T) {
+			t.Setenv("KY_DATA_DIR", t.TempDir())
+			t.Setenv("KY_HOST", tc.host)
+			t.Setenv("KY_APP_URL", "http://localhost:8080")
+			t.Setenv("KY_ALLOW_PLAINTEXT_BIND", tc.allow)
+			_, err := config.LoadFromEnv()
+			if (err != nil) != tc.invalid {
+				t.Fatalf("host %s allow %q: error %v, want rejected=%v", tc.host, tc.allow, err, tc.invalid)
+			}
+		})
 	}
 }

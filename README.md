@@ -11,7 +11,7 @@ Fresh installations only: KyYard uses its own recovery service identity and toke
 label. Existing base-project databases, pairing tokens and capsules are not a supported
 in-place migration. The SQLite filename `ky_server.db` remains the inherited storage format.
 Container data lives under `/data`, including local capsules under `/data/backups` in Compose.
-Production mode generates persistent secrets without manual configuration. Compose runs one
+KyYard generates persistent secrets without manual configuration. Compose runs one
 container with SQLite and a named `kyyard-data` volume; SSO and SCIM are off by default.
 
 ## Start KyYard
@@ -77,9 +77,15 @@ The bare binary defaults to `127.0.0.1:8080`; the image listens on `0.0.0.0:8080
 its container, while Compose publishes only `127.0.0.1:8080` on the host. `KY_APP_URL`
 defaults to `http://localhost:8080` (or the configured port). Use that exact origin in your
 browser: writes from a different origin are refused, including login. Cookies are HttpOnly
-for sessions and SameSite, and their Secure flag follows the advertised URL, not `KY_ENV`.
+for sessions and SameSite, and their Secure flag follows the advertised URL.
 `KY_COOKIE_SECURE`, if supplied, must agree with the URL scheme. HTTP advertised URLs are
-accepted only for localhost/loopback. Do not expose their backend port to a LAN or the internet.
+accepted only for localhost/loopback. A non-loopback HTTP listen address (or a hostname whose
+resolution cannot be assumed safe) additionally requires `KY_ALLOW_PLAINTEXT_BIND=true`.
+Compose sets this beside its loopback-only host publish; the image deliberately does not.
+A bare `docker run` must either configure an HTTPS reverse proxy or explicitly set this
+acknowledgement and publish with `-p 127.0.0.1:8080:8080`. It does not add encryption or
+restrict the socket: do not expose that HTTP backend port to a LAN or the internet.
+`KY_ENV` has been removed; there is no separate development/production security mode.
 
 For access from another machine during setup, forward the local port over SSH:
 `ssh -N -L 8080:127.0.0.1:8080 user@docker-host`, then open http://localhost:8080 locally.

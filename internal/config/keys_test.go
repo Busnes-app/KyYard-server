@@ -17,10 +17,9 @@ import (
 	"github.com/Busness-app/kyyard-server/internal/config"
 )
 
-func TestProductionKeysPersistAndStayPrivate(t *testing.T) {
+func TestKeysPersistAndStayPrivate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	t.Setenv("KY_DATA_DIR", dir)
-	t.Setenv("KY_ENV", "production")
 	t.Setenv("KY_SESSION_SECRET", "")
 	t.Setenv("KY_ENCRYPTION_KEY", "")
 	first, err := config.LoadFromEnv()
