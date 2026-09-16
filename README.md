@@ -132,8 +132,10 @@ claim it. Platform administration remains separate from organization membership.
 
 Membership removal or disabling survives restart and administrator password resets. Legacy
 SCIM groups do not grant organization access. Tenant APIs enforce live membership on every
-operation; platform administrators need explicit membership too. Membership administration is available through the tenant API;
-management screens and typed settings follow in the next delivery slice.
+operation; platform administrators need explicit membership too. Membership administration is available through the tenant API and the web UI: pick an
+organization in the header, then manage environments, members and audit history under
+`/organizations/{organization}`. Links are deep-linkable and survive sign-in. Typed settings
+follow when the first optional product setting exists.
 
 ### Tenant API
 

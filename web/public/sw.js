@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ky-base-pwa-v1';
+const CACHE_NAME = 'kyyard-pwa-v2';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -32,6 +32,12 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   // Only cache GET requests and non-API paths
   if (event.request.method !== 'GET' || event.request.url.includes('/api/') || event.request.url.includes('/scim/')) {
+    return;
+  }
+
+  // Deep links are served by the app shell, so an offline navigation falls back to it.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).catch(() => caches.match('/')));
     return;
   }
 
