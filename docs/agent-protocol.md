@@ -11,7 +11,9 @@
 
 ## 2. Transport
 
-**Proposed:** one outbound WebSocket over TLS from the agent to `wss://<control-plane>/api/agent/v1/connect`, carrying length-delimited JSON envelopes (section 4). Chosen over gRPC because it traverses ordinary reverse proxies with default settings, needs no HTTP/2 end to end, and keeps the one-binary deployment. The disposable spike must show: connect through Caddy and nginx with default proxy timeouts, idle survival with heartbeats, reconnect after the proxy restarts, and a 4 MiB frame passing both proxies.
+**Decided by spike (2026-09-16):** one outbound WebSocket over TLS from the agent to `wss://<control-plane>/api/agent/v1/connect`, carrying length-delimited JSON envelopes (section 4). Chosen over gRPC because it traverses ordinary reverse proxies with default settings, needs no HTTP/2 end to end, and keeps the one-binary deployment. The disposable spike must show: connect through Caddy and nginx with default proxy timeouts, idle survival with heartbeats, reconnect after the proxy restarts, and a 4 MiB frame passing both proxies.
+
+Spike results (`scripts/spikes/websocket-proxy/run.sh`, re-runnable; echo server behind Caddy 2 and nginx 1 on the host network, `github.com/coder/websocket`): Caddy proxies the upgrade with a bare `reverse_proxy` line. nginx needs `proxy_http_version 1.1` plus the `Upgrade`/`Connection` headers, which the README will ship verbatim, and keeps its 60-second `proxy_read_timeout` default: with 30-second heartbeats a connection idled for 90 seconds survived both proxies; with a 75-second heartbeat nginx closed it at the first gap, so the heartbeat interval is load-bearing and must stay under 60 seconds. Restarting nginx mid-idle dropped the socket and the client reconnected on its first backoff attempt. A 4 MiB binary frame echoed through both in under 10 ms with no size configuration. The agent will use `github.com/coder/websocket` (no CGO, context-based, no transitive dependencies).
 
 The control plane's TLS story is unchanged from M1: HTTPS terminates at a reverse proxy or the built-in listener; the agent verifies the server certificate against the system trust store, or against a pinned CA supplied at enrollment for private CAs (`--ca-file`). No `--insecure` flag ships.
 
@@ -93,10 +95,10 @@ Registry credentials and Compose secrets are delivered only inside the command t
 
 | Decision | Proposed | Status |
 |---|---|---|
-| Transport | Outbound WebSocket over TLS, JSON envelopes | proposed, spike required |
+| Transport | Outbound WebSocket over TLS, JSON envelopes, `coder/websocket` | decided: spike passed on Caddy and nginx (section 2) |
 | Connection auth | Ed25519 challenge-response per connection with domain-separated messages, no bearer tokens; duplicate connections refused | proposed |
 | Identity | Ed25519 keypair in an agent volume, fingerprint reviewed at approval; a rotated key authenticates only after an operator acknowledges it, one pending key at a time | proposed |
 | Token | 32 random bytes, SHA-256 stored, single use, 15 min | proposed |
-| Heartbeat / offline | 30 s / 3 missed | proposed |
+| Heartbeat / offline | 30 s / 3 missed; must stay under nginx's 60 s default read timeout | proposed, lower bound proven by spike |
 | Unknown outcome | Reconcile from inventory before any retry; destructive never auto-retried | required by handoff |
 | Compatibility | Current and previous major version | proposed |

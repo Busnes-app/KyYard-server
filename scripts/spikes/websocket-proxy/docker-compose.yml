@@ -1,0 +1,9 @@
+services:
+  caddy:
+    image: caddy:2
+    network_mode: host
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
+  nginx:
+    image: nginx:1
+    network_mode: host
+    volumes: ["./nginx.conf:/etc/nginx/nginx.conf:ro"]
