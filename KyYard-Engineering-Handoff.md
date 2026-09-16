@@ -3,7 +3,7 @@
 > **KyYard — The simple control plane for your container fleet.**
 
 **Status:** Product and implementation handoff  
-**Starting repository:** `https://github.com/Busness-app/ky_server_base`  
+**Starting repository:** `https://github.com/Busnes-app/ky_server_base`  
 **Reviewed base revision:** `f4ca19a`  
 **Primary implementation language:** Go backend; React 19 + TypeScript frontend  
 
@@ -184,7 +184,7 @@ The default deployment should resemble:
 ```yaml
 services:
   kyyard:
-    image: ghcr.io/busness-app/kyyard:latest
+    image: ghcr.io/busnes-app/kyyard:latest
     restart: unless-stopped
     ports:
       - "9443:9443"
@@ -350,9 +350,9 @@ The first pull request should be a scaffold-only change. Do not combine renaming
 Expected contents:
 
 - New `kyyard-server` repository scaffolded from `ky_server_base`.
-- Go module `github.com/Busness-app/kyyard-server`.
+- Go module `github.com/Busnes-app/kyyard-server`.
 - Product display name `KyYard`.
-- Image `ghcr.io/busness-app/kyyard`.
+- Image `ghcr.io/busnes-app/kyyard`.
 - Container name `kyyard`.
 - Persistent paths standardized under `/data` inside the product container.
 - Existing behavior and test coverage preserved.
@@ -362,7 +362,7 @@ Expected contents:
 Suggested verification:
 
 ```bash
-rg -n 'ky_server_base|Busnes\.app Base|ghcr\.io/busness-app/ky_server_base' . \
+rg -n 'ky_server_base|Busnes\.app Base|ghcr\.io/busnes-app/ky_server_base' . \
   --glob '!web/dist/**' --glob '!.git/**'
 make ci
 docker compose config
@@ -418,7 +418,7 @@ The acceptance test is not merely that every API works. A person familiar with c
 
 - Product name: **KyYard**.
 - Tagline: **The simple control plane for your container fleet.**
-- Base: `Busness-app/ky_server_base` at or after reviewed revision `f4ca19a`.
+- Base: `Busnes-app/ky_server_base` at or after reviewed revision `f4ca19a`.
 - Docker-first delivery; Kubernetes adapter follows a proven Docker control plane.
 - One agent implementation with runtime adapters unless evidence requires separation.
 - Multi-tenancy and scoped authorization precede workload management.

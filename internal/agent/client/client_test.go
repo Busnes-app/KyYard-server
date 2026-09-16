@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/coder/websocket"
 	"net/http"
 	"net/http/httptest"
@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/client"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
 	"github.com/Busness-app/ky-primitives/password"
-	"github.com/Busness-app/kyyard-server/internal/agent/client"
-	"github.com/Busness-app/kyyard-server/internal/api"
-	"github.com/Busness-app/kyyard-server/internal/auth"
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/store"
-	"github.com/Busness-app/kyyard-server/internal/testdb"
 )
 
 func TestConnectURLRefusesPlaintextOffLoopback(t *testing.T) {

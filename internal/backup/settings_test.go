@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/backup"
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/store"
 )
 
 // sqliteInstance is a fresh SQLite store in a temp data dir, the way every backup adapter

@@ -8,7 +8,7 @@ Hand-off, 2026-09-04. Board folder `kypost-kyrecovery-deposit`. Written before a
 
 ## Where it stands (surveyed 2026-09-04)
 
-- Go module lives at `backend/`, module path `kypost-server/backend` — not importable and not a GitHub path. Fix first: `module github.com/Busness-app/kypost-server/backend` (or move the module to the repo root), update every import, then everything else.
+- Go module lives at `backend/`, module path `kypost-server/backend` — not importable and not a GitHub path. Fix first: `module github.com/Busnes-app/kypost-server/backend` (or move the module to the repo root), update every import, then everything else.
 - `go 1.26.6`, no ky-primitives. Layout `backend/ + frontend/ + worker/ + worker-apns/`. Not a scaffold fork.
 - Passwords: scrypt (`backend/internal/users/users.go:2019,2035,2100`; cost notes in `internal/users/kdf.go`). Move to Argon2id via `ky-primitives/password`. Nothing in the wild.
 - TOTP, push MFA with number match, recovery codes: all local (`internal/totp`, `internal/mfa`, `internal/api/auth_stepup.go`). Adopt `ky-primitives/totp` and `recoverycode`; keep the push MFA, the library has no equivalent.

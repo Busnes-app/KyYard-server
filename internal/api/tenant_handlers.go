@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/Busness-app/kyyard-server/internal/auth"
-	"github.com/Busness-app/kyyard-server/internal/crypto"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 // tenantRoute authenticates identity only. The store selects the named action and

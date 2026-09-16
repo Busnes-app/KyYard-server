@@ -15,7 +15,7 @@
 - **No behaviour change to any capsule or recovery kit that already exists.** KySignOn's kits are the suite's most valuable artefact and the reason the parent plan gates on compatibility.
 - `go.mod` direct requires go from **three to four**, with **no new indirect entries**. This repo's architecture rests on a small dependency tree; a migration that grows it has failed.
 - Gates stay green: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`, `govulncheck ./...`.
-- Module path prefix is `github.com/Busness-app/`.
+- Module path prefix is `github.com/Busnes-app/`.
 
 ---
 
@@ -52,7 +52,7 @@ cd /home/yoshi/busness.app/kysignon-server
 mkdir -p testdata
 cp /home/yoshi/busness.app/ky_server_base/testdata/shamir-vectors.json testdata/
 cp /home/yoshi/busness.app/ky_server_base/internal/backup/shamir_vectors_test.go internal/backup/
-sed -i 's|github.com/Busness-app/ky_server_base/internal/backup|github.com/Busness-app/kysignon-server/internal/backup|' \
+sed -i 's|github.com/Busnes-app/ky_server_base/internal/backup|github.com/Busnes-app/kysignon-server/internal/backup|' \
   internal/backup/shamir_vectors_test.go
 go test -race -count=1 -run TestShamirGoldenVectors ./internal/backup/...
 ```
@@ -153,7 +153,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kysignon-server/internal/backup"
+	"github.com/Busnes-app/kysignon-server/internal/backup"
 )
 
 // A custodian pasting the same shard twice must be told so, not handed a panic

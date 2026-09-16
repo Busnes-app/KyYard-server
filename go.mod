@@ -1,4 +1,4 @@
-module github.com/Busness-app/kyyard-server
+module github.com/Busnes-app/kyyard-server
 
 go 1.26.6
 

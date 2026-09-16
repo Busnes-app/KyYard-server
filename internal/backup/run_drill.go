@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/config"
 	"golang.org/x/sys/unix"
 )
 

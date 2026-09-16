@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 // Docker-socket access is host-equivalent; every enrollment command says so, in the same

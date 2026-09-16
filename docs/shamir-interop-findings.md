@@ -106,11 +106,11 @@ key, and any future caller of `CombineShares` that skips it inherits the hazard.
 **The module paths do not match the org the code lives in.**
 
 > **Superseded, 2026-09-02.** This section originally said the parent plan's
-> `github.com/Busness-app/<name>` convention "is wrong" and that the real prefix is
+> `github.com/Busnes-app/<name>` convention "is wrong" and that the real prefix is
 > `github.com/Yoshiofthewire/`. **That was wrong.** It described `go.mod` accurately, but
-> `go.mod` was the stale artefact: the suite has moved to the `Busness-app` organisation
+> `go.mod` was the stale artefact: the suite has moved to the `Busnes-app` organisation
 > and the module paths never followed. The parent plan named the destination, not the
-> current state. The canonical prefix is `github.com/Busness-app/`, matching the org — see
+> current state. The canonical prefix is `github.com/Busnes-app/`, matching the org — see
 > [the module path migration plan](superpowers/plans/2026-09-02-module-path-migration.md).
 > The measurements below stand; only the conclusion drawn from them was wrong.
 

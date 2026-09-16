@@ -15,7 +15,7 @@
 - **No existing audit record may become unverifiable.** A migration that invalidates a trail destroys the evidence the trail exists to preserve.
 - The shared module has **zero dependencies**. Standard library only.
 - Gates stay green in every repo touched: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`.
-- Module path prefix is `github.com/Busness-app/`.
+- Module path prefix is `github.com/Busnes-app/`.
 
 ---
 

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/coder/websocket"
 )
 

@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/client"
+	"github.com/Busnes-app/kyyard-server/internal/agent/client"
 )
 
 var version = "dev"

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busness-app/ky-primitives/totp"
-	"github.com/Busness-app/kyyard-server/internal/auth"
 )
 
 func TestTOTPValidateReturnsCounter(t *testing.T) {

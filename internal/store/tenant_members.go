@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/Busness-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 )
 
 func validTenantRole(role TenantRole) bool {

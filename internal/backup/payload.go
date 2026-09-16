@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/config"
 	_ "modernc.org/sqlite"
 )
 

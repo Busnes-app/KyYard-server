@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/permissions"
-	"github.com/Busness-app/kyyard-server/internal/store/migrations"
-	"github.com/Busness-app/kyyard-server/internal/testdb"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
 )
 
 func tenantAtomicStore(t *testing.T) (*SQLStore, TenantAccess) {

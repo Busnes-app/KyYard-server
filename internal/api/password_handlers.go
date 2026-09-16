@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busness-app/ky-primitives/password"
-	"github.com/Busness-app/kyyard-server/internal/auth"
-	"github.com/Busness-app/kyyard-server/internal/store"
 )
 
 // handleChangePassword completes a mandatory local-password replacement. All sessions

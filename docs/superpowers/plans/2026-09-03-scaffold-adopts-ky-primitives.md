@@ -785,9 +785,9 @@ import (
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/backup"
-	"github.com/Busness-app/ky_server_base/internal/store"
-	"github.com/Busness-app/ky_server_base/internal/testdb"
+	"github.com/Busnes-app/ky_server_base/internal/backup"
+	"github.com/Busnes-app/ky_server_base/internal/store"
+	"github.com/Busnes-app/ky_server_base/internal/testdb"
 )
 
 func openSettings(t *testing.T) store.SettingsStore {
@@ -896,7 +896,7 @@ import (
 
 	"github.com/Busness-app/ky-primitives/keyfile"
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busnes-app/ky_server_base/internal/store"
 )
 
 var (
@@ -1176,7 +1176,7 @@ import (
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/backup"
+	"github.com/Busnes-app/ky_server_base/internal/backup"
 )
 
 func testKey(t *testing.T) (recoverykey.PrivateKey, backup.RecoveryKey) {
@@ -1600,7 +1600,7 @@ import (
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/backup"
+	"github.com/Busnes-app/ky_server_base/internal/backup"
 )
 
 func sealFixture(t *testing.T, service string) (string, []string) {
@@ -1786,7 +1786,7 @@ MODULE_OLD="$(cd "$BASE_DIR" && go list -m)"
 
 Add `go` to whatever prerequisite check the script has (it already needs `go` for `go mod tidy`, so none is needed beyond the existing `set -euo pipefail`). Run `shellcheck scripts/ky-init.sh` (the `smoke` CI job does).
 
-The spec's line 300 says `go mod tidy` "must now resolve a module under the Busness-app org" and needs `GOPRIVATE`. It does not: `github.com/Busness-app/ky-primitives` is public and resolves through the proxy. Do not add `GOPRIVATE`.
+The spec's line 300 says `go mod tidy` "must now resolve a module under the Busnes-app org" and needs `GOPRIVATE`. It does not: `github.com/Busness-app/ky-primitives` is public and resolves through the proxy. Do not add `GOPRIVATE`.
 
 - [ ] **Step 2: Compat workflow**
 

@@ -1,4 +1,4 @@
-**Repo:** Busness-app/kyyard-server
+**Repo:** Busnes-app/kyyard-server
 **Worktree:** /home/yoshi/busness.app/kyyard-tenant-authorization (branch feat/tenant-authorization)
 
 # KyYard implementation plan
@@ -53,7 +53,7 @@ Critical path: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7a → releas
 **PR 01: product identity only.**
 
 1. Record source revision and inspect the scaffold script. Generate into an empty directory; preserve this checkout's local material and establish the intended product remote.
-2. Use module `github.com/Busness-app/kyyard-server`, display name `KyYard`, image `ghcr.io/busness-app/kyyard`, container/service `kyyard`, and a consistently named product binary.
+2. Use module `github.com/Busnes-app/kyyard-server`, display name `KyYard`, image `ghcr.io/busnes-app/kyyard`, container/service `kyyard`, and a consistently named product binary.
 3. Update imports, Makefile, Dockerfile, Compose overlays, install scripts, CLI help, config defaults, package/lock metadata, manifest/title, README, smoke tests, image publication and attestation repository/workflow identities.
 4. Standardize container persistence under `/data`; keep existing startup semantics in this PR. Rename recovery application identity and domain-separated sealer labels coherently for fresh installs; explicitly decide whether preexisting base capsules/data are supported before claiming compatibility.
 5. Rebuild and commit `web/dist`. Audit old references in source and generated assets; historical source citations are allowed and listed. Repair stale absolute DOX links as part of the rename.
