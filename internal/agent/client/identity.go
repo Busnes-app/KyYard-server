@@ -27,6 +27,7 @@ type Identity struct {
 	// authenticating meanwhile.
 	PendingPrivateKey  []byte    `json:"pending_private_key,omitempty"`
 	PendingFingerprint string    `json:"pending_fingerprint,omitempty"`
+	PendingSince       time.Time `json:"pending_since,omitempty"`
 	RotatedAt          time.Time `json:"rotated_at"`
 }
 
@@ -38,6 +39,7 @@ func (id *Identity) Promote() {
 	}
 	id.PendingPrivateKey = nil
 	id.PendingFingerprint = ""
+	id.PendingSince = time.Time{}
 }
 
 func (id *Identity) fingerprint() string {

@@ -184,7 +184,7 @@ The default deployment should resemble:
 ```yaml
 services:
   kyyard:
-    image: ghcr.io/busnes-app/kyyard:latest
+    image: ghcr.io/busness-app/kyyard:latest
     restart: unless-stopped
     ports:
       - "9443:9443"
@@ -352,7 +352,7 @@ Expected contents:
 - New `kyyard-server` repository scaffolded from `ky_server_base`.
 - Go module `github.com/Busness-app/kyyard-server`.
 - Product display name `KyYard`.
-- Image `ghcr.io/busnes-app/kyyard`.
+- Image `ghcr.io/busness-app/kyyard`.
 - Container name `kyyard`.
 - Persistent paths standardized under `/data` inside the product container.
 - Existing behavior and test coverage preserved.

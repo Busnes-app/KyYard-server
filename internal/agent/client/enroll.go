@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
 )
@@ -68,7 +69,7 @@ func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tok
 	if reply.Fingerprint != protocol.Fingerprint(pub) {
 		return nil, errors.New("server echoed a fingerprint that is not ours")
 	}
-	id := &Identity{EndpointID: reply.EndpointID, PrivateKey: priv, InstanceFingerprint: reply.InstanceFingerprint, Server: strings.TrimRight(server, "/")}
+	id := &Identity{EndpointID: reply.EndpointID, PrivateKey: priv, InstanceFingerprint: reply.InstanceFingerprint, Server: strings.TrimRight(server, "/"), RotatedAt: time.Now().UTC()}
 	if err := SaveIdentity(dir, id); err != nil {
 		return nil, err
 	}

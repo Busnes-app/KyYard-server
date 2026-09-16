@@ -233,6 +233,7 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 	}()
 	timer := time.NewTimer(agentReadTimeout)
 	defer timer.Stop()
+	helloSeen := false
 	for {
 		select {
 		case <-c.closed:
@@ -244,6 +245,7 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 			if c.reason != protocol.CloseShutdown {
 				return
 			}
+			s.agents.remove(c)
 			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
 			return
 		case e := <-c.send:
@@ -251,10 +253,14 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 				return
 			}
 		case <-timer.C:
+			s.agents.remove(c)
 			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseTimeout)
 			return
 		case <-readErr:
+			// Free the slot before touching the database so a reconnecting agent never waits on
+			// the writer lock and reads as a duplicate of itself.
+			s.agents.remove(c)
 			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
 			return
 		case f := <-frames:
@@ -262,71 +268,89 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 				<-timer.C
 			}
 			timer.Reset(agentReadTimeout)
-			// Revocation between frames must not be outrun by a cached state.
-			state, err := ts.EndpointState(ctx, c.endpointID)
-			if err != nil || state == "revoked" {
-				c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
+			if s.handleAgentFrame(ctx, ts, c, f, pending, &helloSeen) {
 				return
-			}
-			switch f.Type {
-			case protocol.TypeHello:
-				var hello protocol.Hello
-				if json.Unmarshal(f.Payload, &hello) == nil && !pending {
-					if err := ts.SetEndpointCapabilities(ctx, c.endpointID, hello.Capabilities); err != nil {
-						log.Printf("agent %s: capabilities: %v", c.endpointID, err)
-					}
-				}
-			case protocol.TypeRotate:
-				if pending {
-					continue
-				}
-				var rot protocol.Rotate
-				if err := json.Unmarshal(f.Payload, &rot); err != nil {
-					c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
-					return
-				}
-				fp, err := ts.RotateEndpointKey(ctx, c.endpointID, rot.PublicKey, rot.Signature, c.ip)
-				reply := protocol.Rotated{Fingerprint: fp}
-				switch {
-				case errors.Is(err, store.ErrRotationPending):
-					reply.Code = "rotation_pending"
-				case errors.Is(err, store.ErrRotationBlocked):
-					reply.Code = "rotation_blocked"
-				case err != nil:
-					reply.Code = "rotation_refused"
-				}
-				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeRotate, reply)); err != nil {
-					return
-				}
-			case protocol.TypeHeartbeat:
-				if !pending {
-					_ = ts.TouchEndpoint(ctx, c.endpointID)
-				}
-				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeHeartbeat, nil)); err != nil {
-					return
-				}
-			case protocol.TypeInventory:
-				if pending {
-					continue
-				}
-				var inv protocol.Inventory
-				if err := json.Unmarshal(f.Payload, &inv); err != nil {
-					c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
-					return
-				}
-				accepted, err := ts.AcceptInventory(ctx, c.endpointID, inv.Generation)
-				if err != nil {
-					log.Printf("agent %s: inventory: %v", c.endpointID, err)
-				} else if !accepted {
-					log.Printf("agent %s: inventory generation %d not newer than the stored one; snapshot ignored", c.endpointID, inv.Generation)
-				}
-			default:
-				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]string{"code": "unsupported_type", "type": f.Type})); err != nil {
-					return
-				}
 			}
 		}
 	}
+}
+
+// handleAgentFrame applies one received frame and reports whether the session must end. A
+// frame that was received is applied even if the socket drops while we work: the request
+// context dies with the connection, and an inventory report or rotation offer must not be
+// lost to that race, so store calls run on a detached, bounded context.
+func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c *agentConn, f protocol.Envelope, pending bool, helloSeen *bool) bool {
+	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer fcancel()
+	// Revocation between frames must not be outrun by a cached state.
+	state, err := ts.EndpointState(fctx, c.endpointID)
+	if err != nil || state == "revoked" {
+		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
+		return true
+	}
+	switch f.Type {
+	case protocol.TypeHello:
+		// One hello per session: a second carries nothing new and must not rewrite the set.
+		if *helloSeen {
+			return false
+		}
+		*helloSeen = true
+		var hello protocol.Hello
+		if json.Unmarshal(f.Payload, &hello) == nil && !pending {
+			if err := ts.SetEndpointCapabilities(fctx, c.endpointID, hello.Capabilities); err != nil {
+				log.Printf("agent %s: capabilities: %v", c.endpointID, err)
+			}
+		}
+	case protocol.TypeRotate:
+		if pending {
+			return false
+		}
+		var rot protocol.Rotate
+		if err := json.Unmarshal(f.Payload, &rot); err != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		fp, err := ts.RotateEndpointKey(fctx, c.endpointID, rot.PublicKey, rot.Signature, c.ip)
+		reply := protocol.Rotated{Fingerprint: fp}
+		switch {
+		case errors.Is(err, store.ErrRotationPending):
+			reply.Code = "rotation_pending"
+		case errors.Is(err, store.ErrRotationBlocked):
+			reply.Code = "rotation_blocked"
+		case err != nil:
+			reply.Code = "rotation_refused"
+		}
+		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeRotate, reply)); err != nil {
+			return true
+		}
+	case protocol.TypeHeartbeat:
+		if !pending {
+			_ = ts.TouchEndpoint(fctx, c.endpointID)
+		}
+		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeHeartbeat, nil)); err != nil {
+			return true
+		}
+	case protocol.TypeInventory:
+		if pending {
+			return false
+		}
+		var inv protocol.Inventory
+		if err := json.Unmarshal(f.Payload, &inv); err != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		accepted, err := ts.AcceptInventory(fctx, c.endpointID, inv.Generation)
+		if err != nil {
+			log.Printf("agent %s: inventory: %v", c.endpointID, err)
+		} else if !accepted {
+			log.Printf("agent %s: inventory generation %d not newer than the stored one; snapshot ignored", c.endpointID, inv.Generation)
+		}
+	default:
+		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]string{"code": "unsupported_type", "type": f.Type})); err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) writeFrame(ctx context.Context, conn *websocket.Conn, e protocol.Envelope) error {

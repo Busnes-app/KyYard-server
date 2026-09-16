@@ -111,7 +111,10 @@ func (t *tenancyStore) Enroll(ctx context.Context, req EnrollmentRequest) (*Endp
 	return e, nil
 }
 
-const endpointColumns = `e.id,e.organization_id,e.environment_id,e.name,e.runtime,e.state,e.facts,e.created_at,e.approved_at,e.approved_by,e.revoked_at,e.last_seen_at,COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state IN ('approved','pending_review') ORDER BY k.state LIMIT 1),''),COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state='pending_review' AND e.state<>'pending' ORDER BY k.created_at DESC LIMIT 1),'')`
+const endpointColumns = `e.id,e.organization_id,e.environment_id,e.name,e.runtime,e.state,e.facts,e.created_at,e.approved_at,e.approved_by,e.revoked_at,e.last_seen_at,COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state IN ('approved','pending_review') ORDER BY k.state LIMIT 1),''),COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state='pending_review' AND e.state<>'pending' AND k.created_at>? ORDER BY k.created_at DESC LIMIT 1),'')`
+
+// pendingCutoff is the oldest creation time a key may have and still count as pending.
+func pendingCutoff() time.Time { return time.Now().UTC().Add(-pendingKeyLife) }
 
 func scanEndpoint(row interface{ Scan(...any) error }) (*Endpoint, error) {
 	var e Endpoint
@@ -132,7 +135,7 @@ func scanEndpoint(row interface{ Scan(...any) error }) (*Endpoint, error) {
 
 // decorate loads capabilities and unacknowledged high-severity events (bounded) for the UI.
 func (t *tenancyStore) decorate(ctx context.Context, tx *sql.Tx, e *Endpoint) error {
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT capability FROM endpoint_capabilities WHERE endpoint_id=? ORDER BY capability`), e.ID)
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT capability FROM endpoint_capabilities WHERE endpoint_id=? ORDER BY capability LIMIT ?`), e.ID, MaxCapabilities)
 	if err != nil {
 		return err
 	}
@@ -166,7 +169,7 @@ func (t *tenancyStore) ListEndpoints(ctx context.Context, a TenantAccess, offset
 		if offset < 0 || limit < 1 || limit > 200 {
 			return ErrInvalid
 		}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.organization_id=? AND (?='' OR e.environment_id=?) ORDER BY e.name,e.id LIMIT ? OFFSET ?`), a.OrganizationID, a.EnvironmentID, a.EnvironmentID, limit, offset)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.organization_id=? AND (?='' OR e.environment_id=?) ORDER BY e.name,e.id LIMIT ? OFFSET ?`), pendingCutoff(), a.OrganizationID, a.EnvironmentID, a.EnvironmentID, limit, offset)
 		if err != nil {
 			return err
 		}
@@ -199,7 +202,7 @@ func (t *tenancyStore) ReadEndpoint(ctx context.Context, a TenantAccess, id stri
 	var e *Endpoint
 	err := t.readTenant(ctx, a, permissions.EndpointRead, func(tx *sql.Tx) error {
 		var err error
-		e, err = scanEndpoint(tx.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.organization_id=? AND e.id=?`), a.OrganizationID, id))
+		e, err = scanEndpoint(tx.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.organization_id=? AND e.id=?`), pendingCutoff(), a.OrganizationID, id))
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}

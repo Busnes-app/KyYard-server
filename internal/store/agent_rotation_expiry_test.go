@@ -42,6 +42,9 @@ func TestPendingRotationExpires(t *testing.T) {
 	if err := ts.AcknowledgeEndpointKey(ctx, org, e.ID, fp); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expired pending key acknowledged: %v", err)
 	}
+	if view, err := ts.ReadEndpoint(ctx, org, e.ID); err != nil || view.PendingFingerprint != "" {
+		t.Fatalf("expired pending key still offered for acknowledgement: %v %+v", err, view)
+	}
 	if _, err := ts.AgentIdentity(ctx, e.ID, fp); !errors.Is(err, ErrKeyRetired) {
 		t.Fatalf("expired pending key state: %v", err)
 	}

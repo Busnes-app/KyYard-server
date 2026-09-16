@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
@@ -104,6 +105,19 @@ func TestRotationWaitsForAcknowledgementAndAllowsOnePendingKey(t *testing.T) {
 	mustTenant(t, ts.SetEndpointCapabilities(ctx, e.ID, []string{"docker.containers", "docker.logs"}))
 	if err := ts.SetEndpointCapabilities(ctx, e.ID, []string{"bad\ncap"}); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("unsafe capability accepted: %v", err)
+	}
+	many := make([]string, 1000)
+	for i := range many {
+		many[i] = "cap." + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + string(rune('a'+(i/676)%26))
+	}
+	if err := ts.SetEndpointCapabilities(ctx, e.ID, many); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("1000 capabilities accepted: %v", err)
+	}
+	if err := ts.SetEndpointCapabilities(ctx, e.ID, []string{strings.Repeat("c", 255), strings.Repeat("d", 255), strings.Repeat("e", 255), strings.Repeat("f", 255), strings.Repeat("g", 255), strings.Repeat("h", 255), strings.Repeat("i", 255), strings.Repeat("j", 255), strings.Repeat("k", 255), strings.Repeat("l", 255), strings.Repeat("m", 255), strings.Repeat("n", 255), strings.Repeat("o", 255), strings.Repeat("p", 255), strings.Repeat("q", 255), strings.Repeat("r", 255), strings.Repeat("s", 255)}); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("oversized capability set accepted: %v", err)
+	}
+	if err := ts.RecordEndpointEvent(ctx, got, "high", "bad\nkind", ""); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("unsafe event text accepted: %v", err)
 	}
 	got, _ = ts.ReadEndpoint(ctx, org, e.ID)
 	if len(got.Capabilities) != 2 || got.Capabilities[0] != "docker.containers" {

@@ -320,6 +320,7 @@ func TestAgentRotatesKeyOnlyAfterAcknowledgement(t *testing.T) {
 	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/approve", jar, `{"fingerprint":"`+e.Fingerprint+`"}`)
 	oldFP := e.Fingerprint
 
+	id.RotatedAt = time.Time{} // enrollment set it to now; make the first rotation due
 	runCtx, stopAgent := context.WithCancel(ctx)
 	defer stopAgent()
 	runErr := make(chan error, 1)
@@ -368,5 +369,146 @@ func TestAgentRotatesKeyOnlyAfterAcknowledgement(t *testing.T) {
 	// The old key is retired for good.
 	if _, err := ts.AgentIdentity(ctx, id.EndpointID, oldFP); !errors.Is(err, store.ErrKeyRetired) {
 		t.Fatalf("old key still usable: %v", err)
+	}
+}
+
+// Setup shared by the rotation-hardening tests: a real server, an approved agent identity.
+func approvedAgent(t *testing.T) (*httptest.Server, store.Store, cookies, *client.Identity, string) {
+	t.Helper()
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbCfg := testdb.Config(t)
+	dbCfg.DataDir = cfg.Database.DataDir
+	cfg.Database = dbCfg
+	cfg.Captcha.Provider = "none"
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	httpSrv := httptest.NewServer(api.NewServer(cfg, st))
+	t.Cleanup(httpSrv.Close)
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	hash, _ := password.Hash("SuperSecretPass123!")
+	_ = st.Users().CreateUser(ctx, &store.User{ID: "usr_admin", Username: "admin", PasswordHash: hash, Role: "user", Status: "active", SSOProvider: "local"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_admin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	jar := login(t, httpSrv.URL, "admin", "SuperSecretPass123!")
+	minted := post(t, httpSrv.URL+"/api/organizations/a/environments/env-a/enrollment-tokens", jar, `{"runtime":"docker"}`)
+	var tok struct{ Token string }
+	_ = json.Unmarshal(minted, &tok)
+	dir := filepath.Join(t.TempDir(), "id")
+	id, err := client.Enroll(ctx, &http.Client{Timeout: 10 * time.Second}, httpSrv.URL, dir, "host-h", tok.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, _ := ts.ReadEndpointRaw(ctx, id.EndpointID)
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/approve", jar, `{"fingerprint":"`+e.Fingerprint+`"}`)
+	return httpSrv, st, jar, id, dir
+}
+
+// A key that cannot be persisted is never announced.
+func TestRotationIsNotOfferedWhenTheIdentityCannotBePersisted(t *testing.T) {
+	httpSrv, st, _, id, _ := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	// Persistence is broken: the identity path runs through a regular file, so no write there
+	// can succeed (SaveIdentity tightens modes, so a chmod alone cannot model it).
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(blocker, "id")
+	id.RotatedAt = time.Time{}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: time.Nanosecond})
+	}()
+	// The session ends as soon as the offer cannot be persisted, so the endpoint is active only
+	// briefly; wait for the server to have applied a frame at all, then give a retry time to happen.
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		e, _ := st.Tenancy().ReadEndpointRaw(ctx, id.EndpointID)
+		if e != nil && e.LastSeenAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("agent never reached the server")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	stop()
+	<-done
+	view, err := st.Tenancy().ReadEndpoint(ctx, store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}, id.EndpointID)
+	if err != nil || view.PendingFingerprint != "" || len(view.Alerts) != 0 {
+		t.Fatalf("a key the agent could not persist was announced: %v %+v", err, view)
+	}
+	if id.PendingFingerprint != "" {
+		t.Fatal("pending key kept in memory after a failed save")
+	}
+}
+
+// An offer nobody acknowledged expires on the agent too, and a fresh key is offered next.
+func TestExpiredPendingOfferIsReplaced(t *testing.T) {
+	httpSrv, st, _, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+	run := func() {
+		runCtx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+		}()
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+			if e != nil && e.PendingFingerprint != "" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("no rotation offered")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		stop()
+		<-done
+	}
+	id.RotatedAt = time.Time{} // due now
+	run()
+	first := id.PendingFingerprint
+	e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+	if first == "" || e.PendingFingerprint != first {
+		t.Fatalf("first offer: %q %+v", first, e)
+	}
+	// Eight days pass without acknowledgement, on both sides.
+	backdate := time.Now().Add(-8 * 24 * time.Hour)
+	if err := st.(*store.SQLStore).BackdatePendingKey(ctx, first, backdate); err != nil {
+		t.Fatal(err)
+	}
+	id.PendingSince = backdate
+	id.RotatedAt = time.Time{}
+	if err := client.SaveIdentity(dir, id); err != nil {
+		t.Fatal(err)
+	}
+	e, _ = ts.ReadEndpoint(ctx, view, id.EndpointID)
+	if e.PendingFingerprint != "" {
+		t.Fatalf("expired key still offered by the server view: %+v", e)
+	}
+	run()
+	if id.PendingFingerprint == "" || id.PendingFingerprint == first {
+		t.Fatalf("agent did not offer a fresh key after expiry: %q vs %q", id.PendingFingerprint, first)
+	}
+	e, _ = ts.ReadEndpoint(ctx, view, id.EndpointID)
+	if e.PendingFingerprint != id.PendingFingerprint {
+		t.Fatalf("server did not record the fresh key: %+v", e)
 	}
 }

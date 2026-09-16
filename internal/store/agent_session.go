@@ -26,7 +26,7 @@ var (
 )
 
 func (t *tenancyStore) AgentIdentity(ctx context.Context, endpointID, fingerprint string) (*AgentIdentity, error) {
-	e, err := scanEndpoint(t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.id=?`), endpointID))
+	e, err := scanEndpoint(t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.id=?`), pendingCutoff(), endpointID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -65,7 +65,7 @@ func (t *tenancyStore) AgentIdentity(ctx context.Context, endpointID, fingerprin
 
 // ReadEndpointRaw is a trusted helper for the handshake's own audit row; it is not authorized.
 func (t *tenancyStore) ReadEndpointRaw(ctx context.Context, endpointID string) (*Endpoint, error) {
-	e, err := scanEndpoint(t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.id=?`), endpointID))
+	e, err := scanEndpoint(t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.id=?`), pendingCutoff(), endpointID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

@@ -29,7 +29,7 @@ func (t *tenancyStore) RotateEndpointKey(ctx context.Context, endpointID string,
 		return "", err
 	}
 	defer tx.Rollback()
-	e, err := scanEndpoint(tx.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.id=?`), endpointID))
+	e, err := scanEndpoint(tx.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.id=?`), pendingCutoff(), endpointID))
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && (e.State == "pending" || e.State == "revoked" || e.State == "expired")) {
 		return "", ErrForbidden
 	}
@@ -59,7 +59,7 @@ func (t *tenancyStore) RotateEndpointKey(ctx context.Context, endpointID string,
 	if pending > 0 {
 		return "", ErrRotationPending
 	}
-	// An expired pending key is retired now so the fingerprint can be reused if the agent retries.
+	// An expired pending key is retired now; the agent offers a fresh key, never the same one.
 	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_keys SET state='retired',retired_at=? WHERE endpoint_id=? AND state='pending_review'`), now, endpointID); err != nil {
 		return "", err
 	}
@@ -100,6 +100,9 @@ func (t *tenancyStore) AcknowledgeEndpointKey(ctx context.Context, a TenantAcces
 }
 
 func (t *tenancyStore) RecordEndpointEvent(ctx context.Context, e *Endpoint, severity, kind, details string) error {
+	if !displaySafe(kind) || !displaySafe(details) || (severity != "info" && severity != "high") {
+		return ErrInvalid
+	}
 	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_events (endpoint_id,organization_id,environment_id,severity,kind,details,created_at) VALUES (?,?,?,?,?,?,?)`), e.ID, e.OrganizationID, e.EnvironmentID, severity, kind, details, time.Now().UTC())
 	return err
 }
@@ -111,8 +114,24 @@ func (t *tenancyStore) AcknowledgeEndpointEvent(ctx context.Context, a TenantAcc
 	})
 }
 
+// Capabilities are agent-supplied: bounded in count and bytes like enrollment facts.
+const (
+	MaxCapabilities    = 64
+	MaxCapabilityBytes = 4096
+)
+
 // SetEndpointCapabilities replaces the recorded set from the agent's hello.
 func (t *tenancyStore) SetEndpointCapabilities(ctx context.Context, endpointID string, capabilities []string) error {
+	if len(capabilities) > MaxCapabilities {
+		return ErrInvalid
+	}
+	total := 0
+	for _, c := range capabilities {
+		total += len(c)
+	}
+	if total > MaxCapabilityBytes {
+		return ErrInvalid
+	}
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

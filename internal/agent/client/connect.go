@@ -98,7 +98,14 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 			return err
 		}
 		if errors.Is(err, errSwitchKey) {
-			continue // reconnect at once with the key the server now expects
+			// Reconnect with the key the server now expects, after a short pause so the server
+			// has released this endpoint's slot: an immediate redial can read as a duplicate.
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return nil
+			}
+			continue
 		}
 		if err == nil {
 			delay = time.Second // a clean session resets the backoff
@@ -155,7 +162,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			if len(id.PendingPrivateKey) == ed25519.PrivateKeySize {
 				// The operator acknowledged our rotated key while we were away.
 				id.Promote()
-				opts.save(id)
+				_ = opts.save(id)
 				return errSwitchKey
 			}
 			return ErrRevoked // nothing left to authenticate with; re-enrollment is the only way back
@@ -187,7 +194,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			return err
 		}
 		id.Generation = gen
-		opts.save(id)
+		_ = opts.save(id)
+		if id.PendingFingerprint != "" && time.Since(id.PendingSince) > PendingKeyLife {
+			opts.Log.Printf("pending key %s was never acknowledged; dropping it", id.PendingFingerprint)
+			id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+			_ = opts.save(id)
+		}
 		if opts.RotateEvery > 0 && id.PendingFingerprint == "" && time.Since(id.RotatedAt) >= opts.RotateEvery {
 			if err := offerRotation(ctx, conn, id, opts); err != nil {
 				return err
@@ -246,7 +258,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				if ack.Code != "" || ack.Fingerprint != id.PendingFingerprint {
 					opts.Log.Printf("rotation not recorded (%s); keeping the current key", ack.Code)
 					id.PendingPrivateKey, id.PendingFingerprint = nil, ""
-					opts.save(id)
+					_ = opts.save(id)
 				} else {
 					opts.Log.Printf("rotation recorded as %s; waiting for operator acknowledgement", ack.Fingerprint)
 				}
@@ -255,7 +267,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				_ = json.Unmarshal(f.Payload, &done)
 				if done.Fingerprint == id.PendingFingerprint && id.PendingFingerprint != "" {
 					id.Promote()
-					opts.save(id)
+					_ = opts.save(id)
 					opts.Log.Printf("rotation acknowledged; reconnecting with the new key")
 					conn.Close(websocket.StatusNormalClosure, "rotated")
 					return errSwitchKey
@@ -303,17 +315,24 @@ func read(ctx context.Context, conn *websocket.Conn) (protocol.Envelope, error) 
 	return e, json.Unmarshal(raw, &e)
 }
 
-func (o *Options) save(id *Identity) {
+func (o *Options) save(id *Identity) error {
 	if o.IdentityDir == "" {
-		return
+		return nil
 	}
 	if err := SaveIdentity(o.IdentityDir, id); err != nil {
 		o.Log.Printf("could not persist identity: %v", err)
+		return err
 	}
+	return nil
 }
 
-// offerRotation mints a key, keeps it as pending on disk before it is sent (so a crash after
-// the server recorded it cannot lose it), and signs it with the current key.
+// PendingKeyLife mirrors the server's window: an offer nobody acknowledged in this time is
+// dropped so a fresh key can be offered, instead of rotation silently stopping forever.
+const PendingKeyLife = 7 * 24 * time.Hour
+
+// offerRotation mints a key and persists it as pending before it is sent, so a crash after the
+// server recorded it cannot lose it. If the key cannot be persisted nothing is sent: announcing
+// a key held only in memory would strand the agent once an operator acknowledges it.
 func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options) error {
 	pub, priv, err := newKey()
 	if err != nil {
@@ -322,7 +341,11 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 	current := ed25519.PrivateKey(id.PrivateKey)
 	id.PendingPrivateKey = priv
 	id.PendingFingerprint = protocol.Fingerprint(pub)
-	opts.save(id)
+	id.PendingSince = time.Now().UTC()
+	if err := opts.save(id); err != nil {
+		id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+		return fmt.Errorf("rotation not offered: %w", err)
+	}
 	sig := ed25519.Sign(current, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(current.Public().(ed25519.PublicKey)), pub))
 	return write(ctx, conn, protocol.TypeRotate, protocol.Rotate{PublicKey: pub, Signature: sig})
 }

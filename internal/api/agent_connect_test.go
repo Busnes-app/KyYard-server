@@ -363,14 +363,32 @@ func TestAgentRotationOverTheSocket(t *testing.T) {
 	if notice.Type != protocol.TypeRotated || rotated.Fingerprint != e.PendingFingerprint {
 		t.Fatalf("rotated notice: %+v", notice)
 	}
+	// The agent reconnects as soon as it sees the notice; the server must free the slot before
+	// any database write so this never reads as a duplicate connection.
 	sock.conn.Close(websocket.StatusNormalClosure, "rotated")
-	waitFor(t, func() bool { return !s.Connected(ag.id) })
 	if _, reason := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version); reason != protocol.CloseKeyRetired {
 		t.Fatalf("old key after acknowledgement: %q", reason)
 	}
 	sock, reason := connect(t, ctx, httpSrv.URL, ag, newPriv, protocol.Version)
 	if reason != "" {
 		t.Fatalf("new key refused: %q", reason)
+	}
+	w = tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	for _, al := range e.Alerts {
+		if al.Kind == "duplicate_connection" {
+			t.Fatalf("immediate reconnect after rotation read as a duplicate: %+v", e.Alerts)
+		}
+	}
+	// A second hello on the same socket does not rewrite the capability set.
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{"docker.containers"}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{"docker.exec"}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	readEnvelope(t, ctx, sock.conn)
+	w = tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	if len(e.Capabilities) != 1 || e.Capabilities[0] != "docker.containers" {
+		t.Fatalf("second hello rewrote capabilities: %+v", e.Capabilities)
 	}
 	// A duplicate connection records an alert and blocks a further rotation.
 	if _, reason := connect(t, ctx, httpSrv.URL, ag, newPriv, protocol.Version); reason != protocol.CloseDuplicate {
