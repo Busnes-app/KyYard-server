@@ -40,8 +40,8 @@ status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 start_server() { # start_server <captcha-provider>
   KY_ENV=production \
-    KY_SESSION_SECRET= \
-    KY_ENCRYPTION_KEY= \
+    KY_SESSION_SECRET='' \
+    KY_ENCRYPTION_KEY='' \
     KY_COOKIE_SECURE=false \
     KY_PORT="$PORT" \
     KY_HOST=127.0.0.1 \
