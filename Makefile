@@ -7,8 +7,9 @@ build-web:
 	@cd web && npm ci && npm run build
 
 build:
-	@echo "==> Compiling kyyard-server binary..."
+	@echo "==> Compiling kyyard-server and kyyard-agent binaries..."
 	@go build -o kyyard-server ./cmd/server
+	@go build -o kyyard-agent ./cmd/agent
 
 test:
 	@echo "==> Running test suite..."

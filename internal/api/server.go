@@ -47,6 +47,7 @@ type Server struct {
 	// before the store closes.
 	detached detachedCounter
 	stopping atomic.Bool
+	agents   agentRegistry
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -227,6 +228,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/reject", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RejectEndpoint)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/revoke", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RevokeEndpoint)))
 	s.mux.HandleFunc("POST /api/agent/v1/enroll", s.handleAgentEnroll)
+	s.mux.HandleFunc("GET /api/agent/v1/connect", s.handleAgentConnect)
 	s.mux.HandleFunc("/api/agent/", func(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "Agent route not found")
 	})

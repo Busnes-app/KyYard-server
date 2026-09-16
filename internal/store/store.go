@@ -123,6 +123,15 @@ type TenancyStore interface {
 	RevokeEndpoint(ctx context.Context, access TenantAccess, endpointID string) error
 	RenameEndpoint(ctx context.Context, access TenantAccess, endpointID, name string) error
 
+	// Agent-facing lifecycle: authenticated by endpoint identity, never by a session.
+	AgentIdentity(ctx context.Context, endpointID string) (*AgentIdentity, error)
+	ReadEndpointRaw(ctx context.Context, endpointID string) (*Endpoint, error)
+	RecordAgentConnect(ctx context.Context, endpoint *Endpoint, ip, result string) error
+	TouchEndpoint(ctx context.Context, endpointID string) error
+	AcceptInventory(ctx context.Context, endpointID string, generation uint64) (bool, error)
+	MarkEndpointOffline(ctx context.Context, endpointID string) error
+	EndpointState(ctx context.Context, endpointID string) (string, error)
+
 	Initialize(ctx context.Context) error
 	CreateOrganization(ctx context.Context, organization *Organization) error
 	GetOrganization(ctx context.Context, organizationID string) (*Organization, error)

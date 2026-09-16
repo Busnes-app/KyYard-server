@@ -1,5 +1,7 @@
 github.com/Busness-app/ky-primitives v0.6.0 h1:5zqycnXl7Msuy3C4g+sg0UDCY8voIzxeNNhlJN9P0bg=
 github.com/Busness-app/ky-primitives v0.6.0/go.mod h1:cNU4XVPbGf9Dxx8WCB6gDNJj8NdQZI5c6Lr2V8Hp09M=
+github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
+github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/coreos/go-oidc/v3 v3.21.0 h1:wZo4Q9Pum8dYEj0eMUPrqR+kvuGkeUplbLpNCkBqoWM=
 github.com/coreos/go-oidc/v3 v3.21.0/go.mod h1:DYCf24+ncYi+XkIH97GY1+dqoRlbaSI26KVTCI9SrY4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
