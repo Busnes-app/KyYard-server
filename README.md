@@ -131,8 +131,37 @@ migration completes without assigning a member; adding a local admin later does 
 claim it. Platform administration remains separate from organization membership.
 
 Membership removal or disabling survives restart and administrator password resets. Legacy
-SCIM groups do not grant organization access. This release adds the storage foundation;
-tenant permission enforcement and management screens are the next delivery slices.
+SCIM groups do not grant organization access. Tenant APIs enforce live membership on every
+operation; platform administrators need explicit membership too. Management screens and
+membership/settings administration follow in the next delivery slice.
+
+### Tenant API
+
+Use `/api/organizations/{organization}` (`org_initial` for the default organization):
+
+| Method | Suffix | Operation |
+|---|---|---|
+| GET | empty | Organization details |
+| GET / POST | `/environments` | List / create environment |
+| GET / PATCH / DELETE | `/environments/{environment}` | Read / rename / delete |
+| GET | `/audit` | Organization audit history |
+| GET | `/environments/{environment}/audit` | Environment audit history |
+
+Create/rename takes `{"name":"Production"}`. Lists accept `offset` (default 0) and
+`limit` (default 50, maximum 200). Browser writes require the existing CSRF token.
+Responses include a server-generated `X-Request-ID` for audit correlation.
+
+| Organization membership | Read organization/environments | Manage environments | Read tenant audit |
+|---|---|---|---|
+| Organization administrator | Yes | Yes | Yes |
+| Environment administrator | Yes | Yes | No |
+| Operator / developer / read-only | Yes | No | No |
+
+These memberships apply throughout their organization; individual environment grants and
+workload permissions arrive with their corresponding APIs. Successful operations and audit
+records commit together. Audit failures prevent mutations. Historical platform events keep
+their original meaning and are excluded from tenant history. Existing recovery and instance
+settings retain platform authorization; tenant settings and credentials are not exposed yet.
 
 ## Persistent keys
 

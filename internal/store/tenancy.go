@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"time"
 )
 
@@ -49,7 +50,7 @@ func (t *tenancyStore) Initialize(ctx context.Context) error {
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at) VALUES (?,'organization.bootstrap',?,'One-time initial organization membership migration',?)`), userID, InitialOrganizationID, now)
+	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,correlation_id,result) VALUES (?,'organization.bootstrap',?,'One-time initial organization membership migration',?,'organization',?,?,'success')`), userID, InitialOrganizationID, now, InitialOrganizationID, uuid.NewString())
 	if err != nil {
 		return err
 	}

@@ -300,6 +300,19 @@ CREATE TABLE tenancy_bootstrap (
 INSERT INTO organizations (id, name, created_at) VALUES ('org_initial', 'Default organization', CURRENT_TIMESTAMP);
 INSERT INTO tenancy_bootstrap (id) VALUES (1);
 `},
+	{Version: 6, Name: "scoped_audit", SQLite: `ALTER TABLE audit_records ADD COLUMN scope TEXT NOT NULL DEFAULT 'platform' CHECK (scope IN ('platform','organization'));
+ALTER TABLE audit_records ADD COLUMN organization_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN environment_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN result TEXT NOT NULL DEFAULT 'unknown' CHECK (result IN ('unknown','success','denied','failure'));
+CREATE INDEX idx_audit_scope_created ON audit_records(organization_id, created_at, id);
+`, Postgres: `ALTER TABLE audit_records ADD COLUMN scope TEXT NOT NULL DEFAULT 'platform' CHECK (scope IN ('platform','organization'));
+ALTER TABLE audit_records ADD COLUMN organization_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN environment_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN result TEXT NOT NULL DEFAULT 'unknown' CHECK (result IN ('unknown','success','denied','failure'));
+CREATE INDEX idx_audit_scope_created ON audit_records(organization_id, created_at, id);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.
