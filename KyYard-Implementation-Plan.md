@@ -1,10 +1,9 @@
 **Repo:** Busness-app/kyyard-server
-**PR:** #5 — https://github.com/Busness-app/KyYard-server/pull/5
-**Worktree:** /home/yoshi/busness.app/kyyard-production-onboarding (branch feat/production-onboarding)
+**Worktree:** /home/yoshi/busness.app/kyyard-tenancy-schema (branch feat/tenancy-schema)
 
 # KyYard implementation plan
 
-Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). M0 merged in PR #1; password replacement and security corrections merged in PR #3 (base backport #33 also merged). M1 durable secrets merged in PR #4. The onboarding/health slice is implemented on `feat/production-onboarding`; local CI, PostgreSQL race tests and a fresh-volume browser password-change/restart check pass. PR #5 security review identified missing plaintext bind acknowledgement and an unused environment mode; both are corrected, with current-head CI/re-review pending; M2 tenancy follows after merge.
+Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). M0 and M1 are merged through PR #5, including both onboarding security corrections. M2 schema/bootstrap is implemented on `feat/tenancy-schema`; verification and PR review are in progress. Scoped permission enforcement/audit and routed administration follow as separate slices.
 
 ## 1. Outcome and scope
 
@@ -74,7 +73,7 @@ Include generated keys in capsule collection, manifest/member reporting, and res
 
 ### M2 — Tenancy, authorization, settings, and navigation
 
-**PR 04: schema and bootstrap migration.** Add organizations, memberships, environments, and scoped group membership or scoped extensions. Use fixed role mappings first; add role bindings only where environment grants require them. Define initial-organization migration for existing users; do not automatically grant every existing user access to every organization. Keep platform administration distinct from tenant membership. Migrations are resumable/forward-only and transactional where supported.
+**PR 04: schema and bootstrap migration.** Add organizations, memberships, environments, and scoped group membership or scoped extensions. Use fixed role mappings first; add role bindings only where environment grants require them. Define initial-organization migration for existing users; do not automatically grant every existing user access to every organization. Keep platform administration distinct from tenant membership. Migrations are resumable/forward-only and transactional where supported. Implemented in migration 5: organization-scoped roles/statuses, environments, groups and composite membership references. Startup then transactionally initializes the default organization once, selecting active local `admin` first or the oldest active local administrator; all other users remain unassigned. With no eligible local admin, initialization finishes without a grant. Restarts do not restore removed/disabled memberships. Existing global identity groups confer no organization access. This persistence slice exposes no tenant HTTP endpoints; authorization remains the next gate.
 
 **PR 05: permission enforcement and audit.** Introduce named actions and a single scoped authorization path. Require organization/environment context in product routes and store methods. Enforce composite ownership constraints so an endpoint, deployment, credential, or environment cannot reference a different tenant. Add actor, target, organization, environment, correlation ID, action, result, and timestamp to audit. Preserve historical/global audit meaning explicitly. Scope settings and credential access; retain instance-wide recovery operations under platform authority.
 

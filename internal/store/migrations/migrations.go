@@ -217,6 +217,89 @@ ALTER TABLE mfa_challenges ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';`,
 		Postgres: `DELETE FROM mfa_challenges;
 ALTER TABLE mfa_challenges ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';`,
 	},
+	{Version: 5, Name: "tenant_schema", SQLite: `CREATE TABLE organizations (
+ id TEXT PRIMARY KEY,
+ name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+ created_at DATETIME NOT NULL
+);
+CREATE TABLE organization_memberships (
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ role TEXT NOT NULL CHECK (role IN ('organization_admin','environment_admin','operator','developer','read_only')),
+ status TEXT NOT NULL CHECK (status IN ('active','disabled')),
+ PRIMARY KEY (organization_id, user_id)
+);
+CREATE INDEX idx_memberships_user ON organization_memberships(user_id);
+CREATE TABLE environments (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+ UNIQUE (organization_id, id),
+ UNIQUE (organization_id, name)
+);
+CREATE TABLE organization_groups (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+ UNIQUE (organization_id, id),
+ UNIQUE (organization_id, name)
+);
+CREATE TABLE organization_group_members (
+ organization_id TEXT NOT NULL,
+ group_id TEXT NOT NULL,
+ user_id TEXT NOT NULL,
+ PRIMARY KEY (organization_id, group_id, user_id),
+ FOREIGN KEY (organization_id, group_id) REFERENCES organization_groups(organization_id, id) ON DELETE CASCADE,
+ FOREIGN KEY (organization_id, user_id) REFERENCES organization_memberships(organization_id, user_id) ON DELETE CASCADE
+);
+CREATE TABLE tenancy_bootstrap (
+ id INTEGER PRIMARY KEY CHECK (id = 1),
+ completed_at DATETIME
+);
+INSERT INTO organizations (id, name, created_at) VALUES ('org_initial', 'Default organization', CURRENT_TIMESTAMP);
+INSERT INTO tenancy_bootstrap (id) VALUES (1);
+`, Postgres: `CREATE TABLE organizations (
+ id TEXT PRIMARY KEY,
+ name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+ created_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE organization_memberships (
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ role TEXT NOT NULL CHECK (role IN ('organization_admin','environment_admin','operator','developer','read_only')),
+ status TEXT NOT NULL CHECK (status IN ('active','disabled')),
+ PRIMARY KEY (organization_id, user_id)
+);
+CREATE INDEX idx_memberships_user ON organization_memberships(user_id);
+CREATE TABLE environments (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+ UNIQUE (organization_id, id),
+ UNIQUE (organization_id, name)
+);
+CREATE TABLE organization_groups (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+ UNIQUE (organization_id, id),
+ UNIQUE (organization_id, name)
+);
+CREATE TABLE organization_group_members (
+ organization_id TEXT NOT NULL,
+ group_id TEXT NOT NULL,
+ user_id TEXT NOT NULL,
+ PRIMARY KEY (organization_id, group_id, user_id),
+ FOREIGN KEY (organization_id, group_id) REFERENCES organization_groups(organization_id, id) ON DELETE CASCADE,
+ FOREIGN KEY (organization_id, user_id) REFERENCES organization_memberships(organization_id, user_id) ON DELETE CASCADE
+);
+CREATE TABLE tenancy_bootstrap (
+ id INTEGER PRIMARY KEY CHECK (id = 1),
+ completed_at TIMESTAMPTZ
+);
+INSERT INTO organizations (id, name, created_at) VALUES ('org_initial', 'Default organization', CURRENT_TIMESTAMP);
+INSERT INTO tenancy_bootstrap (id) VALUES (1);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

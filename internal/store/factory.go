@@ -45,8 +45,15 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 		if strings.Contains(dsn, "?") {
 			delim = "&"
 		}
-		dsn = fmt.Sprintf("%s%s_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)", dsn, delim)
+		dsn = fmt.Sprintf("%s%s_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", dsn, delim)
 	}
+
+	// Each physical connection must enable constraints, even with custom tuning pragmas.
+	delim := "?"
+	if strings.Contains(dsn, "?") {
+		delim = "&"
+	}
+	dsn += delim + "_pragma=foreign_keys(ON)"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -59,6 +66,16 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
+	}
+
+	var foreignKeys int
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to verify SQLite foreign keys: %w", err)
+	}
+	if foreignKeys != 1 {
+		_ = db.Close()
+		return nil, fmt.Errorf("SQLite foreign keys must be enabled; remove conflicting KY_DB_DSN pragmas or options")
 	}
 
 	return newSQLStore(ctx, db, "sqlite")

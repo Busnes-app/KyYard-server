@@ -49,6 +49,8 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	return s, nil
 }
 
+func (s *SQLStore) Tenancy() TenancyStore { return &tenancyStore{store: s} }
+
 func (s *SQLStore) Users() UserStore        { return s.users }
 func (s *SQLStore) Sessions() SessionStore  { return s.sessions }
 func (s *SQLStore) Devices() DeviceStore    { return s.devices }

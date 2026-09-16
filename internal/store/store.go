@@ -14,6 +14,7 @@ var (
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
 type Store interface {
+	Tenancy() TenancyStore
 	Users() UserStore
 	Sessions() SessionStore
 	Devices() DeviceStore
@@ -90,4 +91,23 @@ type SettingsStore interface {
 	SetSetting(ctx context.Context, key, val string) error
 	DeleteSetting(ctx context.Context, key string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
+}
+
+// TenancyStore is a persistence boundary, not authorization. Callers must authorize access;
+// every tenant-owned operation takes the owning organization explicitly.
+type TenancyStore interface {
+	Initialize(ctx context.Context) error
+	CreateOrganization(ctx context.Context, organization *Organization) error
+	GetOrganization(ctx context.Context, organizationID string) (*Organization, error)
+	SetMembership(ctx context.Context, membership *OrganizationMembership) error
+	GetMembership(ctx context.Context, organizationID, userID string) (*OrganizationMembership, error)
+	DeleteMembership(ctx context.Context, organizationID, userID string) error
+	CreateEnvironment(ctx context.Context, environment *Environment) error
+	GetEnvironment(ctx context.Context, organizationID, environmentID string) (*Environment, error)
+	RenameEnvironment(ctx context.Context, organizationID, environmentID, name string) error
+	DeleteEnvironment(ctx context.Context, organizationID, environmentID string) error
+	CreateOrganizationGroup(ctx context.Context, group *OrganizationGroup) error
+	AddOrganizationGroupMember(ctx context.Context, organizationID, groupID, userID string) error
+	ListOrganizationGroupMembers(ctx context.Context, organizationID, groupID string) ([]string, error)
+	RemoveOrganizationGroupMember(ctx context.Context, organizationID, groupID, userID string) error
 }

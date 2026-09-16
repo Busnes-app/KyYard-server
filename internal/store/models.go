@@ -84,3 +84,37 @@ type Setting struct {
 	Value     string    `json:"value"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// Platform authority remains User.Role; it never implies one of these tenant roles.
+type TenantRole string
+
+const (
+	RoleOrganizationAdmin TenantRole = "organization_admin"
+	RoleEnvironmentAdmin  TenantRole = "environment_admin"
+	RoleOperator          TenantRole = "operator"
+	RoleDeveloper         TenantRole = "developer"
+	RoleReadOnly          TenantRole = "read_only"
+	InitialOrganizationID            = "org_initial"
+)
+
+type Organization struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+type OrganizationMembership struct {
+	OrganizationID string     `json:"organization_id"`
+	UserID         string     `json:"user_id"`
+	Role           TenantRole `json:"role"`
+	Status         string     `json:"status"`
+}
+type Environment struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	Name           string `json:"name"`
+}
+type OrganizationGroup struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	Name           string `json:"name"`
+}

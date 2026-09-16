@@ -122,6 +122,18 @@ the database with a two-second deadline and returns 503 during shutdown or datab
 They expose only `status`, never connection strings, keys or backend errors. The image
 healthcheck calls readiness using the binary, without loading keys or creating data.
 
+## Initial organization
+
+Startup creates the default organization and assigns one active local administrator once:
+`admin` if present, otherwise the oldest active local admin. Existing ordinary, disabled and
+federated accounts are not automatically enrolled. If no eligible local admin exists, the
+migration completes without assigning a member; adding a local admin later does not silently
+claim it. Platform administration remains separate from organization membership.
+
+Membership removal or disabling survives restart and administrator password resets. Legacy
+SCIM groups do not grant organization access. This release adds the storage foundation;
+tenant permission enforcement and management screens are the next delivery slices.
+
 ## Persistent keys
 
 First boot creates `KY_DATA_DIR` (default `./data`) privately and creates `encryption.key`,
