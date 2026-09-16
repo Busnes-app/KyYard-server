@@ -9,7 +9,7 @@
 - **Instance** — the placement of an application on one endpoint. One application may have several instances in later milestones; 0.1 uses one.
 - **Deployment** — one attempt to make an instance match a revision, with per-step outcomes.
 - **Resource** — a runtime object (container, image, volume, network, later Kubernetes objects) observed on an endpoint, owned by an instance or unmanaged.
-- **Registry** — a named image source with optional credentials.
+- **Registry** — a named image source with optional credentials. A credential is sent only when the image reference's registry host exactly equals the registry's configured host (no suffix or wildcard matching), is never attached to a request that follows a redirect to another host, and a reference on a registry with no configuration is pulled anonymously or refused by the organization's setting.
 - **Update policy** (M7b) — a rule for detecting and applying image updates.
 
 Desired configuration, observed runtime, drift and last deployment are stored and shown separately; the UI never blends them.
