@@ -4,6 +4,8 @@ import { secureFetch } from './api';
 export interface MemberOrganization { id: string; name: string; role: string }
 export interface Environment { id: string; organization_id: string; name: string }
 export interface Member { user_id: string; username: string; role: string; status: string }
+export interface Endpoint { id: string; environment_id: string; name: string; runtime: string; state: string; facts: Record<string, string>; fingerprint: string; created_at: string; approved_by?: string }
+export interface EnrollmentToken { id: string; runtime: string; expires_at: string; token: string; command?: string; image?: string; note?: string; disclosure: string }
 export interface AuditRecord { id: number; user_id: string; action: string; resource: string; environment_id: string; correlation_id: string; result: string; created_at: string }
 
 export const tenantRoles = ['organization_admin', 'environment_admin', 'operator', 'developer', 'read_only'] as const;
@@ -46,6 +48,7 @@ export async function tenantWrite(url: string, method: string, body?: unknown): 
     if (payload.code === 'last_administrator') return 'The organization needs at least one active administrator.';
     if (resp.status === 403) return 'You do not have permission to do that in this organization.';
     if (resp.status === 404) return 'Not found in this organization.';
+    if (payload.code === 'environment_in_use') return 'Revoke every endpoint in this environment before deleting it.';
     if (resp.status === 409) return 'That already exists.';
     return `Request failed (${resp.status}).`;
   } catch {
