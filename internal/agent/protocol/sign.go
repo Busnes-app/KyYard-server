@@ -16,12 +16,14 @@ const (
 	TokenSize     = 32
 )
 
-// Preimage is a context string followed by 2-byte big-endian length-prefixed fields, so a
-// signature under one context can never verify under another or split differently.
+// Preimage is the context string and every field, each as a 4-byte big-endian length followed
+// by the bytes, so a signature under one context can never verify under another or split
+// differently. The prefix is total for any field a message can carry.
 func Preimage(context string, fields ...[]byte) []byte {
-	out := []byte(context)
+	out := binary.BigEndian.AppendUint32(nil, uint32(len(context)))
+	out = append(out, context...)
 	for _, f := range fields {
-		out = binary.BigEndian.AppendUint16(out, uint16(len(f)))
+		out = binary.BigEndian.AppendUint32(out, uint32(len(f)))
 		out = append(out, f...)
 	}
 	return out

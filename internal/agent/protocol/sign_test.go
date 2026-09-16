@@ -3,6 +3,7 @@ package protocol
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"testing"
 )
 
@@ -34,6 +35,15 @@ func TestPreimagesAreDomainSeparated(t *testing.T) {
 	b := Preimage(ContextAuth, []byte("a"), []byte("bc"))
 	if string(a) == string(b) {
 		t.Fatal("length prefixes do not separate fields")
+	}
+	// A field past 65535 bytes keeps a faithful length prefix, and the context is prefixed too.
+	big := make([]byte, 70000)
+	p := Preimage(ContextAuth, big)
+	if len(p) != 4+len(ContextAuth)+4+len(big) || binary.BigEndian.Uint32(p[4+len(ContextAuth):]) != 70000 {
+		t.Fatal("length prefix does not describe a large field")
+	}
+	if string(Preimage("ab", []byte("c"))) == string(Preimage("a", []byte("bc"))) {
+		t.Fatal("context is not length-prefixed")
 	}
 	if Fingerprint(pub) == Fingerprint(append([]byte{}, pub[1:]...)) || len(Fingerprint(pub)) != 64 {
 		t.Fatal("fingerprint shape")

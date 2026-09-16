@@ -15,7 +15,10 @@ import (
 	"github.com/Busness-app/kyyard-server/internal/store"
 )
 
+const agentImage = "ghcr.io/example/kyyard-agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func TestEnrollmentRoutes(t *testing.T) {
+	t.Setenv("KY_AGENT_IMAGE", agentImage)
 	s, st, _ := setupTestServer(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
@@ -51,12 +54,15 @@ func TestEnrollmentRoutes(t *testing.T) {
 	}
 	w := check(admin, "POST", tokens, `{"runtime":"docker"}`, 201)
 	var minted struct {
-		Token, Command, Disclosure string
-		ExpiresAt                  string `json:"expires_at"`
+		Token, Command, Disclosure, Image, Note string
+		ExpiresAt                               string `json:"expires_at"`
 	}
 	must(json.Unmarshal(w.Body.Bytes(), &minted))
 	if !strings.Contains(minted.Command, minted.Token) || !strings.Contains(minted.Command, "docker.sock") || !strings.Contains(minted.Disclosure, "root-equivalent") || minted.ExpiresAt == "" {
 		t.Fatalf("enrollment command incomplete: %+v", minted)
+	}
+	if !strings.Contains(minted.Command, " "+agentImage+" ") || minted.Image != agentImage || strings.Contains(minted.Command, ":latest") {
+		t.Fatalf("command does not name exactly the configured digest-pinned image: %s", minted.Command)
 	}
 	tokenBytes, err := base64.RawURLEncoding.DecodeString(minted.Token)
 	must(err)
@@ -140,4 +146,32 @@ func TestEnrollmentRoutes(t *testing.T) {
 		t.Fatalf("final state: %+v", got)
 	}
 	check(admin, "GET", "/api/agent/v1/anything", "", 404)
+}
+
+// Without a configured digest-pinned image the token still issues, but no command does.
+func TestEnrollmentTokenWithoutImageHasNoCommand(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if err := ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"}); err != nil {
+		t.Fatal(err)
+	}
+	admin := loginAs(t, s, st, "envadmin", "user")
+	if err := ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleEnvironmentAdmin, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w := tenantRequest(s, admin, "POST", "/api/organizations/a/environments/env-a/enrollment-tokens", `{"runtime":"docker"}`, true)
+	if w.Code != 201 {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := out["command"]; has || out["token"] == "" || out["note"] == nil || out["disclosure"] == nil {
+		t.Fatalf("token without image: %v", out)
+	}
 }

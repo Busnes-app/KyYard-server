@@ -164,7 +164,8 @@ roles; it never reveals anyone else's. Membership writes take `{"role":"operator
 removing the last one returns `409` with code `last_administrator`, even for that administrator.
 
 Create/rename takes `{"name":"Production"}`. An enrollment token lives 15 minutes, is single use,
-and is shown once with a `docker run` command that pipes it on stdin; the same response states that
+and is shown once; when `KY_AGENT_IMAGE` names a digest-pinned agent image the response also
+carries a `docker run` command that pipes the token on stdin; the same response states that
 mounting the Docker socket gives the agent root-equivalent access to that host. A host enrolls as
 `pending` until an administrator approves the exact key fingerprint it presented. Lists accept `offset` (default 0) and
 `limit` (default 50, maximum 200). Browser writes require the existing CSRF token.

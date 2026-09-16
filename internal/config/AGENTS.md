@@ -7,6 +7,7 @@ Manages environment and file-based configuration loading, defaults, and type con
 Owns environment variable parsing, configuration validation, default fallbacks, and security key generations.
 
 ## Local Contracts
+- `KY_AGENT_IMAGE` is optional and, when set, must be a digest-pinned reference (`registry/repo@sha256:<64 hex>`); a tag is refused at startup because the image runs with the Docker socket. Empty means enrollment tokens issue without a ready-to-run command.
 - `KY_ALLOW_PLAINTEXT_BIND=true` explicitly acknowledges a non-loopback plaintext listen socket; without it HTTP accepts only literal loopback bind addresses. Compose opts in alongside its loopback host publish; the image does not. `KY_ENV` and `ServerConfig.Environment` are removed: security follows the transport contract.
 - Bare HTTP listens on loopback by default. `KY_APP_URL` must be an origin: HTTP only on localhost/loopback, HTTPS only with an explicit trusted proxy. Cookie Secure follows its scheme in every environment; contradictory overrides fail startup. Default ports and host casing normalize to browser origins. SSO/SCIM default off.
 - `DefaultAppName` is `KyYard`, shared by server branding and the default recovery service identity.

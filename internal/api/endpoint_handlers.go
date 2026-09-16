@@ -33,17 +33,26 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		s.tenantError(w, err)
 		return
 	}
-	tok, err := s.store.Tenancy().CreateEnrollmentToken(r.Context(), a, input.Runtime)
+	image := s.config.Server.AgentImage
+	tok, err := s.store.Tenancy().CreateEnrollmentToken(r.Context(), a, input.Runtime, image)
 	if err != nil {
 		s.tenantError(w, err)
 		return
 	}
 	secret := base64.RawURLEncoding.EncodeToString(tok.Secret)
-	command := fmt.Sprintf("printf '%%s\\n' '%s' | docker run -d -i --name kyyard-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent ghcr.io/busnes-app/kyyard-agent:latest --server %s", secret, s.config.Server.AppURL)
-	s.writeJSON(w, http.StatusCreated, map[string]any{
+	out := map[string]any{
 		"id": tok.ID, "environment_id": tok.EnvironmentID, "runtime": tok.Runtime, "expires_at": tok.ExpiresAt,
-		"token": secret, "command": command, "disclosure": socketDisclosure,
-	})
+		"token": secret, "disclosure": socketDisclosure,
+	}
+	// No configured image, no command: the control plane never points operators at an image it
+	// has not been told to trust by digest.
+	if image != "" {
+		out["image"] = image
+		out["command"] = fmt.Sprintf("printf '%%s\\n' '%s' | docker run -d -i --name kyyard-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent %s --server %s", secret, image, s.config.Server.AppURL)
+	} else {
+		out["note"] = "Set KY_AGENT_IMAGE to a digest-pinned agent image to receive a ready-to-run command."
+	}
+	s.writeJSON(w, http.StatusCreated, out)
 }
 
 // handleAgentEnroll is the only agent-facing route in this slice. It has no session: the

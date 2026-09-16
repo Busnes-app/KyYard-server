@@ -162,6 +162,7 @@ type EnrollmentToken struct {
 	EnvironmentID string    `json:"environment_id"`
 	Runtime       string    `json:"runtime"`
 	ExpiresAt     time.Time `json:"expires_at"`
+	AgentImage    string    `json:"agent_image,omitempty"`
 	Secret        []byte    `json:"-"`
 }
 

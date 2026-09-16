@@ -140,3 +140,23 @@ func TestBackupKeepBelowOneIsRefused(t *testing.T) {
 		t.Fatalf("want KY_BACKUP_KEEP error, got %v", err)
 	}
 }
+
+func TestAgentImageMustBeDigestPinned(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	for _, bad := range []string{"ghcr.io/busnes-app/kyyard-agent:latest", "ghcr.io/busnes-app/kyyard-agent", "kyyard-agent@sha256:abc", "ghcr.io/busnes-app/kyyard-agent@sha256:" + strings.Repeat("g", 64)} {
+		t.Setenv("KY_AGENT_IMAGE", bad)
+		if _, err := config.LoadFromEnv(); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	good := "ghcr.io/busnes-app/kyyard-agent@sha256:" + strings.Repeat("a", 64)
+	t.Setenv("KY_AGENT_IMAGE", good)
+	cfg, err := config.LoadFromEnv()
+	if err != nil || cfg.Server.AgentImage != good {
+		t.Fatalf("digest reference refused: %v", err)
+	}
+	t.Setenv("KY_AGENT_IMAGE", "")
+	if cfg, err := config.LoadFromEnv(); err != nil || cfg.Server.AgentImage != "" {
+		t.Fatalf("empty image must be allowed: %v", err)
+	}
+}

@@ -351,6 +351,7 @@ CREATE TABLE agent_enrollment_tokens (
  expires_at DATETIME NOT NULL,
  consumed_at DATETIME,
  endpoint_id TEXT NOT NULL DEFAULT '',
+ agent_image TEXT NOT NULL DEFAULT '',
  FOREIGN KEY (organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE CASCADE
 );
 `, Postgres: `CREATE TABLE endpoints (
@@ -391,6 +392,7 @@ CREATE TABLE agent_enrollment_tokens (
  expires_at TIMESTAMPTZ NOT NULL,
  consumed_at TIMESTAMPTZ,
  endpoint_id TEXT NOT NULL DEFAULT '',
+ agent_image TEXT NOT NULL DEFAULT '',
  FOREIGN KEY (organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE CASCADE
 );
 `},

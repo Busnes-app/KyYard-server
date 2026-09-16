@@ -16,7 +16,7 @@ func TestEnrollmentExpiryIsEnforcedFromStoredTimestamps(t *testing.T) {
 	st, a := tenantAtomicStore(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker")
+	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestEnrollmentExpiryIsEnforcedFromStoredTimestamps(t *testing.T) {
 	if _, err := ts.Enroll(ctx, req); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expired token accepted: %v", err)
 	}
-	tok, err = ts.CreateEnrollmentToken(ctx, a, "docker")
+	tok, err = ts.CreateEnrollmentToken(ctx, a, "docker", "")
 	if err != nil {
 		t.Fatal(err)
 	}

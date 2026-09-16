@@ -26,7 +26,9 @@ var factKeys = map[string]bool{"hostname": true, "os": true, "runtime_version": 
 
 func validRuntime(r string) bool { return r == "docker" || r == "kubernetes" }
 
-func (t *tenancyStore) CreateEnrollmentToken(ctx context.Context, a TenantAccess, runtime string) (*EnrollmentToken, error) {
+// CreateEnrollmentToken records the image reference the operator is handed with the token, so
+// the audit trail names the bytes that were authorized to run as root on the host.
+func (t *tenancyStore) CreateEnrollmentToken(ctx context.Context, a TenantAccess, runtime, agentImage string) (*EnrollmentToken, error) {
 	if a.EnvironmentID == "" {
 		return nil, ErrInvalid
 	}
@@ -35,12 +37,12 @@ func (t *tenancyStore) CreateEnrollmentToken(ctx context.Context, a TenantAccess
 		return nil, err
 	}
 	now := time.Now().UTC()
-	tok := &EnrollmentToken{ID: uuid.NewString(), EnvironmentID: a.EnvironmentID, Runtime: runtime, ExpiresAt: now.Add(enrollmentTokenLife), Secret: secret}
+	tok := &EnrollmentToken{ID: uuid.NewString(), EnvironmentID: a.EnvironmentID, Runtime: runtime, ExpiresAt: now.Add(enrollmentTokenLife), Secret: secret, AgentImage: agentImage}
 	err := t.withTenantTarget(ctx, a, permissions.EndpointEnroll, tok.ID, func(tx *sql.Tx) error {
 		if !validRuntime(runtime) {
 			return ErrInvalid
 		}
-		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO agent_enrollment_tokens (id,organization_id,environment_id,runtime,token_hash,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?)`), tok.ID, a.OrganizationID, a.EnvironmentID, runtime, crypto.SHA256Hex(secret), a.ActorID, now, tok.ExpiresAt)
+		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO agent_enrollment_tokens (id,organization_id,environment_id,runtime,token_hash,created_by,created_at,expires_at,agent_image) VALUES (?,?,?,?,?,?,?,?,?)`), tok.ID, a.OrganizationID, a.EnvironmentID, runtime, crypto.SHA256Hex(secret), a.ActorID, now, tok.ExpiresAt, agentImage)
 		return err
 	})
 	if err != nil {

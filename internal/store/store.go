@@ -113,7 +113,7 @@ type TenancyStore interface {
 	// ListMemberOrganizations returns the caller's own active memberships; it is not tenant-scoped.
 	ListMemberOrganizations(ctx context.Context, userID string) ([]MemberOrganization, error)
 
-	CreateEnrollmentToken(ctx context.Context, access TenantAccess, runtime string) (*EnrollmentToken, error)
+	CreateEnrollmentToken(ctx context.Context, access TenantAccess, runtime, agentImage string) (*EnrollmentToken, error)
 	// Enroll is agent-facing: the token, not a session, selects the tenant.
 	Enroll(ctx context.Context, request EnrollmentRequest) (*Endpoint, error)
 	ListEndpoints(ctx context.Context, access TenantAccess, offset, limit int) ([]Endpoint, error)

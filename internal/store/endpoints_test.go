@@ -33,13 +33,13 @@ func TestEnrollmentTokenIsSingleUseAndBound(t *testing.T) {
 	st, a := setupTenantAccess(t)
 	ts := st.Tenancy()
 	a.EnvironmentID = "env-a"
-	if _, err := ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: a.ActorID, OrganizationID: "a"}, "docker"); !errors.Is(err, store.ErrInvalid) {
+	if _, err := ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: a.ActorID, OrganizationID: "a"}, "docker", ""); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("token without environment: %v", err)
 	}
-	if _, err := ts.CreateEnrollmentToken(ctx, a, "podman"); !errors.Is(err, store.ErrInvalid) {
+	if _, err := ts.CreateEnrollmentToken(ctx, a, "podman", ""); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("unknown runtime: %v", err)
 	}
-	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker")
+	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
 	mustTenant(t, err)
 	if len(tok.Secret) != protocol.TokenSize || tok.EnvironmentID != "env-a" {
 		t.Fatalf("token shape: %+v", tok)
@@ -100,7 +100,7 @@ func TestEnrollmentTokenIsSingleUseAndBound(t *testing.T) {
 		t.Fatal("unknown fact key stored")
 	}
 	// A second token cannot reuse the name inside the organization.
-	tok2, err := ts.CreateEnrollmentToken(ctx, a, "docker")
+	tok2, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
 	mustTenant(t, err)
 	if _, err := ts.Enroll(ctx, newAgentKey(t).request(tok2.Secret, "racer")); !errors.Is(err, store.ErrAlreadyExists) {
 		t.Fatalf("duplicate name: %v", err)
@@ -131,7 +131,7 @@ func TestEndpointApprovalBindsFingerprintAndTerminalStates(t *testing.T) {
 	st, a := setupTenantAccess(t)
 	ts := st.Tenancy()
 	a.EnvironmentID = "env-a"
-	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker")
+	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
 	mustTenant(t, err)
 	key := newAgentKey(t)
 	e, err := ts.Enroll(ctx, key.request(tok.Secret, "host"))
@@ -150,7 +150,7 @@ func TestEndpointApprovalBindsFingerprintAndTerminalStates(t *testing.T) {
 	if err := ts.ApproveEndpoint(ctx, viewer, e.ID, e.Fingerprint); !errors.Is(err, store.ErrForbidden) {
 		t.Fatalf("read-only approved: %v", err)
 	}
-	if _, err := ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: "viewer", OrganizationID: "a", EnvironmentID: "env-a"}, "docker"); !errors.Is(err, store.ErrForbidden) {
+	if _, err := ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: "viewer", OrganizationID: "a", EnvironmentID: "env-a"}, "docker", ""); !errors.Is(err, store.ErrForbidden) {
 		t.Fatalf("read-only minted a token: %v", err)
 	}
 	// The reviewed fingerprint must be the enrolled one.
@@ -192,12 +192,12 @@ func TestEndpointApprovalBindsFingerprintAndTerminalStates(t *testing.T) {
 	}
 
 	// A pending enrollment can be rejected; it is terminal too.
-	tok2, err := ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: a.ActorID, OrganizationID: "b", EnvironmentID: "env-b"}, "docker")
+	tok2, err := ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: a.ActorID, OrganizationID: "b", EnvironmentID: "env-b"}, "docker", "")
 	if !errors.Is(err, store.ErrForbidden) {
 		t.Fatalf("token for an organization without membership: %v", err)
 	}
 	mustTenant(t, ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a2", OrganizationID: "a", Name: "Second"}))
-	tok2, err = ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: a.ActorID, OrganizationID: "a", EnvironmentID: "env-a2"}, "kubernetes")
+	tok2, err = ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: a.ActorID, OrganizationID: "a", EnvironmentID: "env-a2"}, "kubernetes", "")
 	mustTenant(t, err)
 	e2, err := ts.Enroll(ctx, newAgentKey(t).request(tok2.Secret, "host"))
 	mustTenant(t, err)
