@@ -3,7 +3,7 @@ import { Server } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { envPath, orgPath } from '../router';
-import { useTenantResource, type Endpoint, type Inventory } from '../tenant';
+import { useTenantResource, type Endpoint, type Inventory, type Sample } from '../tenant';
 import { displayName } from '../components/Endpoints';
 
 const bytes = (n: number) => n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GiB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(0)} MiB` : `${n} B`;
@@ -15,6 +15,15 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
   const details = useTenantResource<Endpoint>(base);
   const inventory = useTenantResource<Inventory>(`${base}/inventory`);
+  const samples = useTenantResource<Sample[]>(`${base}/samples`);
+  const latest = new Map((Array.isArray(samples.data) ? samples.data : []).map((s) => [s.container_id, s]));
+  // -1 is "no interval yet" and a missing row is "no data"; neither is zero usage.
+  const usage = (c: { id: string; state: string }) => {
+    const s = latest.get(c.id);
+    if (!s) return c.state === 'running' ? 'no data' : '—';
+    const cpu = s.cpu_percent < 0 ? 'cpu —' : `cpu ${s.cpu_percent.toFixed(1)}%`;
+    return `${cpu} · mem ${bytes(s.memory_bytes)}`;
+  };
   const e = details.data;
   const inv = inventory.data;
   const skew = inv ? Math.abs(new Date(inv.received_at).getTime() - new Date(inv.observed_at).getTime()) > 5 * 60 * 1000 : false;
@@ -51,7 +60,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
-          <Table title="Containers" rows={inv.snapshot.containers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Ports', 'Project']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—']} />
+          <Table title="Containers" rows={inv.snapshot.containers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Usage', 'Ports', 'Project']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, usage(c), c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—']} />
           <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), displayName(i.id).slice(0, 19)]} />
           <Table title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />
           <Table title="Volumes" rows={inv.snapshot.volumes} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [displayName(v.name), displayName(v.driver), displayName(v.mountpoint)]} />

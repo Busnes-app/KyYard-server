@@ -37,6 +37,8 @@ type Options struct {
 	RotateEvery time.Duration
 	// Snapshot reads the runtime; nil reports facts only (no runtime reachable).
 	Snapshot func(ctx context.Context) (*protocol.Snapshot, error)
+	// Metrics samples the running containers named in the last snapshot; nil sends none.
+	Metrics func(ctx context.Context, running []string) protocol.Metrics
 	// InventoryEvery is how often a fresh snapshot is sent while connected.
 	InventoryEvery time.Duration
 	// OnState is called with the state the server reported at connect (tests).
@@ -409,6 +411,22 @@ func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 		return err
 	}
 	id.Generation = gen
-	opts.save(id)
+	_ = opts.save(id)
+	if opts.Metrics != nil {
+		running := make([]string, 0, len(snap.Containers))
+		for _, ct := range snap.Containers {
+			if ct.State == "running" {
+				running = append(running, ct.ID)
+			}
+		}
+		mctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		m := opts.Metrics(mctx, running)
+		cancel()
+		if len(m.Samples) > 0 {
+			if err := write(ctx, conn, protocol.TypeMetrics, m); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }

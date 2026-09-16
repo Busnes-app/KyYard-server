@@ -39,6 +39,7 @@ func main() {
 	// The Docker adapter is optional at start: a host whose daemon is down still enrolls and
 	// reports facts, and the snapshot call keeps retrying the socket on its own schedule.
 	var snapshot func(context.Context) (*protocol.Snapshot, error)
+	var metrics func(context.Context, []string) protocol.Metrics
 	runtimeVersion := ""
 	if *socket != "" {
 		engine := docker.New(*socket)
@@ -48,6 +49,7 @@ func main() {
 			runtimeVersion = facts.Version
 		}
 		snapshot = engine.Snapshot
+		metrics = engine.Stats
 	}
 
 	id, err := client.LoadIdentity(*dir)
@@ -73,7 +75,7 @@ func main() {
 	} else if *server != "" && *server != id.Server {
 		log.Fatalf("identity is enrolled with %s, not %s; remove %s to re-enroll", id.Server, *server, *dir)
 	}
-	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, InventoryEvery: *inventoryEvery}); err != nil {
+	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, InventoryEvery: *inventoryEvery}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

@@ -263,3 +263,25 @@ func Shrink(s *Snapshot) []byte {
 		}
 	}
 }
+
+// MaxSamples bounds one metrics frame; the adapter reports running containers only.
+const MaxSamples = 1000
+
+// Metrics is a bounded observation of running containers taken at one instant.
+type Metrics struct {
+	ObservedAt time.Time `json:"observed_at"`
+	Samples    []Sample  `json:"samples"`
+}
+
+// Sample is one container's usage at ObservedAt. CPUPercent is the share of one core over the
+// interval since the previous sample (100 = one core busy); the first sample after a restart
+// has no interval and reports -1, which the UI shows as "no data" rather than zero.
+type Sample struct {
+	ContainerID string  `json:"container_id"`
+	CPUPercent  float64 `json:"cpu_percent"`
+	MemoryBytes int64   `json:"memory_bytes"`
+	MemoryLimit int64   `json:"memory_limit"`
+	RxBytes     int64   `json:"rx_bytes"`
+	TxBytes     int64   `json:"tx_bytes"`
+	Pids        int64   `json:"pids"`
+}

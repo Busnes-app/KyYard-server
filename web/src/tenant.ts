@@ -16,6 +16,7 @@ export interface Snapshot {
   networks: { id: string; name: string; driver: string; scope: string }[]; volumes: { name: string; driver: string; mountpoint: string; created_at: string }[];
   truncated?: string[];
 }
+export interface Sample { container_id: string; observed_at: string; cpu_percent: number; memory_bytes: number; memory_limit: number; rx_bytes: number; tx_bytes: number; pids: number }
 export interface Inventory { endpoint_id: string; state: string; generation: number; observed_at: string; received_at: string; snapshot: Snapshot }
 export interface AuditRecord { id: number; user_id: string; action: string; resource: string; environment_id: string; correlation_id: string; result: string; created_at: string }
 

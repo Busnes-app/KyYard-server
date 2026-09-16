@@ -372,6 +372,18 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeHeartbeat, nil)); err != nil {
 			return true
 		}
+	case protocol.TypeMetrics:
+		if pending {
+			return false
+		}
+		var m protocol.Metrics
+		if err := json.Unmarshal(f.Payload, &m); err != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		if err := ts.RecordSamples(fctx, c.endpointID, m); err != nil {
+			log.Printf("agent %s: metrics: %v", c.endpointID, err)
+		}
 	case protocol.TypeInventory:
 		if pending {
 			return false

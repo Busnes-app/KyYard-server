@@ -612,3 +612,38 @@ func TestLateAcknowledgementAfterTheAgentForgotTheOffer(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// Metrics ride along with each inventory report and land as samples.
+func TestAgentReportsMetricsWithInventory(t *testing.T) {
+	httpSrv, st, _, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	snapshot := func(context.Context) (*protocol.Snapshot, error) {
+		return &protocol.Snapshot{ObservedAt: time.Now(), Containers: []protocol.Container{{ID: "c1", Name: "web", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}, {ID: "c2", Name: "old", State: "exited", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+	}
+	var asked []string
+	metrics := func(_ context.Context, running []string) protocol.Metrics {
+		asked = append(asked, running...)
+		return protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1", CPUPercent: 7.5, MemoryBytes: 42}}}
+	}
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() {
+		_ = client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, Snapshot: snapshot, Metrics: metrics})
+	}()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		latest, _ := st.Tenancy().LatestSamples(ctx, view, id.EndpointID)
+		if len(latest) == 1 && latest[0].ContainerID == "c1" && latest[0].CPUPercent == 7.5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("samples never arrived: %+v", latest)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(asked) != 1 || asked[0] != "c1" {
+		t.Fatalf("metrics asked for %v, want only the running container", asked)
+	}
+}

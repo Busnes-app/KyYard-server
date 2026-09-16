@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
 	"time"
 )
 
@@ -138,6 +139,10 @@ type TenancyStore interface {
 	TouchEndpoint(ctx context.Context, endpointID string) error
 	AcceptInventory(ctx context.Context, endpointID string, generation uint64, observedAt time.Time, snapshot []byte) (bool, error)
 	ReadInventory(ctx context.Context, access TenantAccess, endpointID string) (*Inventory, error)
+	RecordSamples(ctx context.Context, endpointID string, metrics protocol.Metrics) error
+	LatestSamples(ctx context.Context, access TenantAccess, endpointID string) ([]SampleRow, error)
+	ReadSamples(ctx context.Context, access TenantAccess, endpointID, containerID string, window time.Duration) ([]SampleRow, error)
+	Prune(ctx context.Context) (int64, error)
 	MarkEndpointOffline(ctx context.Context, endpointID string) error
 	EndpointState(ctx context.Context, endpointID string) (string, error)
 
