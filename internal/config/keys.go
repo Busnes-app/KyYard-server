@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -22,7 +23,19 @@ func secureDataDir(path string) error {
 	}
 	dir := os.NewFile(uintptr(fd), path)
 	defer dir.Close()
-	return dir.Chmod(0700)
+	var info unix.Stat_t
+	if err := unix.Fstat(fd, &info); err != nil {
+		return fmt.Errorf("inspect data directory %q: %w", path, err)
+	}
+	mode := info.Mode & 0777
+	if mode&0077 == 0 {
+		return nil
+	}
+	if err := dir.Chmod(0700); err != nil {
+		return fmt.Errorf("tighten data directory %q from %04o to 0700 (owner uid %d): %w", path, mode, info.Uid, err)
+	}
+	log.Printf("[SECURITY] data directory %q permissions tightened from %04o to 0700", path, mode)
+	return nil
 }
 
 func loadKey(dir, name, env string) ([]byte, error) {

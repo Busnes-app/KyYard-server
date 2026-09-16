@@ -130,6 +130,18 @@ func TestUnsafeKeysFailWithoutReplacement(t *testing.T) {
 				} else if err := os.WriteFile(path, []byte(data), mode); err != nil {
 					t.Fatal(err)
 				}
+				if kind != "symlink" && kind != "directory" {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+					info, err := os.Stat(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if info.Mode().Perm() != mode {
+						t.Fatalf("fixture mode: got %04o, want %04o", info.Mode().Perm(), mode)
+					}
+				}
 				if _, err := config.LoadFromEnv(); err == nil || strings.Contains(err.Error(), "secret-invalid-marker") {
 					t.Fatal("unsafe key accepted or leaked", err)
 				}

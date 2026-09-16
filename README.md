@@ -62,11 +62,16 @@ are not retroactively flagged, since the server cannot infer whether they still 
 
 ## Persistent keys
 
-First boot secures `KY_DATA_DIR` (default `./data`) to 0700 and creates `encryption.key`,
+First boot creates `KY_DATA_DIR` (default `./data`) privately and creates `encryption.key`,
 `session.key` and `instance.key` as private 0600 files. Each contains 32 random bytes encoded
 as hex. Restarts reuse them; invalid, truncated, symlink or overly permissive files stop
 startup without replacing the key. Keep the directory's ancestors trusted and writable only
 by the deployment owner. A final symlink for the data directory is refused.
+Startup leaves owner-only directory permissions unchanged. If group/other access is present,
+it tightens the directory to 0700 and logs the path and old/new modes; a failure reports
+ownership details. This also changes host bind-mount permissions. Host jobs copying sealed
+backups must run with access as the directory owner, or use `KY_BACKUP_DIR` outside the
+private data directory.
 
 `KY_ENCRYPTION_KEY` and `KY_SESSION_SECRET` are optional overrides: exactly 32 bytes encoded
 as hex or base64. They take precedence without overwriting files. Empty values use the files.
