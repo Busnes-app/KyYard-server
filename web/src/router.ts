@@ -7,10 +7,21 @@ export type Route =
   | { name: 'environment'; org: string; env: string };
 
 const NAV_EVENT = 'ky:navigate';
-const segment = /^[A-Za-z0-9._-]{1,64}$/;
+// At least one non-dot character, so a segment can never be `.` or `..`.
+const segment = /^(?=.*[A-Za-z0-9_-])[A-Za-z0-9._-]{1,64}$/;
+
+// decodeURIComponent throws on malformed escapes; a bad link must land on not-found, not a blank page.
+function decodeSegments(pathname: string): string[] | null {
+  try {
+    return pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+}
 
 export function matchRoute(pathname: string): Route {
-  const parts = pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  const parts = decodeSegments(pathname);
+  if (parts === null) return { name: 'notfound' };
   if (parts.length === 0) return { name: 'dashboard' };
   if (parts.length === 1 && (parts[0] === 'scim' || parts[0] === 'backup' || parts[0] === 'settings')) return { name: parts[0] };
   if (parts[0] === 'organizations' && parts.length >= 2 && segment.test(parts[1])) {

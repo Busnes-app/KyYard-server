@@ -47,7 +47,7 @@ export async function tenantWrite(url: string, method: string, body?: unknown): 
     if (resp.status === 403) return 'You do not have permission to do that in this organization.';
     if (resp.status === 404) return 'Not found in this organization.';
     if (resp.status === 409) return 'That already exists.';
-    return typeof payload.error === 'string' ? payload.error : `Request failed (${resp.status}).`;
+    return `Request failed (${resp.status}).`;
   } catch {
     return 'Offline: the server could not be reached.';
   }
