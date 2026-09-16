@@ -44,6 +44,8 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusNotFound, "Resource not found in this organization")
 	case errors.Is(err, store.ErrAlreadyExists):
 		s.writeError(w, http.StatusConflict, "Resource already exists")
+	case errors.Is(err, store.ErrInUse):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Revoke the environment's endpoints first", "code": "environment_in_use"})
 	case errors.Is(err, store.ErrLastAdmin):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The organization needs at least one active administrator", "code": "last_administrator"})
 	case errors.Is(err, store.ErrInvalid):

@@ -139,6 +139,43 @@ type OrganizationGroup struct {
 	Name           string `json:"name"`
 }
 
+// Endpoint is an enrolled (or enrolling) host. Facts are the bounded enrollment report.
+type Endpoint struct {
+	ID             string            `json:"id"`
+	OrganizationID string            `json:"organization_id"`
+	EnvironmentID  string            `json:"environment_id"`
+	Name           string            `json:"name"`
+	Runtime        string            `json:"runtime"`
+	State          string            `json:"state"`
+	Facts          map[string]string `json:"facts"`
+	Fingerprint    string            `json:"fingerprint"` // key under review while pending, approved key afterwards
+	CreatedAt      time.Time         `json:"created_at"`
+	ApprovedAt     *time.Time        `json:"approved_at,omitempty"`
+	ApprovedBy     string            `json:"approved_by,omitempty"`
+	RevokedAt      *time.Time        `json:"revoked_at,omitempty"`
+	LastSeenAt     *time.Time        `json:"last_seen_at,omitempty"`
+}
+
+// EnrollmentToken is returned once; Secret is the raw token and is never stored.
+type EnrollmentToken struct {
+	ID            string    `json:"id"`
+	EnvironmentID string    `json:"environment_id"`
+	Runtime       string    `json:"runtime"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	AgentImage    string    `json:"agent_image,omitempty"`
+	Secret        []byte    `json:"-"`
+}
+
+// EnrollmentRequest is what an agent presents; everything in it is untrusted.
+type EnrollmentRequest struct {
+	Token     []byte
+	PublicKey []byte
+	Proof     []byte
+	Name      string
+	Facts     map[string]string
+	IPAddress string
+}
+
 // TenantAccess is server-derived request context. Clients cannot choose ActorID or CorrelationID.
 type TenantAccess struct {
 	ActorID        string

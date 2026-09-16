@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Busness-app/kyyard-server/internal/permissions"
 	"github.com/google/uuid"
@@ -154,7 +155,25 @@ func (t *tenancyStore) ListEnvironments(ctx context.Context, a TenantAccess, off
 	}
 	return result, nil
 }
-func validTenantName(name string) bool { return strings.TrimSpace(name) != "" && len(name) <= 255 }
+
+// validTenantName refuses text that could forge or reorder a line in the confirmation dialogs
+// and logs an operator relies on: control characters (C0, DEL, C1), Unicode line and paragraph
+// separators, and bidi embedding/override/isolate controls.
+func validTenantName(name string) bool {
+	return strings.TrimSpace(name) != "" && displaySafe(name)
+}
+
+func displaySafe(s string) bool {
+	if len(s) > 255 {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+			return false
+		}
+	}
+	return true
+}
 func (t *tenancyStore) AddEnvironment(ctx context.Context, a TenantAccess, name string) (*Environment, error) {
 	a.EnvironmentID = uuid.NewString()
 	e := Environment{ID: a.EnvironmentID, OrganizationID: a.OrganizationID, Name: strings.TrimSpace(name)}
@@ -181,6 +200,17 @@ func (t *tenancyStore) UpdateEnvironment(ctx context.Context, a TenantAccess, na
 }
 func (t *tenancyStore) RemoveEnvironment(ctx context.Context, a TenantAccess) error {
 	return t.withTenant(ctx, a, permissions.EnvironmentDelete, func(tx *sql.Tx) error {
+		// Endpoints must be revoked first; revoked ones are history and go with the environment.
+		var live int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM endpoints WHERE organization_id=? AND environment_id=? AND state<>'revoked'`), a.OrganizationID, a.EnvironmentID).Scan(&live); err != nil {
+			return err
+		}
+		if live > 0 {
+			return ErrInUse
+		}
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM endpoints WHERE organization_id=? AND environment_id=?`), a.OrganizationID, a.EnvironmentID); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM environments WHERE organization_id=? AND id=?`), a.OrganizationID, a.EnvironmentID)
 		return tenantChangeResult(result, err)
 	})

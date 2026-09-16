@@ -152,6 +152,10 @@ Use `/api/organizations/{organization}` (`org_initial` for the default organizat
 | GET | `/audit` | Organization audit history |
 | GET | `/environments/{environment}/audit` | Environment audit history |
 | GET | `/members` | List memberships (user, username, role, status) |
+| POST | `/environments/{environment}/enrollment-tokens` | Mint a one-time agent enrollment token and command |
+| GET | `/endpoints`, `/environments/{environment}/endpoints` | List endpoints |
+| GET / PATCH | `/endpoints/{endpoint}` | Read / rename an endpoint |
+| POST | `/endpoints/{endpoint}/approve`, `/reject`, `/revoke` | Review or terminate an endpoint |
 | PUT / DELETE | `/members/{user}` | Set role/status for an existing user / remove membership |
 
 `GET /api/organizations` (no suffix) lists the signed-in user's own active organizations and
@@ -159,11 +163,15 @@ roles; it never reveals anyone else's. Membership writes take `{"role":"operator
 (status optional). An organization must keep one active administrator, so demoting, disabling or
 removing the last one returns `409` with code `last_administrator`, even for that administrator.
 
-Create/rename takes `{"name":"Production"}`. Lists accept `offset` (default 0) and
+Create/rename takes `{"name":"Production"}`. An enrollment token lives 15 minutes, is single use,
+and is shown once; when `KY_AGENT_IMAGE` names a digest-pinned agent image the response also
+carries a `docker run` command that pipes the token on stdin; the same response states that
+mounting the Docker socket gives the agent root-equivalent access to that host. A host enrolls as
+`pending` until an administrator approves the exact key fingerprint it presented. Lists accept `offset` (default 0) and
 `limit` (default 50, maximum 200). Browser writes require the existing CSRF token.
 Responses include a server-generated `X-Request-ID` for audit correlation.
 
-| Organization membership | Read organization/environments | Manage environments | Manage members | Read tenant audit |
+| Organization membership | Read organization/environments/endpoints | Manage environments and endpoints | Manage members | Read tenant audit |
 |---|---|---|---|---|
 | Organization administrator | Yes | Yes | Yes | Yes |
 | Environment administrator | Yes | Yes | No | No |
