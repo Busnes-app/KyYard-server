@@ -55,7 +55,7 @@ func main() {
 	} else if *server != "" && *server != id.Server {
 		log.Fatalf("identity is enrolled with %s, not %s; remove %s to re-enroll", id.Server, *server, *dir)
 	}
-	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version}); err != nil {
+	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

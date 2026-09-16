@@ -27,6 +27,9 @@ func Facts(name string) map[string]string {
 // Enroll redeems a token for an identity and pins the server's instance fingerprint. The token
 // is used once and dropped; only the resulting identity is persisted.
 func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tokenB64 string) (*Identity, error) {
+	if _, err := checkServerOrigin(server); err != nil {
+		return nil, err
+	}
 	token, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(tokenB64))
 	if err != nil || len(token) != protocol.TokenSize {
 		return nil, errors.New("enrollment token is not a valid 32-byte token")

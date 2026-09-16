@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/coder/websocket"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -107,7 +109,7 @@ func TestAgentEnrollsConnectsAndStopsOnRevocation(t *testing.T) {
 	runCtx, stopAgent := context.WithCancel(ctx)
 	defer stopAgent()
 	go func() {
-		runErr <- client.Run(runCtx, id, client.Options{HTTPClient: httpClient, OnState: func(s string) { states <- s }})
+		runErr <- client.Run(runCtx, id, client.Options{HTTPClient: httpClient, IdentityDir: dir, OnState: func(s string) { states <- s }})
 	}()
 	if s := <-states; s != "pending" {
 		t.Fatalf("first state %q", s)
@@ -117,17 +119,24 @@ func TestAgentEnrollsConnectsAndStopsOnRevocation(t *testing.T) {
 	if s := <-states; s != "approved" {
 		t.Fatalf("state after approval %q", s)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		e, _ = ts.ReadEndpointRaw(ctx, id.EndpointID)
-		if e.State == "active" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("never active: %+v", e)
-		}
-		time.Sleep(20 * time.Millisecond)
+	waitState(t, ctx, ts, id.EndpointID, "active")
+	// A restarted process must come back active: the generation persists and rises.
+	stopAgent()
+	if err := <-runErr; err != nil {
+		t.Fatalf("first run: %v", err)
 	}
+	waitState(t, ctx, ts, id.EndpointID, "offline")
+	reloaded, err := client.LoadIdentity(dir)
+	if err != nil || reloaded.Generation == 0 {
+		t.Fatalf("generation not persisted: %+v %v", reloaded, err)
+	}
+	runCtx, stopAgent = context.WithCancel(ctx)
+	defer stopAgent()
+	go func() {
+		runErr <- client.Run(runCtx, reloaded, client.Options{HTTPClient: httpClient, IdentityDir: dir})
+	}()
+	waitState(t, ctx, ts, id.EndpointID, "active")
+
 	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/revoke", jar, "")
 	select {
 	case err := <-runErr:
@@ -191,4 +200,80 @@ func post(t *testing.T, url string, c cookies, body string) []byte {
 		t.Fatalf("POST %s: %d %s", url, resp.StatusCode, out.String())
 	}
 	return []byte(out.String())
+}
+
+func waitState(t *testing.T, ctx context.Context, ts store.TenancyStore, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		e, _ := ts.ReadEndpointRaw(ctx, id)
+		if e != nil && e.State == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("endpoint never reached %s: %+v", want, e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Enrollment never sends the token in the clear off loopback.
+func TestEnrollRefusesPlaintextOffLoopback(t *testing.T) {
+	requests := 0
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++; w.WriteHeader(401) }))
+	defer stub.Close()
+	ctx := context.Background()
+	for _, bad := range []string{"http://ky.example", "http://10.0.0.5:8080", "ftp://127.0.0.1", "http://user:pw@127.0.0.1"} {
+		if _, err := client.Enroll(ctx, stub.Client(), bad, t.TempDir(), "h", strings.Repeat("A", 43)); err == nil {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("%d requests left the agent for refused origins", requests)
+	}
+	if _, err := client.Enroll(ctx, stub.Client(), stub.URL, t.TempDir(), "h", strings.Repeat("A", 43)); err == nil || requests != 1 {
+		t.Fatalf("loopback enrollment did not reach the server: %v %d", err, requests)
+	}
+}
+
+// A control plane that accepts and then goes silent must not wedge the agent.
+func TestAgentReconnectsWhenTheControlPlaneGoesSilent(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	dials := make(chan int, 8)
+	n := 0
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		n++
+		dials <- n
+		ctx := r.Context()
+		nonce := make([]byte, 32)
+		frame := func(typ string, payload any) []byte {
+			raw, _ := json.Marshal(payload)
+			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
+			return b
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: nonce, InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
+		_, _, _ = c.Read(ctx)
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
+		<-ctx.Done()
+	}))
+	defer stub.Close()
+	id := &client.Identity{EndpointID: "ep_silent", PrivateKey: priv, InstanceFingerprint: strings.Repeat("a", 64), Server: stub.URL}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	go func() { _ = client.Run(ctx, id, client.Options{HTTPClient: stub.Client()}) }()
+	if <-dials != 1 {
+		t.Fatal("first dial")
+	}
+	select {
+	case d := <-dials:
+		if d != 2 {
+			t.Fatalf("dial %d", d)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("agent did not reconnect after the control plane went silent")
+	}
 }

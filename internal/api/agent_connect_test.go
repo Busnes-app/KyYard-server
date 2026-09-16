@@ -283,3 +283,23 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met in time")
 }
+
+// An unauthenticated client may not make the server buffer a large frame.
+func TestAgentConnectLimitsFramesBeforeAuth(t *testing.T) {
+	s, _, _ := setupTestServer(t)
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	u, _ := url.Parse(httpSrv.URL)
+	c, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readEnvelope(t, ctx, c)
+	big := make([]byte, 64<<10)
+	_ = c.Write(ctx, websocket.MessageText, big)
+	if _, _, err := c.Read(ctx); err == nil {
+		t.Fatal("server answered an oversized pre-auth frame instead of closing")
+	}
+}

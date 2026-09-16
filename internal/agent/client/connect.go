@@ -29,30 +29,46 @@ type Options struct {
 	HTTPClient *http.Client
 	Version    string
 	Log        *log.Logger
-	// Generation seeds inventory generations; the loop increases it per snapshot.
-	Generation uint64
+	// IdentityDir is where the rising inventory generation is written back; empty skips it.
+	IdentityDir string
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
 
-// ConnectURL turns the enrolled server origin into the socket URL, refusing plaintext to any
-// host that is not loopback.
-func ConnectURL(server string) (string, error) {
+// checkServerOrigin admits https anywhere and http only to loopback: enrollment carries the
+// single-use token and every connection carries the identity, so neither may cross a network
+// in the clear.
+func checkServerOrigin(server string) (*url.URL, error) {
 	u, err := url.Parse(server)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	switch u.Scheme {
 	case "https":
-		u.Scheme = "wss"
 	case "http":
 		host := u.Hostname()
 		if ip := net.ParseIP(host); (ip == nil || !ip.IsLoopback()) && host != "localhost" {
-			return "", fmt.Errorf("refusing plaintext connection to %s; use https", host)
+			return nil, fmt.Errorf("refusing plaintext connection to %s; use https", host)
 		}
-		u.Scheme = "ws"
 	default:
-		return "", fmt.Errorf("unsupported scheme %q", u.Scheme)
+		return nil, fmt.Errorf("unsupported scheme %q", u.Scheme)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("server must be an origin without credentials, query or fragment")
+	}
+	return u, nil
+}
+
+// ConnectURL turns the enrolled server origin into the socket URL.
+func ConnectURL(server string) (string, error) {
+	u, err := checkServerOrigin(server)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
 	}
 	u.Path = "/api/agent/v1/connect"
 	return u.String(), nil
@@ -105,8 +121,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	conn.SetReadLimit(4 << 20)
 	defer conn.CloseNow()
 
+	// The handshake has its own deadline: a server that accepts and then says nothing must not
+	// hold the agent forever.
+	hctx, hcancel := context.WithTimeout(ctx, 15*time.Second)
+	defer hcancel()
 	// Challenge: the server must present the instance we enrolled with.
-	f, err := read(ctx, conn)
+	f, err := read(hctx, conn)
 	if err != nil {
 		return closeReason(err)
 	}
@@ -118,10 +138,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		return ErrInstanceChanged
 	}
 	sig := ed25519.Sign(ed25519.PrivateKey(id.PrivateKey), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
-	if err := write(ctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Version: protocol.Version, Signature: sig}); err != nil {
+	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Version: protocol.Version, Signature: sig}); err != nil {
 		return err
 	}
-	f, err = read(ctx, conn)
+	f, err = read(hctx, conn)
 	if err != nil {
 		return closeReason(err)
 	}
@@ -140,9 +160,20 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		return err
 	}
 	if hello.State != "pending" {
-		opts.Generation++
-		if err := write(ctx, conn, protocol.TypeInventory, protocol.Inventory{Generation: opts.Generation, Facts: Facts("")}); err != nil {
+		// Generations must rise across restarts, or a restarted agent's first snapshot would be
+		// ignored and the endpoint would stay offline. Wall-clock seeding covers a lost file.
+		gen := id.Generation + 1
+		if now := uint64(time.Now().Unix()); now > gen {
+			gen = now
+		}
+		if err := write(ctx, conn, protocol.TypeInventory, protocol.Inventory{Generation: gen, Facts: Facts("")}); err != nil {
 			return err
+		}
+		id.Generation = gen
+		if opts.IdentityDir != "" {
+			if err := SaveIdentity(opts.IdentityDir, id); err != nil {
+				opts.Log.Printf("could not persist inventory generation: %v", err)
+			}
 		}
 	} else {
 		opts.Log.Printf("enrollment pending approval as %s", id.EndpointID)
@@ -152,8 +183,16 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	readErr := make(chan error, 1)
 	go func() {
 		for {
-			f, err := read(ctx, conn)
+			// The server answers every heartbeat, so silence for two intervals means the path is
+			// dead even if TCP has not noticed; reconnecting is the only way to hear about
+			// approval or revocation again.
+			rctx, rcancel := context.WithTimeout(ctx, 2*heartbeat)
+			f, err := read(rctx, conn)
+			rcancel()
 			if err != nil {
+				if rctx.Err() != nil && ctx.Err() == nil {
+					err = errors.New("no frame from the control plane for two heartbeat intervals")
+				}
 				readErr <- err
 				return
 			}

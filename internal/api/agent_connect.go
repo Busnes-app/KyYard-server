@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	agentHeartbeat   = 30 * time.Second
-	agentReadTimeout = 3 * agentHeartbeat // three missed heartbeats mark the endpoint offline
-	agentFrameLimit  = 4 << 20
-	handshakeTimeout = 10 * time.Second
+	agentHeartbeat    = 30 * time.Second
+	agentReadTimeout  = 3 * agentHeartbeat // three missed heartbeats mark the endpoint offline
+	agentFrameLimit   = 4 << 20
+	preAuthFrameLimit = 4096
+	handshakeTimeout  = 10 * time.Second
 )
 
 // agentConn is one live socket. The registry holds at most one per endpoint.
@@ -126,7 +127,8 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	conn.SetReadLimit(agentFrameLimit)
+	// Only a small auth frame is legitimate before the handshake; the full limit waits for it.
+	conn.SetReadLimit(preAuthFrameLimit)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -135,6 +137,7 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		conn.Close(websocket.StatusPolicyViolation, closeReason)
 		return
 	}
+	conn.SetReadLimit(agentFrameLimit)
 	c := &agentConn{endpointID: identity.Endpoint.ID, conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
 	if !s.agents.add(c) {
 		_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "denied")
@@ -271,8 +274,11 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 					c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 					return
 				}
-				if _, err := ts.AcceptInventory(ctx, c.endpointID, inv.Generation); err != nil {
+				accepted, err := ts.AcceptInventory(ctx, c.endpointID, inv.Generation)
+				if err != nil {
 					log.Printf("agent %s: inventory: %v", c.endpointID, err)
+				} else if !accepted {
+					log.Printf("agent %s: inventory generation %d not newer than the stored one; snapshot ignored", c.endpointID, inv.Generation)
 				}
 			default:
 				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]string{"code": "unsupported_type", "type": f.Type})); err != nil {

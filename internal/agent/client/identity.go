@@ -18,6 +18,8 @@ type Identity struct {
 	PrivateKey          []byte `json:"private_key"`
 	InstanceFingerprint string `json:"instance_fingerprint"`
 	Server              string `json:"server"`
+	// Generation is the last inventory generation sent; it only rises, across restarts too.
+	Generation uint64 `json:"generation"`
 }
 
 func identityPath(dir string) string { return filepath.Join(dir, "identity.json") }
