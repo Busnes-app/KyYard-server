@@ -24,6 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: image and attestation coordinates match this repository
+        run: |
+          grep -qF "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kyyard:latest" docker-compose.yml
+          ! grep -ohE 'Busnes-app/[A-Za-z0-9._-]+' docker-compose.yml docs/RESTORE.md | grep -vxF "$GITHUB_REPOSITORY"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
