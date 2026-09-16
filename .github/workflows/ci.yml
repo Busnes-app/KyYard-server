@@ -26,8 +26,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: image and attestation coordinates match this repository
         run: |
-          grep -qF "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kyyard:latest" docker-compose.yml
-          ! grep -ohE 'Busnes-app/[A-Za-z0-9._-]+' docker-compose.yml docs/RESTORE.md | grep -vxF "$GITHUB_REPOSITORY"
+          img="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kyyard"
+          files="docker-compose.yml"; [ -f docs/RESTORE.md ] && files="$files docs/RESTORE.md"
+          # the image key itself, not just some occurrence in a comment
+          grep -E '^\s*image:' docker-compose.yml | grep -qF "$img" || { echo "image: does not default to $img"; exit 1; }
+          # every image coordinate an operator could paste, in either spelling of either org
+          seen=$(grep -ohE 'ghcr\.io/[A-Za-z0-9._/-]+' $files | sort -u)
+          [ -n "$seen" ] || { echo "no image coordinate found"; exit 1; }
+          printf '%s\n' "$seen" | grep -vxF "$img" && { echo "image coordinate differs from $img"; exit 1; }
+          # every identity the attestation check matches exactly, case included
+          ids=$(grep -ohE -- '(--repo |--cert-identity https://github\.com/)[A-Za-z0-9._-]+/[A-Za-z0-9._-]+' $files | sed -E 's#^(--repo |--cert-identity https://github\.com/)##' | sort -u)
+          [ -n "$ids" ] || { echo "no attestation identity found"; exit 1; }
+          printf '%s\n' "$ids" | grep -vxF "$GITHUB_REPOSITORY" && { echo "attestation identity differs from $GITHUB_REPOSITORY"; exit 1; }
+          # README may only point at docs that exist
+          grep -ohE 'docs/[A-Za-z0-9._/-]+\.md' README.md | sort -u | xargs -r -I{} test -f {}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
