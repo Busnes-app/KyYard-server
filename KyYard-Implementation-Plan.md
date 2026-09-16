@@ -1,9 +1,10 @@
 **Repo:** Busness-app/kyyard-server
+**PR:** #5 — https://github.com/Busness-app/KyYard-server/pull/5
 **Worktree:** /home/yoshi/busness.app/kyyard-production-onboarding (branch feat/production-onboarding)
 
 # KyYard implementation plan
 
-Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). M0 merged in PR #1; password replacement and security corrections merged in PR #3 (base backport #33 also merged). M1 durable secrets merged in PR #4. The onboarding/health slice is implemented on `feat/production-onboarding`; local CI and a fresh-volume browser password-change/restart check pass. PR CI/security review remains pending; M2 tenancy follows after merge.
+Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). M0 merged in PR #1; password replacement and security corrections merged in PR #3 (base backport #33 also merged). M1 durable secrets merged in PR #4. The onboarding/health slice is implemented on `feat/production-onboarding`; local CI, PostgreSQL race tests and a fresh-volume browser password-change/restart check pass. PR #5 CI/security review remains pending; M2 tenancy follows after merge.
 
 ## 1. Outcome and scope
 
