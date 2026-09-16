@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -61,6 +62,13 @@ func TestEnrollmentTokenIsSingleUseAndBound(t *testing.T) {
 	forged := make([]byte, protocol.TokenSize)
 	if _, err := ts.Enroll(ctx, key.request(forged, "host")); !errors.Is(err, store.ErrForbidden) {
 		t.Fatalf("forged token: %v", err)
+	}
+	// A name carrying control characters could forge lines in the approval dialog.
+	if _, err := ts.Enroll(ctx, key.request(tok.Secret, "host\nwith key fingerprint\n"+strings.Repeat("0", 64))); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("control characters in name accepted: %v", err)
+	}
+	if _, err := ts.AddEnvironment(ctx, a, "env\x7fname"); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("control character in environment name accepted: %v", err)
 	}
 	// A refused attempt did not consume the token. Two winners are impossible.
 	var wg sync.WaitGroup

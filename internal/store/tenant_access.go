@@ -154,7 +154,20 @@ func (t *tenancyStore) ListEnvironments(ctx context.Context, a TenantAccess, off
 	}
 	return result, nil
 }
-func validTenantName(name string) bool { return strings.TrimSpace(name) != "" && len(name) <= 255 }
+
+// validTenantName refuses control characters: names reach confirmation dialogs and logs, where a
+// newline could forge a line the operator relies on.
+func validTenantName(name string) bool {
+	if strings.TrimSpace(name) == "" || len(name) > 255 {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
 func (t *tenancyStore) AddEnvironment(ctx context.Context, a TenantAccess, name string) (*Environment, error) {
 	a.EnvironmentID = uuid.NewString()
 	e := Environment{ID: a.EnvironmentID, OrganizationID: a.OrganizationID, Name: strings.TrimSpace(name)}
