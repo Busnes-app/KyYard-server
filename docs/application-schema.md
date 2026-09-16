@@ -9,7 +9,7 @@
 - **Instance** — the placement of an application on one endpoint. One application may have several instances in later milestones; 0.1 uses one.
 - **Deployment** — one attempt to make an instance match a revision, with per-step outcomes.
 - **Resource** — a runtime object (container, image, volume, network, later Kubernetes objects) observed on an endpoint, owned by an instance or unmanaged.
-- **Registry** — a named image source with optional credentials. A credential is sent only when the image reference's registry host exactly equals the registry's configured host (no suffix or wildcard matching), is never attached to a request that follows a redirect to another host, and a reference whose registry host has no configured `registries` row fails the preview and the pull with `registry_not_configured` by default. Anonymous pulls from unconfigured hosts are an explicit per-organization opt-in recorded as an audited setting change.
+- **Registry** — a named image source with optional credentials. A credential is sent only when the image reference's registry host exactly equals the registry's configured host (no suffix or wildcard matching), is never attached to a request that follows a redirect to another host, and a reference whose registry host has no configured `registries` row fails the preview and the pull with `registry_not_configured` by default. Anonymous pulls from unconfigured hosts are an explicit per-organization opt-in that only `registry.manage` (organization administrators) may enable, recorded as an audited setting change (`registry.anonymous_pull.enabled`).
 - **Update policy** (M7b) — a rule for detecting and applying image updates.
 
 Desired configuration, observed runtime, drift and last deployment are stored and shown separately; the UI never blends them.
@@ -84,6 +84,6 @@ The common model maps to Deployments/StatefulSets, Services, ConfigMaps, Secrets
 | Unmanaged edits | require adoption | proposed (plan default) |
 | Preview validity | 10 minutes, preconditions on touched resources only | proposed |
 | `env_file` values | secret references by default, plain only by explicit choice | proposed |
-| Unconfigured registry | refuse by default; anonymous pull is an audited per-organization opt-in | proposed |
+| Unconfigured registry | refuse by default; anonymous pull is an audited per-organization opt-in gated by `registry.manage` (see `authorization-matrix.md`) | proposed |
 | Application removal | keeps volumes and images | required by plan |
 | Revision retention after removal | 90 days | proposed, see retention-policy.md |

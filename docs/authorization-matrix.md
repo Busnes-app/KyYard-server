@@ -90,6 +90,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `secret.use` (deploy with a secret reference) | implied by `application.deploy` | | | | | no | recorded on the deployment |
 | `registry.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no credentials | – |
 | `registry.manage` | ✓ | – | – | – | – | write-only credentials | success |
+| `registry.manage` — anonymous-pull opt-in (`registry.anonymous_pull.enabled`) | ✓ | – | – | – | – | no | success, details carry old and new value; the setting is per organization and off by default |
 | `registry.use` | implied by `image.pull` and `application.deploy` | | | | | no | on the operation |
 | `update_policy.manage` and `maintenance_window.manage` (M7b) | ✓ | ✓ | – | – | – | no | success; scheduler acts as `system:scheduler` with the policy's organization |
 
