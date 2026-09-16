@@ -11,11 +11,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// withTenant serializes live authorization with the operation. A no-op user update
-// acquires SQLite's writer lock before any reads, and a row lock on PostgreSQL.
-// The membership update likewise locks against removal/role/status changes.
-// Successful operations and their audit records commit together; errors roll back.
+// withTenant serializes live authorization with a mutation and commits both with the audit
+// record. PostgreSQL locks the user and membership rows through FOR UPDATE on the join.
+// SQLite has a single writer, so a no-op write on the membership row takes the RESERVED
+// lock before the read: a deferred read-then-write transaction would otherwise lose to a
+// concurrent revocation and fail with BUSY_SNAPSHOT instead of waiting behind it.
 func (t *tenancyStore) withTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
+	return t.run(ctx, a, action, true, op)
+}
+
+// readTenant checks the same live authorization without locks; reads use a snapshot.
+func (t *tenancyStore) readTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
+	return t.run(ctx, a, action, false, op)
+}
+
+func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, lock bool, op func(*sql.Tx) error) error {
 	if a.ActorID == "" || a.OrganizationID == "" {
 		return ErrForbidden
 	}
@@ -31,19 +41,23 @@ func (t *tenancyStore) withTenant(ctx context.Context, a TenantAccess, action pe
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE users SET updated_at=updated_at WHERE id=?`), a.ActorID); err != nil {
-		return err
+	query := `SELECT u.status,u.must_change_password,m.status,m.role FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=? AND m.organization_id=?`
+	if lock && t.store.driver == "postgres" {
+		query += " FOR UPDATE"
+	} else if lock {
+		if _, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE organization_memberships SET status=status WHERE organization_id=? AND user_id=?`), a.OrganizationID, a.ActorID); err != nil {
+			return err
+		}
 	}
-	if _, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE organization_memberships SET status=status WHERE organization_id=? AND user_id=?`), a.OrganizationID, a.ActorID); err != nil {
-		return err
-	}
-	var status, memberStatus, role, credentialHash string
+	var status, memberStatus, role string
 	var restricted bool
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT u.status,u.must_change_password,m.status,m.role,u.password_hash FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=? AND m.organization_id=?`), a.ActorID, a.OrganizationID).Scan(&status, &restricted, &memberStatus, &role, &credentialHash)
+	err = tx.QueryRowContext(ctx, t.store.rebind(query), a.ActorID, a.OrganizationID).Scan(&status, &restricted, &memberStatus, &role)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = ErrForbidden
+		// The URL scope is unverified for a non-member: no tenant audit row, or any caller
+		// could write into another organization's history without bound.
+		return ErrForbidden
 	}
-	if err == nil && (status != "active" || restricted || credentialHash != a.CredentialHash || memberStatus != "active" || !permissions.Allows(role, action)) {
+	if err == nil && (status != "active" || restricted || memberStatus != "active" || !permissions.Allows(role, action)) {
 		err = ErrForbidden
 	}
 	if err == nil && a.EnvironmentID != "" && action != permissions.EnvironmentCreate {
@@ -81,7 +95,7 @@ func (t *tenancyStore) withTenant(ctx context.Context, a TenantAccess, action pe
 
 func (t *tenancyStore) ReadOrganization(ctx context.Context, a TenantAccess) (*Organization, error) {
 	var o Organization
-	err := t.withTenant(ctx, a, permissions.OrganizationRead, func(tx *sql.Tx) error {
+	err := t.readTenant(ctx, a, permissions.OrganizationRead, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,name,created_at FROM organizations WHERE id=?`), a.OrganizationID).Scan(&o.ID, &o.Name, &o.CreatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
@@ -95,7 +109,7 @@ func (t *tenancyStore) ReadOrganization(ctx context.Context, a TenantAccess) (*O
 }
 func (t *tenancyStore) ReadEnvironment(ctx context.Context, a TenantAccess) (*Environment, error) {
 	var e Environment
-	err := t.withTenant(ctx, a, permissions.EnvironmentRead, func(tx *sql.Tx) error {
+	err := t.readTenant(ctx, a, permissions.EnvironmentRead, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,organization_id,name FROM environments WHERE organization_id=? AND id=?`), a.OrganizationID, a.EnvironmentID).Scan(&e.ID, &e.OrganizationID, &e.Name)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
@@ -109,7 +123,7 @@ func (t *tenancyStore) ReadEnvironment(ctx context.Context, a TenantAccess) (*En
 }
 func (t *tenancyStore) ListEnvironments(ctx context.Context, a TenantAccess, offset, limit int) ([]Environment, error) {
 	result := []Environment{}
-	err := t.withTenant(ctx, a, permissions.EnvironmentRead, func(tx *sql.Tx) error {
+	err := t.readTenant(ctx, a, permissions.EnvironmentRead, func(tx *sql.Tx) error {
 		if offset < 0 || limit < 1 || limit > 200 {
 			return ErrInvalid
 		}
@@ -178,7 +192,7 @@ func tenantChangeResult(result sql.Result, err error) error {
 }
 func (t *tenancyStore) ReadAudit(ctx context.Context, a TenantAccess, offset, limit int) ([]AuditRecord, error) {
 	records := []AuditRecord{}
-	err := t.withTenant(ctx, a, permissions.AuditRead, func(tx *sql.Tx) error {
+	err := t.readTenant(ctx, a, permissions.AuditRead, func(tx *sql.Tx) error {
 		if offset < 0 || limit < 1 || limit > 200 {
 			return ErrInvalid
 		}

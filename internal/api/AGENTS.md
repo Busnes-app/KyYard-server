@@ -36,7 +36,7 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
 - `GET /api/settings` tiers its payload: public fields for the login screen, `db_driver`/`scim_enabled` for any session, and `extra_settings` for admins only; KyRecovery tokens are omitted in both sealed and legacy plaintext forms, dropped by the `kyrecovery_token` key prefix rather than by literal key name.
 
 - Tenant namespace is `/api/organizations/{organization}`: GET organization; GET/POST `/environments`; GET/PATCH/DELETE `/environments/{environment}`; GET `/audit` or `/environments/{environment}/audit`. Unknown tenant paths/methods return JSON 404, never SPA content.
-- `tenantRoute` authenticates unrestricted sessions, derives actor/credential snapshot and correlation ID server-side, and sends `X-Request-ID` plus `Cache-Control: no-store`. Handlers pass explicit URL scope to authorized store methods; clients cannot supply actor, organization or arbitrary update fields in JSON. Existing Origin/CSRF/body limits apply.
+- `tenantRoute` authenticates unrestricted sessions, derives actor and correlation ID server-side, and sends `X-Request-ID` plus `Cache-Control: no-store`. Handlers pass explicit URL scope to authorized store methods; clients cannot supply actor, organization or arbitrary update fields in JSON. Existing Origin/CSRF/body limits apply.
 - Environment create/update accepts only `{name}`; lists accept nonnegative `offset` and `limit` 1–200 (default 50). Store errors map to generic 400/403/404/409/500 responses. Request parsing/authentication/CSRF failures occur before the transactional tenant audit path.
 
 ## Verification

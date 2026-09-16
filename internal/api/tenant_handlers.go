@@ -33,7 +33,7 @@ func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.Te
 			s.writeError(w, http.StatusBadRequest, "Invalid tenant scope")
 			return
 		}
-		h(w, r, store.TenantAccess{ActorID: user.ID, CredentialHash: user.PasswordHash, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: s.requestIP(r)})
+		h(w, r, store.TenantAccess{ActorID: user.ID, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: s.requestIP(r)})
 	}
 }
 func (s *Server) tenantError(w http.ResponseWriter, err error) {

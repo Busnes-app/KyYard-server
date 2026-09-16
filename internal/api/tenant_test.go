@@ -58,6 +58,14 @@ func TestTenantRoutesEnforceScopeAndAudit(t *testing.T) {
 		check(platform, "GET", path, "", 403)
 		check(admin, "GET", path, "", 200)
 	}
+	w := check(admin, "GET", "/api/organizations/a/audit", "", 200)
+	var probes []store.AuditRecord
+	must(json.Unmarshal(w.Body.Bytes(), &probes))
+	for _, r := range probes {
+		if r.UserID == "usr_platform" {
+			t.Fatalf("non-member denial written into tenant audit: %+v", r)
+		}
+	}
 	check(admin, "GET", "/api/organizations/b/environments", "", 403)
 	check(admin, "POST", "/api/organizations/b/environments", `{"name":"Forbidden"}`, 403)
 	for _, tc := range []struct{ method, body string }{{"GET", ""}, {"PATCH", `{"name":"Stolen"}`}, {"DELETE", ""}} {
@@ -69,7 +77,7 @@ func TestTenantRoutesEnforceScopeAndAudit(t *testing.T) {
 	check(admin, "POST", "/api/organizations/a/environments", `{"name":"Injected","actor_id":"usr_platform"}`, 400)
 	check(admin, "POST", "/api/organizations/a/environments", `{"name":"one"}{"name":"two"}`, 400)
 	check(admin, "GET", "/api/organizations/a/environments?limit=100000", "", 400)
-	w := tenantRequest(s, admin, "POST", "/api/organizations/a/environments", `{"name":"No CSRF"}`, false)
+	w = tenantRequest(s, admin, "POST", "/api/organizations/a/environments", `{"name":"No CSRF"}`, false)
 	if w.Code != 403 {
 		t.Fatal("tenant mutation bypassed CSRF")
 	}

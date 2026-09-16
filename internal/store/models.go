@@ -126,7 +126,6 @@ type OrganizationGroup struct {
 
 // TenantAccess is server-derived request context. Clients cannot choose ActorID or CorrelationID.
 type TenantAccess struct {
-	CredentialHash string `json:"-"` // Snapshot from session authentication; never serialized or audited.
 	ActorID        string
 	OrganizationID string
 	EnvironmentID  string

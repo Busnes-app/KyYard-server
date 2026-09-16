@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/kyyard-server/internal/store"
@@ -88,17 +89,13 @@ func TestScopedAuthorizationAndAudit(t *testing.T) {
 	}
 	globalRecords, _, err := st.Audit().ListAuditRecords(ctx, 0, 200)
 	mustTenant(t, err)
-	foundDenial := false
 	for _, r := range globalRecords {
-		if r.OrganizationID == "b" && r.Result == "denied" {
-			foundDenial = true
+		if r.OrganizationID == "b" {
+			t.Fatalf("non-member probe wrote into organization b: %+v", r)
 		}
 		if r.Action == "legacy.global" && (r.Scope != "platform" || r.Result != "unknown") {
 			t.Fatal("legacy audit meaning changed")
 		}
-	}
-	if !foundDenial {
-		t.Fatal("denial not audited")
 	}
 }
 func TestLiveMembershipAndAccountRevocation(t *testing.T) {
@@ -147,18 +144,37 @@ func TestLiveMembershipAndAccountRevocation(t *testing.T) {
 	}
 }
 
-func TestTenantAccessRejectsStaleCredentialSnapshot(t *testing.T) {
+func TestNonMemberDenialLeavesNoTenantAudit(t *testing.T) {
 	ctx := context.Background()
-	st, a := setupTenantAccess(t)
-	a.EnvironmentID = "env-a"
-	u, err := st.Users().GetUserByID(ctx, a.ActorID)
-	mustTenant(t, err)
-	u.PasswordHash = "replacement-credential"
-	u.MustChangePassword = false
-	mustTenant(t, st.Users().UpdateUser(ctx, u))
-	if err := st.Tenancy().UpdateEnvironment(ctx, a, "Stale session"); !errors.Is(err, store.ErrForbidden) {
-		t.Fatal("credential replacement raced past tenant authorization")
+	st, _ := setupTenantAccess(t)
+	ts := st.Tenancy()
+	tenantUser(t, st, "stranger", "user", "local", "active")
+	for _, actor := range []string{"stranger", "actor", "nobody"} {
+		foreign := store.TenantAccess{ActorID: actor, OrganizationID: "b", CorrelationID: "probe-" + actor}
+		if _, err := ts.ReadOrganization(ctx, foreign); !errors.Is(err, store.ErrForbidden) {
+			t.Fatalf("%s read b: %v", actor, err)
+		}
+		if _, err := ts.AddEnvironment(ctx, foreign, "Planted"); !errors.Is(err, store.ErrForbidden) {
+			t.Fatalf("%s wrote b: %v", actor, err)
+		}
 	}
-	a.CredentialHash = u.PasswordHash
-	mustTenant(t, st.Tenancy().UpdateEnvironment(ctx, a, "Fresh session"))
+	// A member's denial is still recorded, so the organization sees its own failed attempts.
+	mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "stranger", Role: store.RoleReadOnly, Status: "active"}))
+	if _, err := ts.AddEnvironment(ctx, store.TenantAccess{ActorID: "stranger", OrganizationID: "a", CorrelationID: "member-denied"}, "No"); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("read-only created environment: %v", err)
+	}
+	all, _, err := st.Audit().ListAuditRecords(ctx, 0, 200)
+	mustTenant(t, err)
+	var memberDenied bool
+	for _, r := range all {
+		if r.OrganizationID == "b" || strings.HasPrefix(r.CorrelationID, "probe-") {
+			t.Fatalf("non-member wrote tenant audit: %+v", r)
+		}
+		if r.CorrelationID == "member-denied" && r.Result == "denied" && r.OrganizationID == "a" {
+			memberDenied = true
+		}
+	}
+	if !memberDenied {
+		t.Fatal("member denial not audited")
+	}
 }
