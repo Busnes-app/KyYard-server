@@ -4,7 +4,7 @@ import { Key, Archive, Database, Users, CheckCircle2, ArrowRight } from 'lucide-
 interface DashboardProps {
   settings: any;
   user: any;
-  onNavigate: (tab: string) => void;
+  onNavigate: (path: string) => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate }) => {
@@ -15,7 +15,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate
       status: 'Verified Ready',
       statusType: 'success',
       icon: Archive,
-      action: () => onNavigate('backup'),
+      action: () => onNavigate('/backup'),
       actionLabel: 'Run Restore Drill',
     },
     {
@@ -24,7 +24,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate
       status: settings?.scim_enabled ? 'Active' : 'Disabled',
       statusType: settings?.scim_enabled ? 'success' : 'neutral',
       icon: Users,
-      action: () => onNavigate('scim'),
+      action: () => onNavigate('/scim'),
       actionLabel: 'Manage Directory',
     },
     {
@@ -33,7 +33,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate
       status: settings?.sso_enabled ? 'Enabled' : 'Disabled',
       statusType: settings?.sso_enabled ? 'success' : 'neutral',
       icon: Key,
-      action: () => onNavigate('settings'),
+      action: () => onNavigate('/settings'),
       actionLabel: 'SSO Settings',
     },
     {
@@ -42,7 +42,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate
       status: `${settings?.db_driver || 'sqlite'} (active)`,
       statusType: 'accent',
       icon: Database,
-      action: () => onNavigate('settings'),
+      action: () => onNavigate('/settings'),
       actionLabel: 'Database Config',
     },
   ];
