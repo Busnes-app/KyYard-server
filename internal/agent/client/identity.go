@@ -28,7 +28,11 @@ type Identity struct {
 	PendingPrivateKey  []byte    `json:"pending_private_key,omitempty"`
 	PendingFingerprint string    `json:"pending_fingerprint,omitempty"`
 	PendingSince       time.Time `json:"pending_since,omitempty"`
-	RotatedAt          time.Time `json:"rotated_at"`
+	// LapsedPrivateKey is an offer the agent gave up on. It is kept until the server proves it
+	// gone (by recording a new offer), because with skewed clocks the server may still
+	// acknowledge it, and key_retired must then be able to promote it.
+	LapsedPrivateKey []byte    `json:"lapsed_private_key,omitempty"`
+	RotatedAt        time.Time `json:"rotated_at"`
 }
 
 // Promote makes the acknowledged pending key the current one.
@@ -40,6 +44,24 @@ func (id *Identity) Promote() {
 	id.PendingPrivateKey = nil
 	id.PendingFingerprint = ""
 	id.PendingSince = time.Time{}
+	id.LapsedPrivateKey = nil
+}
+
+// promotable is the key a key_retired refusal should switch to: the live offer, else a lapsed one.
+func (id *Identity) promotable() bool {
+	if len(id.PendingPrivateKey) != ed25519.PrivateKeySize && len(id.LapsedPrivateKey) == ed25519.PrivateKeySize {
+		id.PendingPrivateKey = id.LapsedPrivateKey
+	}
+	return len(id.PendingPrivateKey) == ed25519.PrivateKeySize
+}
+
+// pendingFingerprint derives the fingerprint from the retained pending key, so an offer whose
+// bookkeeping lapsed can still be matched against the server's acknowledgement.
+func (id *Identity) pendingFingerprint() string {
+	if len(id.PendingPrivateKey) != ed25519.PrivateKeySize {
+		return ""
+	}
+	return protocol.Fingerprint(ed25519.PrivateKey(id.PendingPrivateKey).Public().(ed25519.PublicKey))
 }
 
 func (id *Identity) fingerprint() string {

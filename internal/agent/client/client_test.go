@@ -538,3 +538,77 @@ func TestExpiredPendingOfferIsReplaced(t *testing.T) {
 		t.Fatalf("server did not record the fresh key: %+v", e)
 	}
 }
+
+// The agent may forget an offer before the server does (skewed clock, resumed VM); a late
+// acknowledgement must still promote instead of locking the host out.
+func TestLateAcknowledgementAfterTheAgentForgotTheOffer(t *testing.T) {
+	httpSrv, st, jar, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+	run := func(untilPending bool) {
+		runCtx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+		}()
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+			if e != nil && e.State == "active" && (!untilPending || e.PendingFingerprint != "") {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("session did not reach the expected state: %+v", e)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		stop()
+		if err := <-done; err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	}
+	id.RotatedAt = time.Time{}
+	run(true)
+	offered := id.PendingFingerprint
+	// Only the agent's clock says the offer lapsed; the server still accepts it.
+	id.PendingSince = time.Now().Add(-client.PendingKeyLife - time.Minute)
+	if err := client.SaveIdentity(dir, id); err != nil {
+		t.Fatal(err)
+	}
+	run(false)
+	// Rotation was due again, the server refused the fresh offer (its copy of the old one is
+	// still live), and the agent restored the old offer as pending. Its material survived.
+	if len(id.PendingPrivateKey) == 0 && len(id.LapsedPrivateKey) == 0 {
+		t.Fatalf("lapsed key material dropped: %+v", id)
+	}
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/keys/"+offered+"/acknowledge", jar, "")
+	// The next session meets key_retired and must promote the retained key rather than exit.
+	reloaded, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, reloaded, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.State == "active" && e.Fingerprint == offered {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("agent stopped instead of promoting: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never came back with the acknowledged key: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

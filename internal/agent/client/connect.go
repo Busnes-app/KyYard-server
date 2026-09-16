@@ -159,7 +159,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	if err != nil {
 		var ce websocket.CloseError
 		if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired {
-			if len(id.PendingPrivateKey) == ed25519.PrivateKeySize {
+			if id.promotable() {
 				// The operator acknowledged our rotated key while we were away.
 				id.Promote()
 				_ = opts.save(id)
@@ -196,8 +196,11 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		id.Generation = gen
 		_ = opts.save(id)
 		if id.PendingFingerprint != "" && time.Since(id.PendingSince) > PendingKeyLife {
-			opts.Log.Printf("pending key %s was never acknowledged; dropping it", id.PendingFingerprint)
-			id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+			// Forget the offer but keep the key material until a new offer replaces it: if a
+			// late acknowledgement retires the current key anyway, key_retired can still promote.
+			opts.Log.Printf("pending key %s was never acknowledged; offer lapsed", id.PendingFingerprint)
+			id.LapsedPrivateKey = id.PendingPrivateKey
+			id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
 			_ = opts.save(id)
 		}
 		if opts.RotateEvery > 0 && id.PendingFingerprint == "" && time.Since(id.RotatedAt) >= opts.RotateEvery {
@@ -258,14 +261,24 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				if ack.Code != "" || ack.Fingerprint != id.PendingFingerprint {
 					opts.Log.Printf("rotation not recorded (%s); keeping the current key", ack.Code)
 					id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+					if ack.Code == "rotation_pending" && len(id.LapsedPrivateKey) == ed25519.PrivateKeySize {
+						// The server still holds the offer we gave up on: it is the live one again.
+						id.PendingPrivateKey = id.LapsedPrivateKey
+						id.PendingFingerprint = id.pendingFingerprint()
+						id.PendingSince = time.Now().UTC()
+						id.LapsedPrivateKey = nil
+					}
 					_ = opts.save(id)
 				} else {
+					// A recorded offer proves any lapsed key is retired server-side.
+					id.LapsedPrivateKey = nil
+					_ = opts.save(id)
 					opts.Log.Printf("rotation recorded as %s; waiting for operator acknowledgement", ack.Fingerprint)
 				}
 			case protocol.TypeRotated:
 				var done protocol.Rotated
 				_ = json.Unmarshal(f.Payload, &done)
-				if done.Fingerprint == id.PendingFingerprint && id.PendingFingerprint != "" {
+				if done.Fingerprint != "" && id.promotable() && done.Fingerprint == id.pendingFingerprint() {
 					id.Promote()
 					_ = opts.save(id)
 					opts.Log.Printf("rotation acknowledged; reconnecting with the new key")
@@ -326,9 +339,10 @@ func (o *Options) save(id *Identity) error {
 	return nil
 }
 
-// PendingKeyLife mirrors the server's window: an offer nobody acknowledged in this time is
-// dropped so a fresh key can be offered, instead of rotation silently stopping forever.
-const PendingKeyLife = 7 * 24 * time.Hour
+// PendingKeyLife is a day longer than the server's seven-day window: the agent must forget an
+// offer strictly after the server stops accepting it, so an acknowledgement can never land on
+// a key the agent no longer holds. The extra day is clock-skew margin, not a mirror.
+const PendingKeyLife = 8 * 24 * time.Hour
 
 // offerRotation mints a key and persists it as pending before it is sent, so a crash after the
 // server recorded it cannot lose it. If the key cannot be persisted nothing is sent: announcing
