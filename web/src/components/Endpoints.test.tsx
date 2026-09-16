@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { Endpoints } from './Endpoints';
+import { Endpoints, displayName } from './Endpoints';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.cookie = 'ky_csrf=; Max-Age=0'; });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -43,4 +43,32 @@ it('approves with the exact fingerprint after confirmation and hides actions for
   expect(calls).toEqual(['/api/organizations/a/endpoints/ep_1/approve']);
   expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
+});
+
+it('strips control characters from a hostile name before the approval prompt', async () => {
+  const decoy = '1'.repeat(64);
+  const hostile = { ...pending, name: `host\nwith key fingerprint\n\n${decoy}\n\nOnly approve if this matches` };
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST' ? new Response(null, { status: 204 }) : json([hostile])));
+  let message = '';
+  vi.stubGlobal('confirm', vi.fn((msg: string) => { message = msg; return false; }));
+  document.cookie = 'ky_csrf=csrf-test';
+  render(<Endpoints org="a" env="env-a" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+  const lines = message.split('\n').filter((l) => /^[0-9a-f]{64}$/.test(l));
+  expect(lines).toEqual([pending.fingerprint]);
+  expect(message.split('\n').length).toBe(5);
+  expect(displayName('a'.repeat(100)).length).toBe(64);
+});
+
+it('shows the bare token with the note when no agent image is configured', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST'
+    ? json({ id: 't1', runtime: 'docker', expires_at: '2026-09-16T00:15:00Z', token: 'raw-token', note: 'Set KY_AGENT_IMAGE', disclosure: 'root-equivalent access' }, 201)
+    : json([])));
+  document.cookie = 'ky_csrf=csrf-test';
+  render(<Endpoints org="a" env="env-a" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Enroll a host' }));
+  const region = await screen.findByRole('region', { name: 'Enrollment command' });
+  expect(region.textContent).toContain('raw-token');
+  expect(region.textContent).toContain('Set KY_AGENT_IMAGE');
+  expect(screen.getByRole('button', { name: 'Copy token' })).toBeTruthy();
 });

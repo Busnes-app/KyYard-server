@@ -5,6 +5,13 @@ import { EmptyNotice, StateNotice } from './StateNotice';
 
 const terminal = (s: string) => s === 'revoked' || s === 'expired';
 
+// Names come from whoever redeemed the token. The server refuses control characters, and the
+// dialog strips them again and clamps the length so a name can never forge a fingerprint line.
+export const displayName = (name: string) => {
+  const clean = Array.from(name).filter((c) => c >= ' ' && c !== '\x7f').join('');
+  return clean.length > 64 ? clean.slice(0, 63) + '…' : clean;
+};
+
 // Endpoints live under their environment because enrollment tokens are minted per environment.
 export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}`;
@@ -28,10 +35,11 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
     }
   };
   const act = async (e: Endpoint, action: 'approve' | 'reject' | 'revoke') => {
+    const name = displayName(e.name);
     const prompts = {
-      approve: `Approve "${e.name}" with key fingerprint\n\n${e.fingerprint}\n\nOnly approve if this matches the fingerprint the host printed.`,
-      reject: `Reject the pending enrollment of "${e.name}"? The host will have to enroll again.`,
-      revoke: `Revoke "${e.name}"? Its identity stops working immediately and cannot be restored.`,
+      approve: `Approve "${name}" with key fingerprint\n\n${e.fingerprint}\n\nOnly approve if this matches the fingerprint the host printed.`,
+      reject: `Reject the pending enrollment of "${name}"? The host will have to enroll again.`,
+      revoke: `Revoke "${name}"? Its identity stops working immediately and cannot be restored.`,
     };
     if (!window.confirm(prompts[action])) return;
     setBusy(true);
@@ -49,10 +57,11 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
       </div>
       {token && (
         <div className="dr-alert dr-alert-warn" role="region" aria-label="Enrollment command">
-          <p><strong>Shown once.</strong> Run this on the host before {new Date(token.expires_at).toLocaleTimeString()}:</p>
-          <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{token.command}</pre>
+          <p><strong>Shown once.</strong> {token.command ? 'Run this on the host before' : 'Give this token to the agent before'} {new Date(token.expires_at).toLocaleTimeString()}:</p>
+          <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{token.command ?? token.token}</pre>
+          {token.note && <p>{token.note}</p>}
           <p>{token.disclosure}</p>
-          <button className="btn-secondary" onClick={() => { void navigator.clipboard?.writeText(token.command); }}>Copy command</button>
+          <button className="btn-secondary" onClick={() => { void navigator.clipboard?.writeText(token.command ?? token.token); }}>{token.command ? 'Copy command' : 'Copy token'}</button>
           <button className="btn-secondary" onClick={() => setToken(null)}>Dismiss</button>
         </div>
       )}
