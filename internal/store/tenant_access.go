@@ -26,7 +26,10 @@ func (t *tenancyStore) withTenantTarget(ctx context.Context, a TenantAccess, act
 	return t.run(ctx, a, action, target, true, op)
 }
 
-// readTenant checks the same live authorization without locks; reads use a snapshot.
+// readTenant checks the same live authorization without locks; reads use a snapshot. A
+// successful read writes no audit row (docs/authorization-matrix.md, "Read audit"): inventory
+// and list reads arrive every few seconds per endpoint and would be the audit-growth threat
+// themselves. Denied and failed reads are still recorded.
 func (t *tenancyStore) readTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
 	return t.run(ctx, a, action, "", false, op)
 }
@@ -93,6 +96,9 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 			return ErrAlreadyExists
 		}
 		return err
+	}
+	if !lock {
+		return tx.Commit()
 	}
 	record.Result = "success"
 	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), record.UserID, record.Action, record.Resource, record.IPAddress, record.CreatedAt, record.Scope, record.OrganizationID, record.EnvironmentID, record.CorrelationID, record.Result)

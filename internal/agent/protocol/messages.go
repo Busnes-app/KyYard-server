@@ -85,12 +85,6 @@ type Hello struct {
 	AgentVersion     string   `json:"agent_version,omitempty"`
 }
 
-// Inventory carries a monotonically increasing generation; contents arrive with M4.
-type Inventory struct {
-	Generation uint64            `json:"generation"`
-	Facts      map[string]string `json:"facts,omitempty"`
-}
-
 // AuthPreimage binds the signature to this endpoint, this nonce, the host the agent dialed and
 // the version it speaks, so a capture cannot be replayed elsewhere or later.
 func AuthPreimage(endpointID string, nonce []byte, serverHost string, version int) []byte {

@@ -345,12 +345,15 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		if pending {
 			return false
 		}
-		var inv protocol.Inventory
-		if err := json.Unmarshal(f.Payload, &inv); err != nil {
+		var inv protocol.Snapshot
+		if err := json.Unmarshal(f.Payload, &inv); err != nil || len(f.Payload) > store.MaxSnapshotBytes {
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
-		accepted, err := ts.AcceptInventory(fctx, c.endpointID, inv.Generation)
+		if inv.ObservedAt.IsZero() {
+			inv.ObservedAt = time.Now().UTC()
+		}
+		accepted, err := ts.AcceptInventory(fctx, c.endpointID, inv.Generation, inv.ObservedAt, f.Payload)
 		if err != nil {
 			log.Printf("agent %s: inventory: %v", c.endpointID, err)
 		} else if !accepted {

@@ -434,6 +434,21 @@ CREATE TABLE endpoint_capabilities (
  PRIMARY KEY (endpoint_id, capability)
 );
 `},
+	{Version: 10, Name: "endpoint_inventory", SQLite: `CREATE TABLE endpoint_inventory (
+ endpoint_id TEXT PRIMARY KEY REFERENCES endpoints(id) ON DELETE CASCADE,
+ generation INTEGER NOT NULL,
+ observed_at DATETIME NOT NULL,
+ received_at DATETIME NOT NULL,
+ snapshot TEXT NOT NULL
+);
+`, Postgres: `CREATE TABLE endpoint_inventory (
+ endpoint_id TEXT PRIMARY KEY REFERENCES endpoints(id) ON DELETE CASCADE,
+ generation BIGINT NOT NULL,
+ observed_at TIMESTAMPTZ NOT NULL,
+ received_at TIMESTAMPTZ NOT NULL,
+ snapshot TEXT NOT NULL
+);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

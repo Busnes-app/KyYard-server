@@ -167,7 +167,7 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	if reason != "" || sock.hello.State != "pending" || sock.hello.HeartbeatSeconds != 30 {
 		t.Fatalf("pending hello: %q %+v", reason, sock)
 	}
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 5})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 5})
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {
 		t.Fatalf("heartbeat ack: %+v", e)
@@ -193,9 +193,9 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	if reason != "" || sock.hello.State != "approved" {
 		t.Fatalf("approved hello: %q %+v", reason, sock.hello)
 	}
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 10})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 10})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 9})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 9})
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	readEnvelope(t, ctx, sock.conn)
 	if e, _ := ts.ReadEndpointRaw(ctx, ag.id); e.LastSeenAt == nil {
@@ -212,7 +212,7 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	if sock.hello.State != "offline" {
 		t.Fatalf("offline hello: %+v", sock.hello)
 	}
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 11})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 11})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 
 	// Revocation closes the live socket in the same request and the next connect is refused.
@@ -262,7 +262,7 @@ func TestAgentShutdownClosesSockets(t *testing.T) {
 		t.Fatal("approve")
 	}
 	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 1})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 1})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 	s.BeginShutdown()
 	_, _, err := sock.conn.Read(ctx)
@@ -322,7 +322,7 @@ func TestAgentRotationOverTheSocket(t *testing.T) {
 	}
 	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{"docker.containers"}})
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 1})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 1})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 
 	// Offer a rotated key: recorded pending, echoed back.

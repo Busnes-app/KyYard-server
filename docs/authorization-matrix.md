@@ -112,7 +112,7 @@ Every mutating action and every denied attempt by a member is recorded in organi
 |---|---|---|
 | Platform access to tenants | explicit, time-boxed, audited assumption; no blanket access | proposed (plan preference) |
 | Repair of an organization with no active administrator | `platform.tenant.assume` | proposed, blocker from PR #10 |
-| Successful reads audited | stop from M4, except logs, exec and one-time disclosures | proposed |
+| Successful reads audited | stopped with the inventory API (M4): `readTenant` writes no success row; denials still audited | implemented |
 | Platform grant expiry | enforced in the membership lookup, not by cleanup; excluded from the administrator quorum | proposed |
 | Organization creation | platform administrators, no membership for the creator | proposed |
 | Unmanaged containers | lifecycle by permission, configuration edit needs adoption | proposed (plan default) |

@@ -236,6 +236,11 @@ if [ -x "$AGENT" ]; then
     "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"fingerprint":"'"$EP_FP"'"}' -X POST "$BASE/api/organizations/org_initial/endpoints/$EP_ID/approve")" "204"
   wait_state active || true
   check "agent becomes active after approval" "$(endpoint_state)" "active"
+  INV="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints/$EP_ID/inventory")"
+  contains "inventory is stored with its generation" "$INV" '"generation"'
+  contains "inventory carries a snapshot" "$INV" '"containers"'
+  check "inventory never carries container environment" \
+    "$(if printf '%s' "$INV" | grep -qi '"env"'; then echo leaked; else echo clean; fi)" "clean"
   check "revoke closes the live agent" \
     "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/organizations/org_initial/endpoints/$EP_ID/revoke")" "204"
   AGENT_EXIT=0
