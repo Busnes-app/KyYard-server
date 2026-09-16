@@ -120,6 +120,10 @@ func runServer() {
 		}
 	}
 
+	if err := st.Tenancy().Initialize(ctx); err != nil {
+		log.Fatalf("Failed to initialize tenancy: %v", err)
+	}
+
 	srv := api.NewServer(cfg, st)
 	backupDone := make(chan struct{})
 	go backupLoop(ctx, cfg, st, backupDone)
