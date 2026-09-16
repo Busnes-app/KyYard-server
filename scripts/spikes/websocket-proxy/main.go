@@ -41,7 +41,7 @@ func main() {
 
 func runServer(addr string) {
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"127.0.0.1:8081", "127.0.0.1:8082"}})
 		if err != nil {
 			log.Printf("accept: %v", err)
 			return
