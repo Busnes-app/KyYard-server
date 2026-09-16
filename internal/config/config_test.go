@@ -16,6 +16,10 @@ func TestConfigLoadDefaults(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
+	if cfg.Server.Host != "127.0.0.1" || cfg.Security.CookieSecure || cfg.SSO.Enabled || cfg.SCIM.Enabled {
+		t.Fatal("unsafe or non-minimal defaults")
+	}
+
 	if cfg.Server.AppName != "KyYard" {
 		t.Errorf("expected default product name KyYard, got %s", cfg.Server.AppName)
 	}

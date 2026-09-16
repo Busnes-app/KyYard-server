@@ -39,10 +39,8 @@ contains() { # contains <description> <haystack> <needle>
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 start_server() { # start_server <captcha-provider>
-  KY_ENV=production \
-    KY_SESSION_SECRET='' \
+  KY_SESSION_SECRET='' \
     KY_ENCRYPTION_KEY='' \
-    KY_COOKIE_SECURE=false \
     KY_PORT="$PORT" \
     KY_HOST=127.0.0.1 \
     KY_DATA_DIR="$WORK/data" \
@@ -83,6 +81,9 @@ check "init-admin creates admin" \
 echo "==> HTTP with default PoW captcha"
 ADMIN_PASS=""
 start_server pow
+contains "liveness" "$(curl -sf "$BASE/health/live")" '"status":"ok"'
+contains "readiness" "$(curl -sf "$BASE/health/ready")" '"status":"ok"'
+if KY_HOST=127.0.0.1 KY_PORT="$PORT" "$BIN" healthcheck; then pass "binary readiness probe"; else fail "binary readiness probe"; fi
 ADMIN_PASS="$(sed -n 's/.*Username: admin | Password: //p' "$WORK/server.log")"
 check "fresh production boot prints one generated credential" "$(grep -c 'Initial bootstrap:' "$WORK/server.log")" "1"
 check "generated bootstrap password is present" "$(test -n "$ADMIN_PASS" && echo yes || echo no)" "yes"

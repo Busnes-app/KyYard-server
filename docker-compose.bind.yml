@@ -1,0 +1,5 @@
+# Preserve existing ./data installs, or use this when restoring to a host directory.
+services:
+  kyyard:
+    volumes:
+      - ./data:/data

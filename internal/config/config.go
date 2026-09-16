@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -30,7 +31,6 @@ type ServerConfig struct {
 	AppName      string        `json:"app_name"`
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`
-	Environment  string        `json:"environment"`
 }
 
 // DatabaseConfig holds connection settings for pluggable storage (SQLite, PostgreSQL, MySQL).
@@ -108,11 +108,57 @@ const DefaultAppName = "KyYard"
 
 // LoadFromEnv initializes a Config struct populated from environment variables with sensible defaults.
 func LoadFromEnv() (*Config, error) {
-	port := getEnvInt("KY_PORT", getEnvInt("PORT", 8080))
-	host := getEnv("KY_HOST", "0.0.0.0")
+	port, portErr := strconv.Atoi(getEnv("KY_PORT", getEnv("PORT", "8080")))
+	host := getEnv("KY_HOST", "127.0.0.1")
 	appURL := getEnv("KY_APP_URL", fmt.Sprintf("http://localhost:%d", port))
 	appName := getEnv("KY_APP_NAME", DefaultAppName)
-	env := getEnv("KY_ENV", "development")
+
+	if portErr != nil || port < 1 || port > 65535 {
+		return nil, fmt.Errorf("KY_PORT: must be between 1 and 65535")
+	}
+	trustedProxies, err := ParseTrustedProxies(getEnv("KY_TRUSTED_PROXIES", ""))
+	if err != nil {
+		return nil, fmt.Errorf("KY_TRUSTED_PROXIES: %w", err)
+	}
+	advertised, err := url.Parse(appURL)
+	if err != nil || advertised.Hostname() == "" || (advertised.Scheme != "http" && advertised.Scheme != "https") || advertised.User != nil || (advertised.Path != "" && advertised.Path != "/") || advertised.RawQuery != "" || advertised.ForceQuery || advertised.Fragment != "" || advertised.Opaque != "" {
+		return nil, fmt.Errorf("KY_APP_URL: use an http(s) origin without credentials, path, query or fragment")
+	}
+	if p := advertised.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("KY_APP_URL: invalid port")
+		}
+	}
+	advertised.Host = strings.ToLower(advertised.Host)
+	if strings.HasSuffix(advertised.Host, ":") {
+		return nil, fmt.Errorf("KY_APP_URL: invalid empty port")
+	}
+	if (advertised.Scheme == "https" && advertised.Port() == "443") || (advertised.Scheme == "http" && advertised.Port() == "80") {
+		advertised.Host = advertised.Hostname()
+		if strings.Contains(advertised.Host, ":") {
+			advertised.Host = "[" + advertised.Host + "]"
+		}
+	}
+	// A URL is advertised as an origin, matching the browser's Origin header.
+	advertised.Path = ""
+	appURL = advertised.String()
+	secure := advertised.Scheme == "https"
+	if !secure {
+		bind, err := netip.ParseAddr(host)
+		if (err != nil || !bind.IsLoopback()) && !getEnvBool("KY_ALLOW_PLAINTEXT_BIND", false) {
+			return nil, fmt.Errorf("KY_HOST: plaintext outside a literal loopback address requires KY_ALLOW_PLAINTEXT_BIND=true; keep the published port on loopback or configure an HTTPS reverse proxy")
+		}
+		addr, _ := netip.ParseAddr(advertised.Hostname())
+		if advertised.Hostname() != "localhost" && !addr.IsLoopback() {
+			return nil, fmt.Errorf("KY_APP_URL: HTTP is only for localhost or loopback; remote access requires HTTPS through a reverse proxy and KY_TRUSTED_PROXIES")
+		}
+	} else if len(trustedProxies) == 0 {
+		return nil, fmt.Errorf("KY_TRUSTED_PROXIES: HTTPS requires the TLS reverse proxy's explicit IP or CIDR")
+	}
+	if raw := getEnv("KY_COOKIE_SECURE", ""); raw != "" && getEnvBool("KY_COOKIE_SECURE", secure) != secure {
+		return nil, fmt.Errorf("KY_COOKIE_SECURE: must match the KY_APP_URL scheme (true for HTTPS, false for loopback HTTP)")
+	}
 
 	driver := strings.ToLower(getEnv("KY_DB_DRIVER", "sqlite"))
 	dataDir := getEnv("KY_DATA_DIR", "./data")
@@ -152,11 +198,6 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("KY_BACKUP_KEEP: must be at least 1, got %d", backupKeep)
 	}
 
-	trustedProxies, err := ParseTrustedProxies(getEnv("KY_TRUSTED_PROXIES", ""))
-	if err != nil {
-		return nil, fmt.Errorf("KY_TRUSTED_PROXIES: %w", err)
-	}
-
 	cfg := &Config{
 		Server: ServerConfig{
 			Host:         host,
@@ -165,7 +206,6 @@ func LoadFromEnv() (*Config, error) {
 			AppName:      appName,
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
-			Environment:  env,
 		},
 		Database: DatabaseConfig{
 			Driver:          driver,
@@ -179,13 +219,13 @@ func LoadFromEnv() (*Config, error) {
 			SessionSecret:  hex.EncodeToString(sessionKey),
 			InstanceKey:    instanceKey,
 			EncryptionKey:  encryptionKey,
-			CookieSecure:   getEnvBool("KY_COOKIE_SECURE", env == "production"),
+			CookieSecure:   secure,
 			CookieDomain:   getEnv("KY_COOKIE_DOMAIN", ""),
 			SessionTTL:     7 * 24 * time.Hour,
 			TrustedProxies: trustedProxies,
 		},
 		SSO: SSOConfig{
-			Enabled:             getEnvBool("KY_SSO_ENABLED", true),
+			Enabled:             getEnvBool("KY_SSO_ENABLED", false),
 			KySignOnIssuer:      getEnv("KY_KYSIGNON_ISSUER", ""),
 			KySignOnClientID:    getEnv("KY_KYSIGNON_CLIENT_ID", ""),
 			KySignOnSecret:      getEnv("KY_KYSIGNON_SECRET", ""),
@@ -198,7 +238,7 @@ func LoadFromEnv() (*Config, error) {
 			AutoProvision:       getEnvBool("KY_SSO_AUTO_PROVISION", true),
 		},
 		SCIM: SCIMConfig{
-			Enabled:     getEnvBool("KY_SCIM_ENABLED", true),
+			Enabled:     getEnvBool("KY_SCIM_ENABLED", false),
 			BearerToken: getEnv("KY_SCIM_TOKEN", generateRandomHex(24)),
 		},
 		Backup: BackupConfig{

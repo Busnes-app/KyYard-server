@@ -150,15 +150,26 @@ jobs:
       - name: Build image
         run: docker build -t kyyard:ci .
 
+      - name: Bare image refuses an unacknowledged plaintext bind
+        run: |
+          if docker run --rm kyyard:ci > bare-image.log 2>&1; then
+            echo "Bare image unexpectedly accepted a plaintext wildcard bind" >&2
+            exit 1
+          fi
+          grep -q 'KY_ALLOW_PLAINTEXT_BIND' bare-image.log
+
       - name: Container serves the app
         run: |
-          docker run -d --name ky_ci -p 18080:8080 \
+          docker run -d --name ky_ci -p 127.0.0.1:18080:8080 \
+            -e KY_ALLOW_PLAINTEXT_BIND=true \
             -e KY_ADMIN_PASSWORD='CiSmokeAdminPass123!' \
             -e KY_CAPTCHA_PROVIDER=none \
             kyyard:ci
           trap 'docker logs ky_ci; docker rm -f ky_ci' EXIT
 
           curl -sf -o /dev/null --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:18080/
+          curl -sf http://127.0.0.1:18080/health/ready | grep -q '"status":"ok"'
+          docker exec ky_ci /app/kyyard-server healthcheck
           curl -sf -o /dev/null http://127.0.0.1:18080/api/settings
           curl -sf -X POST -H 'Content-Type: application/json' \
             -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \

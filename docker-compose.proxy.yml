@@ -1,0 +1,6 @@
+# Terminate TLS at your reverse proxy; keep the backend port private.
+services:
+  kyyard:
+    environment:
+      - KY_APP_URL=${KY_APP_URL:?Set the public HTTPS origin}
+      - KY_TRUSTED_PROXIES=${KY_TRUSTED_PROXIES:?Set the proxy peer IP or narrow CIDR}

@@ -7,6 +7,9 @@ Exposes HTTP REST routes, authentication endpoints, Single Sign-On callbacks, SC
 Owns HTTP routing, request parsing, session cookie validation, CORS headers, and error response formatting.
 
 ## Local Contracts
+- SSO routes (including callbacks, sync and SAML metadata) return 404 while disabled; SCIM retains its disabled middleware.
+- Public GET/HEAD `/health/live` reports process availability; `/health/ready` pings the store with a 2s deadline and returns 503 after `BeginShutdown`. Probes are no-store and never return backend errors.
+- Unsafe requests with an Origin must match the configured advertised origin, including login/MFA; originless CLI/webhook requests still undergo their existing authentication/CSRF checks.
 - POST `/api/auth/change-password` accepts a restricted local session, current password and a different policy-valid new password. Browser CSRF and per-IP/account limits apply. Success revokes all sessions and requires sign-in again; flagged sessions get `password_change_required` on protected routes and public-only settings.
 - All JSON API endpoints return structured errors `{"error": "message"}` upon failure.
 - Non-API routes fall back to serving `web.Handler()` for client-side SPA routing.

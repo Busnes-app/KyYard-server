@@ -33,4 +33,6 @@ ENV KY_DATA_DIR=/data
 EXPOSE 8080
 VOLUME ["/data"]
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["/app/kyyard-server", "healthcheck"]
+
 ENTRYPOINT ["/app/kyyard-server"]

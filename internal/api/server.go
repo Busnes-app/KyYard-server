@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
@@ -44,6 +45,7 @@ type Server struct {
 	// connection. http.Server.Shutdown does not know about them, so runServer waits on this
 	// before the store closes.
 	detached detachedCounter
+	stopping atomic.Bool
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -203,6 +205,10 @@ func (s *Server) requestIP(r *http.Request) string {
 }
 
 func (s *Server) routes() {
+	// Public, secret-free probes; readiness includes the database.
+	s.mux.HandleFunc("/health/live", s.handleHealth)
+	s.mux.HandleFunc("/health/ready", s.handleHealth)
+
 	// Auth
 	s.mux.HandleFunc("/api/auth/pow-challenge", s.handlePoWChallenge)
 	s.mux.HandleFunc("/api/auth/login", s.handleLogin)
@@ -307,12 +313,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isUnsafeMethod(r.Method) && origin != "" && !sameOrigin(origin, s.config.Server.AppURL) {
+		s.writeError(w, http.StatusForbidden, "Origin not allowed; use the configured KY_APP_URL")
+		return
+	}
 	if isUnsafeMethod(r.Method) && hasSessionCookie(r) && !csrfExempt(r.URL.Path) && !auth.ValidateCSRF(r) {
 		s.writeError(w, http.StatusForbidden, "Invalid CSRF token")
 		return
 	}
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	}
+
+	if !s.config.SSO.Enabled && (strings.HasPrefix(r.URL.Path, "/api/sso/") || strings.HasPrefix(r.URL.Path, "/saml/")) {
+		s.writeError(w, http.StatusNotFound, "SSO is disabled")
+		return
 	}
 
 	// SCIM middleware
@@ -343,7 +358,7 @@ func sameOrigin(origin, appURL string) bool {
 		return false
 	}
 	o, err := url.Parse(origin)
-	return err == nil && o.Scheme == a.Scheme && o.Host == a.Host
+	return err == nil && o.User == nil && o.Path == "" && o.RawQuery == "" && !o.ForceQuery && o.Fragment == "" && o.Scheme == a.Scheme && o.Host == a.Host
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {

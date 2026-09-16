@@ -173,8 +173,15 @@ Expect three or four files, all mode `600`, under `restored/data` and `restored/
 
 ## Step 3: put it in service
 
-**Docker Compose (the normal deployment).** The data directory is the bind mount `./data`
-in the compose project. It must be empty before the copy, for the same reason Step 1 demands
+**Docker Compose.** The default uses a named volume. This restore procedure deliberately
+switches to a host directory using `docker-compose.bind.yml`; retain the old named volume
+until recovery is verified. Stop the original first with `docker compose down` (never `-v`).
+Append `:docker-compose.bind.yml` to the existing `COMPOSE_FILE` in `.env`, or set
+`COMPOSE_FILE=docker-compose.yml:docker-compose.bind.yml` if none exists. Preserve any build,
+proxy and DNS overlays. Run `mkdir -p data` and verify `docker compose config` mounts that
+host directory at `/data` before continuing.
+
+The destination bind mount `./data` must be empty before the copy, for the same reason Step 1 demands
 an empty directory: a capsule carries `ky_server.db` but never its `-wal` and `-shm`
 sidecars, and a write-ahead log left over from the old database would be replayed into the
 restored one at first open, mixing two databases.

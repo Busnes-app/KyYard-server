@@ -1,18 +1,21 @@
 import React, { useState } from 'react';
 import { Shield, Key, AlertCircle, LogIn } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget';
+import { SetupGuide } from '../components/SetupGuide';
 import { ThemeSwitcher } from '../components/ThemeSwitcher';
 
 interface LoginProps {
   onSuccess: (user: any) => void;
   appName: string;
+  appURL?: string;
+  ssoEnabled?: boolean;
 }
 
 interface MFAChallenge {
   mfa_token: string;
 }
 
-export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
+export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', ssoEnabled = false }) => {
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [captchaToken, setCaptchaToken] = useState<string>('');
@@ -214,7 +217,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
                 <span>{loading ? 'Signing in...' : 'Sign In'}</span>
               </button>
 
-              <div style={{ marginTop: '20px', borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
+              {ssoEnabled && <div style={{ marginTop: '20px', borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
                 <div style={{ fontSize: '12px', color: 'var(--ink)', textAlign: 'center', marginBottom: '12px' }}>
                   Or continue with Single Sign-On
                 </div>
@@ -226,10 +229,11 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
                   <Key size={16} style={{ color: 'var(--accent)' }} />
                   <span>KySignOn Identity</span>
                 </a>
-              </div>
+              </div>}
             </form>
           )}
         </div>
+        <SetupGuide appURL={appURL} />
       </div>
     </div>
   );

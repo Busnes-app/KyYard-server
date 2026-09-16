@@ -11,16 +11,28 @@ Fresh installations only: KyYard uses its own recovery service identity and toke
 label. Existing base-project databases, pairing tokens and capsules are not a supported
 in-place migration. The SQLite filename `ky_server.db` remains the inherited storage format.
 Container data lives under `/data`, including local capsules under `/data/backups` in Compose.
-Production mode generates persistent secrets without manual configuration. The next slice adds
-the one-container onboarding, transport defaults and health checks.
+KyYard generates persistent secrets without manual configuration. Compose runs one
+container with SQLite and a named `kyyard-data` volume; SSO and SCIM are off by default.
 
-Published image (available after the first successful master publication):
+## Start KyYard
+
+Published image:
 
 ```bash
-make ci        # gofmt, vet, race tests, smoke test
-make run       # build and start on :8080; first start prints the bootstrap admin password
 docker compose up -d
+docker compose logs kyyard
 ```
+
+Open **http://localhost:8080** on the Docker host. Sign in as `admin` with the temporary
+password printed in the logs and replace it. The HTTP port is published on loopback only.
+`docker compose ps` reports health; `docker compose exec kyyard /app/kyyard-server healthcheck`
+checks readiness. Restarting preserves accounts, sessions and keys. Do not use `down -v`
+unless you intend to delete the data volume.
+
+**Existing `./data` installs:** before updating, append `:docker-compose.bind.yml` to your
+existing `COMPOSE_FILE` in `.env` (or set `COMPOSE_FILE=docker-compose.yml:docker-compose.bind.yml`).
+Check `docker compose config` still mounts your original directory at `/data`. Otherwise
+the new named-volume default would start a separate, empty instance.
 
 Source install (never paste this into a published-image install: the build overlay wins over a
 `KY_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
@@ -30,7 +42,6 @@ this block once and confirm with `docker compose config --images`, which must pr
 
 ```bash
 make ci        # gofmt, vet, race tests, smoke test
-make run       # build and start on :8080; first start prints the bootstrap admin password
 (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env \
   && cf=$({ grep '^COMPOSE_FILE=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-) && cf=${cf:-docker-compose.yml} \
   && case ":$cf:" in *:docker-compose.build.yml:*) ;; *) cf="$cf:docker-compose.build.yml";; esac \
@@ -59,6 +70,57 @@ of at least 12 characters, then sign in again. Until replacement, the session ca
 its identity, change the password or sign out; privileged APIs remain blocked. Replacement
 revokes existing sessions, MFA transactions and device pairings atomically. Existing accounts
 are not retroactively flagged, since the server cannot infer whether they still use a bootstrap password.
+
+## Transport and advanced deployment
+
+The bare binary defaults to `127.0.0.1:8080`; the image listens on `0.0.0.0:8080` inside
+its container, while Compose publishes only `127.0.0.1:8080` on the host. `KY_APP_URL`
+defaults to `http://localhost:8080` (or the configured port). Use that exact origin in your
+browser: writes from a different origin are refused, including login. Cookies are HttpOnly
+for sessions and SameSite, and their Secure flag follows the advertised URL.
+`KY_COOKIE_SECURE`, if supplied, must agree with the URL scheme. HTTP advertised URLs are
+accepted only for localhost/loopback. A non-loopback HTTP listen address (or a hostname whose
+resolution cannot be assumed safe) additionally requires `KY_ALLOW_PLAINTEXT_BIND=true`.
+Compose sets this beside its loopback-only host publish; the image deliberately does not.
+A bare `docker run` must either configure an HTTPS reverse proxy or explicitly set this
+acknowledgement and publish with `-p 127.0.0.1:8080:8080`. It does not add encryption or
+restrict the socket: do not expose that HTTP backend port to a LAN or the internet.
+`KY_ENV` has been removed; there is no separate development/production security mode.
+
+For access from another machine during setup, forward the local port over SSH:
+`ssh -N -L 8080:127.0.0.1:8080 user@docker-host`, then open http://localhost:8080 locally.
+For shared access, terminate TLS at your reverse proxy with a valid certificate, route to
+this private backend, and preserve the browser Host and Origin headers. Append
+`:docker-compose.proxy.yml` to `COMPOSE_FILE` in `.env` and set:
+
+```dotenv
+KY_APP_URL=https://yard.example.com
+# The proxy's actual peer address as seen by KyYard, not an entire shared Docker network.
+KY_TRUSTED_PROXIES=172.18.0.2/32
+```
+
+Replace the example with your proxy's address. A host proxy may arrive through Docker's
+bridge gateway; a proxy container needs connectivity to KyYard's Docker network. Keep the
+published port on loopback. Only listed peers may supply `X-Forwarded-For`; forwarded
+scheme headers never change cookie security. HTTPS startup requires this explicit proxy
+allowlist. Recreate with `docker compose up -d`, then sign in at the HTTPS URL.
+Agent enrollment is planned; secret-bearing remote enrollment will require HTTPS.
+
+Optional overlays are appended to the existing `COMPOSE_FILE` chain, preserving the build,
+bind and DNS overlays already in use:
+
+- `docker-compose.bind.yml`: existing host directory at `./data` instead of the named volume.
+- `docker-compose.postgres.yml`: PostgreSQL 17, without a published database port. Set
+  `KY_POSTGRES_PASSWORD` and a URL-encoded `KY_DB_DSN` such as
+  `postgres://kyyard:<encoded-password>@postgres:5432/kyyard?sslmode=disable` in private `.env`.
+  This uses the private Compose network; capsule backups support SQLite only.
+- SSO/SCIM: explicitly set `KY_SSO_ENABLED=true` / `KY_SCIM_ENABLED=true` in an environment
+  overlay after configuring the provider or stable `KY_SCIM_TOKEN`.
+
+`GET`/`HEAD /health/live` reports process availability; `/health/ready` additionally probes
+the database with a two-second deadline and returns 503 during shutdown or database failure.
+They expose only `status`, never connection strings, keys or backend errors. The image
+healthcheck calls readiness using the binary, without loading keys or creating data.
 
 ## Persistent keys
 
