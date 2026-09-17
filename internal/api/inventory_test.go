@@ -174,3 +174,61 @@ func TestInventoryIsStoredAndReadWithFreshness(t *testing.T) {
 	}
 	_ = websocket.StatusNormalClosure
 }
+
+// A host clock hours fast must not wedge the endpoint: the skewed generation is refused and
+// surfaced as an alert, and the next snapshot from a sane clock is accepted with no operator
+// action in between.
+func TestFastClockGenerationIsRefusedThenRecovers(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleEnvironmentAdmin, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-clock")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	empty := protocol.Snapshot{Engine: protocol.Engine{Runtime: "docker"}, Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
+	fast := empty
+	fast.Generation = uint64(time.Now().Add(3 * time.Hour).Unix())
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, fast)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "generation_rejected") {
+		t.Fatalf("fast clock generation was not refused: %+v", e)
+	}
+	org := store.TenantAccess{ActorID: "usr_envadmin", OrganizationID: "a"}
+	view, err := ts.ReadEndpoint(ctx, org, ag.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.State == "active" {
+		t.Fatal("skewed snapshot activated the endpoint")
+	}
+	if w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/inventory", "", true); w.Code != 404 {
+		t.Fatalf("skewed snapshot was stored: %d", w.Code)
+	}
+	waitFor(t, func() bool {
+		v, _ := ts.ReadEndpoint(ctx, org, ag.id)
+		for _, al := range v.Alerts {
+			if al.Kind == "generation_rejected" {
+				return true
+			}
+		}
+		return false
+	})
+	sane := empty
+	sane.Generation = uint64(time.Now().Unix())
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, sane)
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+	w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/inventory", "", true)
+	var inv struct{ Generation uint64 }
+	_ = json.Unmarshal(w.Body.Bytes(), &inv)
+	if w.Code != 200 || inv.Generation != sane.Generation {
+		t.Fatalf("sane snapshot not accepted after the skewed one: %d %s", w.Code, w.Body.String())
+	}
+}
