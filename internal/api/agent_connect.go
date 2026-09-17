@@ -41,6 +41,7 @@ type agentConn struct {
 	closeOnce      sync.Once
 	reason         string
 	lastFrame      atomic.Int64 // unix nanoseconds of the last frame the reader delivered
+	lastMetrics    time.Time    // last metrics frame handed to the store; loop goroutine only
 	skewRaised     bool         // generation_rejected raised this session; loop goroutine only
 }
 
@@ -347,6 +348,12 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		c.conn.Close(websocket.StatusPolicyViolation, reason)
 		return true
 	}
+	if f.Type == protocol.TypeMetrics && len(f.Payload) > protocol.MaxMetricsBytes {
+		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "metrics_too_large", "limit_bytes": protocol.MaxMetricsBytes})); err != nil {
+			return true
+		}
+		return false
+	}
 	if f.Type != protocol.TypeInventory && len(f.Payload) > maxControlPayload {
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 		return true
@@ -392,6 +399,34 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		}
 		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeHeartbeat, nil)); err != nil {
 			return true
+		}
+	case protocol.TypeMetrics:
+		if pending {
+			return false
+		}
+		var m protocol.Metrics
+		if err := json.Unmarshal(f.Payload, &m); err != nil || store.ValidateSamples(m) != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		if !c.lastMetrics.IsZero() && time.Since(c.lastMetrics) < store.SampleCadence {
+			return false
+		}
+		c.lastMetrics = time.Now()
+		if err := ts.RecordSamples(fctx, c.endpointID, m); err != nil {
+			if errors.Is(err, store.ErrSampleBudget) {
+				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "samples_budget_exhausted", "limit_rows": store.MaxSampleRowsPerEndpoint})); err != nil {
+					return true
+				}
+				return false
+			}
+			if errors.Is(err, store.ErrInvalid) {
+				// A frame the store refuses is a protocol violation: close so the socket cannot
+				// become an unbounded write channel of rejected frames.
+				c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+				return true
+			}
+			log.Printf("agent %s: metrics: %v", c.endpointID, err)
 		}
 	case protocol.TypeInventory:
 		if pending {

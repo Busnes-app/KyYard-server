@@ -127,6 +127,7 @@ func runServer() {
 	srv := api.NewServer(cfg, st)
 	backupDone := make(chan struct{})
 	go backupLoop(ctx, cfg, st, backupDone)
+	go pruneLoop(ctx, st)
 
 	addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 	httpServer := &http.Server{
@@ -466,5 +467,29 @@ func runRestore(args []string) {
 	}
 	if err := restore(*capsulePath, *target, *service, shares, os.Stdout); err != nil {
 		log.Fatalf("Restore failed: %v", err)
+	}
+}
+
+// pruneLoop enforces retention (docs/retention-policy.md): every minute it deletes expired
+// samples and acknowledged events in bounded batches until a pass removes nothing.
+func pruneLoop(ctx context.Context, st store.Store) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for i := 0; i < 20; i++ {
+				n, err := st.Tenancy().Prune(ctx)
+				if err != nil {
+					log.Printf("[RETENTION] prune: %v", err)
+					break
+				}
+				if n == 0 {
+					break
+				}
+			}
+		}
 	}
 }

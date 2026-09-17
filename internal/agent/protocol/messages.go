@@ -30,6 +30,7 @@ const (
 	TypeHello     = "hello"
 	TypeHeartbeat = "heartbeat"
 	TypeInventory = "inventory"
+	TypeMetrics   = "metrics"
 	TypeApproved  = "enrollment.approved"
 	TypeRotate    = "identity.rotate"  // agent → server: a new key signed by the current one
 	TypeRotated   = "identity.rotated" // server → agent: the operator acknowledged that key

@@ -208,7 +208,7 @@ func TestTenancyUpgradeAndReopen(t *testing.T) {
 	defer db.Close()
 	// Reconstruct the v4 schema while preserving existing accounts, then exercise real Open.
 	// Migration 7's tables reference environments, so they go first and are replayed too.
-	for _, q := range []string{"DROP TABLE endpoint_inventory", "DROP TABLE endpoint_events", "DROP TABLE endpoint_capabilities", "DROP TABLE agent_enrollment_tokens", "DROP TABLE endpoint_keys", "DROP TABLE endpoints", "DROP TABLE organization_group_members", "DROP TABLE organization_groups", "DROP TABLE environments", "DROP TABLE organization_memberships", "DROP TABLE tenancy_bootstrap", "DROP TABLE organizations", "DELETE FROM schema_migrations WHERE version IN (5,7,8,9,10,11)"} {
+	for _, q := range []string{"DROP TABLE container_samples", "DROP TABLE endpoint_inventory", "DROP TABLE endpoint_events", "DROP TABLE endpoint_capabilities", "DROP TABLE agent_enrollment_tokens", "DROP TABLE endpoint_keys", "DROP TABLE endpoints", "DROP TABLE organization_group_members", "DROP TABLE organization_groups", "DROP TABLE environments", "DROP TABLE organization_memberships", "DROP TABLE tenancy_bootstrap", "DROP TABLE organizations", "DELETE FROM schema_migrations WHERE version IN (5,7,8,9,10,11,12,13)"} {
 		_, err := db.ExecContext(ctx, q)
 		mustTenant(t, err)
 	}

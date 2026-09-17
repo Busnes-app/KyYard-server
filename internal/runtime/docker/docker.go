@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -22,8 +23,10 @@ const apiVersion = "v1.41"
 const maxBody = 32 << 20
 
 type Client struct {
-	http *http.Client
-	base string
+	http    *http.Client
+	base    string
+	cpuMu   sync.Mutex
+	cpuPrev map[string]cpuPoint
 }
 
 // New returns an adapter for the Engine at socketPath (a Unix socket) or a TCP host.

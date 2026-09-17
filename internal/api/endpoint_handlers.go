@@ -245,3 +245,37 @@ func (s *Server) handleEndpointInventory(w http.ResponseWriter, r *http.Request,
 	}
 	s.writeJSON(w, http.StatusOK, inv)
 }
+
+func (s *Server) handleLatestSamples(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	rows, err := s.store.Tenancy().LatestSamples(r.Context(), a, id)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, rows)
+}
+
+func (s *Server) handleContainerSamples(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	container := r.PathValue("container")
+	if container == "" || len(container) > 128 {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	minutes, _ := strconv.Atoi(r.URL.Query().Get("minutes"))
+	rows, err := s.store.Tenancy().ReadSamples(r.Context(), a, id, container, time.Duration(minutes)*time.Minute)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, rows)
+}
