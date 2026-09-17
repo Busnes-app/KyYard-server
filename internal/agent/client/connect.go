@@ -192,8 +192,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	if err := write(ctx, conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{}, AgentVersion: opts.Version}); err != nil {
 		return err
 	}
+	metricsOut := make(chan protocol.Metrics, 1)
 	if hello.State != "pending" {
-		if err := sendInventory(ctx, conn, id, opts); err != nil {
+		if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
 			return err
 		}
 		if id.PendingFingerprint != "" && time.Since(id.PendingSince) > PendingKeyLife {
@@ -256,9 +257,13 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			}
 		case <-inventory.C:
 			if hello.State != "pending" {
-				if err := sendInventory(ctx, conn, id, opts); err != nil {
+				if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
 					return err
 				}
+			}
+		case m := <-metricsOut:
+			if err := write(ctx, conn, protocol.TypeMetrics, m); err != nil {
+				return err
 			}
 		case err := <-readErr:
 			// The operator acknowledged our rotated key and the server ended this session on
@@ -387,7 +392,7 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 // sendInventory reads the runtime (or reports facts only) under a generation that rises across
 // restarts: a restarted agent's first snapshot must not be ignored, so the wall clock seeds it
 // when the persisted counter is behind.
-func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options) error {
+func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options, metricsOut chan<- protocol.Metrics) error {
 	gen := id.Generation + 1
 	if now := uint64(time.Now().Unix()); now > gen {
 		gen = now
@@ -412,21 +417,28 @@ func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 	}
 	id.Generation = gen
 	_ = opts.save(id)
-	if opts.Metrics != nil {
+	if opts.Metrics != nil && metricsOut != nil {
 		running := make([]string, 0, len(snap.Containers))
 		for _, ct := range snap.Containers {
 			if ct.State == "running" {
 				running = append(running, ct.ID)
 			}
 		}
-		mctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		m := opts.Metrics(mctx, running)
-		cancel()
-		if len(m.Samples) > 0 {
-			if err := write(ctx, conn, protocol.TypeMetrics, m); err != nil {
-				return err
+		// Sampling talks to the runtime once per container; it runs off the loop so a slow
+		// daemon can never starve heartbeats, and a frame is dropped if the previous one is
+		// still waiting to be written.
+		go func() {
+			mctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			m := opts.Metrics(mctx, running)
+			if len(m.Samples) == 0 {
+				return
 			}
-		}
+			select {
+			case metricsOut <- m:
+			default:
+			}
+		}()
 	}
 	return nil
 }

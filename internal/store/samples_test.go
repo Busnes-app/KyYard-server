@@ -39,7 +39,9 @@ func TestSamplesAreBoundedScopedAndPruned(t *testing.T) {
 		t.Fatalf("skewed sample not re-stamped: %+v", latest)
 	}
 	// Newest per container wins; other containers are independent.
-	mustTenant(t, ts.RecordSamples(ctx, e.ID, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1", CPUPercent: 30}, {ContainerID: "c2", CPUPercent: -1}}}))
+	// Inside the cadence a repeat is dropped; a minute later it lands.
+	mustTenant(t, ts.RecordSamples(ctx, e.ID, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1", CPUPercent: 99}}}))
+	mustTenant(t, ts.RecordSamples(ctx, e.ID, protocol.Metrics{ObservedAt: time.Now().Add(60 * time.Second), Samples: []protocol.Sample{{ContainerID: "c1", CPUPercent: 30}, {ContainerID: "c2", CPUPercent: -1}}}))
 	latest, err = ts.LatestSamples(ctx, org, e.ID)
 	mustTenant(t, err)
 	if len(latest) != 2 || latest[0].ContainerID != "c1" || latest[0].CPUPercent != 30 || latest[1].CPUPercent != -1 {

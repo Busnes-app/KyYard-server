@@ -65,17 +65,15 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 	if w := tenantRequest(s, viewer, "GET", "/api/organizations/a/endpoints/ep_missing/samples", "", true); w.Code != 404 {
 		t.Fatalf("unknown endpoint samples: %d", w.Code)
 	}
-	// An oversized metrics frame is refused (logged), not stored.
-	big := protocol.Metrics{ObservedAt: time.Now(), Samples: make([]protocol.Sample, protocol.MaxSamples+1)}
-	for i := range big.Samples {
-		big.Samples[i].ContainerID = "x"
+	// A frame the store refuses (here: an unsafe container ID) closes the socket, and nothing
+	// of it is stored.
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "bad\nid"}}})
+	if _, _, err := sock.conn.Read(ctx); err == nil {
+		t.Fatal("refused metrics frame left the socket open")
 	}
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, big)
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
-	readEnvelope(t, ctx, sock.conn)
 	w = tenantRequest(s, viewer, "GET", latestPath, "", true)
 	_ = json.Unmarshal(w.Body.Bytes(), &latest)
 	if len(latest) != 2 {
-		t.Fatalf("oversized frame was stored: %d", len(latest))
+		t.Fatalf("refused frame was stored: %d", len(latest))
 	}
 }

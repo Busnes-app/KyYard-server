@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
@@ -13,13 +14,22 @@ import (
 const (
 	SampleRetention    = 6 * time.Hour
 	MaxSamplesPerFrame = protocol.MaxSamples
-	EventRetention     = 7 * 24 * time.Hour
-	PruneBatch         = 5000
+	// SampleCadence is the documented 60 s reporting interval; a container gains at most one
+	// row per cadence (with a little slack for jitter), so the six-hour window holds about
+	// 360 rows per container whatever an agent sends.
+	SampleCadence = 50 * time.Second
+	// MaxSampleRowsPerEndpoint is the backstop against container-ID cardinality: 100
+	// containers × 360 rows at the capacity targets, with headroom.
+	MaxSampleRowsPerEndpoint = 100000
+	EventRetention           = 7 * 24 * time.Hour
+	PruneBatch               = 5000
 )
 
 // RecordSamples stores one metrics frame. An observation more than five minutes from the
 // server clock is stamped with the server's time, so a skewed agent cannot write into the
-// future or the past.
+// future or the past. Samples inside a container's cadence are dropped, and a frame that
+// would push the endpoint past its row ceiling, or carries a bad ID, is refused with
+// ErrInvalid, which the connection treats as a protocol violation.
 func (t *tenancyStore) RecordSamples(ctx context.Context, endpointID string, m protocol.Metrics) error {
 	if len(m.Samples) > MaxSamplesPerFrame {
 		return ErrInvalid
@@ -29,18 +39,53 @@ func (t *tenancyStore) RecordSamples(ctx context.Context, endpointID string, m p
 	if observed.IsZero() || observed.After(now.Add(5*time.Minute)) || observed.Before(now.Add(-5*time.Minute)) {
 		observed = now
 	}
+	for _, s := range m.Samples {
+		if s.ContainerID == "" || len(s.ContainerID) > 128 || !displaySafe(s.ContainerID) {
+			return ErrInvalid
+		}
+	}
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	var existing int
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM container_samples WHERE endpoint_id=?`), endpointID).Scan(&existing); err != nil {
+		return err
+	}
+	newest := map[string]time.Time{}
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id, MAX(observed_at) FROM container_samples WHERE endpoint_id=? GROUP BY container_id`), endpointID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		var raw any
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		at, err := scanTime(raw)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		newest[id] = at
+	}
+	rows.Close()
+	inserted := 0
 	for _, s := range m.Samples {
-		if s.ContainerID == "" || len(s.ContainerID) > 128 || !displaySafe(s.ContainerID) {
+		if last, ok := newest[s.ContainerID]; ok && observed.Sub(last) < SampleCadence {
+			continue // inside the cadence: keep the row we have
+		}
+		if existing+inserted >= MaxSampleRowsPerEndpoint {
 			return ErrInvalid
 		}
 		if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (endpoint_id,container_id,observed_at) DO NOTHING`), endpointID, s.ContainerID, observed, s.CPUPercent, s.MemoryBytes, s.MemoryLimit, s.RxBytes, s.TxBytes, s.Pids); err != nil {
 			return err
 		}
+		newest[s.ContainerID] = observed
+		inserted++
 	}
 	return tx.Commit()
 }
@@ -145,4 +190,24 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 		total += n
 	}
 	return total, nil
+}
+
+// scanTime reads a timestamp that came through an aggregate: PostgreSQL keeps the type,
+// SQLite hands back the stored text.
+func scanTime(v any) (time.Time, error) {
+	switch x := v.(type) {
+	case time.Time:
+		return x.UTC(), nil
+	case string:
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999 -0700 MST", "2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05.999999999Z07:00", "2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05"} {
+			if t, err := time.Parse(layout, x); err == nil {
+				return t.UTC(), nil
+			}
+		}
+		return time.Time{}, fmt.Errorf("unparsable timestamp %q", x)
+	case []byte:
+		return scanTime(string(x))
+	default:
+		return time.Time{}, fmt.Errorf("unexpected timestamp type %T", v)
+	}
 }

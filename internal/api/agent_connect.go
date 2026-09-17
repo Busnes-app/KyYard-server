@@ -382,6 +382,12 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			return true
 		}
 		if err := ts.RecordSamples(fctx, c.endpointID, m); err != nil {
+			if errors.Is(err, store.ErrInvalid) {
+				// A frame the store refuses is a protocol violation: close so the socket cannot
+				// become an unbounded write channel of rejected frames.
+				c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+				return true
+			}
 			log.Printf("agent %s: metrics: %v", c.endpointID, err)
 		}
 	case protocol.TypeInventory:

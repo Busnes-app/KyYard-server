@@ -17,7 +17,7 @@
 | Exec session metadata | 365 days (with audit) | one row per session; no contents | 200 per page | listed under audit |
 | Deployment history and events | deployments older than 90 days pruned unless they produced the current or previous revision; 90 days after the application is removed everything goes | 50 revisions per application (oldest non-current pruned), 500 events per deployment | 100 events per page | "older revisions pruned" note |
 | Endpoint events (state changes, errors) | 7 days | 50,000 rows per endpoint | 200 per page | gap markers between reconnects |
-| Metrics samples (CPU, memory, network, restarts) | 6 hours at 60 s (implemented; raw only, roll-ups pending); hourly roll-ups for 7 days | per container: 360 raw samples, 168 roll-ups (about 1.3 million rows at the capacity targets) | 6 h raw or 7 d roll-up per request | "no data" versus "0" rendered differently |
+| Metrics samples (CPU, memory, network, restarts) | 6 hours at 60 s (time limit, per-container cadence cap and query bound implemented; the 95 % disk-budget stop, restarts and hourly roll-ups pending); hourly roll-ups for 7 days | per container: 360 raw samples, 168 roll-ups (about 1.3 million rows at the capacity targets) | 6 h raw or 7 d roll-up per request | "no data" versus "0" rendered differently |
 | Inventory snapshots | current generation only; previous kept until the next accepted one | one per endpoint | n/a | observed-at age and offline state |
 | Container logs | never stored; streamed on demand | per request 10,000 lines or 4 MiB, whichever first; follow buffer 1 MiB per stream with explicit gap markers | 10,000 lines | truncation and gap markers inline |
 | Agent dedupe records (on the agent) | 24 hours | 10,000 entries | n/a | n/a |

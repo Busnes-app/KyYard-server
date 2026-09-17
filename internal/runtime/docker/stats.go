@@ -47,7 +47,14 @@ func (c *Client) Stats(ctx context.Context, running []string) protocol.Metrics {
 				Current int64 `json:"current"`
 			} `json:"pids_stats"`
 		}
-		if err := c.get(ctx, "/containers/"+id+"/stats?stream=false&one-shot=true", &raw); err != nil {
+		// One slow container must not spend the whole budget.
+		sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := c.get(sctx, "/containers/"+id+"/stats?stream=false&one-shot=true", &raw)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
 			continue // a container that vanished between listing and sampling is not an error
 		}
 		seen[id] = true

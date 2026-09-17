@@ -647,3 +647,63 @@ func TestAgentReportsMetricsWithInventory(t *testing.T) {
 		t.Fatalf("metrics asked for %v, want only the running container", asked)
 	}
 }
+
+// A slow runtime must not cost heartbeats: metrics are collected off the loop.
+func TestHeartbeatsContinueWhileMetricsAreSlow(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	beats := make(chan struct{}, 64)
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		frame := func(typ string, payload any) []byte {
+			raw, _ := json.Marshal(payload)
+			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
+			return b
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
+		_, _, _ = c.Read(ctx)
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
+		for {
+			_, raw, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var e protocol.Envelope
+			_ = json.Unmarshal(raw, &e)
+			if e.Type == protocol.TypeHeartbeat {
+				beats <- struct{}{}
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHeartbeat, nil))
+			}
+		}
+	}))
+	defer stub.Close()
+	id := &client.Identity{EndpointID: "ep_slow", PrivateKey: priv, InstanceFingerprint: strings.Repeat("a", 64), Server: stub.URL, RotatedAt: time.Now()}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	snapshot := func(context.Context) (*protocol.Snapshot, error) {
+		return &protocol.Snapshot{Containers: []protocol.Container{{ID: "c1", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+	}
+	metrics := func(mctx context.Context, _ []string) protocol.Metrics {
+		select {
+		case <-time.After(4 * time.Second):
+		case <-mctx.Done():
+		}
+		return protocol.Metrics{}
+	}
+	go func() {
+		_ = client.Run(ctx, id, client.Options{HTTPClient: stub.Client(), Snapshot: snapshot, Metrics: metrics, InventoryEvery: time.Hour})
+	}()
+	deadline := time.After(4500 * time.Millisecond)
+	n := 0
+	for n < 3 {
+		select {
+		case <-beats:
+			n++
+		case <-deadline:
+			t.Fatalf("only %d heartbeats in 4.5 s while metrics blocked; the loop is starved", n)
+		}
+	}
+}
