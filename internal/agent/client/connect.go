@@ -155,7 +155,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	if ch.InstanceFingerprint != id.InstanceFingerprint {
 		return ErrInstanceChanged
 	}
-	sig := ed25519.Sign(ed25519.PrivateKey(id.PrivateKey), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
+	sig := ed25519.Sign(id.signingKey(), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
 	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Fingerprint: id.fingerprint(), Version: protocol.Version, Signature: sig}); err != nil {
 		return err
 	}
@@ -165,18 +165,31 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		if errors.As(err, &ce) {
 			switch strings.TrimSpace(ce.Reason) {
 			case protocol.CloseKeyRetired:
-				// Our key was retired (an acknowledged rotation while we were away). Try the
-				// next candidate; only with none left is the endpoint really gone. A revoked
-				// close is terminal and never touches the key material: the server also uses
-				// it for a signature mismatch or a store error, and a rotation window must
-				// not turn either into a lost identity.
-				if id.switchKey() {
-					_ = opts.save(id)
+				// Our key was retired (an acknowledged rotation while we were away). Walk to
+				// the next candidate; only with none left is the endpoint really gone.
+				if id.tryNext() {
+					return errSwitchKey
+				}
+			case protocol.CloseRevoked:
+				// Terminal for the identity's own key: the server answers the same way for a
+				// signature mismatch or a store error, and a rotation window must not turn
+				// either into a lost identity. Mid-walk the key in hand has only ever been
+				// refused, and an unknown key looks exactly like a revoked endpoint, so the
+				// remaining candidates are still worth one try each. Nothing is overwritten
+				// on the way, so a server fault that refuses them all leaves every key where
+				// it was and the walk simply ends.
+				if id.recovering() && id.tryNext() {
 					return errSwitchKey
 				}
 			}
 		}
 		return closeReason(err)
+	}
+	// The server accepted this key, which is the only proof that the old one is retired: the
+	// candidate becomes the identity and the others are dropped.
+	if id.recovering() {
+		id.commitCandidate()
+		_ = opts.save(id)
 	}
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
@@ -200,8 +213,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			// Forget the offer but keep the key material until a new offer replaces it: if a
 			// late acknowledgement retires the current key anyway, key_retired can still promote.
 			opts.Log.Printf("pending key %s was never acknowledged; offer lapsed", id.PendingFingerprint)
-			id.LapsedPrivateKey = id.PendingPrivateKey
+			id.LapsedPrivateKey, id.LapsedRecorded = id.PendingPrivateKey, id.PendingRecorded
 			id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
+			id.PendingRecorded = false
 			_ = opts.save(id)
 		}
 		if opts.RotateEvery > 0 && id.PendingFingerprint == "" && time.Since(id.RotatedAt) >= opts.RotateEvery {
@@ -264,8 +278,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			// The operator acknowledged our rotated key and the server ended this session on
 			// the old one: switch now instead of waiting for the next backoff.
 			var ce websocket.CloseError
-			if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired && id.switchKey() {
-				_ = opts.save(id)
+			if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired && id.tryNext() {
 				return errSwitchKey
 			}
 			return closeReason(err)
@@ -280,18 +293,21 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				_ = json.Unmarshal(f.Payload, &ack)
 				if ack.Code != "" || ack.Fingerprint != id.PendingFingerprint {
 					opts.Log.Printf("rotation not recorded (%s); keeping the current key", ack.Code)
-					id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+					id.PendingPrivateKey, id.PendingFingerprint, id.PendingRecorded = nil, "", false
 					if ack.Code == "rotation_pending" && len(id.LapsedPrivateKey) == ed25519.PrivateKeySize {
-						// The server still holds the offer we gave up on: it is the live one again.
+						// The server still holds the offer we gave up on: it is the live one again,
+						// and saying so is the server confirming it holds that key.
 						id.PendingPrivateKey = id.LapsedPrivateKey
 						id.PendingFingerprint = id.pendingFingerprint()
 						id.PendingSince = time.Now().UTC()
-						id.LapsedPrivateKey = nil
+						id.PendingRecorded = true
+						id.LapsedPrivateKey, id.LapsedRecorded = nil, false
 					}
 					_ = opts.save(id)
 				} else {
 					// A recorded offer proves any lapsed key is retired server-side.
-					id.LapsedPrivateKey = nil
+					id.LapsedPrivateKey, id.LapsedRecorded = nil, false
+					id.PendingRecorded = true
 					_ = opts.save(id)
 					opts.Log.Printf("rotation recorded as %s; waiting for operator acknowledgement", ack.Fingerprint)
 				}
@@ -372,10 +388,13 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 	if err != nil {
 		return err
 	}
-	current := ed25519.PrivateKey(id.PrivateKey)
+	current := id.signingKey()
 	id.PendingPrivateKey = priv
 	id.PendingFingerprint = protocol.Fingerprint(pub)
 	id.PendingSince = time.Now().UTC()
+	// Unconfirmed until the server answers: the save must come first so a key the server may
+	// record is never lost, but a key it never saw must not outrank a recorded one.
+	id.PendingRecorded = false
 	if err := opts.save(id); err != nil {
 		id.PendingPrivateKey, id.PendingFingerprint = nil, ""
 		return fmt.Errorf("rotation not offered: %w", err)

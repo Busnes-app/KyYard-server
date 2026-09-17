@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -654,5 +656,417 @@ func TestRevocationDoesNotSwitchKeys(t *testing.T) {
 	}
 	if !bytes.Equal(saved.PrivateKey, current) || len(saved.PendingPrivateKey) == 0 {
 		t.Fatalf("revocation rewrote the identity: current changed=%v pending kept=%v", !bytes.Equal(saved.PrivateKey, current), len(saved.PendingPrivateKey) != 0)
+	}
+}
+
+// A session killed between saving a rotation offer and hearing the answer leaves a key the
+// server may never have recorded. When a late acknowledgement then retires the current key,
+// the agent must reach the acknowledged key rather than strand itself on the unrecorded one:
+// the server answers an unknown key exactly as it answers a revoked endpoint, and that is
+// terminal.
+func TestAnUnrecordedOfferDoesNotStrandTheAgent(t *testing.T) {
+	httpSrv, st, jar, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+
+	// One offer, recorded by the server.
+	id.RotatedAt = time.Time{}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.PendingFingerprint != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no rotation offer was recorded: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	recorded := id.PendingFingerprint
+	recordedKey := append([]byte(nil), id.PendingPrivateKey...)
+
+	// The state a crash mid-offer leaves on disk: the recorded offer has lapsed out of the
+	// pending slot, and a newer offer sits there that the session died before hearing an
+	// answer for. Written as the file itself, the way a killed agent leaves it.
+	unrecordedPub, unrecordedPriv, _ := ed25519.GenerateKey(rand.Reader)
+	raw, err := os.ReadFile(filepath.Join(dir, "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	saved["lapsed_private_key"] = recordedKey
+	saved["pending_private_key"] = []byte(unrecordedPriv)
+	saved["pending_fingerprint"] = protocol.Fingerprint(unrecordedPub)
+	saved["pending_since"] = time.Now().UTC()
+	delete(saved, "pending_recorded")
+	raw, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "identity.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator acknowledges the offer the server actually holds.
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/keys/"+recorded+"/acknowledge", jar, "")
+
+	reloaded, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx2, stop2 := context.WithCancel(ctx)
+	defer stop2()
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- client.Run(runCtx2, reloaded, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir})
+	}()
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.State == "active" && e.Fingerprint == recorded {
+			return
+		}
+		select {
+		case err := <-done2:
+			t.Fatalf("agent gave up instead of trying the recorded key: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never authenticated with the acknowledged key: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The lapsed slot is not a mark of trust: an offer that lapsed without ever being confirmed
+// belongs behind one the server did record, whichever slot each sits in.
+func TestAnUnconfirmedLapsedKeyDoesNotOutrankARecordedOffer(t *testing.T) {
+	httpSrv, st, jar, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+
+	// One offer the server records, left in the pending slot.
+	id.RotatedAt = time.Time{}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.PendingFingerprint != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no rotation offer was recorded: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	recorded := id.PendingFingerprint
+
+	// On disk: the recorded offer still pending but with its provenance lost (an older agent
+	// wrote this file), and a key in the lapsed slot the server has never seen.
+	_, strayPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	saved["lapsed_private_key"] = []byte(strayPriv)
+	delete(saved, "lapsed_recorded")
+	delete(saved, "pending_recorded")
+	raw, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "identity.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/keys/"+recorded+"/acknowledge", jar, "")
+
+	reloaded, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx2, stop2 := context.WithCancel(ctx)
+	defer stop2()
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- client.Run(runCtx2, reloaded, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir})
+	}()
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.State == "active" && e.Fingerprint == recorded {
+			return
+		}
+		select {
+		case err := <-done2:
+			t.Fatalf("agent gave up instead of trying the acknowledged key: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never authenticated with the acknowledged key: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A server fault answers every attempt the way a revocation does. Walking the candidates must
+// cost attempts and nothing else: when the fault clears, the key that works is still on disk.
+func TestAFaultyServerDoesNotConsumeKeyMaterial(t *testing.T) {
+	httpSrv, st, jar, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+
+	// An offer the server records and the operator acknowledges, so the agent's own key is
+	// retired and the acknowledged key is the one that works.
+	id.RotatedAt = time.Time{}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.PendingFingerprint != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no rotation offer was recorded: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	recorded := id.PendingFingerprint
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/keys/"+recorded+"/acknowledge", jar, "")
+
+	// A server that retires the key in hand and then refuses every candidate the way a
+	// revocation reads: a store outage or a Host-rewriting proxy behind the same answers.
+	instance := id.InstanceFingerprint
+	var attempts atomic.Int64
+	faulty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		nonce := make([]byte, 32)
+		_, _ = rand.Read(nonce)
+		raw, _ := json.Marshal(protocol.Challenge{Nonce: nonce, InstanceFingerprint: instance, Versions: []int{protocol.Version}})
+		frame, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeChallenge, Payload: raw})
+		if err := c.Write(r.Context(), websocket.MessageText, frame); err != nil {
+			return
+		}
+		if _, _, err := c.Read(r.Context()); err != nil {
+			return
+		}
+		if attempts.Add(1) == 1 {
+			c.Close(websocket.StatusPolicyViolation, protocol.CloseKeyRetired)
+			return
+		}
+		c.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
+	}))
+	defer faulty.Close()
+
+	before, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := *before
+	broken.Server = faulty.URL
+	brokenDir := t.TempDir()
+	if err := client.SaveIdentity(brokenDir, &broken); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Run(ctx, &broken, client.Options{HTTPClient: faulty.Client(), IdentityDir: brokenDir}); !errors.Is(err, client.ErrRevoked) {
+		t.Fatalf("expected the walk to end in ErrRevoked, got %v", err)
+	}
+	if n := attempts.Load(); n < 2 {
+		t.Fatalf("the walk never left the first key: %d attempts", n)
+	}
+	after, err := client.LoadIdentity(brokenDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after.PrivateKey, before.PrivateKey) || !bytes.Equal(after.PendingPrivateKey, before.PendingPrivateKey) || !bytes.Equal(after.LapsedPrivateKey, before.LapsedPrivateKey) {
+		t.Fatal("the walk against a faulty server overwrote key material")
+	}
+
+	// The fault clears: the same identity reaches the acknowledged key.
+	healed, err := client.LoadIdentity(brokenDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healed.Server = httpSrv.URL
+	runCtx2, stop2 := context.WithCancel(ctx)
+	defer stop2()
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- client.Run(runCtx2, healed, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: brokenDir})
+	}()
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.State == "active" && e.Fingerprint == recorded {
+			return
+		}
+		select {
+		case err := <-done2:
+			t.Fatalf("agent gave up after the fault cleared: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never authenticated after the fault cleared: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A walk that runs out of candidates must leave the agent on its own key. If the index
+// survived, every later cycle would sign with the last key the server refused, and the key
+// that works would sit unreachable on disk.
+func TestAnExhaustedWalkReturnsToTheIdentityKey(t *testing.T) {
+	httpSrv, st, _, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	approved, err := ts.ReadEndpointRaw(ctx, id.EndpointID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two candidates the server has never seen, both marked as offers it confirmed, either
+	// side of the identity's own key, which is the approved one.
+	_, stray1, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stray2, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	saved["pending_private_key"] = []byte(stray1)
+	saved["pending_fingerprint"] = protocol.Fingerprint(stray1.Public().(ed25519.PublicKey))
+	saved["pending_since"] = time.Now().UTC()
+	saved["pending_recorded"] = true
+	saved["lapsed_private_key"] = []byte(stray2)
+	saved["lapsed_recorded"] = true
+	raw, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "identity.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A server that retires the key in hand once, then refuses everything.
+	instance := id.InstanceFingerprint
+	var attempts atomic.Int64
+	faulty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		nonce := make([]byte, 32)
+		_, _ = rand.Read(nonce)
+		payload, _ := json.Marshal(protocol.Challenge{Nonce: nonce, InstanceFingerprint: instance, Versions: []int{protocol.Version}})
+		frame, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeChallenge, Payload: payload})
+		if err := c.Write(r.Context(), websocket.MessageText, frame); err != nil {
+			return
+		}
+		if _, _, err := c.Read(r.Context()); err != nil {
+			return
+		}
+		if attempts.Add(1) == 1 {
+			c.Close(websocket.StatusPolicyViolation, protocol.CloseKeyRetired)
+			return
+		}
+		c.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
+	}))
+	defer faulty.Close()
+
+	stuck, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck.Server = faulty.URL
+	if err := client.Run(ctx, stuck, client.Options{HTTPClient: faulty.Client(), IdentityDir: dir}); !errors.Is(err, client.ErrRevoked) {
+		t.Fatalf("expected the exhausted walk to end in ErrRevoked, got %v", err)
+	}
+	if n := attempts.Load(); n < 3 {
+		t.Fatalf("the walk did not try both candidates: %d attempts", n)
+	}
+	if stuck.RecoveryAttempt != 0 {
+		t.Fatalf("the walk left the index at %d, so the next cycle would sign with a refused key", stuck.RecoveryAttempt)
+	}
+	if reloaded, err := client.LoadIdentity(dir); err != nil || reloaded.RecoveryAttempt != 0 {
+		t.Fatalf("the index survived on disk: %+v %v", reloaded, err)
+	}
+
+	// The fault clears. The agent must be back on its own key, which is the approved one.
+	stuck.Server = httpSrv.URL
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, stuck, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir})
+	}()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		e, _ := ts.ReadEndpointRaw(ctx, id.EndpointID)
+		if e != nil && e.State == "active" && e.Fingerprint == approved.Fingerprint {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("agent gave up on its own key after the fault cleared: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never authenticated with its own key: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
