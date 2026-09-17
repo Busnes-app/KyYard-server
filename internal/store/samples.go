@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -25,12 +26,29 @@ const (
 	PruneBatch               = 5000
 )
 
+var ErrSampleBudget = errors.New("endpoint sample budget exhausted")
+
+func ValidateSamples(m protocol.Metrics) error {
+	if len(m.Samples) > MaxSamplesPerFrame {
+		return ErrInvalid
+	}
+	for _, s := range m.Samples {
+		if s.ContainerID == "" || len(s.ContainerID) > 128 || !displaySafe(s.ContainerID) {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
 // RecordSamples stores one metrics frame. An observation more than five minutes from the
 // server clock is stamped with the server's time, so a skewed agent cannot write into the
 // future or the past. Samples inside a container's cadence are dropped, and a frame that
 // would push the endpoint past its row ceiling, or carries a bad ID, is refused with
 // ErrInvalid, which the connection treats as a protocol violation.
 func (t *tenancyStore) RecordSamples(ctx context.Context, endpointID string, m protocol.Metrics) error {
+	if err := ValidateSamples(m); err != nil {
+		return err
+	}
 	if len(m.Samples) > MaxSamplesPerFrame {
 		return ErrInvalid
 	}
@@ -49,43 +67,50 @@ func (t *tenancyStore) RecordSamples(ctx context.Context, endpointID string, m p
 		return err
 	}
 	defer tx.Rollback()
-	var existing int
-	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM container_samples WHERE endpoint_id=?`), endpointID).Scan(&existing); err != nil {
-		return err
-	}
 	newest := map[string]time.Time{}
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id, MAX(observed_at) FROM container_samples WHERE endpoint_id=? GROUP BY container_id`), endpointID)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var id string
+	for _, s := range m.Samples {
+		if _, seen := newest[s.ContainerID]; seen {
+			continue
+		}
 		var raw any
-		if err := rows.Scan(&id, &raw); err != nil {
-			rows.Close()
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT MAX(observed_at) FROM container_samples WHERE endpoint_id=? AND container_id=?`), endpointID, s.ContainerID).Scan(&raw); err != nil {
 			return err
 		}
-		at, err := scanTime(raw)
-		if err != nil {
-			rows.Close()
-			return err
+		if raw != nil {
+			at, err := scanTime(raw)
+			if err != nil {
+				return err
+			}
+			newest[s.ContainerID] = at
 		}
-		newest[id] = at
 	}
-	rows.Close()
-	inserted := 0
+	writes := make([]protocol.Sample, 0, len(m.Samples))
 	for _, s := range m.Samples {
 		if last, ok := newest[s.ContainerID]; ok && observed.Sub(last) < SampleCadence {
-			continue // inside the cadence: keep the row we have
+			continue
 		}
-		if existing+inserted >= MaxSampleRowsPerEndpoint {
-			return ErrInvalid
-		}
+		writes = append(writes, s)
+		newest[s.ContainerID] = observed
+	}
+	if len(writes) == 0 {
+		return tx.Commit()
+	}
+	offset := MaxSampleRowsPerEndpoint - len(writes)
+	if offset < 0 {
+		return ErrSampleBudget
+	}
+	var present int
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM container_samples WHERE endpoint_id=? LIMIT 1 OFFSET ?`), endpointID, offset).Scan(&present)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil && present == 1 {
+		return ErrSampleBudget
+	}
+	for _, s := range writes {
 		if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (endpoint_id,container_id,observed_at) DO NOTHING`), endpointID, s.ContainerID, observed, s.CPUPercent, s.MemoryBytes, s.MemoryLimit, s.RxBytes, s.TxBytes, s.Pids); err != nil {
 			return err
 		}
-		newest[s.ContainerID] = observed
-		inserted++
 	}
 	return tx.Commit()
 }
@@ -132,7 +157,7 @@ func (t *tenancyStore) LatestSamples(ctx context.Context, a TenantAccess, endpoi
 		if err := t.endpointInScope(ctx, tx, a, endpointID); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT s.container_id,s.observed_at,s.cpu_percent,s.memory_bytes,s.memory_limit,s.rx_bytes,s.tx_bytes,s.pids FROM container_samples s JOIN (SELECT container_id, MAX(observed_at) AS latest FROM container_samples WHERE endpoint_id=? AND observed_at>? GROUP BY container_id) l ON l.container_id=s.container_id AND l.latest=s.observed_at WHERE s.endpoint_id=? ORDER BY s.container_id LIMIT ?`), endpointID, time.Now().UTC().Add(-SampleRetention), endpointID, MaxSamplesPerFrame)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT s.container_id,s.observed_at,s.cpu_percent,s.memory_bytes,s.memory_limit,s.rx_bytes,s.tx_bytes,s.pids FROM container_samples s WHERE s.endpoint_id=? AND s.observed_at>? AND NOT EXISTS (SELECT 1 FROM container_samples newer WHERE newer.endpoint_id=s.endpoint_id AND newer.container_id=s.container_id AND newer.observed_at>s.observed_at) ORDER BY s.container_id LIMIT ?`), endpointID, time.Now().UTC().Add(-SampleRetention), MaxSamplesPerFrame)
 		if err != nil {
 			return err
 		}

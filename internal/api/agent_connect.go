@@ -33,6 +33,7 @@ type agentConn struct {
 	closed      chan struct{}
 	closeOnce   sync.Once
 	reason      string
+	lastMetrics time.Time
 }
 
 // alive pings the socket with a short deadline; a peer that cannot answer is not a competitor.
@@ -377,11 +378,21 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			return false
 		}
 		var m protocol.Metrics
-		if err := json.Unmarshal(f.Payload, &m); err != nil {
+		if err := json.Unmarshal(f.Payload, &m); err != nil || store.ValidateSamples(m) != nil {
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
+		if !c.lastMetrics.IsZero() && time.Since(c.lastMetrics) < store.SampleCadence {
+			return false
+		}
+		c.lastMetrics = time.Now()
 		if err := ts.RecordSamples(fctx, c.endpointID, m); err != nil {
+			if errors.Is(err, store.ErrSampleBudget) {
+				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "samples_budget_exhausted", "limit_rows": store.MaxSampleRowsPerEndpoint})); err != nil {
+					return true
+				}
+				return false
+			}
 			if errors.Is(err, store.ErrInvalid) {
 				// A frame the store refuses is a protocol violation: close so the socket cannot
 				// become an unbounded write channel of rejected frames.

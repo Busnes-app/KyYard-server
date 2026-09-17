@@ -102,7 +102,7 @@ func TestSamplesBoundedPerContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "over"}}})
-	if !errors.Is(err, ErrInvalid) {
+	if !errors.Is(err, ErrSampleBudget) {
 		t.Fatalf("frame past the ceiling accepted: %v", err)
 	}
 	if err := st.db.QueryRowContext(ctx, st.rebind(`SELECT COUNT(*) FROM container_samples WHERE endpoint_id=?`), e).Scan(&count); err != nil || count != MaxSampleRowsPerEndpoint {
