@@ -449,7 +449,8 @@ CREATE TABLE endpoint_capabilities (
  snapshot TEXT NOT NULL
 );
 `},
-	{Version: 11, Name: "container_samples", SQLite: `CREATE TABLE container_samples (
+	{Version: 11, Name: "endpoint_events_open_unique", SQLite: `CREATE UNIQUE INDEX idx_endpoint_events_open ON endpoint_events(endpoint_id, kind) WHERE acknowledged_at IS NULL;`, Postgres: `CREATE UNIQUE INDEX idx_endpoint_events_open ON endpoint_events(endpoint_id, kind) WHERE acknowledged_at IS NULL;`},
+	{Version: 12, Name: "container_samples", SQLite: `CREATE TABLE container_samples (
  endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
  container_id TEXT NOT NULL,
  observed_at DATETIME NOT NULL,
@@ -476,7 +477,7 @@ CREATE INDEX idx_container_samples_observed ON container_samples(observed_at);
 );
 CREATE INDEX idx_container_samples_observed ON container_samples(observed_at);
 `},
-	{Version: 12, Name: "container_samples_endpoint_time", SQLite: `CREATE INDEX idx_container_samples_endpoint_time ON container_samples(endpoint_id, observed_at, container_id);`, Postgres: `CREATE INDEX idx_container_samples_endpoint_time ON container_samples(endpoint_id, observed_at, container_id);`},
+	{Version: 13, Name: "container_samples_endpoint_time", SQLite: `CREATE INDEX idx_container_samples_endpoint_time ON container_samples(endpoint_id, observed_at, container_id);`, Postgres: `CREATE INDEX idx_container_samples_endpoint_time ON container_samples(endpoint_id, observed_at, container_id);`},
 }
 
 // Run executes all pending migrations for the specified database driver.

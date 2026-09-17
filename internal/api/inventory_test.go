@@ -2,8 +2,11 @@ package api_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -173,4 +176,104 @@ func TestInventoryIsStoredAndReadWithFreshness(t *testing.T) {
 		t.Fatalf("read audit: %v", counts)
 	}
 	_ = websocket.StatusNormalClosure
+}
+
+// A host clock hours fast must not wedge the endpoint: the skewed generation is refused and
+// surfaced as an alert, and the next snapshot from a sane clock is accepted with no operator
+// action in between.
+func TestFastClockGenerationIsRefusedThenRecovers(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleEnvironmentAdmin, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-clock")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	empty := protocol.Snapshot{Engine: protocol.Engine{Runtime: "docker"}, Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
+	fast := empty
+	fast.Generation = uint64(time.Now().Add(3 * time.Hour).Unix())
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, fast)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "generation_rejected") {
+		t.Fatalf("fast clock generation was not refused: %+v", e)
+	}
+	org := store.TenantAccess{ActorID: "usr_envadmin", OrganizationID: "a"}
+	view, err := ts.ReadEndpoint(ctx, org, ag.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.State == "active" {
+		t.Fatal("skewed snapshot activated the endpoint")
+	}
+	if w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/inventory", "", true); w.Code != 404 {
+		t.Fatalf("skewed snapshot was stored: %d", w.Code)
+	}
+	waitFor(t, func() bool {
+		v, _ := ts.ReadEndpoint(ctx, org, ag.id)
+		for _, al := range v.Alerts {
+			if al.Kind == "generation_rejected" {
+				return true
+			}
+		}
+		return false
+	})
+	// A duplicate connection raises its alert while the session stands (the frame just sent
+	// proves the incumbent live). A flood of skewed snapshots must neither pile up events nor
+	// push that alert out of the operator's view.
+	u, _ := url.Parse(httpSrv.URL)
+	dup, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authAs(t, ctx, dup, u.Host, ag)
+	var ce websocket.CloseError
+	if _, _, err := dup.Read(ctx); !errors.As(err, &ce) || ce.Reason != protocol.CloseDuplicate {
+		t.Fatalf("second socket was not refused as a duplicate: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		fast.Generation++
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, fast)
+		if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError {
+			t.Fatalf("flood frame %d: %+v", i, e)
+		}
+	}
+	view, err = ts.ReadEndpoint(ctx, org, ag.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]int{}
+	for _, al := range view.Alerts {
+		kinds[al.Kind]++
+	}
+	if kinds["generation_rejected"] != 1 || kinds["duplicate_connection"] != 1 {
+		t.Fatalf("alerts after the flood: %v", kinds)
+	}
+	sane := empty
+	sane.Generation = uint64(time.Now().Unix())
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, sane)
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+	w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/inventory", "", true)
+	var inv struct{ Generation uint64 }
+	_ = json.Unmarshal(w.Body.Bytes(), &inv)
+	if w.Code != 200 || inv.Generation != sane.Generation {
+		t.Fatalf("sane snapshot not accepted after the skewed one: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// authAs answers the challenge on a raw socket with the agent's key and leaves the next read to
+// the caller, so a refusal can be inspected.
+func authAs(t *testing.T, ctx context.Context, c *websocket.Conn, host string, ag enrolledAgent) {
+	t.Helper()
+	env := readEnvelope(t, ctx, c)
+	var ch protocol.Challenge
+	_ = json.Unmarshal(env.Payload, &ch)
+	sig := ed25519.Sign(ag.priv, protocol.AuthPreimage(ag.id, ch.Nonce, host, protocol.Version))
+	writeEnvelope(t, ctx, c, protocol.TypeAuth, protocol.Auth{EndpointID: ag.id, Fingerprint: ag.fp, Version: protocol.Version, Signature: sig})
 }

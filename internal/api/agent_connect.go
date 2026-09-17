@@ -42,6 +42,7 @@ type agentConn struct {
 	reason         string
 	lastFrame      atomic.Int64 // unix nanoseconds of the last frame the reader delivered
 	lastMetrics    time.Time    // last metrics frame handed to the store; loop goroutine only
+	skewRaised     bool         // generation_rejected raised this session; loop goroutine only
 }
 
 // alive pings the socket with a short deadline; a peer that cannot answer is not a competitor.
@@ -448,7 +449,9 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		if err != nil {
 			log.Printf("agent %s: inventory: %v", c.endpointID, err)
 		} else if !accepted {
-			if inv.Generation > uint64(time.Now().UTC().Add(store.GenerationSkew).Unix()) {
+			if inv.Generation > uint64(time.Now().UTC().Add(store.GenerationSkew).Unix()) && !c.skewRaised {
+				// Once per session; the store also keeps one unacknowledged event per kind.
+				c.skewRaised = true
 				if err := ts.RecordEndpointEvent(fctx, &store.Endpoint{ID: c.endpointID, OrganizationID: c.organizationID, EnvironmentID: c.environmentID}, "high", "generation_rejected", "generation is ahead of the server clock"); err != nil {
 					log.Printf("agent %s: generation rejection audit: %v", c.endpointID, err)
 				}

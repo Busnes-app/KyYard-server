@@ -199,3 +199,77 @@ func latestAlert(t *testing.T, ctx context.Context, ts store.TenancyStore, org s
 	t.Fatalf("no %s alert: %+v", kind, view.Alerts)
 	return 0
 }
+
+// Losers of the slot race all reach the event recorder in parallel; the partial unique index,
+// not a prior read, keeps the operator's alert list to one duplicate_connection.
+func TestDuplicateConnectionEventIsRecordedOnce(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbCfg := testdb.Config(t)
+	dbCfg.DataDir = cfg.Database.DataDir
+	cfg.Database = dbCfg
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := NewServer(cfg, st)
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	_ = st.Users().CreateUser(ctx, &store.User{ID: "admin", Username: "admin", Role: "user", SSOProvider: "local", Status: "active"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "admin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	tok, err := ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: "admin", OrganizationID: "a", EnvironmentID: "env-a"}, "docker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	e, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	org := store.TenantAccess{ActorID: "admin", OrganizationID: "a"}
+	if err := ts.ApproveEndpoint(ctx, org, e.ID, e.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	incumbent := &agentConn{endpointID: e.ID, fingerprint: e.Fingerprint, ip: "10.0.0.1", conn: deadPeer(t, ctx), send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	incumbent.lastFrame.Store(time.Now().UnixNano()) // live by the proof-of-life rule
+	if s.agents.add(incumbent) != nil {
+		t.Fatal("registry not empty")
+	}
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	u, _ := url.Parse(httpSrv.URL)
+	const n = 8
+	refused := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			_, _, err := dialAgent(t, ctx, u.Host, e, priv)
+			refused <- err
+		}()
+	}
+	for i := 0; i < n; i++ {
+		var ce websocket.CloseError
+		if err := <-refused; !errors.As(err, &ce) || ce.Reason != protocol.CloseDuplicate {
+			t.Fatalf("competitor %d not refused as a duplicate: %v", i, err)
+		}
+	}
+	view, err := ts.ReadEndpoint(ctx, org, e.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, al := range view.Alerts {
+		if al.Kind == "duplicate_connection" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%d duplicate_connection alerts after %d parallel refusals: %+v", count, n, view.Alerts)
+	}
+}
