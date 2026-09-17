@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
@@ -16,6 +17,9 @@ import (
 )
 
 const (
+	// frameBudget bounds one frame handler and the offline write; a frame this recent also
+	// counts as proof of life when a duplicate is probed.
+	frameBudget       = 10 * time.Second
 	agentHeartbeat    = 30 * time.Second
 	agentReadTimeout  = 3 * agentHeartbeat // three missed heartbeats mark the endpoint offline
 	agentFrameLimit   = 4 << 20
@@ -33,12 +37,19 @@ type agentConn struct {
 	closed      chan struct{}
 	closeOnce   sync.Once
 	reason      string
+	lastFrame   atomic.Int64 // unix nanoseconds of the last frame the reader delivered
 }
 
 // alive pings the socket with a short deadline; a peer that cannot answer is not a competitor.
+// alive tells a dropped peer from a busy one. A frame delivered inside the handler budget
+// proves the socket lived moments ago even though the reader, blocked handing that frame to
+// the loop, cannot answer a ping; otherwise the ping decides.
 func (c *agentConn) alive(ctx context.Context) bool {
 	if c.conn == nil {
 		return false
+	}
+	if time.Since(time.Unix(0, c.lastFrame.Load())) < frameBudget {
+		return true
 	}
 	pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -155,18 +166,19 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	if incumbent := s.agents.add(c); incumbent != nil {
 		// The incumbent may be a socket the network dropped without a FIN: the agent gives up
 		// after two heartbeats and redials before the server's three-heartbeat timeout. Probe
-		// it; a dead incumbent is evicted and the newcomer admitted with no event.
+		// it; a dead incumbent is evicted, audited, and the newcomer admitted with no event.
 		if !incumbent.alive(ctx) {
 			incumbent.close(protocol.CloseTimeout)
 			s.agents.remove(incumbent)
 			if again := s.agents.add(c); again == nil {
+				_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, incumbent.ip, "failure", "evicted: unanswering socket displaced by "+s.requestIP(r))
 				goto admitted
 			}
 		}
 		// A second live socket is the signature of a copied identity volume: audit it, raise
 		// an operator-facing event naming both parties (the refused one is usually the real
 		// host, the holder is the one to doubt), and block rotation until someone looks.
-		_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "denied")
+		_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "denied", "")
 		_ = s.store.Tenancy().RecordEndpointEvent(ctx, &identity.Endpoint, "high", "duplicate_connection", "refused "+s.requestIP(r)+"; live socket held from "+incumbent.ip)
 		conn.Close(websocket.StatusPolicyViolation, protocol.CloseDuplicate)
 		return
@@ -177,7 +189,7 @@ admitted:
 		conn.Close(websocket.StatusGoingAway, protocol.CloseShutdown)
 		return
 	}
-	_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "success")
+	_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "success", "")
 	if err := s.writeFrame(ctx, conn, envelope(protocol.TypeHello, protocol.Hello{State: identity.Endpoint.State, HeartbeatSeconds: int(agentHeartbeat / time.Second)})); err != nil {
 		return
 	}
@@ -219,17 +231,17 @@ func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *ht
 			return nil, protocol.CloseKeyPending
 		case errors.Is(err, store.ErrForbidden):
 			if e, readErr := s.store.Tenancy().ReadEndpointRaw(hctx, auth.EndpointID); readErr == nil {
-				_ = s.store.Tenancy().RecordAgentConnect(hctx, e, s.requestIP(r), "denied")
+				_ = s.store.Tenancy().RecordAgentConnect(hctx, e, s.requestIP(r), "denied", "")
 			}
 		}
 		return nil, protocol.CloseRevoked
 	}
 	if identity.Endpoint.State == "revoked" || identity.Endpoint.State == "expired" {
-		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied")
+		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied", "")
 		return nil, protocol.CloseRevoked
 	}
 	if !protocol.VerifyAuth(identity.PublicKey, auth.EndpointID, nonce, r.Host, auth.Version, auth.Signature) {
-		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied")
+		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied", "")
 		return nil, protocol.CloseRevoked
 	}
 	return identity, ""
@@ -248,6 +260,7 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 				readErr <- err
 				return
 			}
+			c.lastFrame.Store(time.Now().UnixNano())
 			select {
 			case frames <- f:
 			case <-ctx.Done():
@@ -303,7 +316,7 @@ func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 	if s.Connected(c.endpointID) {
 		return
 	}
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), frameBudget)
 	defer cancel()
 	_ = s.store.Tenancy().MarkEndpointOffline(wctx, c.endpointID)
 }
@@ -313,7 +326,7 @@ func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 // context dies with the connection, and an inventory report or rotation offer must not be
 // lost to that race, so store calls run on a detached, bounded context.
 func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c *agentConn, f protocol.Envelope, pending bool, helloSeen *bool) bool {
-	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), frameBudget)
 	defer fcancel()
 	// Revocation between frames must not be outrun by a cached state, and neither must the
 	// retirement of the key that authenticated this session.

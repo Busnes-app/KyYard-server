@@ -78,9 +78,13 @@ func (t *tenancyStore) ReadEndpointRaw(ctx context.Context, endpointID string) (
 }
 
 // RecordAgentConnect audits a connection outcome in the endpoint's organization. Unknown
-// endpoints have no organization and produce no row, like non-members elsewhere.
-func (t *tenancyStore) RecordAgentConnect(ctx context.Context, e *Endpoint, ip, result string) error {
-	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), "agent:"+e.ID, "agent.connect", e.ID, ip, time.Now().UTC(), "organization", e.OrganizationID, e.EnvironmentID, uuid.NewString(), result)
+// endpoints have no organization and produce no row, like non-members elsewhere. Details is
+// display-safe operator text, empty for the plain outcomes.
+func (t *tenancyStore) RecordAgentConnect(ctx context.Context, e *Endpoint, ip, result, details string) error {
+	if !displaySafe(details) {
+		details = ""
+	}
+	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result,details) VALUES (?,?,?,?,?,?,?,?,?,?,?)`), "agent:"+e.ID, "agent.connect", e.ID, ip, time.Now().UTC(), "organization", e.OrganizationID, e.EnvironmentID, uuid.NewString(), result, details)
 	return err
 }
 
