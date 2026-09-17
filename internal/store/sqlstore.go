@@ -17,6 +17,7 @@ type SQLStore struct {
 	db       *sql.DB
 	driver   string
 	budget   int64        // bytes of telemetry allowed; zero disables the check
+	ceiling  int          // stored sample rows allowed per endpoint
 	pressure atomic.Int32 // current Pressure, read on every telemetry write
 	users    *userStore
 	sessions *sessionStore
@@ -27,7 +28,7 @@ type SQLStore struct {
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string, budget int64) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, lim limits) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
@@ -37,10 +38,14 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string, budget int64) (
 		return nil, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
 
+	if lim.ceiling <= 0 {
+		lim.ceiling = MaxSampleRowsPerEndpoint
+	}
 	s := &SQLStore{
-		db:     db,
-		driver: driver,
-		budget: budget,
+		db:      db,
+		driver:  driver,
+		budget:  lim.budget,
+		ceiling: lim.ceiling,
 	}
 
 	s.users = &userStore{store: s}
@@ -944,3 +949,6 @@ func (s *SQLStore) Budget() int64 { return s.budget }
 func (s *SQLStore) Pressure() Pressure { return Pressure(s.pressure.Load()) }
 
 func (s *SQLStore) SetPressure(p Pressure) { s.pressure.Store(int32(p)) }
+
+// SampleCeiling is the stored-rows-per-endpoint limit this store enforces.
+func (s *SQLStore) SampleCeiling() int { return s.ceiling }

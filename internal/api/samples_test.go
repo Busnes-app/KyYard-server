@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +16,9 @@ import (
 
 // Metrics frames land as bounded samples readable only inside the organization.
 func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
-	s, st, cfg := setupTestServer(t)
+	// The subject is the behaviour at the ceiling, not its height: a hundred thousand rows
+	// costs minutes against PostgreSQL and proves nothing a hundred do not.
+	s, st, cfg := setupTestServerWith(t, func(c *config.Config) { c.Database.SampleCeiling = 100 })
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	ts := st.Tenancy()
@@ -94,12 +95,7 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 	}
 	// At the row ceiling a frame is answered with an error frame and the session continues;
 	// a second frame inside the cadence is dropped before the store sees it.
-	// The behaviour at the ceiling is the subject, not its height: a hundred thousand rows
-	// costs minutes against PostgreSQL and says nothing more than a hundred do.
-	ceiling := store.MaxSampleRowsPerEndpoint
-	store.MaxSampleRowsPerEndpoint = 100
-	t.Cleanup(func() { store.MaxSampleRowsPerEndpoint = ceiling })
-	fillSamples(t, cfg.Database, ag.id, store.MaxSampleRowsPerEndpoint-2)
+	fillSamples(t, cfg.Database, ag.id, st.SampleCeiling()-2)
 	waitFor(t, func() bool { return !s.Connected(ag.id) })
 	sock, _ = connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c3"}, {ContainerID: "c4"}, {ContainerID: "c5"}}})
@@ -121,12 +117,14 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 }
 
 // fillSamples writes rows straight into container_samples so a test can reach the endpoint's
-// row ceiling in seconds rather than through a hundred thousand frames.
+// row ceiling in seconds rather than through a hundred thousand frames. One prepared statement
+// inside one transaction: batching into multi-row statements is an order of magnitude slower
+// against PostgreSQL, which re-plans each distinct statement shape.
 func fillSamples(t *testing.T, dbCfg config.DatabaseConfig, endpointID string, n int) {
 	t.Helper()
-	driver, ph := dbCfg.Driver, func(int) string { return "?" }
+	driver, q := dbCfg.Driver, `INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES (?,?,?,0,0,0,0,0,0)`
 	if driver == "postgres" {
-		driver, ph = "pgx", func(i int) string { return fmt.Sprintf("$%d", i) }
+		driver, q = "pgx", `INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES ($1,$2,$3,0,0,0,0,0,0)`
 	}
 	db, err := sql.Open(driver, dbCfg.DSN)
 	if err != nil {
@@ -137,24 +135,17 @@ func fillSamples(t *testing.T, dbCfg config.DatabaseConfig, endpointID string, n
 	if err != nil {
 		t.Fatal(err)
 	}
+	stmt, err := tx.Prepare(q)
+	if err != nil {
+		t.Fatal(err)
+	}
 	old := time.Now().UTC().Add(-3 * time.Hour)
-	const batch = 500
-	for done := 0; done < n; done += batch {
-		rows := min(batch, n-done)
-		var q strings.Builder
-		q.WriteString("INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES ")
-		args := make([]any, 0, 3*rows)
-		for i := 0; i < rows; i++ {
-			if i > 0 {
-				q.WriteString(",")
-			}
-			fmt.Fprintf(&q, "(%s,%s,%s,0,0,0,0,0,0)", ph(len(args)+1), ph(len(args)+2), ph(len(args)+3))
-			args = append(args, endpointID, "fill", old.Add(time.Duration(done+i)*time.Millisecond))
-		}
-		if _, err := tx.Exec(q.String(), args...); err != nil {
+	for i := 0; i < n; i++ {
+		if _, err := stmt.Exec(endpointID, "fill", old.Add(time.Duration(i)*time.Millisecond)); err != nil {
 			t.Fatal(err)
 		}
 	}
+	stmt.Close()
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}

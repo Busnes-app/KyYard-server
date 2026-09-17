@@ -423,7 +423,7 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		c.lastMetrics = time.Now()
 		if err := ts.RecordSamples(fctx, c.endpointID, m); err != nil {
 			if errors.Is(err, store.ErrSampleBudget) {
-				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "samples_budget_exhausted", "limit_rows": store.MaxSampleRowsPerEndpoint})); err != nil {
+				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "samples_budget_exhausted", "limit_rows": s.store.SampleCeiling()})); err != nil {
 					return true
 				}
 				return false

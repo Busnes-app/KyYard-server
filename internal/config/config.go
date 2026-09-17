@@ -44,7 +44,10 @@ type DatabaseConfig struct {
 	DataDir string `json:"data_dir"`
 	// DiskBudget bounds what telemetry may occupy (docs/retention-policy.md). Zero disables
 	// the check; the default is the documented 2 GiB.
-	DiskBudget      int64         `json:"disk_budget"`
+	DiskBudget int64 `json:"disk_budget"`
+	// SampleCeiling bounds stored metric rows per endpoint (docs/retention-policy.md). Zero
+	// means the built-in default; it is configured once, before the store opens.
+	SampleCeiling   int           `json:"sample_ceiling"`
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`

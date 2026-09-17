@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
 )
@@ -73,5 +74,36 @@ func TestRestartCountIsMinusOneWhenTheRuntimeWillNotSay(t *testing.T) {
 	m := c.Stats(context.Background(), []string{"c1"})
 	if len(m.Samples) != 1 || m.Samples[0].RestartCount != -1 {
 		t.Fatalf("expected an unknown restart count, got %+v", m.Samples)
+	}
+}
+
+// A daemon that accepts connections and then answers slowly must cost a fixed slice per
+// container, not one slice per request: the two calls share the budget, or the tail of the
+// list is starved the same way every cycle.
+func TestOneSlowContainerSpendsOneBudget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/containers/json") {
+			_, _ = w.Write([]byte(`[{"Id":"slow"}]`))
+			return
+		}
+		select {
+		case <-time.After(4 * time.Second):
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte(`{"read":"2026-09-16T12:00:00Z","cpu_stats":{"cpu_usage":{"total_usage":1},"system_cpu_usage":2,"online_cpus":1},"memory_stats":{"usage":8,"limit":16},"pids_stats":{"current":1},"RestartCount":2}`))
+	}))
+	defer srv.Close()
+	c := docker.NewHTTP(srv.Client(), srv.URL)
+	started := time.Now()
+	m := c.Stats(context.Background(), []string{"slow"})
+	if took := time.Since(started); took > 6*time.Second {
+		t.Fatalf("two calls took %s, so each opened its own budget", took)
+	}
+	// The stats call answered inside the budget; the inspect that followed did not, and an
+	// unanswered counter is unknown rather than zero.
+	if len(m.Samples) != 1 || m.Samples[0].RestartCount != -1 {
+		t.Fatalf("expected one sample with an unknown restart count, got %+v", m.Samples)
 	}
 }

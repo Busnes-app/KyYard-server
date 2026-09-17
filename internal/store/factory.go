@@ -14,20 +14,31 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// limits are the storage bounds a store enforces, settled once when it opens so nothing has
+// to mutate a shared value later (docs/retention-policy.md).
+type limits struct {
+	budget  int64 // bytes the database may occupy; zero disables the check
+	ceiling int   // stored sample rows per endpoint
+}
+
+func storageLimits(cfg config.DatabaseConfig) limits {
+	return limits{budget: cfg.DiskBudget, ceiling: cfg.SampleCeiling}
+}
+
 // Open initializes and returns the configured database store backend.
 func Open(ctx context.Context, cfg config.DatabaseConfig) (Store, error) {
 	driver := strings.ToLower(cfg.Driver)
 	switch driver {
 	case "sqlite", "sqlite3", "":
-		return openSQLite(ctx, cfg.DSN, cfg.DiskBudget)
+		return openSQLite(ctx, cfg.DSN, storageLimits(cfg))
 	case "postgres", "postgresql", "pgx":
-		return openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime, cfg.DiskBudget)
+		return openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime, storageLimits(cfg))
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %q (supported: sqlite, postgres)", cfg.Driver)
 	}
 }
 
-func openSQLite(ctx context.Context, dsn string, budget int64) (Store, error) {
+func openSQLite(ctx context.Context, dsn string, lim limits) (Store, error) {
 	filePath := dsn
 	if idx := strings.Index(dsn, "?"); idx != -1 {
 		filePath = dsn[:idx]
@@ -78,10 +89,10 @@ func openSQLite(ctx context.Context, dsn string, budget int64) (Store, error) {
 		return nil, fmt.Errorf("SQLite foreign keys must be enabled; remove conflicting KY_DB_DSN pragmas or options")
 	}
 
-	return newSQLStore(ctx, db, "sqlite", budget)
+	return newSQLStore(ctx, db, "sqlite", lim)
 }
 
-func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration, budget int64) (Store, error) {
+func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration, lim limits) (Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open postgres database: %w", err)
@@ -106,5 +117,5 @@ func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLife
 		return nil, fmt.Errorf("failed to ping postgres database: %w", err)
 	}
 
-	return newSQLStore(ctx, db, "postgres", budget)
+	return newSQLStore(ctx, db, "postgres", lim)
 }
