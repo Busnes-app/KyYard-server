@@ -208,8 +208,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 		id.commitCandidate()
 		_ = opts.save(id)
 	}
-	// Buffered to the in-flight limit, so a command finishing after the loop has gone never
-	// blocks a goroutine forever.
+	// Buffered, but what keeps a worker from waiting forever is the session context rather
+	// than the buffer: results already sitting here are not counted against a slot, so more
+	// senders than the buffer holds is an ordinary state.
 	results := make(chan protocol.Result, maxInFlightCommands)
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
@@ -388,7 +389,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				}
 				go func(cmd protocol.Command) {
 					defer func() { <-slots }()
-					results <- handleCommand(ctx, cmd, id, commands, opts)
+					deliver(ctx, results, handleCommand(ctx, cmd, id, commands, opts))
 				}(cmd)
 			case protocol.TypeHeartbeat:
 			case protocol.TypeError:

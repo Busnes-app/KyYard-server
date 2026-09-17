@@ -101,6 +101,19 @@ func (l *ledger) prune() {
 	}
 }
 
+// deliver hands a result to the session loop, or gives up when the session ends. Waiting for a
+// loop that has already returned would hold the in-flight slot for the life of the process --
+// the slots are agent-wide by design -- and enough of those and the agent refuses every
+// command, which is the unmanageable endpoint this whole arrangement exists to prevent.
+// Nothing is lost by giving up: the answer is already in the ledger, so the server's unknown
+// and a re-dispatch of the same ID replay it.
+func deliver(ctx context.Context, out chan<- protocol.Result, res protocol.Result) {
+	select {
+	case out <- res:
+	case <-ctx.Done():
+	}
+}
+
 // handleCommand answers one command: a repeat gets the stored answer, a command for another
 // tenant or endpoint is refused without being run, and anything else is executed and recorded.
 func handleCommand(ctx context.Context, cmd protocol.Command, id *Identity, l *ledger, opts *Options) protocol.Result {

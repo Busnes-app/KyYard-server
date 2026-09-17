@@ -100,3 +100,32 @@ func TestTheLedgerIsBounded(t *testing.T) {
 		t.Fatal("an entry past its life was kept")
 	}
 }
+
+// A slot is agent-wide and lives for the process, so a worker that cannot hand its result over
+// must still give the slot back. A session ends for ordinary reasons -- a dropped socket, a
+// shutdown -- and a worker blocked forever on a loop that has gone would take a quarter of the
+// agent's capacity with it each time, until every command is refused.
+func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
+	slots := make(chan struct{}, maxInFlightCommands)
+	results := make(chan protocol.Result, maxInFlightCommands)
+	for i := 0; i < maxInFlightCommands; i++ {
+		results <- protocol.Result{ID: fmt.Sprintf("earlier_%d", i)}
+	}
+	ctx, endSession := context.WithCancel(context.Background())
+	slots <- struct{}{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { <-slots }()
+		deliver(ctx, results, protocol.Result{ID: "cmd_late", Outcome: protocol.OutcomeSucceeded})
+	}()
+	endSession()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the worker is still waiting to deliver a result nobody is reading")
+	}
+	if len(slots) != 0 {
+		t.Fatalf("%d in-flight slots were never returned", len(slots))
+	}
+}
