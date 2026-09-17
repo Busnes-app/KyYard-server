@@ -106,19 +106,23 @@ func (c *Client) removeImage(ctx context.Context, reference, wantID string) (out
 	ctx, cancel := context.WithTimeout(ctx, operationBudget)
 	defer cancel()
 	escaped := url.PathEscape(reference)
-	if wantID != "" {
-		var inspected struct {
-			ID string `json:"Id"`
+	if wantID == "" {
+		// The control plane always pins the image a removal was decided about. A removal that
+		// arrives without one was not built by that path, and the agent is the last checkpoint
+		// before a root-equivalent socket.
+		return protocol.OutcomeDenied, "this removal did not say which image it was decided about"
+	}
+	var inspected struct {
+		ID string `json:"Id"`
+	}
+	if err := c.get(ctx, "/images/"+escaped+"/json", &inspected); err != nil {
+		if statusOf(err) == http.StatusNotFound {
+			return protocol.OutcomeDenied, "this host does not have that image"
 		}
-		if err := c.get(ctx, "/images/"+escaped+"/json", &inspected); err != nil {
-			if strings.Contains(err.Error(), "404") {
-				return protocol.OutcomeDenied, "this host does not have that image"
-			}
-			return protocol.OutcomeFailed, bound("inspecting the image: "+err.Error(), protocol.MaxResultDetailBytes)
-		}
-		if inspected.ID != wantID {
-			return protocol.OutcomeDenied, "this reference now points at a different image than the one this was decided about"
-		}
+		return protocol.OutcomeFailed, bound("inspecting the image: "+err.Error(), protocol.MaxResultDetailBytes)
+	}
+	if inspected.ID != wantID {
+		return protocol.OutcomeDenied, "this reference now points at a different image than the one this was decided about"
 	}
 	status, err := c.del(ctx, "/images/"+escaped)
 	switch {

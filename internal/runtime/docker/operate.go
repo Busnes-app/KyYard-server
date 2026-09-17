@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -44,7 +43,7 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 		} `json:"State"`
 	}
 	if err := c.get(ctx, "/containers/"+container+"/json", &inspected); err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if statusOf(err) == http.StatusNotFound {
 			return protocol.OutcomeDenied, "the container no longer exists"
 		}
 		return protocol.OutcomeFailed, bound("inspecting the container: "+err.Error(), protocol.MaxResultDetailBytes)

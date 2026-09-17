@@ -395,6 +395,9 @@ func TestImageCommandsAreScopedAndValidated(t *testing.T) {
 		`{"action":"image.pull","reference":"../../etc/passwd"}`,
 		`{"action":"image.pull","reference":""}`,
 		`{"action":"container.restart","container":"ghcr.io/busnes-app/kyyard:1.2.3"}`,
+		// A command names one or the other; preferring one silently would make the request
+		// mean something the caller did not write.
+		`{"action":"image.pull","container":"web","reference":"nginx:1"}`,
 	} {
 		if w := tenantRequest(s, admin, "POST", path, bad, true); w.Code != 400 {
 			t.Fatalf("%s was accepted: %d", bad, w.Code)

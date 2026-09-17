@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -102,7 +103,7 @@ func (l *ledger) prune() {
 
 // handleCommand answers one command: a repeat gets the stored answer, a command for another
 // tenant or endpoint is refused without being run, and anything else is executed and recorded.
-func handleCommand(cmd protocol.Command, id *Identity, l *ledger, opts *Options) protocol.Result {
+func handleCommand(ctx context.Context, cmd protocol.Command, id *Identity, l *ledger, opts *Options) protocol.Result {
 	if prior, ok := l.lookup(cmd.ID); ok {
 		// Already done. The server may be re-dispatching because it never heard the answer.
 		return protocol.Result{ID: cmd.ID, Outcome: prior.Outcome, Detail: prior.Detail}
@@ -118,7 +119,7 @@ func handleCommand(cmd protocol.Command, id *Identity, l *ledger, opts *Options)
 	if opts.Operate == nil {
 		return protocol.Result{ID: cmd.ID, Outcome: protocol.OutcomeDenied, Detail: "this agent has no runtime to operate"}
 	}
-	outcome, detail := opts.Operate(cmd)
+	outcome, detail := opts.Operate(ctx, cmd)
 	l.record(cmd.ID, outcome, detail)
 	return protocol.Result{ID: cmd.ID, Outcome: outcome, Detail: detail}
 }

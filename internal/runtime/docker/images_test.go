@@ -90,11 +90,14 @@ func TestRemovingAnImageChecksItIsStillTheSameImage(t *testing.T) {
 			deleted = append(deleted, r.URL.EscapedPath())
 			return
 		}
-		if present == "" {
+		switch present {
+		case "":
 			w.WriteHeader(http.StatusNotFound)
-			return
+		case "boom":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			_, _ = w.Write([]byte(`{"Id":"` + present + `"}`))
 		}
-		_, _ = w.Write([]byte(`{"Id":"` + present + `"}`))
 	}))
 	defer srv.Close()
 	c := docker.NewHTTP(srv.Client(), srv.URL)
@@ -120,6 +123,15 @@ func TestRemovingAnImageChecksItIsStillTheSameImage(t *testing.T) {
 		t.Fatalf("the delete was sent anyway: %v", deleted)
 	}
 
+	// A reference may legally contain the digits of a status. The answer must come from the
+	// status the daemon returned, not from a substring of the message that quotes the name.
+	unlucky := rm
+	unlucky.Reference = "ghcr.io/busnes-app/kyyard:404"
+	present = "boom"
+	if outcome, detail := c.Operate(context.Background(), unlucky); outcome != protocol.OutcomeFailed {
+		t.Fatalf("a daemon error on a reference containing 404: %s %q", outcome, detail)
+	}
+
 	present = digest
 	if outcome, detail := c.Operate(context.Background(), rm); outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("the image it was decided about: %s %q", outcome, detail)
@@ -132,15 +144,30 @@ func TestRemovingAnImageChecksItIsStillTheSameImage(t *testing.T) {
 // An image a container still uses is refused rather than forced: forcing would leave running
 // containers pointing at something that is no longer there.
 func TestRemovingAnImageInUseIsRefused(t *testing.T) {
+	const digest = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	var status int
 	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			_, _ = w.Write([]byte(`{"Id":"` + digest + `"}`))
+			return
+		}
 		path = r.URL.EscapedPath()
 		w.WriteHeader(status)
 	}))
 	defer srv.Close()
 	c := docker.NewHTTP(srv.Client(), srv.URL)
-	rm := protocol.Command{Action: protocol.ActionImageRemove, Reference: "ghcr.io/busnes-app/kyyard:1.2.3"}
+	rm := protocol.Command{
+		Action:    protocol.ActionImageRemove,
+		Reference: "ghcr.io/busnes-app/kyyard:1.2.3",
+		Expects:   protocol.Expectation{ImageDigest: digest},
+	}
+
+	// A removal that names no image is refused before anything is inspected: the control
+	// plane always pins one, so a removal without one did not come from that path.
+	if outcome, detail := c.Operate(context.Background(), protocol.Command{Action: protocol.ActionImageRemove, Reference: rm.Reference}); outcome != protocol.OutcomeDenied || !strings.Contains(detail, "did not say which image") {
+		t.Fatalf("an unpinned removal: %s %q", outcome, detail)
+	}
 
 	status = http.StatusConflict
 	if outcome, detail := c.Operate(context.Background(), rm); outcome != protocol.OutcomeDenied || !strings.Contains(detail, "still using") {

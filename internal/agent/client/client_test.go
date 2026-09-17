@@ -1222,7 +1222,7 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 	snapshot := func(context.Context) (*protocol.Snapshot, error) {
 		return &protocol.Snapshot{Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
 	}
-	operate := func(protocol.Command) (string, string) {
+	operate := func(context.Context, protocol.Command) (string, string) {
 		<-release
 		return protocol.OutcomeSucceeded, "stopped"
 	}
@@ -1267,4 +1267,149 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 			t.Fatalf("only %d of 4 commands reported after they finished", settled)
 		}
 	}
+}
+
+// The in-flight limit and the dedupe ledger belong to the agent, not to one connection. A
+// command outlives the socket it arrived on, so a per-session limit would grant four more with
+// every reconnect -- and sessions end routinely, at the server's choosing -- while a
+// per-session ledger would serialise its stale view over the file and erase what the new
+// session recorded, making the agent forget commands it really ran.
+func TestTheInFlightLimitAndLedgerSurviveAReconnect(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	started := make(chan string, 8)
+	release := make(chan struct{})
+	results := make(chan protocol.Result, 16)
+	dropFirst := make(chan struct{})
+	sendMore := make(chan string, 4)
+	var sessions atomic.Int32
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		frame := func(typ string, payload any) []byte {
+			raw, _ := json.Marshal(payload)
+			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
+			return b
+		}
+		command := func(id string) []byte {
+			return frame(protocol.TypeCommand, protocol.Command{
+				ID: id, Endpoint: "ep_limit", Action: protocol.ActionStop, Container: "c1",
+				Deadline: time.Now().UTC().Add(5 * time.Minute),
+			})
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
+		_, _, _ = c.Read(ctx)
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
+		if sessions.Add(1) == 1 {
+			for i := 0; i < 4; i++ {
+				_ = c.Write(ctx, websocket.MessageText, command(fmt.Sprintf("cmd_a%d", i)))
+			}
+			<-dropFirst
+			c.CloseNow()
+			return
+		}
+		go func() {
+			for id := range sendMore {
+				if c.Write(ctx, websocket.MessageText, command(id)) != nil {
+					return
+				}
+			}
+		}()
+		for {
+			_, raw, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var e protocol.Envelope
+			_ = json.Unmarshal(raw, &e)
+			switch e.Type {
+			case protocol.TypeHeartbeat:
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHeartbeat, nil))
+			case protocol.TypeResult:
+				var res protocol.Result
+				_ = json.Unmarshal(e.Payload, &res)
+				results <- res
+			}
+		}
+	}))
+	defer stub.Close()
+	dir := t.TempDir()
+	id := &client.Identity{EndpointID: "ep_limit", PrivateKey: priv, InstanceFingerprint: strings.Repeat("a", 64), Server: stub.URL, RotatedAt: time.Now()}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	snapshot := func(context.Context) (*protocol.Snapshot, error) {
+		return &protocol.Snapshot{Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+	}
+	// This runtime call ignores cancellation, as a runtime call that has already reached the
+	// daemon would: the slot stays held until the work really ends.
+	operate := func(_ context.Context, cmd protocol.Command) (string, string) {
+		started <- cmd.ID
+		<-release
+		return protocol.OutcomeSucceeded, "stopped " + cmd.ID
+	}
+	go func() {
+		_ = client.Run(ctx, id, client.Options{
+			HTTPClient: stub.Client(), Snapshot: snapshot, InventoryEvery: time.Hour,
+			IdentityDir: dir, Operate: operate,
+		})
+	}()
+
+	for i := 0; i < 4; i++ {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of 4 commands started", i)
+		}
+	}
+	close(dropFirst)
+
+	// The redialled session inherits the limit: the four commands from the session that just
+	// ended are still running, so it has none of its own to give.
+	sendMore <- "cmd_b0"
+	select {
+	case res := <-results:
+		if res.ID != "cmd_b0" || res.Outcome != protocol.OutcomeDenied {
+			t.Fatalf("a reconnect granted more in-flight commands: %+v", res)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the new session never answered")
+	}
+
+	// Once they finish, the ledger that recorded them is the one the new session reads and
+	// writes, so nothing it recorded is lost and a re-dispatch replays rather than re-runs.
+	close(release)
+	for done := false; !done; {
+		sendMore <- "cmd_b1"
+		select {
+		case res := <-results:
+			switch {
+			case res.ID != "cmd_b1":
+				t.Fatalf("unexpected result: %+v", res)
+			case res.Outcome == protocol.OutcomeSucceeded:
+				done = true
+			case res.Outcome != protocol.OutcomeDenied:
+				t.Fatalf("cmd_b1: %+v", res)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("cmd_b1 never answered")
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded map[string]struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(raw, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"cmd_a0", "cmd_a1", "cmd_a2", "cmd_a3", "cmd_b1"} {
+		if recorded[want].Outcome == "" {
+			t.Fatalf("the ledger forgot %s after a reconnect: %v", want, recorded)
+		}
+	}
+	close(sendMore)
 }

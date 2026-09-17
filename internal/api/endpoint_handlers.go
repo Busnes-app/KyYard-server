@@ -333,6 +333,12 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	expects := protocol.Expectation{ImageDigest: body.Expects.ImageDigest, State: body.Expects.State}
+	if body.Container != "" && body.Reference != "" {
+		// A command names one or the other. Preferring one silently would make the request
+		// mean something the caller did not write.
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
 	target := body.Container
 	if body.Reference != "" {
 		target = body.Reference

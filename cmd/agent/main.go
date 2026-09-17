@@ -40,7 +40,7 @@ func main() {
 	// reports facts, and the snapshot call keeps retrying the socket on its own schedule.
 	var snapshot func(context.Context) (*protocol.Snapshot, error)
 	var metrics func(context.Context, []string) protocol.Metrics
-	var operate func(protocol.Command) (string, string)
+	var operate func(context.Context, protocol.Command) (string, string)
 	runtimeVersion := ""
 	if *socket != "" {
 		engine := docker.New(*socket)
@@ -51,7 +51,7 @@ func main() {
 		}
 		snapshot = engine.Snapshot
 		metrics = engine.Stats
-		operate = func(cmd protocol.Command) (string, string) { return engine.Operate(ctx, cmd) }
+		operate = func(cctx context.Context, cmd protocol.Command) (string, string) { return engine.Operate(cctx, cmd) }
 	}
 
 	id, err := client.LoadIdentity(*dir)

@@ -5,6 +5,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -57,9 +58,30 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("docker %s: HTTP %d", path, resp.StatusCode)
+		return &statusError{path: path, status: resp.StatusCode}
 	}
 	return json.Unmarshal(body, out)
+}
+
+// statusError carries the daemon's status so callers branch on the code rather than on a
+// substring of the message. The path in that message holds a caller-supplied identifier -- a
+// repository ending in -404 is a legal reference -- so matching "404" in it reads the name as
+// readily as the status, and answers "this host does not have that image" about a host that
+// was never asked.
+type statusError struct {
+	path   string
+	status int
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("docker %s: HTTP %d", e.path, e.status) }
+
+// statusOf reports the daemon status an error carries, or zero if it carries none.
+func statusOf(err error) int {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.status
+	}
+	return 0
 }
 
 // Engine facts; used at enrollment for runtime_version too.

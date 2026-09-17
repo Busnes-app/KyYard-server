@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,18 +18,18 @@ func TestALedgerSurvivesRestartAndAnswersOnce(t *testing.T) {
 	dir := t.TempDir()
 	id := &Identity{EndpointID: "ep_1"}
 	runs := 0
-	opts := &Options{Operate: func(cmd protocol.Command) (string, string) {
+	opts := &Options{Operate: func(_ context.Context, cmd protocol.Command) (string, string) {
 		runs++
 		return protocol.OutcomeSucceeded, "stopped"
 	}}
 	cmd := protocol.Command{ID: "cmd_1", Endpoint: "ep_1", Action: protocol.ActionStop, Container: "c1", Deadline: time.Now().UTC().Add(time.Minute)}
 
-	first := handleCommand(cmd, id, openLedger(dir), opts)
+	first := handleCommand(context.Background(), cmd, id, openLedger(dir), opts)
 	if first.Outcome != protocol.OutcomeSucceeded || runs != 1 {
 		t.Fatalf("first run: %+v after %d executions", first, runs)
 	}
 	// A fresh ledger, as a restarted agent would open.
-	again := handleCommand(cmd, id, openLedger(dir), opts)
+	again := handleCommand(context.Background(), cmd, id, openLedger(dir), opts)
 	if again.Outcome != protocol.OutcomeSucceeded || again.Detail != "stopped" {
 		t.Fatalf("the stored answer was not returned: %+v", again)
 	}
@@ -42,8 +43,11 @@ func TestALedgerSurvivesRestartAndAnswersOnce(t *testing.T) {
 func TestACommandForAnotherEndpointIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	ran := false
-	opts := &Options{Operate: func(protocol.Command) (string, string) { ran = true; return protocol.OutcomeSucceeded, "" }}
-	res := handleCommand(protocol.Command{ID: "cmd_2", Endpoint: "ep_other", Action: protocol.ActionStop}, &Identity{EndpointID: "ep_1"}, openLedger(dir), opts)
+	opts := &Options{Operate: func(context.Context, protocol.Command) (string, string) {
+		ran = true
+		return protocol.OutcomeSucceeded, ""
+	}}
+	res := handleCommand(context.Background(), protocol.Command{ID: "cmd_2", Endpoint: "ep_other", Action: protocol.ActionStop}, &Identity{EndpointID: "ep_1"}, openLedger(dir), opts)
 	if res.Outcome != protocol.OutcomeDenied || ran {
 		t.Fatalf("a command for another endpoint was run: %+v", res)
 	}
@@ -56,8 +60,11 @@ func TestACommandForAnotherEndpointIsRefused(t *testing.T) {
 // aged out, and acting on it late is worse than not acting.
 func TestAnExpiredCommandIsNotRun(t *testing.T) {
 	ran := false
-	opts := &Options{Operate: func(protocol.Command) (string, string) { ran = true; return protocol.OutcomeSucceeded, "" }}
-	res := handleCommand(protocol.Command{ID: "cmd_3", Endpoint: "ep_1", Deadline: time.Now().UTC().Add(-time.Minute)}, &Identity{EndpointID: "ep_1"}, openLedger(t.TempDir()), opts)
+	opts := &Options{Operate: func(context.Context, protocol.Command) (string, string) {
+		ran = true
+		return protocol.OutcomeSucceeded, ""
+	}}
+	res := handleCommand(context.Background(), protocol.Command{ID: "cmd_3", Endpoint: "ep_1", Deadline: time.Now().UTC().Add(-time.Minute)}, &Identity{EndpointID: "ep_1"}, openLedger(t.TempDir()), opts)
 	if res.Outcome != protocol.OutcomeTimedOut || ran {
 		t.Fatalf("an expired command was run: %+v", res)
 	}
