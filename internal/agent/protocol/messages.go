@@ -34,7 +34,27 @@ const (
 	TypeApproved  = "enrollment.approved"
 	TypeRotate    = "identity.rotate"  // agent → server: a new key signed by the current one
 	TypeRotated   = "identity.rotated" // server → agent: the operator acknowledged that key
+	TypeCommand   = "command"          // server → agent: do one thing to one named resource
+	TypeResult    = "result"           // agent → server: what became of it
 	TypeError     = "error"
+)
+
+// Command outcomes. Every dispatched command ends in exactly one of these, and the set is
+// closed: an outcome the server has not heard is Unknown, never a missing row.
+const (
+	OutcomeSucceeded = "succeeded"
+	OutcomeFailed    = "failed"
+	OutcomeDenied    = "denied"    // the agent refused: wrong tenant, unmet precondition
+	OutcomeTimedOut  = "timed_out" // the deadline passed before the runtime answered
+	OutcomeUnknown   = "unknown"   // the socket went before a result came back
+)
+
+// Container actions an operator may take on a container that already exists. Destroying one is
+// deliberately absent: it is a different permission and needs its own confirmation.
+const (
+	ActionStart   = "container.start"
+	ActionStop    = "container.stop"
+	ActionRestart = "container.restart"
 )
 
 // Close reasons the server sends in the WebSocket close frame.
@@ -149,3 +169,41 @@ func VerifyAuth(publicKey []byte, endpointID string, nonce []byte, serverHost st
 	}
 	return ed25519.Verify(ed25519.PublicKey(publicKey), AuthPreimage(endpointID, nonce, serverHost, version), signature)
 }
+
+// Command is one instruction for one endpoint. ID is a ULID minted by the server and is the
+// dedupe key: an agent that has already run this ID returns its stored result rather than
+// acting twice. RequestID is the audit correlation ID, so an agent's logs join the audit trail.
+// The actor is never sent; who asked is recorded server-side only.
+type Command struct {
+	ID         string    `json:"id"`
+	RequestID  string    `json:"request_id"`
+	Org        string    `json:"org"`
+	Env        string    `json:"env"`
+	Endpoint   string    `json:"endpoint"`
+	Deadline   time.Time `json:"deadline"`
+	Action     string    `json:"action"`
+	Container  string    `json:"container"`
+	Capability string    `json:"capability,omitempty"`
+	// Expects is what the actor saw when they asked. Docker has no universal resource
+	// version, so this is operation-specific identity the agent re-checks immediately before
+	// acting: the same container, in the state the decision was made about.
+	Expects Expectation `json:"expects"`
+}
+
+// Expectation is the precondition a command is contingent on. An empty field is not checked,
+// so a caller says only what its decision actually depended on.
+type Expectation struct {
+	ImageDigest string `json:"image_digest,omitempty"`
+	State       string `json:"state,omitempty"`
+}
+
+// Result is what became of a command. Detail is bounded: an agent cannot make the control
+// plane store an arbitrary amount of text by failing loudly.
+type Result struct {
+	ID      string `json:"id"`
+	Outcome string `json:"outcome"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// MaxResultDetailBytes bounds the text an agent may attach to a result.
+const MaxResultDetailBytes = 4 << 10

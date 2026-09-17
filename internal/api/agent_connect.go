@@ -14,6 +14,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 )
 
 const (
@@ -115,6 +116,24 @@ func (r *agentRegistry) notify(id string, e protocol.Envelope) {
 		case c.send <- e:
 		default:
 		}
+	}
+}
+
+// deliver queues a frame for one endpoint and says whether it was taken. notify may drop a
+// frame the agent can do without; a command cannot be dropped quietly, because the record of it
+// is already durable and would sit in flight until something abandoned it.
+func (r *agentRegistry) deliver(id string, e protocol.Envelope) bool {
+	r.mu.Lock()
+	c := r.conns[id]
+	r.mu.Unlock()
+	if c == nil {
+		return false
+	}
+	select {
+	case c.send <- e:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -324,6 +343,11 @@ func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), frameBudget)
 	defer cancel()
 	_ = s.store.Tenancy().MarkEndpointOffline(wctx, c.endpointID)
+	// Anything dispatched and unanswered is now unknown. The connection ending is not
+	// evidence the work did not happen, and nothing is retried on its own.
+	if n, err := s.store.Tenancy().AbandonCommands(wctx, c.endpointID); err == nil && n > 0 {
+		log.Printf("agent %s: %d commands left unknown when the connection ended", c.endpointID, n)
+	}
 }
 
 // handleAgentFrame applies one received frame and reports whether the session must end. A
@@ -399,6 +423,26 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		}
 		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeHeartbeat, nil)); err != nil {
 			return true
+		}
+	case protocol.TypeResult:
+		if pending {
+			return false
+		}
+		var res protocol.Result
+		if err := json.Unmarshal(f.Payload, &res); err != nil || res.ID == "" {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		// The first answer wins, and an answer for a command this endpoint was never given
+		// changes nothing: the update is scoped to both.
+		if err := ts.SettleCommand(fctx, c.endpointID, res.ID, res.Outcome, res.Detail); err != nil {
+			// The identifier is server-minted, so anything else is the agent's invention and
+			// none of it reaches the line: an agent does not get to write the operator's log.
+			id := "an unrecognised id"
+			if _, uErr := uuid.Parse(res.ID); uErr == nil {
+				id = res.ID
+			}
+			log.Printf("agent %s: settling command %s: %v", c.endpointID, id, err)
 		}
 	case protocol.TypeMetrics:
 		if pending {
