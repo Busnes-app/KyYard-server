@@ -49,16 +49,14 @@ const (
 	OutcomeUnknown   = "unknown"   // the socket went before a result came back
 )
 
-// Container actions an operator may take on a container that already exists. Destroying one is
-// deliberately absent: it is a different permission and needs its own confirmation.
+// Container actions on a container that already exists. Removal is here because it travels the
+// same path as the others, but it is not one of them: it carries a different permission and a
+// confirmation the server checks against its own state before any frame is built.
 const (
 	ActionStart   = "container.start"
 	ActionStop    = "container.stop"
 	ActionRestart = "container.restart"
-	// ActionRemove destroys a container. It is listed with the others because it travels the
-	// same path, but it carries a different permission and needs a confirmation the server
-	// checks before the frame is built.
-	ActionRemove = "container.remove"
+	ActionRemove  = "container.remove"
 )
 
 // Close reasons the server sends in the WebSocket close frame.

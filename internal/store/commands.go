@@ -60,10 +60,6 @@ var commandActions = map[string]permissions.Action{
 	protocol.ActionRemove:  permissions.ContainerDestroy,
 }
 
-// destructive actions cannot be undone by running the opposite one, so they carry two extra
-// requirements: the actor must say what they saw, and must name the resource back.
-var destructive = map[string]bool{protocol.ActionRemove: true}
-
 // CreateCommand records the intent before anything is sent. The row exists first so that a
 // command which is dispatched and then lost still has somewhere to be marked unknown: an
 // operation the control plane cannot account for is worse than one that failed.
@@ -72,18 +68,13 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 	if !ok {
 		return nil, fmt.Errorf("%w: unsupported action %q", ErrInvalid, action)
 	}
-	if destructive[action] {
-		if expects.State == "" {
-			// Without this the actor is asking to destroy whatever is there now, not the
-			// thing they looked at.
-			return nil, fmt.Errorf("%w: a destructive command must say what state it expects", ErrInvalid)
-		}
-		if confirm != containerID {
-			// Naming the container back is the confirmation the authorization matrix asks
-			// for. It is checked here rather than in the interface so that every caller,
-			// including a script, has to mean it.
-			return nil, fmt.Errorf("%w: confirm must repeat the container name", ErrInvalid)
-		}
+	// Destructive is a property of the permission, not a second list to keep in step with it:
+	// a future action given ContainerDestroy inherits these requirements automatically.
+	destructive := needs == permissions.ContainerDestroy
+	if destructive && expects.State == "" {
+		// Without this the actor is asking to destroy whatever is there now, not the thing
+		// they looked at.
+		return nil, fmt.Errorf("%w: a destructive command must say what state it expects", ErrInvalid)
 	}
 	if !containerName.MatchString(containerID) {
 		// Docker's own grammar for a name or ID. displaySafe is not enough for a value that
@@ -117,6 +108,18 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 				return ErrNotFound
 			}
 			return err
+		}
+		if destructive {
+			// The confirmation is checked against what the server knows the container is
+			// called, not against the request repeating itself, which would attest to
+			// nothing. The identifier may be a name or an ID; both resolve here.
+			name, err := t.confirmableName(ctx, tx, endpointID, containerID)
+			if err != nil {
+				return err
+			}
+			if confirm != name {
+				return fmt.Errorf("%w: confirm must be %q", ErrInvalid, name)
+			}
 		}
 		if state != "active" {
 			// A command for an endpoint that is not connected has nowhere to go, and queueing
@@ -256,4 +259,28 @@ func scanCommand(row scanner) (*Command, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// confirmableName resolves a container identifier to the name the server last observed, which
+// is what a destructive confirmation must repeat. Without an inventory there is nothing to
+// confirm against, and guessing would make the confirmation ceremonial.
+func (t *tenancyStore) confirmableName(ctx context.Context, tx *sql.Tx, endpointID, identifier string) (string, error) {
+	var raw string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: this endpoint has reported no inventory to confirm against", ErrInvalid)
+	}
+	if err != nil {
+		return "", err
+	}
+	var snap protocol.Snapshot
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
+		return "", err
+	}
+	for _, c := range snap.Containers {
+		if c.ID == identifier || c.Name == identifier {
+			return c.Name, nil
+		}
+	}
+	return "", fmt.Errorf("%w: no container %q in the last inventory", ErrNotFound, identifier)
 }

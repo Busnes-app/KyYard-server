@@ -34,10 +34,6 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 		State struct {
 			Status string `json:"Status"`
 		} `json:"State"`
-		Mounts []struct {
-			Name string `json:"Name"`
-			Type string `json:"Type"`
-		} `json:"Mounts"`
 	}
 	if err := c.get(ctx, "/containers/"+container+"/json", &inspected); err != nil {
 		if strings.Contains(err.Error(), "404") {

@@ -412,7 +412,10 @@ func (s *Server) handleRemovalPreview(w http.ResponseWriter, r *http.Request, a 
 		preview := map[string]any{
 			"organization": a.OrganizationID,
 			"endpoint":     id,
-			"container":    c.ID,
+			// Echoed as the caller addressed it, so a client can feed this response straight
+			// back: the identifier it sent, and the name the server knows, are both here.
+			"container":    container,
+			"container_id": c.ID,
 			"name":         c.Name,
 			"image":        c.Image,
 			"state":        c.State,

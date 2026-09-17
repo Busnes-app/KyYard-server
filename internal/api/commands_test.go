@@ -245,6 +245,8 @@ func TestRemovingAContainerNeedsConfirmationAndItsOwnPermission(t *testing.T) {
 		t.Fatalf("preview: %d %s", w.Code, w.Body.String())
 	}
 	var preview struct {
+		Container    string   `json:"container"`
+		ContainerID  string   `json:"container_id"`
 		Consequences []string `json:"consequences"`
 		ConfirmWith  string   `json:"confirm_with"`
 	}
@@ -276,9 +278,26 @@ func TestRemovingAContainerNeedsConfirmationAndItsOwnPermission(t *testing.T) {
 	if w := tenantRequest(s, admin, "POST", path, `{"action":"container.remove","container":"web","confirm":"webb","expects":{"state":"exited"}}`, true); w.Code != 400 {
 		t.Fatalf("removal confirmed with the wrong name: %d", w.Code)
 	}
-	w = tenantRequest(s, admin, "POST", path, `{"action":"container.remove","container":"web","confirm":"web","expects":{"state":"exited"}}`, true)
+	// The preview's own output must work as dispatch input: that is the flow it exists for.
+	fromPreview, err := json.Marshal(map[string]any{
+		"action": "container.remove", "container": preview.Container, "confirm": preview.ConfirmWith,
+		"expects": map[string]string{"state": "exited"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := tenantRequest(s, admin, "POST", path, string(fromPreview), true); w.Code != 202 {
+		t.Fatalf("the preview's own values were refused: %d %s", w.Code, w.Body.String())
+	}
+	readEnvelope(t, ctx, sock.conn)
+	// And so must the container ID, confirmed with the name the server knows.
+	byID, _ := json.Marshal(map[string]any{
+		"action": "container.remove", "container": preview.ContainerID, "confirm": preview.ConfirmWith,
+		"expects": map[string]string{"state": "exited"},
+	})
+	w = tenantRequest(s, admin, "POST", path, string(byID), true)
 	if w.Code != 202 {
-		t.Fatalf("a confirmed removal by an administrator: %d %s", w.Code, w.Body.String())
+		t.Fatalf("removal addressed by container ID: %d %s", w.Code, w.Body.String())
 	}
 	frame := readEnvelope(t, ctx, sock.conn)
 	var sent protocol.Command
