@@ -44,8 +44,12 @@ type report struct {
 	Ticks           int
 	SamplesOffered  int64
 	RowsStored      int64
-	BudgetRefusals  int64
+	CeilingRefusals int64
+	PressureDrops   int64
+	RollupErrors    int64
+	PruneErrors     int64
 	ReadFailures    int64
+	RoleDenials     int64
 	CrossTenantLeak int64
 	DenialsRefused  int64
 	DenialsLeaked   int64
@@ -53,6 +57,7 @@ type report struct {
 	PeakUsage       int64
 	FinalUsage      int64
 	Budget          int64
+	Duration        time.Duration
 	PressureSeen    map[store.Pressure]int
 	MaxRowsEndpoint int64
 	Ceiling         int
@@ -112,7 +117,7 @@ func run(ctx context.Context, s settings) (*report, error) {
 		return nil, err
 	}
 
-	r := &report{Budget: s.budget, PressureSeen: map[store.Pressure]int{}}
+	r := &report{Budget: s.budget, Duration: s.duration, PressureSeen: map[store.Pressure]int{}}
 	var mu sync.Mutex
 	var reads []time.Duration
 	runCtx, cancel := context.WithTimeout(ctx, s.duration)
@@ -135,14 +140,23 @@ func run(ctx context.Context, s settings) (*report, error) {
 					for i := range m.Samples {
 						m.Samples[i] = protocol.Sample{ContainerID: fmt.Sprintf("%s-c%03d", id, i), CPUPercent: float64(i % 100), MemoryBytes: int64(i) << 20, RestartCount: int64(i % 3)}
 					}
+					// Shed by pressure before writing, as internal/api does for a real agent.
+					// Without this the soak would drive a path no deployment uses and could
+					// not say whether the disk budget sheds anything at all.
+					if st.Pressure() != store.PressureNormal {
+						mu.Lock()
+						r.PressureDrops++
+						mu.Unlock()
+						continue
+					}
 					err := st.Tenancy().RecordSamples(runCtx, id, m)
 					mu.Lock()
 					switch {
 					case runCtx.Err() != nil:
 					case errors.Is(err, store.ErrSampleBudget):
-						// Evidence the ceiling actually turned a write away, which a level
-						// flag toggling on and off is not.
-						r.BudgetRefusals++
+						// The per-endpoint row ceiling, which is not the disk budget: nothing
+						// in RecordSamples consults that.
+						r.CeilingRefusals++
 					case err != nil:
 						r.Failures = append(r.Failures, fmt.Sprintf("metrics refused for an unexpected reason: %v", err))
 					default:
@@ -168,13 +182,15 @@ func run(ctx context.Context, s settings) (*report, error) {
 			case <-runCtx.Done():
 				return
 			case <-t.C:
-				// A target that exists nowhere: this asks whether refusals grow the audit
-				// trail without bound, and may answer "not found" as fairly as "forbidden".
+				// Audit growth: a target that exists nowhere, refused for the whole run.
 				fresh := st.Tenancy().RenameEndpoint(runCtx, fixture.readOnly, fmt.Sprintf("ep_absent_%d", n), "nope")
-				// A real, approved endpoint belonging to the other organization. Only
-				// forbidden will do: "not found" here would mean the boundary had become a
-				// lookup, telling this member which identifiers exist.
-				real := st.Tenancy().RenameEndpoint(runCtx, fixture.readOnly, fixture.endpoints[0], "nope")
+				// The role gate: a read-only member is refused before the operation runs at
+				// all, so this says nothing about tenancy and is not counted as if it did.
+				role := st.Tenancy().RenameEndpoint(runCtx, fixture.readOnly, fixture.endpoints[0], "nope")
+				// The organization boundary itself: an administrator of the other tenant, who
+				// passes every role check, so only the scoping predicate in the statement can
+				// refuse. This is the probe that notices if that predicate is ever dropped.
+				boundary := st.Tenancy().RenameEndpoint(runCtx, fixture.readAdmin, fixture.endpoints[0], "nope")
 				mu.Lock()
 				switch {
 				case runCtx.Err() != nil:
@@ -188,11 +204,19 @@ func run(ctx context.Context, s settings) (*report, error) {
 				}
 				switch {
 				case runCtx.Err() != nil:
-				case errors.Is(real, store.ErrForbidden):
+				case errors.Is(role, store.ErrForbidden), errors.Is(role, store.ErrNotFound):
+					r.RoleDenials++
+				default:
+					r.DenialsLeaked++
+					r.Failures = append(r.Failures, fmt.Sprintf("a read-only member was allowed to rename an endpoint: %v", role))
+				}
+				switch {
+				case runCtx.Err() != nil:
+				case errors.Is(boundary, store.ErrNotFound), errors.Is(boundary, store.ErrForbidden):
 					r.DenialsRefused++
 				default:
 					r.CrossTenantLeak++
-					r.Failures = append(r.Failures, fmt.Sprintf("a read-only member of another organization reached a real endpoint: %v", real))
+					r.Failures = append(r.Failures, fmt.Sprintf("an administrator of another organization renamed an endpoint that is not theirs: %v", boundary))
 				}
 				mu.Unlock()
 			}
@@ -214,14 +238,28 @@ func run(ctx context.Context, s settings) (*report, error) {
 				rollCtx, cancelRoll := context.WithTimeout(runCtx, 30*time.Second)
 				n, err := st.Tenancy().RollUp(rollCtx, time.Now().UTC().Add(-window))
 				cancelRoll()
-				if err == nil {
+				mu.Lock()
+				switch {
+				case runCtx.Err() != nil:
+				case err != nil:
+					// A roll-up that fails every tick leaves no summaries at all, and a check
+					// that only looks at the summaries it finds would call that healthy.
+					r.RollupErrors++
+					r.Failures = append(r.Failures, fmt.Sprintf("roll-up failed: %v", err))
+				default:
 					window = 2 * time.Hour
-					mu.Lock()
 					r.RollupRows += n
-					mu.Unlock()
 				}
+				mu.Unlock()
 				for i := 0; i < 20; i++ {
 					removed, err := st.Tenancy().Prune(runCtx)
+					if err != nil && runCtx.Err() == nil {
+						mu.Lock()
+						r.PruneErrors++
+						r.Failures = append(r.Failures, fmt.Sprintf("prune failed: %v", err))
+						mu.Unlock()
+						break
+					}
 					if err != nil || removed == 0 {
 						break
 					}
@@ -285,7 +323,7 @@ func run(ctx context.Context, s settings) (*report, error) {
 				case <-t.C:
 					used, _ := st.Usage(runCtx)
 					mu.Lock()
-					log.Printf("[SOAK] %d samples offered, %d refused for budget, %d denials refused, %d bytes used, telemetry %s", r.SamplesOffered, r.BudgetRefusals, r.DenialsRefused, used, st.Pressure())
+					log.Printf("[SOAK] %d samples offered, %d shed under pressure, %d denials refused, %d bytes used, telemetry %s", r.SamplesOffered, r.PressureDrops, r.DenialsRefused, used, st.Pressure())
 					mu.Unlock()
 				}
 			}

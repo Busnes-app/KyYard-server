@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	_ "modernc.org/sqlite"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -119,5 +123,67 @@ func TestAgeOfReportsWhatItCannotRead(t *testing.T) {
 				t.Fatalf("age %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// A summary far past its window must be reported. This guards the copy-paste that had the
+// summary check comparing the sample age, which made it unable to fire.
+func TestCheckCatchesASummaryPastItsWindow(t *testing.T) {
+	r := &report{Budget: 1 << 30, PressureSeen: map[store.Pressure]int{}}
+	now := time.Now().UTC()
+	r.OldestSample = within(r, "sample", now.Add(-time.Hour), now, store.SampleRetention, 2*time.Minute)
+	if len(r.Failures) != 0 {
+		t.Fatalf("a sample inside its window was reported: %v", r.Failures)
+	}
+	r.OldestRollup = within(r, "summary", now.Add(-8*24*time.Hour), now, store.RollupRetention, time.Hour)
+	if len(r.Failures) != 1 || !strings.Contains(r.Failures[0], "summary") {
+		t.Fatalf("a summary eight days old was not reported against the seven-day window: %v", r.Failures)
+	}
+}
+
+// Retention failing every tick leaves nothing for the checks that read summaries to read, so
+// silence there has to be a failure rather than an absence.
+func TestSoakReportsWhenRetentionCannotRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("soak driver runs for seconds")
+	}
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// Take the table away once the schema exists, so every roll-up pass fails.
+	broken := make(chan struct{})
+	go func() {
+		defer close(broken)
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			db, err := sql.Open("sqlite", filepath.Join(dir, "soak.db"))
+			if err == nil {
+				_, execErr := db.Exec(`DROP TABLE IF EXISTS container_rollups`)
+				db.Close()
+				if execErr == nil {
+					var probe *sql.DB
+					if probe, err = sql.Open("sqlite", filepath.Join(dir, "soak.db")); err == nil {
+						defer probe.Close()
+					}
+					return
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	r, err := run(ctx, settings{
+		dir: dir, endpoints: 2, containers: 3, duration: 6 * time.Second,
+		cadence: 300 * time.Millisecond, retention: 300 * time.Millisecond,
+		report: time.Hour, budget: 2 << 30, quiet: true,
+	})
+	<-broken
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.RollupErrors == 0 {
+		t.Skip("the table was not dropped in time; nothing to prove")
+	}
+	if len(r.Failures) == 0 {
+		t.Fatalf("roll-up failed %d times and the run reported success:\n%s", r.RollupErrors, r.String())
 	}
 }

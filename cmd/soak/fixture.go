@@ -119,27 +119,10 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 		return err
 	}
 	now := time.Now().UTC()
-	age, err := ageOf(oldestSample, now)
-	if err != nil {
-		r.Failures = append(r.Failures, fmt.Sprintf("the retention bound went unchecked: %v", err))
-	}
-	if age > 0 {
-		r.OldestSample = age
-		// One retention interval of slack: a row may age out between prune and this check.
-		if age > store.SampleRetention+2*time.Minute {
-			r.Failures = append(r.Failures, fmt.Sprintf("retention fell behind: a sample is %s old against a %s window", age.Round(time.Second), store.SampleRetention))
-		}
-	}
-	rollupAge, err := ageOf(oldestRollup, now)
-	if err != nil {
-		r.Failures = append(r.Failures, fmt.Sprintf("the summary retention bound went unchecked: %v", err))
-	}
-	if rollupAge > 0 {
-		r.OldestRollup = rollupAge
-		if age > store.RollupRetention+time.Hour {
-			r.Failures = append(r.Failures, fmt.Sprintf("a summary is %s old against a %s window", age.Round(time.Second), store.RollupRetention))
-		}
-	}
+	// Both windows go through one helper: checking the sample age against the summary window
+	// is the kind of copy-paste that leaves an assertion unable to fire.
+	r.OldestSample = within(r, "sample", oldestSample, now, store.SampleRetention, 2*time.Minute)
+	r.OldestRollup = within(r, "summary", oldestRollup, now, store.RollupRetention, time.Hour)
 
 	// The level returning to normal proves nothing on its own: by design any prune pass
 	// clears it, so the flag toggles whether or not the database came back under budget.
@@ -151,8 +134,24 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 	if used > r.Budget {
 		r.Failures = append(r.Failures, fmt.Sprintf("the run ended %d bytes over its %d budget", used-r.Budget, r.Budget))
 	}
-	if r.PeakUsage >= r.Budget && r.BudgetRefusals == 0 {
-		r.Failures = append(r.Failures, "usage passed the budget and not one write was refused for it")
+	// Nothing in RecordSamples consults the disk budget; shedding lives at the transport, and
+	// the writers here shed the same way. So the question is whether pressure was raised and
+	// whether anything was actually dropped for it.
+	if r.PeakUsage >= r.Budget {
+		if r.PressureSeen[store.PressureDegraded]+r.PressureSeen[store.PressureStopped] == 0 {
+			r.Failures = append(r.Failures, "usage passed the budget and pressure was never raised")
+		}
+		if r.PressureDrops == 0 {
+			r.Failures = append(r.Failures, "pressure was raised and not one write was shed for it")
+		}
+	}
+	if r.RollupErrors > 0 || r.PruneErrors > 0 {
+		r.Failures = append(r.Failures, fmt.Sprintf("retention failed during the run: %d roll-up errors, %d prune errors", r.RollupErrors, r.PruneErrors))
+	}
+	// A run long enough to end an hour must have summarised one, or the roll-up half of the
+	// policy went untested while every check that reads summaries found none to read.
+	if r.Duration > store.SampleRetention && r.RollupRows == 0 {
+		r.Failures = append(r.Failures, "a run spanning the raw window produced no hourly summary")
 	}
 	if r.ReadFailures > 0 {
 		r.Failures = append(r.Failures, fmt.Sprintf("%d of %d list reads failed under load", r.ReadFailures, r.Ticks))
@@ -196,9 +195,9 @@ func (r *report) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\nsoak report\n")
 	fmt.Fprintf(&b, "  rows stored          %d (from %d samples offered)\n", r.RowsStored, r.SamplesOffered)
-	fmt.Fprintf(&b, "  writes refused       %d for the row ceiling or budget\n", r.BudgetRefusals)
+	fmt.Fprintf(&b, "  writes refused       %d at the row ceiling, %d shed under pressure\n", r.CeilingRefusals, r.PressureDrops)
 	fmt.Fprintf(&b, "  summary rows written %d\n", r.RollupRows)
-	fmt.Fprintf(&b, "  refusals exercised   %d (leaked %d)\n", r.DenialsRefused, r.DenialsLeaked)
+	fmt.Fprintf(&b, "  refusals exercised   %d tenancy, %d role (leaked %d, cross-tenant %d)\n", r.DenialsRefused, r.RoleDenials, r.DenialsLeaked, r.CrossTenantLeak)
 	fmt.Fprintf(&b, "  rows, worst endpoint %d of %d allowed\n", r.MaxRowsEndpoint, r.Ceiling)
 	fmt.Fprintf(&b, "  oldest sample        %s\n", r.OldestSample.Round(time.Second))
 	fmt.Fprintf(&b, "  oldest summary       %s\n", r.OldestRollup.Round(time.Second))
@@ -214,4 +213,19 @@ func (r *report) String() string {
 		fmt.Fprintf(&b, "    - %s\n", f)
 	}
 	return b.String()
+}
+
+// within reports the age of the oldest row of a kind and fails the run when it sits outside the
+// window that kind is kept for. An empty table is nothing to check; a value that cannot be read
+// is a failure, because skipping it would delete the assertion and print an age of zero.
+func within(r *report, kind string, oldest any, now time.Time, window, slack time.Duration) time.Duration {
+	age, err := ageOf(oldest, now)
+	if err != nil {
+		r.Failures = append(r.Failures, fmt.Sprintf("the %s retention bound went unchecked: %v", kind, err))
+		return 0
+	}
+	if age > window+slack {
+		r.Failures = append(r.Failures, fmt.Sprintf("retention fell behind: a %s is %s old against a %s window", kind, age.Round(time.Second), window))
+	}
+	return age
 }
