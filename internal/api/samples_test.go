@@ -248,7 +248,7 @@ func TestContainerRollupsAreServedAndScoped(t *testing.T) {
 	// that has already ended is seeded directly.
 	past := time.Now().UTC().Add(-2 * time.Hour)
 	seedSample(t, cfg.Database, ag.id, "c1", past, 40, 900, 6)
-	if _, err := ts.RollUp(ctx); err != nil {
+	if _, err := ts.RollUp(ctx, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 

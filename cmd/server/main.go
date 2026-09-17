@@ -470,6 +470,14 @@ func runRestore(args []string) {
 	}
 }
 
+const (
+	// recentHours is how far back a steady roll-up pass looks: the hour that just ended plus
+	// the one before it, which is where a late-arriving sample can still land.
+	recentHours = 2 * time.Hour
+	// rollUpBudget bounds one aggregate so a pathological pass cannot pin the database.
+	rollUpBudget = 30 * time.Second
+)
+
 // pruneLoop enforces retention (docs/retention-policy.md): every minute it summarises ended
 // hours, deletes expired samples, summaries and acknowledged events in bounded batches until a
 // pass removes nothing, and
@@ -477,16 +485,27 @@ func runRestore(args []string) {
 func pruneLoop(ctx context.Context, st store.Store) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
+	// The first pass catches up the whole raw window, every later one only the hours that can
+	// still gain samples.
+	rollUpWindow := store.SampleRetention
 	measure(ctx, st)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Summarise before pruning, or the raw rows leave without being counted.
-			if _, err := st.Tenancy().RollUp(ctx); err != nil {
+			// Summarise before pruning, or the raw rows leave without being counted. A steady
+			// pass covers the hours that can still change; the first pass after start covers
+			// the whole raw window, so hours that ended while the server was down are still
+			// summarised before they age out. The statement gets its own deadline because
+			// SQLite serves the process from one connection, and everything else waits behind
+			// a long one.
+			rollCtx, cancelRoll := context.WithTimeout(ctx, rollUpBudget)
+			if _, err := st.Tenancy().RollUp(rollCtx, time.Now().UTC().Add(-rollUpWindow)); err != nil {
 				log.Printf("[RETENTION] roll-up: %v", err)
 			}
+			cancelRoll()
+			rollUpWindow = recentHours
 			for i := 0; i < 20; i++ {
 				n, err := st.Tenancy().Prune(ctx)
 				if err != nil {
