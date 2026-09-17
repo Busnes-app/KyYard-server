@@ -305,6 +305,12 @@ func TestRemovingAContainerNeedsConfirmationAndItsOwnPermission(t *testing.T) {
 	if sent.Action != protocol.ActionRemove || sent.Expects.State != "exited" {
 		t.Fatalf("the removal frame lost its action or its precondition: %+v", sent)
 	}
+	// Addressed by name, dispatched as the container the confirmation resolved to: a name is
+	// a label the runtime reassigns, and a recreate between inventory and execution would
+	// otherwise redirect the removal to whatever holds it.
+	if sent.Container != preview.ContainerID {
+		t.Fatalf("the frame carried %q rather than the confirmed container %q", sent.Container, preview.ContainerID)
+	}
 	if strings.Contains(string(frame.Payload), "confirm") {
 		t.Fatal("the confirmation was sent to the agent; it is the server's check, not the agent's")
 	}

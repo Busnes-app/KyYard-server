@@ -113,13 +113,19 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 			// The confirmation is checked against what the server knows the container is
 			// called, not against the request repeating itself, which would attest to
 			// nothing. The identifier may be a name or an ID; both resolve here.
-			name, err := t.confirmableName(ctx, tx, endpointID, containerID)
+			name, resolvedID, err := t.confirmable(ctx, tx, endpointID, containerID)
 			if err != nil {
 				return err
 			}
 			if confirm != name {
 				return fmt.Errorf("%w: confirm must be %q", ErrInvalid, name)
 			}
+			// What travels is the container the confirmation was checked against, not the
+			// name it answered to. A name is a label the runtime reassigns: a compose
+			// recreate puts a different container behind it, and the preview warns about
+			// exactly that. Sending the name would confirm one container and destroy
+			// whichever holds the label when the agent acts.
+			cmd.ContainerID = resolvedID
 		}
 		if state != "active" {
 			// A command for an endpoint that is not connected has nowhere to go, and queueing
@@ -261,26 +267,30 @@ func scanCommand(row scanner) (*Command, error) {
 	return &c, nil
 }
 
-// confirmableName resolves a container identifier to the name the server last observed, which
-// is what a destructive confirmation must repeat. Without an inventory there is nothing to
-// confirm against, and guessing would make the confirmation ceremonial.
-func (t *tenancyStore) confirmableName(ctx context.Context, tx *sql.Tx, endpointID, identifier string) (string, error) {
+// confirmable resolves a container identifier against the last inventory and returns both the
+// name a destructive confirmation must repeat and the ID the command will carry. Without an
+// inventory there is nothing to confirm against, and guessing would make the confirmation
+// ceremonial.
+func (t *tenancyStore) confirmable(ctx context.Context, tx *sql.Tx, endpointID, identifier string) (name, id string, err error) {
 	var raw string
-	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("%w: this endpoint has reported no inventory to confirm against", ErrInvalid)
+		return "", "", fmt.Errorf("%w: this endpoint has reported no inventory to confirm against", ErrInvalid)
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var snap protocol.Snapshot
 	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, c := range snap.Containers {
 		if c.ID == identifier || c.Name == identifier {
-			return c.Name, nil
+			if !containerName.MatchString(c.ID) {
+				return "", "", fmt.Errorf("%w: the recorded container ID is not usable", ErrInvalid)
+			}
+			return c.Name, c.ID, nil
 		}
 	}
-	return "", fmt.Errorf("%w: no container %q in the last inventory", ErrNotFound, identifier)
+	return "", "", fmt.Errorf("%w: no container %q in the last inventory", ErrNotFound, identifier)
 }
