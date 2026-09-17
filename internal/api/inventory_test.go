@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,33 @@ func TestInventoryIsStoredAndReadWithFreshness(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &inv)
 	if inv.Generation != 6 {
 		t.Fatalf("oversized snapshot changed the stored generation: %d", inv.Generation)
+	}
+	// A payload just under the byte cap made of minimal elements is decoded with the list caps
+	// applied during decoding: accepted, capped, named as truncated, and the session continues.
+	dense := []byte(`{"generation":8,"observed_at":"2026-09-16T12:00:00Z","engine":{"runtime":"docker"},"containers":[`)
+	for i := 0; len(dense) < protocol.MaxSnapshotBytes-64; i++ {
+		if i > 0 {
+			dense = append(dense, ',')
+		}
+		dense = append(dense, `{"id":"c"}`...)
+	}
+	dense = append(dense, "]}"...)
+	raw, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeInventory, Payload: dense})
+	if err := sock.conn.Write(ctx, websocket.MessageText, raw); err != nil {
+		t.Fatal(err)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {
+		t.Fatalf("session did not continue after a dense snapshot: %+v", e)
+	}
+	waitFor(t, func() bool {
+		w = tenantRequest(s, viewer, "GET", inventoryPath, "", true)
+		_ = json.Unmarshal(w.Body.Bytes(), &inv)
+		return inv.Generation == 8
+	})
+	_ = json.Unmarshal(inv.Snapshot, &stored)
+	if len(stored.Containers) != protocol.MaxContainers || !slices.Contains(stored.Truncated, "containers") {
+		t.Fatalf("dense snapshot not capped: %d containers, truncated %v", len(stored.Containers), stored.Truncated)
 	}
 	// Successful inventory reads are not audited, but the sensitive low-volume reads are:
 	// one audit-trail read and one member enumeration each leave exactly one row.

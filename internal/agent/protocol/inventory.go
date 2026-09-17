@@ -1,13 +1,113 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 )
+
+// UnmarshalSnapshotBounded decodes list fields one element at a time. A byte cap
+// alone is not enough: a small JSON object can expand into a much larger Go value.
+func UnmarshalSnapshotBounded(data []byte, s *Snapshot) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	decode := func(name string, dst any) error {
+		if raw, ok := fields[name]; ok {
+			return json.Unmarshal(raw, dst)
+		}
+		return nil
+	}
+	if err := decode("generation", &s.Generation); err != nil {
+		return err
+	}
+	if err := decode("observed_at", &s.ObservedAt); err != nil {
+		return err
+	}
+	if err := decode("engine", &s.Engine); err != nil {
+		return err
+	}
+	if err := decode("truncated", &s.Truncated); err != nil {
+		return err
+	}
+	var err error
+	if raw, ok := fields["containers"]; ok {
+		var cut bool
+		s.Containers, cut, err = decodeBounded[Container](raw, MaxContainers)
+		if err != nil {
+			return err
+		}
+		if cut {
+			s.Truncated = append(s.Truncated, "containers")
+		}
+	}
+	if raw, ok := fields["images"]; ok {
+		var cut bool
+		s.Images, cut, err = decodeBounded[Image](raw, MaxImages)
+		if err != nil {
+			return err
+		}
+		if cut {
+			s.Truncated = append(s.Truncated, "images")
+		}
+	}
+	if raw, ok := fields["networks"]; ok {
+		var cut bool
+		s.Networks, cut, err = decodeBounded[Network](raw, MaxNetworks)
+		if err != nil {
+			return err
+		}
+		if cut {
+			s.Truncated = append(s.Truncated, "networks")
+		}
+	}
+	if raw, ok := fields["volumes"]; ok {
+		var cut bool
+		s.Volumes, cut, err = decodeBounded[Volume](raw, MaxVolumes)
+		if err != nil {
+			return err
+		}
+		if cut {
+			s.Truncated = append(s.Truncated, "volumes")
+		}
+	}
+	return nil
+}
+
+func decodeBounded[T any](raw []byte, max int) ([]T, bool, error) {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := d.Token()
+	if err != nil {
+		return nil, false, err
+	}
+	if tok == nil {
+		return nil, false, nil
+	}
+	if tok != json.Delim('[') {
+		return nil, false, fmt.Errorf("expected array")
+	}
+	items := make([]T, 0, min(max, 64))
+	for d.More() {
+		if len(items) == max {
+			// The caller already validated the whole document (Unmarshal into RawMessage
+			// scans it first), so the tail is well-formed and need not be parsed at all.
+			return items, true, nil
+		}
+		var item T
+		if err := d.Decode(&item); err != nil {
+			return nil, false, err
+		}
+		items = append(items, item)
+	}
+	_, err = d.Token()
+	return items, false, err
+}
 
 // Product inventory types. Runtime SDK shapes never leave their adapter; these are the bounded
 // summaries the control plane stores (docs/application-schema.md, retention-policy.md).

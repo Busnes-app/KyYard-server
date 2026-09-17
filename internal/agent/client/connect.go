@@ -166,10 +166,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		var ce websocket.CloseError
 		if errors.As(err, &ce) {
 			switch strings.TrimSpace(ce.Reason) {
-			case protocol.CloseKeyRetired, protocol.CloseRevoked:
-				// Our key was retired (an acknowledged rotation while we were away) or is not
-				// known at all (a candidate that was never recorded). Try the next candidate;
-				// only with none left is the endpoint really gone.
+			case protocol.CloseKeyRetired:
+				// Our key was retired (an acknowledged rotation while we were away). Try the
+				// next candidate; only with none left is the endpoint really gone. A revoked
+				// close is terminal and never touches the key material: the server also uses
+				// it for a signature mismatch or a store error, and a rotation window must
+				// not turn either into a lost identity.
 				if id.switchKey() {
 					_ = opts.save(id)
 					return errSwitchKey
@@ -390,13 +392,10 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 }
 
 // sendInventory reads the runtime (or reports facts only) under a generation that rises across
-// restarts: a restarted agent's first snapshot must not be ignored, so the wall clock seeds it
-// when the persisted counter is behind.
+// restarts. The persisted counter is the only source of truth: trusting a fast host wall clock
+// can create a generation the server rejects for being in the future and persist the wedge.
 func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options, metricsOut chan<- protocol.Metrics) error {
 	gen := id.Generation + 1
-	if now := uint64(time.Now().Unix()); now > gen {
-		gen = now
-	}
 	var snap *protocol.Snapshot
 	if opts.Snapshot != nil {
 		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)

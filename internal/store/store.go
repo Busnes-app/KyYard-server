@@ -135,7 +135,7 @@ type TenancyStore interface {
 	AcknowledgeEndpointEvent(ctx context.Context, access TenantAccess, endpointID string, eventID int64) error
 	SetEndpointCapabilities(ctx context.Context, endpointID string, capabilities []string) error
 	ReadEndpointRaw(ctx context.Context, endpointID string) (*Endpoint, error)
-	RecordAgentConnect(ctx context.Context, endpoint *Endpoint, ip, result string) error
+	RecordAgentConnect(ctx context.Context, endpoint *Endpoint, ip, result, details string) error
 	TouchEndpoint(ctx context.Context, endpointID string) error
 	AcceptInventory(ctx context.Context, endpointID string, generation uint64, observedAt time.Time, snapshot []byte) (bool, error)
 	ReadInventory(ctx context.Context, access TenantAccess, endpointID string) (*Inventory, error)
