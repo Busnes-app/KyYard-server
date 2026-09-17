@@ -223,3 +223,76 @@ func TestTelemetryBacksOffUnderRetentionPressure(t *testing.T) {
 		t.Fatalf("samples did not resume: %+v", latest)
 	}
 }
+
+// The hourly summary is a separate route from the raw samples, so a caller knows which
+// resolution it asked for, and it is scoped exactly as the raw one is.
+func TestContainerRollupsAreServedAndScoped(t *testing.T) {
+	s, st, cfg := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "b", Name: "B"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	viewer := loginAs(t, s, st, "viewer", "user")
+	stranger := loginAs(t, s, st, "stranger", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleEnvironmentAdmin, Status: "active"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_viewer", Role: store.RoleReadOnly, Status: "active"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "b", UserID: "usr_stranger", Role: store.RoleOrganizationAdmin, Status: "active"})
+	ag := enrollAgent(t, s, st, admin, "host-r")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	// The agent path re-stamps an observation this old, by design, so the sample for an hour
+	// that has already ended is seeded directly.
+	past := time.Now().UTC().Add(-2 * time.Hour)
+	seedSample(t, cfg.Database, ag.id, "c1", past, 40, 900, 6)
+	if _, err := ts.RollUp(ctx, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/api/organizations/a/endpoints/" + ag.id + "/containers/c1/rollups?hours=48"
+	w := tenantRequest(s, viewer, "GET", path, "", true)
+	if w.Code != 200 {
+		t.Fatalf("rollups: %d %s", w.Code, w.Body.String())
+	}
+	var hours []store.RollupRow
+	if err := json.Unmarshal(w.Body.Bytes(), &hours); err != nil {
+		t.Fatal(err)
+	}
+	if len(hours) != 1 || hours[0].CPUPeak != 40 || hours[0].RestartCount != 6 || hours[0].Samples != 1 {
+		t.Fatalf("summary served: %+v", hours)
+	}
+	if !hours[0].Hour.Equal(past.Truncate(time.Hour)) {
+		t.Fatalf("hour bucket %v does not match the sample at %v", hours[0].Hour, past)
+	}
+	if w := tenantRequest(s, stranger, "GET", path, "", true); w.Code != 403 {
+		t.Fatalf("cross-tenant rollups: %d", w.Code)
+	}
+	if w := tenantRequest(s, viewer, "GET", "/api/organizations/a/endpoints/ep_missing/containers/c1/rollups", "", true); w.Code != 404 {
+		t.Fatalf("unknown endpoint rollups: %d", w.Code)
+	}
+	// A window past retention is clamped rather than refused, like the raw route.
+	if w := tenantRequest(s, viewer, "GET", "/api/organizations/a/endpoints/"+ag.id+"/containers/c1/rollups?hours=100000", "", true); w.Code != 200 {
+		t.Fatalf("oversized window: %d", w.Code)
+	}
+}
+
+// seedSample writes one sample at a chosen time, which the agent path will not do: it
+// re-stamps observations far from the server clock.
+func seedSample(t *testing.T, dbCfg config.DatabaseConfig, endpointID, container string, at time.Time, cpu float64, mem, restarts int64) {
+	t.Helper()
+	driver, q := dbCfg.Driver, `INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids,restart_count) VALUES (?,?,?,?,?,0,0,0,0,?)`
+	if driver == "postgres" {
+		driver, q = "pgx", `INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids,restart_count) VALUES ($1,$2,$3,$4,$5,0,0,0,0,$6)`
+	}
+	db, err := sql.Open(driver, dbCfg.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(q, endpointID, container, at, cpu, mem, restarts); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -260,6 +260,29 @@ func (s *Server) handleLatestSamples(w http.ResponseWriter, r *http.Request, a s
 	s.writeJSON(w, http.StatusOK, rows)
 }
 
+// handleContainerRollups serves the hourly summary, which outlives the raw window: samples are
+// kept six hours, their summaries a week. It is a separate route rather than a wider window on
+// the raw one, so a caller always knows which resolution it asked for and got.
+func (s *Server) handleContainerRollups(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	container := r.PathValue("container")
+	if container == "" || len(container) > 128 {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	hours, _ := strconv.Atoi(r.URL.Query().Get("hours"))
+	rows, err := s.store.Tenancy().ReadRollups(r.Context(), a, id, container, time.Duration(hours)*time.Hour)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, rows)
+}
+
 func (s *Server) handleContainerSamples(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	id, err := endpointID(r)
 	if err != nil {

@@ -480,6 +480,39 @@ CREATE INDEX idx_container_samples_observed ON container_samples(observed_at);
 	{Version: 13, Name: "container_samples_endpoint_time", SQLite: `CREATE INDEX idx_container_samples_endpoint_time ON container_samples(endpoint_id, observed_at, container_id);`, Postgres: `CREATE INDEX idx_container_samples_endpoint_time ON container_samples(endpoint_id, observed_at, container_id);`},
 	// -1 is "the runtime did not say", which existing rows cannot distinguish from zero either.
 	{Version: 14, Name: "container_samples_restarts", SQLite: `ALTER TABLE container_samples ADD COLUMN restart_count INTEGER NOT NULL DEFAULT -1;`, Postgres: `ALTER TABLE container_samples ADD COLUMN restart_count BIGINT NOT NULL DEFAULT -1;`},
+	{Version: 15, Name: "container_rollups", SQLite: `CREATE TABLE container_rollups (
+  endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+  container_id TEXT NOT NULL,
+  hour DATETIME NOT NULL,
+  samples INTEGER NOT NULL,
+  cpu_avg REAL NOT NULL,
+  cpu_max REAL NOT NULL,
+  memory_avg INTEGER NOT NULL,
+  memory_max INTEGER NOT NULL,
+  rx_bytes INTEGER NOT NULL,
+  tx_bytes INTEGER NOT NULL,
+  pids_max INTEGER NOT NULL,
+  restart_count INTEGER NOT NULL,
+  PRIMARY KEY (endpoint_id, container_id, hour)
+);
+CREATE INDEX idx_container_rollups_hour ON container_rollups(endpoint_id, hour);
+`, Postgres: `CREATE TABLE container_rollups (
+  endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+  container_id TEXT NOT NULL,
+  hour TIMESTAMPTZ NOT NULL,
+  samples INTEGER NOT NULL,
+  cpu_avg DOUBLE PRECISION NOT NULL,
+  cpu_max DOUBLE PRECISION NOT NULL,
+  memory_avg BIGINT NOT NULL,
+  memory_max BIGINT NOT NULL,
+  rx_bytes BIGINT NOT NULL,
+  tx_bytes BIGINT NOT NULL,
+  pids_max BIGINT NOT NULL,
+  restart_count BIGINT NOT NULL,
+  PRIMARY KEY (endpoint_id, container_id, hour)
+);
+CREATE INDEX idx_container_rollups_hour ON container_rollups(endpoint_id, hour);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

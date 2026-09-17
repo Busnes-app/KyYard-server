@@ -177,6 +177,10 @@ type TenancyStore interface {
 	RecordSamples(ctx context.Context, endpointID string, metrics protocol.Metrics) error
 	LatestSamples(ctx context.Context, access TenantAccess, endpointID string) ([]SampleRow, error)
 	ReadSamples(ctx context.Context, access TenantAccess, endpointID, containerID string, window time.Duration) ([]SampleRow, error)
+	// RollUp summarises ended hours before the raw window drops them; ReadRollups serves the
+	// week of history that summary buys.
+	RollUp(ctx context.Context, since time.Time) (int64, error)
+	ReadRollups(ctx context.Context, access TenantAccess, endpointID, containerID string, window time.Duration) ([]RollupRow, error)
 	Prune(ctx context.Context) (int64, error)
 	MarkEndpointOffline(ctx context.Context, endpointID string) error
 	EndpointState(ctx context.Context, endpointID string) (string, error)
