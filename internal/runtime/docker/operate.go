@@ -48,6 +48,9 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 		return protocol.OutcomeDenied, fmt.Sprintf("the container is %s, not %s", inspected.State.Status, want)
 	}
 
+	if cmd.Action == protocol.ActionRemove {
+		return c.remove(ctx, container, inspected.State.Status)
+	}
 	var path string
 	switch cmd.Action {
 	case protocol.ActionStart:
@@ -78,6 +81,46 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 // means the container was already where the caller wanted it.
 func (c *Client) post(ctx context.Context, path string) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+// remove destroys a container, and refuses to do it to a running one. Docker would oblige with
+// force, which kills the process first; an operator who means that can stop it and say so, and
+// the difference is worth a second decision rather than a flag.
+//
+// Named volumes are left alone: this never passes v=1, so removing a container does not remove
+// the data it was using. A volume is destroyed by its own action, with its own confirmation.
+func (c *Client) remove(ctx context.Context, container, state string) (outcome, detail string) {
+	if state == "running" || state == "restarting" || state == "paused" {
+		return protocol.OutcomeDenied, fmt.Sprintf("the container is %s; stop it first", state)
+	}
+	status, err := c.del(ctx, "/containers/"+container)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return protocol.OutcomeTimedOut, "the runtime did not answer in time"
+	case err != nil:
+		return protocol.OutcomeFailed, bound(err.Error(), protocol.MaxResultDetailBytes)
+	case status == http.StatusConflict:
+		// Docker says conflict when something still depends on it.
+		return protocol.OutcomeDenied, "the runtime refused: something still depends on this container"
+	case status == http.StatusNotFound:
+		return protocol.OutcomeDenied, "the container no longer exists"
+	case status >= 400:
+		return protocol.OutcomeFailed, fmt.Sprintf("the runtime refused with status %d", status)
+	}
+	return protocol.OutcomeSucceeded, ""
+}
+
+func (c *Client) del(ctx context.Context, path string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+path, nil)
 	if err != nil {
 		return 0, err
 	}

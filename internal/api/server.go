@@ -228,6 +228,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/samples", s.tenantRoute(s.handleLatestSamples))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/samples", s.tenantRoute(s.handleContainerSamples))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/rollups", s.tenantRoute(s.handleContainerRollups))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/removal", s.tenantRoute(s.handleRemovalPreview))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleDispatchCommand))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleListCommands))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands/{command}", s.tenantRoute(s.handleReadCommand))

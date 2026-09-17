@@ -51,18 +51,30 @@ func (c *Command) InFlight() bool { return c.Outcome == "" }
 // different Engine API route.
 var containerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 
-var commandActions = map[string]bool{
-	protocol.ActionStart:   true,
-	protocol.ActionStop:    true,
-	protocol.ActionRestart: true,
+// commandActions maps each action to the permission it needs. Removing a container is not a
+// stronger form of stopping one: it is a different thing to be allowed to do.
+var commandActions = map[string]permissions.Action{
+	protocol.ActionStart:   permissions.ContainerOperate,
+	protocol.ActionStop:    permissions.ContainerOperate,
+	protocol.ActionRestart: permissions.ContainerOperate,
+	protocol.ActionRemove:  permissions.ContainerDestroy,
 }
 
 // CreateCommand records the intent before anything is sent. The row exists first so that a
 // command which is dispatched and then lost still has somewhere to be marked unknown: an
 // operation the control plane cannot account for is worse than one that failed.
-func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpointID, action, containerID string, expects protocol.Expectation) (*Command, error) {
-	if !commandActions[action] {
+func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpointID, action, containerID, confirm string, expects protocol.Expectation) (*Command, error) {
+	needs, ok := commandActions[action]
+	if !ok {
 		return nil, fmt.Errorf("%w: unsupported action %q", ErrInvalid, action)
+	}
+	// Destructive is a property of the permission, not a second list to keep in step with it:
+	// a future action given ContainerDestroy inherits these requirements automatically.
+	destructive := needs == permissions.ContainerDestroy
+	if destructive && expects.State == "" {
+		// Without this the actor is asking to destroy whatever is there now, not the thing
+		// they looked at.
+		return nil, fmt.Errorf("%w: a destructive command must say what state it expects", ErrInvalid)
 	}
 	if !containerName.MatchString(containerID) {
 		// Docker's own grammar for a name or ID. displaySafe is not enough for a value that
@@ -87,7 +99,7 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 		Deadline:    now.Add(CommandDeadline),
 		CreatedAt:   now,
 	}
-	err = t.withTenantTarget(ctx, a, permissions.ContainerOperate, endpointID, func(tx *sql.Tx) error {
+	err = t.withTenantTarget(ctx, a, needs, endpointID, func(tx *sql.Tx) error {
 		var state string
 		row := tx.QueryRowContext(ctx, t.store.rebind(`SELECT organization_id,environment_id,state FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
 			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID)
@@ -96,6 +108,24 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 				return ErrNotFound
 			}
 			return err
+		}
+		if destructive {
+			// The confirmation is checked against what the server knows the container is
+			// called, not against the request repeating itself, which would attest to
+			// nothing. The identifier may be a name or an ID; both resolve here.
+			name, resolvedID, err := t.confirmable(ctx, tx, endpointID, containerID)
+			if err != nil {
+				return err
+			}
+			if confirm != name {
+				return fmt.Errorf("%w: confirm must be %q", ErrInvalid, name)
+			}
+			// What travels is the container the confirmation was checked against, not the
+			// name it answered to. A name is a label the runtime reassigns: a compose
+			// recreate puts a different container behind it, and the preview warns about
+			// exactly that. Sending the name would confirm one container and destroy
+			// whichever holds the label when the agent acts.
+			cmd.ContainerID = resolvedID
 		}
 		if state != "active" {
 			// A command for an endpoint that is not connected has nowhere to go, and queueing
@@ -235,4 +265,32 @@ func scanCommand(row scanner) (*Command, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// confirmable resolves a container identifier against the last inventory and returns both the
+// name a destructive confirmation must repeat and the ID the command will carry. Without an
+// inventory there is nothing to confirm against, and guessing would make the confirmation
+// ceremonial.
+func (t *tenancyStore) confirmable(ctx context.Context, tx *sql.Tx, endpointID, identifier string) (name, id string, err error) {
+	var raw string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", fmt.Errorf("%w: this endpoint has reported no inventory to confirm against", ErrInvalid)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	var snap protocol.Snapshot
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
+		return "", "", err
+	}
+	for _, c := range snap.Containers {
+		if c.ID == identifier || c.Name == identifier {
+			if !containerName.MatchString(c.ID) {
+				return "", "", fmt.Errorf("%w: the recorded container ID is not usable", ErrInvalid)
+			}
+			return c.Name, c.ID, nil
+		}
+	}
+	return "", "", fmt.Errorf("%w: no container %q in the last inventory", ErrNotFound, identifier)
 }

@@ -317,7 +317,10 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 	var body struct {
 		Action    string `json:"action"`
 		Container string `json:"container"`
-		Expects   struct {
+		// Confirm must repeat the container name for a destructive action. Requiring it here
+		// rather than in the interface means every caller has to mean it, scripts included.
+		Confirm string `json:"confirm"`
+		Expects struct {
 			ImageDigest string `json:"image_digest"`
 			State       string `json:"state"`
 		} `json:"expects"`
@@ -327,7 +330,7 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	expects := protocol.Expectation{ImageDigest: body.Expects.ImageDigest, State: body.Expects.State}
-	cmd, err := s.store.Tenancy().CreateCommand(r.Context(), a, id, body.Action, body.Container, expects)
+	cmd, err := s.store.Tenancy().CreateCommand(r.Context(), a, id, body.Action, body.Container, body.Confirm, expects)
 	if err != nil {
 		s.tenantError(w, err)
 		return
@@ -379,4 +382,69 @@ func (s *Server) handleListCommands(w http.ResponseWriter, r *http.Request, a st
 		return
 	}
 	s.writeJSON(w, http.StatusOK, rows)
+}
+
+// handleRemovalPreview says what destroying a container would mean, so a confirmation is a
+// decision rather than a reflex. It answers from the stored inventory and says how old that is:
+// the agent is not asked, because a preview must not be a way to make an endpoint do work, and
+// the command itself re-checks the state at the moment it acts.
+func (s *Server) handleRemovalPreview(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	container := r.PathValue("container")
+	inv, err := s.store.Tenancy().ReadInventory(r.Context(), a, id)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	var snap protocol.Snapshot
+	if err := json.Unmarshal(inv.Snapshot, &snap); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	for _, c := range snap.Containers {
+		if c.ID != container && c.Name != container {
+			continue
+		}
+		preview := map[string]any{
+			"organization": a.OrganizationID,
+			"endpoint":     id,
+			// Echoed as the caller addressed it, so a client can feed this response straight
+			// back: the identifier it sent, and the name the server knows, are both here.
+			"container":    container,
+			"container_id": c.ID,
+			"name":         c.Name,
+			"image":        c.Image,
+			"state":        c.State,
+			"observed_at":  inv.ObservedAt,
+			"received_at":  inv.ReceivedAt,
+			// What an operator is actually deciding about.
+			"consequences": consequencesOfRemoval(c),
+			"confirm_with": c.Name,
+		}
+		s.writeJSON(w, http.StatusOK, preview)
+		return
+	}
+	s.tenantError(w, store.ErrNotFound)
+}
+
+// consequencesOfRemoval names what goes and what stays. Saying what survives matters as much
+// as saying what does not: an operator who believes the data is going too will hesitate over
+// the wrong thing, and one who believes it is safe when it is not will lose it.
+func consequencesOfRemoval(c protocol.Container) []string {
+	out := []string{"the container and its writable layer are destroyed"}
+	if c.State == "running" || c.State == "restarting" || c.State == "paused" {
+		out = append(out, "it is "+c.State+", so removal is refused until it is stopped")
+	}
+	if len(c.Ports) > 0 {
+		out = append(out, "published ports stop answering")
+	}
+	if c.ComposeProject != "" {
+		out = append(out, "it belongs to compose project "+c.ComposeProject+", which may recreate it")
+	}
+	out = append(out, "named volumes and images are left alone; destroying data is a separate action")
+	return out
 }
