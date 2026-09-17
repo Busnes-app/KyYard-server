@@ -43,7 +43,7 @@ Disk budget: the operator sees the database size and each store's share on the s
 | Concurrent streams | 16 per endpoint, 8 per user, 64 per instance |
 | Retention disk budget | 2 GiB SQLite default |
 
-The soak runs the fixture at these targets for 24 hours on SQLite, including sustained denied mutations from a read-only member against freshly generated target identifiers for the whole run while another organization keeps writing (asserting rows stay under the ceiling, each distinct-target denial adds no row past the per-actor budget, and an administrator can still remove that member at exhaustion), verifies the database stays within budget, cleanup keeps up, p95 read latency on list screens stays under 500 ms, and memory stays bounded with slow log clients attached. Numbers that fail are lowered before freeze.
+The fixture is `cmd/soak` ([docs/soak.md](soak.md)), which asserts these bounds and names what it cannot yet cover. The soak runs it at these targets for 24 hours on SQLite, including sustained denied mutations from a read-only member against freshly generated target identifiers for the whole run while another organization keeps writing (asserting rows stay under the ceiling, each distinct-target denial adds no row past the per-actor budget, and an administrator can still remove that member at exhaustion), verifies the database stays within budget, cleanup keeps up, p95 read latency on list screens stays under 500 ms, and memory stays bounded with slow log clients attached. Numbers that fail are lowered before freeze.
 
 ## Decisions
 
