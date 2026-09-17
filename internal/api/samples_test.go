@@ -150,3 +150,76 @@ func fillSamples(t *testing.T, dbCfg config.DatabaseConfig, endpointID string, n
 		t.Fatal(err)
 	}
 }
+
+// When storage runs short the fleet must stay visible: metrics go first, inventory only if
+// that was not enough, and heartbeats, endpoint state and the audit trail never.
+func TestTelemetryBacksOffUnderRetentionPressure(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-p")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	empty := protocol.Snapshot{Engine: protocol.Engine{Runtime: "docker"}, Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
+
+	// Only the prune loop moves this level in production, so the test reaches past the
+	// interface rather than the interface offering a way to disarm the budget.
+	// Degraded: metrics are refused by name, inventory still lands.
+	st.(*store.SQLStore).SetPressure(store.PressureDegraded)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1"}}})
+	e := readEnvelope(t, ctx, sock.conn)
+	if e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "retention_pressure") || !strings.Contains(string(e.Payload), "degraded") {
+		t.Fatalf("metrics under degraded pressure: %+v", e)
+	}
+	first := empty
+	first.Generation = uint64(time.Now().Unix())
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, first)
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+
+	// Stopped: inventory is refused too, and the stored snapshot does not move.
+	st.(*store.SQLStore).SetPressure(store.PressureStopped)
+	later := empty
+	later.Generation = first.Generation + 1
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, later)
+	e = readEnvelope(t, ctx, sock.conn)
+	if e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "stopped") {
+		t.Fatalf("inventory under stopped pressure: %+v", e)
+	}
+	w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/inventory", "", true)
+	var inv struct{ Generation uint64 }
+	_ = json.Unmarshal(w.Body.Bytes(), &inv)
+	if inv.Generation != first.Generation {
+		t.Fatalf("stopped pressure stored a snapshot: %d", inv.Generation)
+	}
+
+	// The session and its heartbeats outlive both, and the audit trail is untouched.
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {
+		t.Fatalf("pressure ended the session: %+v", e)
+	}
+	records, err := ts.ReadAudit(ctx, store.TenantAccess{ActorID: "usr_envadmin", OrganizationID: "a"}, 0, 50)
+	if err != nil || len(records) == 0 {
+		t.Fatalf("audit refused under pressure: %d rows, %v", len(records), err)
+	}
+	st.(*store.SQLStore).SetPressure(store.PressureNormal)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1", RestartCount: 1}}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {
+		t.Fatalf("metrics were refused after the pressure cleared: %+v", e)
+	}
+	w = tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/samples", "", true)
+	var latest []store.SampleRow
+	_ = json.Unmarshal(w.Body.Bytes(), &latest)
+	if len(latest) != 1 || latest[0].ContainerID != "c1" {
+		t.Fatalf("samples did not resume: %+v", latest)
+	}
+}

@@ -409,6 +409,14 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
+		// Metrics are the first telemetry dropped when storage runs short: cheapest to lose,
+		// fastest to grow. The session, its heartbeats and the audit trail continue.
+		if p := s.store.Pressure(); p != store.PressureNormal {
+			if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "retention_pressure", "pressure": p.String(), "dropped": "metrics"})); err != nil {
+				return true
+			}
+			return false
+		}
 		if !c.lastMetrics.IsZero() && time.Since(c.lastMetrics) < store.SampleCadence {
 			return false
 		}
@@ -430,6 +438,14 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		}
 	case protocol.TypeInventory:
 		if pending {
+			return false
+		}
+		// Inventory goes only when dropping metrics was not enough. Heartbeats and endpoint
+		// state still flow, so the fleet stays visible while storage is recovered.
+		if s.store.Pressure() == store.PressureStopped {
+			if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "retention_pressure", "pressure": store.PressureStopped.String(), "dropped": "inventory"})); err != nil {
+				return true
+			}
 			return false
 		}
 		var inv protocol.Snapshot

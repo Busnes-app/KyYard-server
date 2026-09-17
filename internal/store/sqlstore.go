@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
@@ -15,7 +16,10 @@ import (
 type SQLStore struct {
 	db       *sql.DB
 	driver   string
-	ceiling  int // stored sample rows allowed per endpoint
+	budget   int64        // bytes of telemetry allowed; zero disables the check
+	lastUsed atomic.Int64 // bytes at the previous evaluation, to tell growth from a plateau
+	ceiling  int          // stored sample rows allowed per endpoint
+	pressure atomic.Int32 // current Pressure, read on every telemetry write
 	users    *userStore
 	sessions *sessionStore
 	devices  *deviceStore
@@ -25,7 +29,7 @@ type SQLStore struct {
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string, ceiling int) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, lim limits) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
@@ -35,13 +39,14 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string, ceiling int) (*
 		return nil, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
 
-	if ceiling <= 0 {
-		ceiling = MaxSampleRowsPerEndpoint
+	if lim.ceiling <= 0 {
+		lim.ceiling = MaxSampleRowsPerEndpoint
 	}
 	s := &SQLStore{
 		db:      db,
 		driver:  driver,
-		ceiling: ceiling,
+		budget:  lim.budget,
+		ceiling: lim.ceiling,
 	}
 
 	s.users = &userStore{store: s}
@@ -920,6 +925,85 @@ func errorsIs(err, target error) bool {
 	}
 	return err == target || strings.Contains(err.Error(), target.Error())
 }
+
+// Usage reports what the database holds, cheaply enough to read every minute: SQLite counts
+// its pages minus the freelist, PostgreSQL reports the database size. Neither number is a
+// measure of reclaimable data alone, which is why the level's release does not depend on it.
+func (s *SQLStore) Usage(ctx context.Context) (int64, error) {
+	if s.driver == "postgres" {
+		var n int64
+		err := s.db.QueryRowContext(ctx, "SELECT pg_database_size(current_database())").Scan(&n)
+		return n, err
+	}
+	var pages, free, size int64
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&free); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&size); err != nil {
+		return 0, err
+	}
+	if free > pages {
+		free = pages
+	}
+	return (pages - free) * size, nil
+}
+
+// EvaluatePressure re-reads usage and settles the level, returning it. Degrading at 95 % leaves
+// room to prune before anything must stop; the threshold divides before multiplying so a very
+// large budget cannot overflow into a negative one.
+//
+// What raises the level is being over budget *and still growing*. Any prune pass under
+// pressure releases it, whether or not it freed rows.
+//
+// Release cannot depend on the reading falling. A delete returns pages to the table rather than
+// the file, a plain PostgreSQL vacuum never shrinks an index, and the reading counts data
+// retention cannot touch at all: audit, which is never refused and not yet pruned, and
+// inventory, where a report replaces a row rather than adding one. So once a pass has taken
+// everything retention is owed, holding the level achieves nothing that dropping more metrics
+// could fix — it would only refuse telemetry for the rest of the server's life.
+//
+// The result at the ceiling is a throttle rather than a stop: telemetry resumes, usage grows,
+// the level returns. That is escapable by construction, and a condition that persists is
+// reported at intervals rather than once, because it needs an operator, not a log line.
+func (s *SQLStore) EvaluatePressure(ctx context.Context) (Pressure, error) {
+	current := s.Pressure()
+	if s.budget <= 0 {
+		return current, nil
+	}
+	used, err := s.Usage(ctx)
+	if err != nil {
+		return current, err
+	}
+	implied := PressureNormal
+	switch {
+	case used >= s.budget:
+		implied = PressureStopped
+	case used >= s.budget/100*95:
+		implied = PressureDegraded
+	}
+	next := current
+	switch {
+	case implied > current && used > s.lastUsed.Load():
+		next = implied
+	case implied < current:
+		next = implied
+	case current > PressureNormal:
+		next = PressureNormal
+	}
+	s.lastUsed.Store(used)
+	s.SetPressure(next)
+	return next, nil
+}
+
+// Budget is the configured ceiling, zero when the check is disabled.
+func (s *SQLStore) Budget() int64 { return s.budget }
+
+func (s *SQLStore) Pressure() Pressure { return Pressure(s.pressure.Load()) }
+
+func (s *SQLStore) SetPressure(p Pressure) { s.pressure.Store(int32(p)) }
 
 // SampleCeiling is the stored-rows-per-endpoint limit this store enforces.
 func (s *SQLStore) SampleCeiling() int { return s.ceiling }

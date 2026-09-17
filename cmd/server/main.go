@@ -471,10 +471,12 @@ func runRestore(args []string) {
 }
 
 // pruneLoop enforces retention (docs/retention-policy.md): every minute it deletes expired
-// samples and acknowledged events in bounded batches until a pass removes nothing.
+// samples and acknowledged events in bounded batches until a pass removes nothing, and
+// publishes how close the database is to its budget so telemetry writes can back off.
 func pruneLoop(ctx context.Context, st store.Store) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
+	measure(ctx, st)
 	for {
 		select {
 		case <-ctx.Done():
@@ -490,6 +492,39 @@ func pruneLoop(ctx context.Context, st store.Store) {
 					break
 				}
 			}
+			measure(ctx, st)
 		}
+	}
+}
+
+// overBudgetReminder is how often a persistent over-budget condition is repeated. Telemetry
+// throttling clears itself every pass, so without this an operator would see the transitions
+// and never learn that the condition behind them has not gone away.
+const overBudgetReminder = 15 * time.Minute
+
+var lastReminder time.Time
+
+// measure settles the retention pressure, reports each change, and keeps saying so while the
+// database stays over its budget, because that needs an operator rather than a log line.
+func measure(ctx context.Context, st store.Store) {
+	if st.Budget() <= 0 {
+		return
+	}
+	prev := st.Pressure()
+	next, err := st.EvaluatePressure(ctx)
+	if err != nil {
+		log.Printf("[RETENTION] usage: %v", err)
+		return
+	}
+	used, err := st.Usage(ctx)
+	if err != nil {
+		return
+	}
+	if next != prev {
+		log.Printf("[RETENTION] %d of %d bytes in use: telemetry %s (was %s)", used, st.Budget(), next, prev)
+	}
+	if used >= st.Budget()/100*95 && time.Since(lastReminder) >= overBudgetReminder {
+		lastReminder = time.Now()
+		log.Printf("[RETENTION] %d of %d bytes in use: telemetry is being throttled and will stay throttled until the budget is raised, disk is added, or retention is shortened", used, st.Budget())
 	}
 }

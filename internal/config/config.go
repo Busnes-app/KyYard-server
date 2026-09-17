@@ -37,11 +37,18 @@ type ServerConfig struct {
 	WriteTimeout time.Duration `json:"write_timeout"`
 }
 
+// maxDiskBudget is a petabyte: past this the value is a typo, not a policy, and an operator
+// who means "no limit" has 0 for that.
+const maxDiskBudget = 1 << 50
+
 // DatabaseConfig holds connection settings for pluggable storage (SQLite, PostgreSQL, MySQL).
 type DatabaseConfig struct {
 	Driver  string `json:"driver"` // "sqlite", "postgres", "mysql"
 	DSN     string `json:"dsn"`    // Connection string or file path
 	DataDir string `json:"data_dir"`
+	// DiskBudget bounds what telemetry may occupy (docs/retention-policy.md). Zero disables
+	// the check; the default is the documented 2 GiB.
+	DiskBudget int64 `json:"disk_budget"`
 	// SampleCeiling bounds stored metric rows per endpoint (docs/retention-policy.md). Zero
 	// means the built-in default; it is configured once, before the store opens.
 	SampleCeiling   int           `json:"sample_ceiling"`
@@ -181,6 +188,15 @@ func LoadFromEnv() (*Config, error) {
 		driver = "postgres"
 		defaultDSN = "postgres://postgres:postgres@localhost:5432/ky_server?sslmode=disable"
 	}
+	diskBudget := int64(getEnvInt("KY_RETENTION_DISK_BUDGET", 2<<30))
+	// A negative budget would disable the control as quietly as zero does, and zero is the
+	// documented way to say so. An absurd one would only ever be a typo.
+	if diskBudget < 0 {
+		return nil, fmt.Errorf("KY_RETENTION_DISK_BUDGET: must not be negative (0 disables the check), got %d", diskBudget)
+	}
+	if diskBudget > maxDiskBudget {
+		return nil, fmt.Errorf("KY_RETENTION_DISK_BUDGET: %d is larger than any real disk; use 0 to disable the check", diskBudget)
+	}
 	dsn := getEnv("KY_DB_DSN", defaultDSN)
 
 	if err := secureDataDir(dataDir); err != nil {
@@ -226,6 +242,7 @@ func LoadFromEnv() (*Config, error) {
 			Driver:          driver,
 			DSN:             dsn,
 			DataDir:         dataDir,
+			DiskBudget:      diskBudget,
 			MaxOpenConns:    getEnvInt("KY_DB_MAX_OPEN_CONNS", 25),
 			MaxIdleConns:    getEnvInt("KY_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: 15 * time.Minute,

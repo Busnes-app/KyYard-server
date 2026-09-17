@@ -199,14 +199,22 @@ func (t *tenancyStore) ReadSamples(ctx context.Context, a TenantAccess, endpoint
 
 // Prune deletes expired samples and acknowledged events in bounded batches and reports how
 // many rows went, so the caller loops until a pass removes nothing.
+// DegradedSampleRetention is how far back raw samples are kept once the budget is under
+// pressure: refusing new writes alone does not give space back, so the window closes too.
+const DegradedSampleRetention = time.Hour
+
 func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 	now := time.Now().UTC()
+	samples := SampleRetention
+	if t.store.Pressure() != PressureNormal {
+		samples = DegradedSampleRetention
+	}
 	var total int64
 	for _, q := range []struct {
 		sql string
 		arg any
 	}{
-		{`DELETE FROM container_samples WHERE (endpoint_id,container_id,observed_at) IN (SELECT endpoint_id,container_id,observed_at FROM container_samples WHERE observed_at<? LIMIT ?)`, now.Add(-SampleRetention)},
+		{`DELETE FROM container_samples WHERE (endpoint_id,container_id,observed_at) IN (SELECT endpoint_id,container_id,observed_at FROM container_samples WHERE observed_at<? LIMIT ?)`, now.Add(-samples)},
 		{`DELETE FROM endpoint_events WHERE id IN (SELECT id FROM endpoint_events WHERE created_at<? AND acknowledged_at IS NOT NULL LIMIT ?)`, now.Add(-EventRetention)},
 	} {
 		result, err := t.store.db.ExecContext(ctx, t.store.rebind(q.sql), q.arg, PruneBatch)
