@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"database/sql"
@@ -610,5 +611,48 @@ func TestLateAcknowledgementAfterTheAgentForgotTheOffer(t *testing.T) {
 			t.Fatalf("agent never came back with the acknowledged key: %+v", e)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// identity_revoked is terminal: the server also uses it for a bad signature or a store error,
+// so an agent inside a rotation window must not answer it by discarding its current key.
+func TestRevocationDoesNotSwitchKeys(t *testing.T) {
+	httpSrv, st, jar, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+	id.RotatedAt = time.Time{}
+	current := append([]byte(nil), id.PrivateKey...)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(ctx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+	}()
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.State == "active" && e.PendingFingerprint != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no rotation offer: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/revoke", jar, "")
+	select {
+	case err := <-done:
+		if !errors.Is(err, client.ErrRevoked) {
+			t.Fatalf("expected ErrRevoked, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("agent kept running after revocation")
+	}
+	saved, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(saved.PrivateKey, current) || len(saved.PendingPrivateKey) == 0 {
+		t.Fatalf("revocation rewrote the identity: current changed=%v pending kept=%v", !bytes.Equal(saved.PrivateKey, current), len(saved.PendingPrivateKey) != 0)
 	}
 }

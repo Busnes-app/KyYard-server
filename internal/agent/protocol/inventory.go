@@ -93,24 +93,20 @@ func decodeBounded[T any](raw []byte, max int) ([]T, bool, error) {
 		return nil, false, fmt.Errorf("expected array")
 	}
 	items := make([]T, 0, min(max, 64))
-	truncated := false
 	for d.More() {
-		if len(items) < max {
-			var item T
-			if err := d.Decode(&item); err != nil {
-				return nil, false, err
-			}
-			items = append(items, item)
-		} else {
-			var discard json.RawMessage
-			if err := d.Decode(&discard); err != nil {
-				return nil, false, err
-			}
-			truncated = true
+		if len(items) == max {
+			// The caller already validated the whole document (Unmarshal into RawMessage
+			// scans it first), so the tail is well-formed and need not be parsed at all.
+			return items, true, nil
 		}
+		var item T
+		if err := d.Decode(&item); err != nil {
+			return nil, false, err
+		}
+		items = append(items, item)
 	}
 	_, err = d.Token()
-	return items, truncated, err
+	return items, false, err
 }
 
 // Product inventory types. Runtime SDK shapes never leave their adapter; these are the bounded

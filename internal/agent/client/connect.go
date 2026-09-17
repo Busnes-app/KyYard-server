@@ -165,9 +165,11 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		if errors.As(err, &ce) {
 			switch strings.TrimSpace(ce.Reason) {
 			case protocol.CloseKeyRetired:
-				// Our key was retired (an acknowledged rotation while we were away) or is not
-				// known at all (a candidate that was never recorded). Try the next candidate;
-				// only with none left is the endpoint really gone.
+				// Our key was retired (an acknowledged rotation while we were away). Try the
+				// next candidate; only with none left is the endpoint really gone. A revoked
+				// close is terminal and never touches the key material: the server also uses
+				// it for a signature mismatch or a store error, and a rotation window must
+				// not turn either into a lost identity.
 				if id.switchKey() {
 					_ = opts.save(id)
 					return errSwitchKey
