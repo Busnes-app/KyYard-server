@@ -238,6 +238,11 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 
 // scanTime reads a timestamp that came through an aggregate: PostgreSQL keeps the type,
 // SQLite hands back the stored text.
+// ParseStoredTime reads a timestamp in whichever shape the driver returned it. It is exported
+// because anything inspecting the database from outside has to agree with the store about what
+// it wrote, and a second, narrower copy of these layouts would drift silently.
+func ParseStoredTime(v any) (time.Time, error) { return scanTime(v) }
+
 func scanTime(v any) (time.Time, error) {
 	switch x := v.(type) {
 	case time.Time:

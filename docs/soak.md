@@ -20,6 +20,11 @@ failed. A short run at the same targets is a useful smoke check before committin
 go run ./cmd/soak -duration 5m -cadence 10s -retention-interval 10s -report 1m
 ```
 
+A cadence below `store.SampleCadence` (50 s) does not store more rows: `RecordSamples` keeps at
+most one row per container per cadence and drops the rest, which is the bound it exists to
+enforce. A fast short run therefore offers many samples and stores few, and the report prints
+both numbers so the difference cannot be mistaken for throughput.
+
 Every knob has a flag: `-endpoints`, `-containers`, `-cadence`, `-retention-interval`,
 `-budget`, `-dir`, `-report`, `-quiet`. With no `-dir` it works in a temporary directory and
 removes it afterwards.
@@ -33,7 +38,10 @@ removes it afterwards.
 | Does the disk budget engage, and can it be left? | records every pressure level seen; exceeding the budget without ever returning to normal is a failure |
 | Are refusals recorded and never leaked? | a read-only member of a second organization attempts a mutation against a target identifier it has never used, for the whole run, while the first organization keeps writing |
 | Can an administrator still tidy up afterwards? | removes that member at the end |
-| Do the list screens stay fast while all of it runs? | times `ListEndpoints` plus `LatestSamples` once a second and reports p95 against the 500 ms target |
+| Do the list screens stay fast while all of it runs? | times `ListEndpoints` plus `LatestSamples` once a second and reports p95 against the 500 ms target. A read that fails is timed and counted too, never dropped: read failures under load are the degradation the gate exists to catch |
+| Was storage exercised at all? | counts rows actually in the database, not samples offered. A run that stored nothing satisfies every other bound here, so it is a failure |
+| Did the budget hold? | final usage must be at or under the budget, and if peak usage passed it, the ceiling must have refused at least one write. The pressure level returning to normal proves nothing on its own, since any prune pass clears it |
+| Could a read-only member of another organization reach a real endpoint? | a second probe targets a real, approved endpoint in the writers' organization and accepts only `ErrForbidden`. "Not found" would mean the boundary had become a lookup oracle |
 
 ## What it does not cover
 

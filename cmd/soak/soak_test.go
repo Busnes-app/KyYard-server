@@ -34,8 +34,10 @@ func TestSoakDriverHoldsItsBoundsInMiniature(t *testing.T) {
 		t.Fatalf("the driver reported failures on a healthy run: %v\n%s", r.Failures, r.String())
 	}
 	// The run has to have actually done the things it claims to check.
-	if r.SamplesWritten == 0 {
-		t.Fatal("no samples were written, so the storage bounds were never exercised")
+	// Offered is not stored: the cadence rule drops most of what a fast run sends, and an
+	// empty table satisfies every other bound here.
+	if r.RowsStored == 0 {
+		t.Fatal("no sample rows reached the database, so the storage bounds were never exercised")
 	}
 	if r.DenialsRefused == 0 {
 		t.Fatal("no refusal was exercised, so the denial path proves nothing")
@@ -75,5 +77,47 @@ func TestSoakReportsWhenTheBudgetCannotHold(t *testing.T) {
 	}
 	if r.PressureSeen[0]+r.PressureSeen[1]+r.PressureSeen[2] == 0 {
 		t.Fatal("pressure was never evaluated during the run")
+	}
+	// A budget nothing can satisfy must be reported as a failure, not passed over: a soak
+	// that cannot tell whether the budget held is worth nothing.
+	if len(r.Failures) == 0 {
+		t.Fatalf("a run that ended over its budget reported no failure:\n%s", r.String())
+	}
+}
+
+// A timestamp the harness cannot read must be reported, not skipped: skipping deletes the
+// retention assertion and prints an age of zero, which reads exactly like a healthy run.
+func TestAgeOfReportsWhatItCannotRead(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	hour := now.Add(-time.Hour)
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  time.Duration
+		bad   bool
+	}{
+		{name: "no rows", value: nil, want: 0},
+		{name: "time", value: hour, want: time.Hour},
+		{name: "driver text", value: "2026-09-17 11:00:00 +0000 UTC", want: time.Hour},
+		{name: "rfc3339", value: "2026-09-17T11:00:00Z", want: time.Hour},
+		{name: "zone-less", value: "2026-09-17 11:00:00", want: time.Hour},
+		{name: "bytes", value: []byte("2026-09-17 11:00:00 +0000 UTC"), want: time.Hour},
+		{name: "nonsense", value: "not a time at all", bad: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ageOf(tc.value, now)
+			if tc.bad {
+				if err == nil {
+					t.Fatalf("an unreadable timestamp passed silently as %s", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("age %s, want %s", got, tc.want)
+			}
+		})
 	}
 }

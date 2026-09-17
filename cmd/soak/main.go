@@ -42,11 +42,16 @@ type settings struct {
 // report is what the run proves, or fails to.
 type report struct {
 	Ticks           int
-	SamplesWritten  int64
+	SamplesOffered  int64
+	RowsStored      int64
+	BudgetRefusals  int64
+	ReadFailures    int64
+	CrossTenantLeak int64
 	DenialsRefused  int64
 	DenialsLeaked   int64
 	RollupRows      int64
 	PeakUsage       int64
+	FinalUsage      int64
 	Budget          int64
 	PressureSeen    map[store.Pressure]int
 	MaxRowsEndpoint int64
@@ -130,14 +135,21 @@ func run(ctx context.Context, s settings) (*report, error) {
 					for i := range m.Samples {
 						m.Samples[i] = protocol.Sample{ContainerID: fmt.Sprintf("%s-c%03d", id, i), CPUPercent: float64(i % 100), MemoryBytes: int64(i) << 20, RestartCount: int64(i % 3)}
 					}
-					if err := st.Tenancy().RecordSamples(runCtx, id, m); err != nil && !errors.Is(err, store.ErrSampleBudget) && runCtx.Err() == nil {
-						mu.Lock()
-						r.Failures = append(r.Failures, fmt.Sprintf("metrics refused for an unexpected reason: %v", err))
-						mu.Unlock()
-						continue
-					}
+					err := st.Tenancy().RecordSamples(runCtx, id, m)
 					mu.Lock()
-					r.SamplesWritten += int64(len(m.Samples))
+					switch {
+					case runCtx.Err() != nil:
+					case errors.Is(err, store.ErrSampleBudget):
+						// Evidence the ceiling actually turned a write away, which a level
+						// flag toggling on and off is not.
+						r.BudgetRefusals++
+					case err != nil:
+						r.Failures = append(r.Failures, fmt.Sprintf("metrics refused for an unexpected reason: %v", err))
+					default:
+						// Offered, not stored: the cadence rule drops most of these. What
+						// landed is counted from the database in check.
+						r.SamplesOffered += int64(len(m.Samples))
+					}
 					mu.Unlock()
 				}
 			}
@@ -156,17 +168,31 @@ func run(ctx context.Context, s settings) (*report, error) {
 			case <-runCtx.Done():
 				return
 			case <-t.C:
-				err := st.Tenancy().RenameEndpoint(runCtx, fixture.readOnly, fmt.Sprintf("ep_absent_%d", n), "nope")
+				// A target that exists nowhere: this asks whether refusals grow the audit
+				// trail without bound, and may answer "not found" as fairly as "forbidden".
+				fresh := st.Tenancy().RenameEndpoint(runCtx, fixture.readOnly, fmt.Sprintf("ep_absent_%d", n), "nope")
+				// A real, approved endpoint belonging to the other organization. Only
+				// forbidden will do: "not found" here would mean the boundary had become a
+				// lookup, telling this member which identifiers exist.
+				real := st.Tenancy().RenameEndpoint(runCtx, fixture.readOnly, fixture.endpoints[0], "nope")
 				mu.Lock()
 				switch {
 				case runCtx.Err() != nil:
-				case errors.Is(err, store.ErrForbidden), errors.Is(err, store.ErrNotFound):
+				case errors.Is(fresh, store.ErrForbidden), errors.Is(fresh, store.ErrNotFound):
 					r.DenialsRefused++
-				case err == nil:
+				case fresh == nil:
 					r.DenialsLeaked++
 					r.Failures = append(r.Failures, "a read-only member renamed an endpoint")
 				default:
-					r.Failures = append(r.Failures, fmt.Sprintf("denial path failed oddly: %v", err))
+					r.Failures = append(r.Failures, fmt.Sprintf("denial path failed oddly: %v", fresh))
+				}
+				switch {
+				case runCtx.Err() != nil:
+				case errors.Is(real, store.ErrForbidden):
+					r.DenialsRefused++
+				default:
+					r.CrossTenantLeak++
+					r.Failures = append(r.Failures, fmt.Sprintf("a read-only member of another organization reached a real endpoint: %v", real))
 				}
 				mu.Unlock()
 			}
@@ -227,15 +253,20 @@ func run(ctx context.Context, s settings) (*report, error) {
 				return
 			case <-t.C:
 				started := time.Now()
-				if _, err := st.Tenancy().ListEndpoints(runCtx, fixture.admin, 0, 50); err != nil {
-					continue
-				}
-				if _, err := st.Tenancy().LatestSamples(runCtx, fixture.admin, fixture.endpoints[0]); err != nil {
+				_, listErr := st.Tenancy().ListEndpoints(runCtx, fixture.admin, 0, 50)
+				_, sampleErr := st.Tenancy().LatestSamples(runCtx, fixture.admin, fixture.endpoints[0])
+				elapsed := time.Since(started)
+				if runCtx.Err() != nil {
 					continue
 				}
 				mu.Lock()
-				reads = append(reads, time.Since(started))
+				// Timed whether it worked or not: a read that fails under load is exactly what
+				// the latency gate is for, and dropping it would flatter the result twice.
+				reads = append(reads, elapsed)
 				r.Ticks++
+				if listErr != nil || sampleErr != nil {
+					r.ReadFailures++
+				}
 				mu.Unlock()
 			}
 		}
@@ -254,7 +285,7 @@ func run(ctx context.Context, s settings) (*report, error) {
 				case <-t.C:
 					used, _ := st.Usage(runCtx)
 					mu.Lock()
-					log.Printf("[SOAK] %d samples written, %d denials refused, %d bytes used, telemetry %s", r.SamplesWritten, r.DenialsRefused, used, st.Pressure())
+					log.Printf("[SOAK] %d samples offered, %d refused for budget, %d denials refused, %d bytes used, telemetry %s", r.SamplesOffered, r.BudgetRefusals, r.DenialsRefused, used, st.Pressure())
 					mu.Unlock()
 				}
 			}

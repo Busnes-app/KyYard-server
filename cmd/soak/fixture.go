@@ -96,9 +96,15 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 		if err := f.inspect.QueryRowContext(ctx, `SELECT COUNT(*) FROM container_samples WHERE endpoint_id=?`, id).Scan(&rows); err != nil {
 			return err
 		}
+		r.RowsStored += rows
 		if rows > r.MaxRowsEndpoint {
 			r.MaxRowsEndpoint = rows
 		}
+	}
+	if r.RowsStored == 0 {
+		// Every other storage bound is satisfied by an empty table: no rows past the ceiling,
+		// no sample too old to have been pruned. A run that stored nothing proves nothing.
+		r.Failures = append(r.Failures, "not one sample row was stored, so no storage bound was exercised")
 	}
 	r.Ceiling = st.SampleCeiling()
 	if r.MaxRowsEndpoint > int64(st.SampleCeiling()) {
@@ -113,22 +119,46 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 		return err
 	}
 	now := time.Now().UTC()
-	if age, ok := ageOf(oldestSample, now); ok {
+	age, err := ageOf(oldestSample, now)
+	if err != nil {
+		r.Failures = append(r.Failures, fmt.Sprintf("the retention bound went unchecked: %v", err))
+	}
+	if age > 0 {
 		r.OldestSample = age
 		// One retention interval of slack: a row may age out between prune and this check.
 		if age > store.SampleRetention+2*time.Minute {
 			r.Failures = append(r.Failures, fmt.Sprintf("retention fell behind: a sample is %s old against a %s window", age.Round(time.Second), store.SampleRetention))
 		}
 	}
-	if age, ok := ageOf(oldestRollup, now); ok {
-		r.OldestRollup = age
+	rollupAge, err := ageOf(oldestRollup, now)
+	if err != nil {
+		r.Failures = append(r.Failures, fmt.Sprintf("the summary retention bound went unchecked: %v", err))
+	}
+	if rollupAge > 0 {
+		r.OldestRollup = rollupAge
 		if age > store.RollupRetention+time.Hour {
 			r.Failures = append(r.Failures, fmt.Sprintf("a summary is %s old against a %s window", age.Round(time.Second), store.RollupRetention))
 		}
 	}
 
-	if r.PeakUsage >= r.Budget && r.PressureSeen[store.PressureNormal] == 0 {
-		r.Failures = append(r.Failures, "the budget was exceeded and telemetry never returned to normal")
+	// The level returning to normal proves nothing on its own: by design any prune pass
+	// clears it, so the flag toggles whether or not the database came back under budget.
+	used, err := st.Usage(ctx)
+	if err != nil {
+		return err
+	}
+	r.FinalUsage = used
+	if used > r.Budget {
+		r.Failures = append(r.Failures, fmt.Sprintf("the run ended %d bytes over its %d budget", used-r.Budget, r.Budget))
+	}
+	if r.PeakUsage >= r.Budget && r.BudgetRefusals == 0 {
+		r.Failures = append(r.Failures, "usage passed the budget and not one write was refused for it")
+	}
+	if r.ReadFailures > 0 {
+		r.Failures = append(r.Failures, fmt.Sprintf("%d of %d list reads failed under load", r.ReadFailures, r.Ticks))
+	}
+	if r.CrossTenantLeak > 0 {
+		r.Failures = append(r.Failures, fmt.Sprintf("%d cross-tenant mutations were not refused", r.CrossTenantLeak))
 	}
 	if r.DenialsRefused == 0 {
 		r.Failures = append(r.Failures, "no refusal was exercised, so the denial path proves nothing")
@@ -148,36 +178,32 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 	return nil
 }
 
-func ageOf(v any, now time.Time) (time.Duration, bool) {
+// ageOf reads a timestamp the store wrote. An empty table is nothing to check and is not an
+// error; a value that cannot be read is, because silently skipping it would delete the
+// assertion and print an age of zero, which reads exactly like a healthy run.
+func ageOf(v any, now time.Time) (time.Duration, error) {
 	if v == nil {
-		return 0, false
+		return 0, nil
 	}
-	switch t := v.(type) {
-	case time.Time:
-		return now.Sub(t.UTC()), true
-	case string:
-		for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999 -0700 MST", "2006-01-02 15:04:05.999999999Z07:00"} {
-			if parsed, err := time.Parse(layout, t); err == nil {
-				return now.Sub(parsed.UTC()), true
-			}
-		}
-	case []byte:
-		return ageOf(string(t), now)
+	parsed, err := store.ParseStoredTime(v)
+	if err != nil {
+		return 0, err
 	}
-	return 0, false
+	return now.Sub(parsed), nil
 }
 
 func (r *report) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\nsoak report\n")
-	fmt.Fprintf(&b, "  samples written      %d\n", r.SamplesWritten)
+	fmt.Fprintf(&b, "  rows stored          %d (from %d samples offered)\n", r.RowsStored, r.SamplesOffered)
+	fmt.Fprintf(&b, "  writes refused       %d for the row ceiling or budget\n", r.BudgetRefusals)
 	fmt.Fprintf(&b, "  summary rows written %d\n", r.RollupRows)
 	fmt.Fprintf(&b, "  refusals exercised   %d (leaked %d)\n", r.DenialsRefused, r.DenialsLeaked)
 	fmt.Fprintf(&b, "  rows, worst endpoint %d of %d allowed\n", r.MaxRowsEndpoint, r.Ceiling)
 	fmt.Fprintf(&b, "  oldest sample        %s\n", r.OldestSample.Round(time.Second))
 	fmt.Fprintf(&b, "  oldest summary       %s\n", r.OldestRollup.Round(time.Second))
-	fmt.Fprintf(&b, "  peak usage           %d of %d bytes\n", r.PeakUsage, r.Budget)
-	fmt.Fprintf(&b, "  p95 list read        %s over %d reads\n", r.ReadP95.Round(time.Millisecond), r.Ticks)
+	fmt.Fprintf(&b, "  usage                %d peak, %d final, of %d bytes\n", r.PeakUsage, r.FinalUsage, r.Budget)
+	fmt.Fprintf(&b, "  p95 list read        %s over %d reads (%d failed)\n", r.ReadP95.Round(time.Millisecond), r.Ticks, r.ReadFailures)
 	fmt.Fprintf(&b, "  not covered here     log-client memory (M5), the per-actor denial budget and per-organization audit ceiling (both still proposed)\n")
 	if len(r.Failures) == 0 {
 		fmt.Fprintf(&b, "  result               every bound held\n")
