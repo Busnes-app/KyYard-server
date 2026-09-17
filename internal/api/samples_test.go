@@ -41,6 +41,18 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1", CPUPercent: 42, MemoryBytes: 512, MemoryLimit: 1024, RxBytes: 1, TxBytes: 2, Pids: 3}, {ContainerID: "c2", CPUPercent: -1}}})
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	readEnvelope(t, ctx, sock.conn)
+	oversized := protocol.Metrics{ObservedAt: time.Now(), Samples: make([]protocol.Sample, protocol.MaxSamples)}
+	for i := range oversized.Samples {
+		oversized.Samples[i].ContainerID = strings.Repeat("a", 64)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, oversized)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "metrics_too_large") {
+		t.Fatalf("oversized metrics not named: %+v", e)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {
+		t.Fatalf("oversized metrics closed the session: %+v", e)
+	}
 
 	latestPath := "/api/organizations/a/endpoints/" + ag.id + "/samples"
 	w := tenantRequest(s, viewer, "GET", latestPath, "", true)

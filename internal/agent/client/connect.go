@@ -430,6 +430,7 @@ func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 			mctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			m := opts.Metrics(mctx, running)
+			m = protocol.ShrinkMetrics(m)
 			if len(m.Samples) == 0 {
 				return
 			}

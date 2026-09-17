@@ -348,6 +348,12 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		c.conn.Close(websocket.StatusPolicyViolation, reason)
 		return true
 	}
+	if f.Type == protocol.TypeMetrics && len(f.Payload) > protocol.MaxMetricsBytes {
+		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "metrics_too_large", "limit_bytes": protocol.MaxMetricsBytes})); err != nil {
+			return true
+		}
+		return false
+	}
 	if f.Type != protocol.TypeInventory && len(f.Payload) > maxControlPayload {
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 		return true

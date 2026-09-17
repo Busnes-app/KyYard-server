@@ -367,10 +367,40 @@ func Shrink(s *Snapshot) []byte {
 // MaxSamples bounds one metrics frame; the adapter reports running containers only.
 const MaxSamples = 1000
 
+// MaxMetricsBytes matches the server's control-payload limit. Metrics are shrunk on the
+// agent before they enter the wire, so a large but valid container set cannot reconnect-loop.
+const MaxMetricsBytes = 64 << 10
+
 // Metrics is a bounded observation of running containers taken at one instant.
 type Metrics struct {
 	ObservedAt time.Time `json:"observed_at"`
 	Samples    []Sample  `json:"samples"`
+}
+
+// ShrinkMetrics keeps the largest prefix that fits the wire limit. The server applies the
+// same limit, and a prefix search avoids repeatedly marshaling one sample at a time.
+func ShrinkMetrics(m Metrics) Metrics {
+	if len(m.Samples) > MaxSamples {
+		m.Samples = m.Samples[:MaxSamples]
+	}
+	if raw, _ := json.Marshal(m); len(raw) <= MaxMetricsBytes {
+		return m
+	}
+	lo, hi, best := 0, len(m.Samples), 0
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		candidate := m
+		candidate.Samples = m.Samples[:mid]
+		raw, _ := json.Marshal(candidate)
+		if len(raw) <= MaxMetricsBytes {
+			best = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	m.Samples = m.Samples[:best]
+	return m
 }
 
 // Sample is one container's usage at ObservedAt. CPUPercent is the share of one core over the

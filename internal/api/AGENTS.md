@@ -7,6 +7,7 @@ Exposes HTTP REST routes, authentication endpoints, Single Sign-On callbacks, SC
 Owns HTTP routing, request parsing, session cookie validation, CORS headers, and error response formatting.
 
 ## Local Contracts
+- Metrics frames are limited to `protocol.MaxMetricsBytes`; the agent shrinks honest frames before sending, and an oversized frame receives `metrics_too_large` while the session remains alive. Sample-budget exhaustion likewise returns an error frame without ending the session.
 - SSO routes (including callbacks, sync and SAML metadata) return 404 while disabled; SCIM retains its disabled middleware.
 - Public GET/HEAD `/health/live` reports process availability; `/health/ready` pings the store with a 2s deadline and returns 503 after `BeginShutdown`. Probes are no-store and never return backend errors.
 - Unsafe requests with an Origin must match the configured advertised origin, including login/MFA; originless CLI/webhook requests still undergo their existing authentication/CSRF checks.

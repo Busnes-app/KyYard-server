@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 )
 
 // A payload at the byte cap made of the smallest possible elements must not expand into a
@@ -40,6 +42,28 @@ func TestBoundedDecodeCapsAllocation(t *testing.T) {
 	var plain Snapshot
 	if json.Unmarshal(payload, &plain) != nil || len(plain.Containers) <= MaxContainers {
 		t.Fatal("test payload does not exercise the bound")
+	}
+}
+
+func TestShrinkMetricsFitsControlPayload(t *testing.T) {
+	m := Metrics{ObservedAt: time.Now().UTC(), Samples: make([]Sample, MaxSamples)}
+	for i := range m.Samples {
+		m.Samples[i].ContainerID = strings.Repeat("a", 64)
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) <= MaxMetricsBytes {
+		t.Fatalf("test payload did not exceed cap: %d", len(raw))
+	}
+	shrunk := ShrinkMetrics(m)
+	raw, err = json.Marshal(shrunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > MaxMetricsBytes || len(shrunk.Samples) == 0 || len(shrunk.Samples) >= len(m.Samples) {
+		t.Fatalf("metrics not shrunk: %d bytes, %d samples", len(raw), len(shrunk.Samples))
 	}
 }
 
