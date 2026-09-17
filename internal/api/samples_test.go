@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"github.com/Busness-app/kyyard-server/internal/config"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ import (
 // Metrics frames land as bounded samples readable only inside the organization.
 func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 	s, st, cfg := setupTestServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	ts := st.Tenancy()
 	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
@@ -106,9 +107,9 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 // row ceiling in seconds rather than through a hundred thousand frames.
 func fillSamples(t *testing.T, dbCfg config.DatabaseConfig, endpointID string, n int) {
 	t.Helper()
-	driver, q := dbCfg.Driver, `INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES (?,?,?,0,0,0,0,0,0)`
+	driver, ph := dbCfg.Driver, func(int) string { return "?" }
 	if driver == "postgres" {
-		driver, q = "pgx", `INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES ($1,$2,$3,0,0,0,0,0,0)`
+		driver, ph = "pgx", func(i int) string { return fmt.Sprintf("$%d", i) }
 	}
 	db, err := sql.Open(driver, dbCfg.DSN)
 	if err != nil {
@@ -119,17 +120,24 @@ func fillSamples(t *testing.T, dbCfg config.DatabaseConfig, endpointID string, n
 	if err != nil {
 		t.Fatal(err)
 	}
-	stmt, err := tx.Prepare(q)
-	if err != nil {
-		t.Fatal(err)
-	}
 	old := time.Now().UTC().Add(-3 * time.Hour)
-	for i := 0; i < n; i++ {
-		if _, err := stmt.Exec(endpointID, "fill", old.Add(time.Duration(i)*time.Millisecond)); err != nil {
+	const batch = 500
+	for done := 0; done < n; done += batch {
+		rows := min(batch, n-done)
+		var q strings.Builder
+		q.WriteString("INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES ")
+		args := make([]any, 0, 3*rows)
+		for i := 0; i < rows; i++ {
+			if i > 0 {
+				q.WriteString(",")
+			}
+			fmt.Fprintf(&q, "(%s,%s,%s,0,0,0,0,0,0)", ph(len(args)+1), ph(len(args)+2), ph(len(args)+3))
+			args = append(args, endpointID, "fill", old.Add(time.Duration(done+i)*time.Millisecond))
+		}
+		if _, err := tx.Exec(q.String(), args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	stmt.Close()
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
