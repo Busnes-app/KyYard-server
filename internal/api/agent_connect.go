@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
@@ -16,21 +17,47 @@ import (
 )
 
 const (
+	// frameBudget bounds one frame handler and the offline write; a frame this recent also
+	// counts as proof of life when a duplicate is probed.
+	frameBudget       = 10 * time.Second
 	agentHeartbeat    = 30 * time.Second
 	agentReadTimeout  = 3 * agentHeartbeat // three missed heartbeats mark the endpoint offline
 	agentFrameLimit   = 4 << 20
 	preAuthFrameLimit = 4096
+	maxControlPayload = 64 << 10
 	handshakeTimeout  = 10 * time.Second
 )
 
 // agentConn is one live socket. The registry holds at most one per endpoint.
 type agentConn struct {
-	endpointID string
-	conn       *websocket.Conn
-	send       chan protocol.Envelope
-	closed     chan struct{}
-	closeOnce  sync.Once
-	reason     string
+	endpointID     string
+	organizationID string
+	environmentID  string
+	fingerprint    string // the key that authenticated this session
+	ip             string
+	conn           *websocket.Conn
+	send           chan protocol.Envelope
+	closed         chan struct{}
+	closeOnce      sync.Once
+	reason         string
+	lastFrame      atomic.Int64 // unix nanoseconds of the last frame the reader delivered
+	skewRaised     bool         // generation_rejected raised this session; loop goroutine only
+}
+
+// alive pings the socket with a short deadline; a peer that cannot answer is not a competitor.
+// alive tells a dropped peer from a busy one. A frame delivered inside the handler budget
+// proves the socket lived moments ago even though the reader, blocked handing that frame to
+// the loop, cannot answer a ping; otherwise the ping decides.
+func (c *agentConn) alive(ctx context.Context) bool {
+	if c.conn == nil {
+		return false
+	}
+	if time.Since(time.Unix(0, c.lastFrame.Load())) < frameBudget {
+		return true
+	}
+	pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return c.conn.Ping(pctx) == nil
 }
 
 func (c *agentConn) close(reason string) {
@@ -47,17 +74,18 @@ type agentRegistry struct {
 	conns map[string]*agentConn
 }
 
-func (r *agentRegistry) add(c *agentConn) bool {
+// add registers c, or returns the incumbent socket that already holds the endpoint.
+func (r *agentRegistry) add(c *agentConn) (incumbent *agentConn) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.conns == nil {
 		r.conns = map[string]*agentConn{}
 	}
-	if _, live := r.conns[c.endpointID]; live {
-		return false
+	if live, ok := r.conns[c.endpointID]; ok {
+		return live
 	}
 	r.conns[c.endpointID] = c
-	return true
+	return nil
 }
 
 func (r *agentRegistry) remove(c *agentConn) {
@@ -138,18 +166,34 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(agentFrameLimit)
-	c := &agentConn{endpointID: identity.Endpoint.ID, conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
-	if !s.agents.add(c) {
-		_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "denied")
+	c := &agentConn{endpointID: identity.Endpoint.ID, organizationID: identity.Endpoint.OrganizationID, environmentID: identity.Endpoint.EnvironmentID, fingerprint: identity.Fingerprint, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	if incumbent := s.agents.add(c); incumbent != nil {
+		// The incumbent may be a socket the network dropped without a FIN: the agent gives up
+		// after two heartbeats and redials before the server's three-heartbeat timeout. Probe
+		// it; a dead incumbent is evicted, audited, and the newcomer admitted with no event.
+		if !incumbent.alive(ctx) {
+			incumbent.close(protocol.CloseTimeout)
+			s.agents.remove(incumbent)
+			if again := s.agents.add(c); again == nil {
+				_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, incumbent.ip, "failure", "evicted: unanswering socket displaced by "+s.requestIP(r))
+				goto admitted
+			}
+		}
+		// A second live socket is the signature of a copied identity volume: audit it, raise
+		// an operator-facing event naming both parties (the refused one is usually the real
+		// host, the holder is the one to doubt), and block rotation until someone looks.
+		_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "denied", "")
+		_ = s.store.Tenancy().RecordEndpointEvent(ctx, &identity.Endpoint, "high", "duplicate_connection", "refused "+s.requestIP(r)+"; live socket held from "+incumbent.ip)
 		conn.Close(websocket.StatusPolicyViolation, protocol.CloseDuplicate)
 		return
 	}
+admitted:
 	defer s.agents.remove(c)
 	if s.stopping.Load() {
 		conn.Close(websocket.StatusGoingAway, protocol.CloseShutdown)
 		return
 	}
-	_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "success")
+	_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, s.requestIP(r), "success", "")
 	if err := s.writeFrame(ctx, conn, envelope(protocol.TypeHello, protocol.Hello{State: identity.Endpoint.State, HeartbeatSeconds: int(agentHeartbeat / time.Second)})); err != nil {
 		return
 	}
@@ -177,22 +221,31 @@ func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *ht
 	if auth.Version != protocol.Version {
 		return nil, protocol.CloseIncompatible
 	}
-	identity, err := s.store.Tenancy().AgentIdentity(hctx, auth.EndpointID)
+	if len(auth.Fingerprint) != 64 {
+		return nil, protocol.CloseProtocol
+	}
+	identity, err := s.store.Tenancy().AgentIdentity(hctx, auth.EndpointID, auth.Fingerprint)
 	if err != nil {
-		// Unknown and revoked look the same to the caller; a revoked endpoint is audited.
-		if errors.Is(err, store.ErrForbidden) {
+		// A retired or still-pending key is named so a legitimate agent picks the right one;
+		// unknown and revoked look the same and a revoked endpoint is audited.
+		switch {
+		case errors.Is(err, store.ErrKeyRetired):
+			return nil, protocol.CloseKeyRetired
+		case errors.Is(err, store.ErrKeyPendingReview):
+			return nil, protocol.CloseKeyPending
+		case errors.Is(err, store.ErrForbidden):
 			if e, readErr := s.store.Tenancy().ReadEndpointRaw(hctx, auth.EndpointID); readErr == nil {
-				_ = s.store.Tenancy().RecordAgentConnect(hctx, e, s.requestIP(r), "denied")
+				_ = s.store.Tenancy().RecordAgentConnect(hctx, e, s.requestIP(r), "denied", "")
 			}
 		}
 		return nil, protocol.CloseRevoked
 	}
 	if identity.Endpoint.State == "revoked" || identity.Endpoint.State == "expired" {
-		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied")
+		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied", "")
 		return nil, protocol.CloseRevoked
 	}
 	if !protocol.VerifyAuth(identity.PublicKey, auth.EndpointID, nonce, r.Host, auth.Version, auth.Signature) {
-		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied")
+		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied", "")
 		return nil, protocol.CloseRevoked
 	}
 	return identity, ""
@@ -211,6 +264,7 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 				readErr <- err
 				return
 			}
+			c.lastFrame.Store(time.Now().UnixNano())
 			select {
 			case frames <- f:
 			case <-ctx.Done():
@@ -220,6 +274,7 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 	}()
 	timer := time.NewTimer(agentReadTimeout)
 	defer timer.Stop()
+	helloSeen := false
 	for {
 		select {
 		case <-c.closed:
@@ -231,62 +286,158 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 			if c.reason != protocol.CloseShutdown {
 				return
 			}
-			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
+			s.markOffline(ctx, c)
 			return
 		case e := <-c.send:
 			if err := s.writeFrame(ctx, c.conn, e); err != nil {
 				return
 			}
 		case <-timer.C:
-			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
+			s.markOffline(ctx, c)
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseTimeout)
 			return
 		case <-readErr:
-			_ = ts.MarkEndpointOffline(context.WithoutCancel(ctx), c.endpointID)
+			s.markOffline(ctx, c)
 			return
 		case f := <-frames:
 			if !timer.Stop() {
 				<-timer.C
 			}
 			timer.Reset(agentReadTimeout)
-			// Revocation between frames must not be outrun by a cached state.
-			state, err := ts.EndpointState(ctx, c.endpointID)
-			if err != nil || state == "revoked" {
-				c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
+			if s.handleAgentFrame(ctx, ts, c, f, pending, &helloSeen) {
 				return
-			}
-			switch f.Type {
-			case protocol.TypeHello:
-				// Capabilities are recorded with M4; the frame is accepted and ignored for now.
-			case protocol.TypeHeartbeat:
-				if !pending {
-					_ = ts.TouchEndpoint(ctx, c.endpointID)
-				}
-				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeHeartbeat, nil)); err != nil {
-					return
-				}
-			case protocol.TypeInventory:
-				if pending {
-					continue
-				}
-				var inv protocol.Inventory
-				if err := json.Unmarshal(f.Payload, &inv); err != nil {
-					c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
-					return
-				}
-				accepted, err := ts.AcceptInventory(ctx, c.endpointID, inv.Generation)
-				if err != nil {
-					log.Printf("agent %s: inventory: %v", c.endpointID, err)
-				} else if !accepted {
-					log.Printf("agent %s: inventory generation %d not newer than the stored one; snapshot ignored", c.endpointID, inv.Generation)
-				}
-			default:
-				if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]string{"code": "unsupported_type", "type": f.Type})); err != nil {
-					return
-				}
 			}
 		}
 	}
+}
+
+// markOffline ends a session: the slot is freed first so a reconnecting agent never waits on
+// the writer lock and reads as its own duplicate, and the offline write is skipped when a
+// successor already holds the endpoint, so a late write cannot demote a live session. The
+// detached context is bounded.
+func (s *Server) markOffline(ctx context.Context, c *agentConn) {
+	s.agents.remove(c)
+	if s.Connected(c.endpointID) {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), frameBudget)
+	defer cancel()
+	_ = s.store.Tenancy().MarkEndpointOffline(wctx, c.endpointID)
+}
+
+// handleAgentFrame applies one received frame and reports whether the session must end. A
+// frame that was received is applied even if the socket drops while we work: the request
+// context dies with the connection, and an inventory report or rotation offer must not be
+// lost to that race, so store calls run on a detached, bounded context.
+func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c *agentConn, f protocol.Envelope, pending bool, helloSeen *bool) bool {
+	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), frameBudget)
+	defer fcancel()
+	// Revocation between frames must not be outrun by a cached state, and neither must the
+	// retirement of the key that authenticated this session.
+	state, err := ts.EndpointState(fctx, c.endpointID)
+	if err != nil || state == "revoked" {
+		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
+		return true
+	}
+	if _, err := ts.AgentIdentity(fctx, c.endpointID, c.fingerprint); err != nil {
+		reason := protocol.CloseRevoked
+		if errors.Is(err, store.ErrKeyRetired) {
+			reason = protocol.CloseKeyRetired
+		}
+		c.conn.Close(websocket.StatusPolicyViolation, reason)
+		return true
+	}
+	if f.Type != protocol.TypeInventory && len(f.Payload) > maxControlPayload {
+		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+		return true
+	}
+	switch f.Type {
+	case protocol.TypeHello:
+		// One hello per session: a second carries nothing new and must not rewrite the set.
+		if *helloSeen {
+			return false
+		}
+		*helloSeen = true
+		var hello protocol.Hello
+		if protocol.UnmarshalHelloBounded(f.Payload, &hello) == nil && !pending {
+			if err := ts.SetEndpointCapabilities(fctx, c.endpointID, hello.Capabilities); err != nil {
+				log.Printf("agent %s: capabilities: %v", c.endpointID, err)
+			}
+		}
+	case protocol.TypeRotate:
+		if pending {
+			return false
+		}
+		var rot protocol.Rotate
+		if err := json.Unmarshal(f.Payload, &rot); err != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		fp, err := ts.RotateEndpointKey(fctx, c.endpointID, rot.PublicKey, rot.Signature, c.ip)
+		reply := protocol.Rotated{Fingerprint: fp}
+		switch {
+		case errors.Is(err, store.ErrRotationPending):
+			reply.Code = "rotation_pending"
+		case errors.Is(err, store.ErrRotationBlocked):
+			reply.Code = "rotation_blocked"
+		case err != nil:
+			reply.Code = "rotation_refused"
+		}
+		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeRotate, reply)); err != nil {
+			return true
+		}
+	case protocol.TypeHeartbeat:
+		if !pending {
+			_ = ts.TouchEndpoint(fctx, c.endpointID)
+		}
+		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeHeartbeat, nil)); err != nil {
+			return true
+		}
+	case protocol.TypeInventory:
+		if pending {
+			return false
+		}
+		var inv protocol.Snapshot
+		if len(f.Payload) > protocol.MaxSnapshotBytes {
+			// A data problem, not an availability one: say so and keep the session so
+			// heartbeats continue and the endpoint stays visible.
+			if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "snapshot_too_large", "limit_bytes": protocol.MaxSnapshotBytes})); err != nil {
+				return true
+			}
+			return false
+		}
+		if err := protocol.UnmarshalSnapshotBounded(f.Payload, &inv); err != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		if inv.ObservedAt.IsZero() {
+			inv.ObservedAt = time.Now().UTC()
+		}
+		// Store the schema-conforming re-encoding, never the agent's bytes.
+		protocol.Clamp(&inv)
+		body := protocol.Shrink(&inv)
+		accepted, err := ts.AcceptInventory(fctx, c.endpointID, inv.Generation, inv.ObservedAt, body)
+		if err != nil {
+			log.Printf("agent %s: inventory: %v", c.endpointID, err)
+		} else if !accepted {
+			if inv.Generation > uint64(time.Now().UTC().Add(store.GenerationSkew).Unix()) && !c.skewRaised {
+				// Once per session; the store also keeps one unacknowledged event per kind.
+				c.skewRaised = true
+				if err := ts.RecordEndpointEvent(fctx, &store.Endpoint{ID: c.endpointID, OrganizationID: c.organizationID, EnvironmentID: c.environmentID}, "high", "generation_rejected", "generation is ahead of the server clock"); err != nil {
+					log.Printf("agent %s: generation rejection audit: %v", c.endpointID, err)
+				}
+			}
+			log.Printf("agent %s: inventory generation %d not accepted (not newer, or implausible); snapshot ignored", c.endpointID, inv.Generation)
+			if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "generation_rejected", "generation": inv.Generation})); err != nil {
+				return true
+			}
+		}
+	default:
+		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]string{"code": "unsupported_type", "type": f.Type})); err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) writeFrame(ctx context.Context, conn *websocket.Conn, e protocol.Envelope) error {

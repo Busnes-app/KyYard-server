@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
 )
 
 // Identity is everything the agent keeps between runs. The enrollment token is never in it.
@@ -20,6 +23,64 @@ type Identity struct {
 	Server              string `json:"server"`
 	// Generation is the last inventory generation sent; it only rises, across restarts too.
 	Generation uint64 `json:"generation"`
+	// A rotated key waits here until the operator acknowledges it; the current key keeps
+	// authenticating meanwhile.
+	PendingPrivateKey  []byte    `json:"pending_private_key,omitempty"`
+	PendingFingerprint string    `json:"pending_fingerprint,omitempty"`
+	PendingSince       time.Time `json:"pending_since,omitempty"`
+	// LapsedPrivateKey is an offer the agent gave up on. It is kept until the server proves it
+	// gone (by recording a new offer), because with skewed clocks the server may still
+	// acknowledge it, and key_retired must then be able to promote it.
+	LapsedPrivateKey []byte    `json:"lapsed_private_key,omitempty"`
+	RotatedAt        time.Time `json:"rotated_at"`
+}
+
+// Promote makes the acknowledged pending key the current one.
+func (id *Identity) Promote() {
+	if len(id.PendingPrivateKey) == ed25519.PrivateKeySize {
+		id.PrivateKey = id.PendingPrivateKey
+		id.RotatedAt = time.Now().UTC()
+	}
+	id.PendingPrivateKey = nil
+	id.PendingFingerprint = ""
+	id.PendingSince = time.Time{}
+	id.LapsedPrivateKey = nil
+}
+
+// switchKey moves to the next candidate when the current key is refused: the live offer
+// first, then a lapsed one. The other candidate is kept so a wrong guess can still fall back.
+// It returns false when nothing is left to try.
+func (id *Identity) switchKey() bool {
+	switch {
+	case len(id.PendingPrivateKey) == ed25519.PrivateKeySize:
+		id.PrivateKey = id.PendingPrivateKey
+		id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
+	case len(id.LapsedPrivateKey) == ed25519.PrivateKeySize:
+		id.PrivateKey = id.LapsedPrivateKey
+		id.LapsedPrivateKey = nil
+	default:
+		return false
+	}
+	id.RotatedAt = time.Now().UTC()
+	return true
+}
+
+// promotable reports whether a refusal of the current key has somewhere to go.
+func (id *Identity) promotable() bool {
+	return len(id.PendingPrivateKey) == ed25519.PrivateKeySize || len(id.LapsedPrivateKey) == ed25519.PrivateKeySize
+}
+
+// pendingFingerprint derives the fingerprint from the retained pending key, so an offer whose
+// bookkeeping lapsed can still be matched against the server's acknowledgement.
+func (id *Identity) pendingFingerprint() string {
+	if len(id.PendingPrivateKey) != ed25519.PrivateKeySize {
+		return ""
+	}
+	return protocol.Fingerprint(ed25519.PrivateKey(id.PendingPrivateKey).Public().(ed25519.PublicKey))
+}
+
+func (id *Identity) fingerprint() string {
+	return protocol.Fingerprint(ed25519.PrivateKey(id.PrivateKey).Public().(ed25519.PublicKey))
 }
 
 func identityPath(dir string) string { return filepath.Join(dir, "identity.json") }
@@ -56,10 +117,32 @@ func SaveIdentity(dir string, id *Identity) error {
 		return err
 	}
 	tmp := identityPath(dir) + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, identityPath(dir))
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return err
+	}
+	// A rotation offer is announced only after this returns, so the bytes must be on disk,
+	// not in the writeback window a power loss would erase.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, identityPath(dir)); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func newKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {

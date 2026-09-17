@@ -18,6 +18,8 @@ import (
 	"github.com/coder/websocket"
 )
 
+var errSwitchKey = errors.New("switching keys")
+
 // Errors the loop treats as terminal: reconnecting cannot help.
 var (
 	ErrRevoked         = errors.New("identity revoked by the control plane")
@@ -29,8 +31,14 @@ type Options struct {
 	HTTPClient *http.Client
 	Version    string
 	Log        *log.Logger
-	// IdentityDir is where the rising inventory generation is written back; empty skips it.
+	// IdentityDir is where the rising inventory generation and rotation state are written back.
 	IdentityDir string
+	// RotateEvery is how often the agent offers a new key; zero disables rotation.
+	RotateEvery time.Duration
+	// Snapshot reads the runtime; nil reports facts only (no runtime reachable).
+	Snapshot func(ctx context.Context) (*protocol.Snapshot, error)
+	// InventoryEvery is how often a fresh snapshot is sent while connected.
+	InventoryEvery time.Duration
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -93,6 +101,16 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 		if errors.Is(err, ErrRevoked) || errors.Is(err, ErrInstanceChanged) || errors.Is(err, ErrIncompatible) {
 			return err
 		}
+		if errors.Is(err, errSwitchKey) {
+			// Reconnect with the key the server now expects, after a short pause so the server
+			// has released this endpoint's slot: an immediate redial can read as a duplicate.
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return nil
+			}
+			continue
+		}
 		if err == nil {
 			delay = time.Second // a clean session resets the backoff
 		} else {
@@ -138,11 +156,26 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		return ErrInstanceChanged
 	}
 	sig := ed25519.Sign(ed25519.PrivateKey(id.PrivateKey), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
-	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Version: protocol.Version, Signature: sig}); err != nil {
+	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Fingerprint: id.fingerprint(), Version: protocol.Version, Signature: sig}); err != nil {
 		return err
 	}
 	f, err = read(hctx, conn)
 	if err != nil {
+		var ce websocket.CloseError
+		if errors.As(err, &ce) {
+			switch strings.TrimSpace(ce.Reason) {
+			case protocol.CloseKeyRetired:
+				// Our key was retired (an acknowledged rotation while we were away). Try the
+				// next candidate; only with none left is the endpoint really gone. A revoked
+				// close is terminal and never touches the key material: the server also uses
+				// it for a signature mismatch or a store error, and a rotation window must
+				// not turn either into a lost identity.
+				if id.switchKey() {
+					_ = opts.save(id)
+					return errSwitchKey
+				}
+			}
+		}
 		return closeReason(err)
 	}
 	var hello protocol.Hello
@@ -160,19 +193,20 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		return err
 	}
 	if hello.State != "pending" {
-		// Generations must rise across restarts, or a restarted agent's first snapshot would be
-		// ignored and the endpoint would stay offline. Wall-clock seeding covers a lost file.
-		gen := id.Generation + 1
-		if now := uint64(time.Now().Unix()); now > gen {
-			gen = now
-		}
-		if err := write(ctx, conn, protocol.TypeInventory, protocol.Inventory{Generation: gen, Facts: Facts("")}); err != nil {
+		if err := sendInventory(ctx, conn, id, opts); err != nil {
 			return err
 		}
-		id.Generation = gen
-		if opts.IdentityDir != "" {
-			if err := SaveIdentity(opts.IdentityDir, id); err != nil {
-				opts.Log.Printf("could not persist inventory generation: %v", err)
+		if id.PendingFingerprint != "" && time.Since(id.PendingSince) > PendingKeyLife {
+			// Forget the offer but keep the key material until a new offer replaces it: if a
+			// late acknowledgement retires the current key anyway, key_retired can still promote.
+			opts.Log.Printf("pending key %s was never acknowledged; offer lapsed", id.PendingFingerprint)
+			id.LapsedPrivateKey = id.PendingPrivateKey
+			id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
+			_ = opts.save(id)
+		}
+		if opts.RotateEvery > 0 && id.PendingFingerprint == "" && time.Since(id.RotatedAt) >= opts.RotateEvery {
+			if err := offerRotation(ctx, conn, id, opts); err != nil {
+				return err
 			}
 		}
 	} else {
@@ -205,6 +239,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	}()
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
+	inventoryEvery := opts.InventoryEvery
+	if inventoryEvery <= 0 {
+		inventoryEvery = 60 * time.Second
+	}
+	inventory := time.NewTicker(inventoryEvery)
+	defer inventory.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -214,7 +254,20 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			if err := write(ctx, conn, protocol.TypeHeartbeat, nil); err != nil {
 				return err
 			}
+		case <-inventory.C:
+			if hello.State != "pending" {
+				if err := sendInventory(ctx, conn, id, opts); err != nil {
+					return err
+				}
+			}
 		case err := <-readErr:
+			// The operator acknowledged our rotated key and the server ended this session on
+			// the old one: switch now instead of waiting for the next backoff.
+			var ce websocket.CloseError
+			if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired && id.switchKey() {
+				_ = opts.save(id)
+				return errSwitchKey
+			}
 			return closeReason(err)
 		case f := <-frames:
 			switch f.Type {
@@ -222,6 +275,36 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				opts.Log.Printf("approved; reconnecting with full protocol")
 				conn.Close(websocket.StatusNormalClosure, "approved")
 				return nil
+			case protocol.TypeRotate:
+				var ack protocol.Rotated
+				_ = json.Unmarshal(f.Payload, &ack)
+				if ack.Code != "" || ack.Fingerprint != id.PendingFingerprint {
+					opts.Log.Printf("rotation not recorded (%s); keeping the current key", ack.Code)
+					id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+					if ack.Code == "rotation_pending" && len(id.LapsedPrivateKey) == ed25519.PrivateKeySize {
+						// The server still holds the offer we gave up on: it is the live one again.
+						id.PendingPrivateKey = id.LapsedPrivateKey
+						id.PendingFingerprint = id.pendingFingerprint()
+						id.PendingSince = time.Now().UTC()
+						id.LapsedPrivateKey = nil
+					}
+					_ = opts.save(id)
+				} else {
+					// A recorded offer proves any lapsed key is retired server-side.
+					id.LapsedPrivateKey = nil
+					_ = opts.save(id)
+					opts.Log.Printf("rotation recorded as %s; waiting for operator acknowledgement", ack.Fingerprint)
+				}
+			case protocol.TypeRotated:
+				var done protocol.Rotated
+				_ = json.Unmarshal(f.Payload, &done)
+				if done.Fingerprint != "" && id.promotable() && done.Fingerprint == id.pendingFingerprint() {
+					id.Promote()
+					_ = opts.save(id)
+					opts.Log.Printf("rotation acknowledged; reconnecting with the new key")
+					conn.Close(websocket.StatusNormalClosure, "rotated")
+					return errSwitchKey
+				}
 			case protocol.TypeHeartbeat:
 			case protocol.TypeError:
 				opts.Log.Printf("server error frame: %s", string(f.Payload))
@@ -263,4 +346,68 @@ func read(ctx context.Context, conn *websocket.Conn) (protocol.Envelope, error) 
 		return e, err
 	}
 	return e, json.Unmarshal(raw, &e)
+}
+
+func (o *Options) save(id *Identity) error {
+	if o.IdentityDir == "" {
+		return nil
+	}
+	if err := SaveIdentity(o.IdentityDir, id); err != nil {
+		o.Log.Printf("could not persist identity: %v", err)
+		return err
+	}
+	return nil
+}
+
+// PendingKeyLife is a day longer than the server's seven-day window: the agent must forget an
+// offer strictly after the server stops accepting it, so an acknowledgement can never land on
+// a key the agent no longer holds. The extra day is clock-skew margin, not a mirror.
+const PendingKeyLife = 8 * 24 * time.Hour
+
+// offerRotation mints a key and persists it as pending before it is sent, so a crash after the
+// server recorded it cannot lose it. If the key cannot be persisted nothing is sent: announcing
+// a key held only in memory would strand the agent once an operator acknowledges it.
+func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options) error {
+	pub, priv, err := newKey()
+	if err != nil {
+		return err
+	}
+	current := ed25519.PrivateKey(id.PrivateKey)
+	id.PendingPrivateKey = priv
+	id.PendingFingerprint = protocol.Fingerprint(pub)
+	id.PendingSince = time.Now().UTC()
+	if err := opts.save(id); err != nil {
+		id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+		return fmt.Errorf("rotation not offered: %w", err)
+	}
+	sig := ed25519.Sign(current, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(current.Public().(ed25519.PublicKey)), pub))
+	return write(ctx, conn, protocol.TypeRotate, protocol.Rotate{PublicKey: pub, Signature: sig})
+}
+
+// sendInventory reads the runtime (or reports facts only) under a generation that rises across
+// restarts. The persisted counter is the only source of truth: trusting a fast host wall clock
+// can create a generation the server rejects for being in the future and persist the wedge.
+func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options) error {
+	gen := id.Generation + 1
+	var snap *protocol.Snapshot
+	if opts.Snapshot != nil {
+		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		s, err := opts.Snapshot(sctx)
+		cancel()
+		if err != nil {
+			opts.Log.Printf("runtime snapshot failed: %v; reporting facts only", err)
+		} else {
+			snap = s
+		}
+	}
+	if snap == nil {
+		snap = &protocol.Snapshot{ObservedAt: time.Now().UTC(), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
+	}
+	snap.Generation = gen
+	if err := write(ctx, conn, protocol.TypeInventory, snap); err != nil {
+		return err
+	}
+	id.Generation = gen
+	opts.save(id)
+	return nil
 }

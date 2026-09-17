@@ -31,6 +31,8 @@ const (
 	TypeHeartbeat = "heartbeat"
 	TypeInventory = "inventory"
 	TypeApproved  = "enrollment.approved"
+	TypeRotate    = "identity.rotate"  // agent → server: a new key signed by the current one
+	TypeRotated   = "identity.rotated" // server → agent: the operator acknowledged that key
 	TypeError     = "error"
 )
 
@@ -43,6 +45,8 @@ const (
 	CloseShutdown     = "server_shutdown"
 	CloseTimeout      = "heartbeat_timeout"
 	CloseProtocol     = "protocol_error"
+	CloseKeyRetired   = "key_retired"        // switch to the acknowledged key
+	CloseKeyPending   = "key_pending_review" // keep using the approved key
 )
 
 // Challenge is the server's first frame: a fresh nonce and its pinned identity.
@@ -54,9 +58,22 @@ type Challenge struct {
 
 // Auth is the agent's reply, signed under ContextAuth by its endpoint key.
 type Auth struct {
-	EndpointID string `json:"endpoint_id"`
-	Version    int    `json:"version"`
-	Signature  []byte `json:"signature"`
+	EndpointID  string `json:"endpoint_id"`
+	Fingerprint string `json:"fingerprint"` // which of the endpoint's keys signed
+	Version     int    `json:"version"`
+	Signature   []byte `json:"signature"`
+}
+
+// Rotate carries a freshly minted public key and the current key's signature over it.
+type Rotate struct {
+	PublicKey []byte `json:"public_key"`
+	Signature []byte `json:"signature"`
+}
+
+// Rotated names the key that now authenticates (server → agent) or was recorded (ack of Rotate).
+type Rotated struct {
+	Fingerprint string `json:"fingerprint"`
+	Code        string `json:"code,omitempty"`
 }
 
 // Hello is exchanged after authentication. The server's copy states the endpoint state and the
@@ -68,10 +85,55 @@ type Hello struct {
 	AgentVersion     string   `json:"agent_version,omitempty"`
 }
 
-// Inventory carries a monotonically increasing generation; contents arrive with M4.
-type Inventory struct {
-	Generation uint64            `json:"generation"`
-	Facts      map[string]string `json:"facts,omitempty"`
+// UnmarshalHelloBounded limits capability count and total decoded text before
+// the caller hands it to the store.
+func UnmarshalHelloBounded(data []byte, h *Hello) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var raw struct {
+		State            string
+		HeartbeatSeconds int
+		Capabilities     []string
+		AgentVersion     string
+	}
+	if v, ok := fields["state"]; ok {
+		if err := json.Unmarshal(v, &raw.State); err != nil {
+			return err
+		}
+	}
+	if v, ok := fields["heartbeat_seconds"]; ok {
+		if err := json.Unmarshal(v, &raw.HeartbeatSeconds); err != nil {
+			return err
+		}
+	}
+	if v, ok := fields["agent_version"]; ok {
+		if err := json.Unmarshal(v, &raw.AgentVersion); err != nil {
+			return err
+		}
+	}
+	if v, ok := fields["capabilities"]; ok {
+		var err error
+		raw.Capabilities, _, err = decodeBounded[string](v, 64)
+		if err != nil {
+			return err
+		}
+	}
+	total := 0
+	for i, v := range raw.Capabilities {
+		if len(v) > 256 {
+			raw.Capabilities[i] = v[:256]
+		}
+		total += len(raw.Capabilities[i])
+		if total > 4096 {
+			raw.Capabilities = raw.Capabilities[:i+1]
+			raw.Capabilities[i] = raw.Capabilities[i][:len(raw.Capabilities[i])-(total-4096)]
+			break
+		}
+	}
+	h.State, h.HeartbeatSeconds, h.Capabilities, h.AgentVersion = raw.State, raw.HeartbeatSeconds, raw.Capabilities, raw.AgentVersion
+	return nil
 }
 
 // AuthPreimage binds the signature to this endpoint, this nonce, the host the agent dialed and

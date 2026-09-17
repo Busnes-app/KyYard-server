@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -97,7 +98,7 @@ func connect(t *testing.T, ctx context.Context, base string, ag enrolledAgent, p
 		t.Fatalf("challenge: %+v", ch)
 	}
 	sig := ed25519.Sign(priv, protocol.AuthPreimage(ag.id, challenge.Nonce, u.Host, version))
-	writeEnvelope(t, ctx, c, protocol.TypeAuth, protocol.Auth{EndpointID: ag.id, Version: version, Signature: sig})
+	writeEnvelope(t, ctx, c, protocol.TypeAuth, protocol.Auth{EndpointID: ag.id, Fingerprint: protocol.Fingerprint(priv.Public().(ed25519.PublicKey)), Version: version, Signature: sig})
 	_, raw, err := c.Read(ctx)
 	if err != nil {
 		var ce websocket.CloseError
@@ -166,7 +167,7 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	if reason != "" || sock.hello.State != "pending" || sock.hello.HeartbeatSeconds != 30 {
 		t.Fatalf("pending hello: %q %+v", reason, sock)
 	}
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 5})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 5})
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {
 		t.Fatalf("heartbeat ack: %+v", e)
@@ -174,14 +175,17 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	if e, err := ts.ReadEndpointRaw(ctx, ag.id); err != nil || e.State != "pending" {
 		t.Fatalf("pending endpoint moved by inventory: %+v", e)
 	}
-	// A second socket for the same endpoint is refused while the first is live.
+	// A second socket for the same endpoint is refused while the first is live; the incumbent
+	// is pinged first, so keep a reader active like a real agent.
+	next := make(chan protocol.Envelope, 1)
+	go func() { next <- readEnvelope(t, ctx, sock.conn) }()
 	if _, reason := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version); reason != protocol.CloseDuplicate {
 		t.Fatalf("duplicate: %q", reason)
 	}
 	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
 		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
 	}
-	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeApproved {
+	if e := <-next; e.Type != protocol.TypeApproved {
 		t.Fatalf("approval notice: %+v", e)
 	}
 	sock.conn.Close(websocket.StatusNormalClosure, "approved")
@@ -192,9 +196,12 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	if reason != "" || sock.hello.State != "approved" {
 		t.Fatalf("approved hello: %q %+v", reason, sock.hello)
 	}
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 10})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 10})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 9})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 9})
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "generation_rejected") {
+		t.Fatalf("stale generation was not named: %+v", e)
+	}
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	readEnvelope(t, ctx, sock.conn)
 	if e, _ := ts.ReadEndpointRaw(ctx, ag.id); e.LastSeenAt == nil {
@@ -211,7 +218,7 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	if sock.hello.State != "offline" {
 		t.Fatalf("offline hello: %+v", sock.hello)
 	}
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 11})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 11})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 
 	// Revocation closes the live socket in the same request and the next connect is refused.
@@ -261,7 +268,7 @@ func TestAgentShutdownClosesSockets(t *testing.T) {
 		t.Fatal("approve")
 	}
 	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Inventory{Generation: 1})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 1})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 	s.BeginShutdown()
 	_, _, err := sock.conn.Read(ctx)
@@ -301,5 +308,128 @@ func TestAgentConnectLimitsFramesBeforeAuth(t *testing.T) {
 	_ = c.Write(ctx, websocket.MessageText, big)
 	if _, _, err := c.Read(ctx); err == nil {
 		t.Fatal("server answered an oversized pre-auth frame instead of closing")
+	}
+}
+
+func TestAgentRotationOverTheSocket(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleEnvironmentAdmin, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-r")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{"docker.containers"}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 1})
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+
+	// Offer a rotated key: recorded pending, echoed back.
+	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
+	oldPub := ag.priv.Public().(ed25519.PublicKey)
+	sig := ed25519.Sign(ag.priv, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(oldPub), newPub))
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeRotate, protocol.Rotate{PublicKey: newPub, Signature: sig})
+	ack := readEnvelope(t, ctx, sock.conn)
+	var rotated protocol.Rotated
+	_ = json.Unmarshal(ack.Payload, &rotated)
+	if ack.Type != protocol.TypeRotate || rotated.Code != "" || rotated.Fingerprint != protocol.Fingerprint(newPub) {
+		t.Fatalf("rotation ack: %+v %+v", ack, rotated)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeRotate, protocol.Rotate{PublicKey: newPub, Signature: sig})
+	ack = readEnvelope(t, ctx, sock.conn)
+	_ = json.Unmarshal(ack.Payload, &rotated)
+	if rotated.Code != "rotation_pending" {
+		t.Fatalf("second rotation: %+v", rotated)
+	}
+	// The pending key cannot connect yet; it is named so the agent keeps the old one.
+	newAg := ag
+	if _, reason := connect(t, ctx, httpSrv.URL, newAg, newPriv, protocol.Version); reason != protocol.CloseKeyPending {
+		t.Fatalf("pending key connect: %q", reason)
+	}
+	// A pending key with the wrong endpoint state check: list shows both fingerprints and the alert.
+	w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
+	var e store.Endpoint
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	if e.Fingerprint != ag.fp || e.PendingFingerprint != protocol.Fingerprint(newPub) || len(e.Alerts) != 1 || len(e.Capabilities) != 1 {
+		t.Fatalf("endpoint view during rotation: %+v", e)
+	}
+	// Acknowledge: the live socket is told, the old key is retired, the new one connects.
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/keys/"+e.PendingFingerprint+"/acknowledge", "", true); w.Code != 204 {
+		t.Fatalf("acknowledge: %d %s", w.Code, w.Body.String())
+	}
+	notice := readEnvelope(t, ctx, sock.conn)
+	_ = json.Unmarshal(notice.Payload, &rotated)
+	if notice.Type != protocol.TypeRotated || rotated.Fingerprint != e.PendingFingerprint {
+		t.Fatalf("rotated notice: %+v", notice)
+	}
+	// The session on the retired key ends in the same request as the acknowledgement, and a
+	// heartbeat on it can no longer advance last_seen_at.
+	before, _ := ts.ReadEndpointRaw(ctx, ag.id)
+	_, _, err := sock.conn.Read(ctx)
+	var retired websocket.CloseError
+	if !errorsAs(err, &retired) || retired.Reason != protocol.CloseKeyRetired {
+		t.Fatalf("acknowledgement did not close the old key's session: %v", err)
+	}
+	raw, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeHeartbeat})
+	_ = sock.conn.Write(ctx, websocket.MessageText, raw)
+	time.Sleep(100 * time.Millisecond)
+	after, _ := ts.ReadEndpointRaw(ctx, ag.id)
+	if before.LastSeenAt != nil && after.LastSeenAt != nil && after.LastSeenAt.After(*before.LastSeenAt) {
+		t.Fatal("a heartbeat on the retired key advanced last_seen_at")
+	}
+	// The agent reconnects as soon as it sees the close; the server must free the slot before
+	// any database write so this never reads as a duplicate connection.
+	if _, reason := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version); reason != protocol.CloseKeyRetired {
+		t.Fatalf("old key after acknowledgement: %q", reason)
+	}
+	sock, reason := connect(t, ctx, httpSrv.URL, ag, newPriv, protocol.Version)
+	if reason != "" {
+		t.Fatalf("new key refused: %q", reason)
+	}
+	w = tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	for _, al := range e.Alerts {
+		if al.Kind == "duplicate_connection" {
+			t.Fatalf("immediate reconnect after rotation read as a duplicate: %+v", e.Alerts)
+		}
+	}
+	// A second hello on the same socket does not rewrite the capability set.
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{"docker.containers"}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{"docker.exec"}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	readEnvelope(t, ctx, sock.conn)
+	w = tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	if len(e.Capabilities) != 1 || e.Capabilities[0] != "docker.containers" {
+		t.Fatalf("second hello rewrote capabilities: %+v", e.Capabilities)
+	}
+	// A duplicate connection records an alert and blocks a further rotation. The incumbent is
+	// probed first, so a reader must be active for it to answer the ping like a real agent.
+	next := make(chan protocol.Envelope, 1)
+	go func() { next <- readEnvelope(t, ctx, sock.conn) }()
+	if _, reason := connect(t, ctx, httpSrv.URL, ag, newPriv, protocol.Version); reason != protocol.CloseDuplicate {
+		t.Fatalf("duplicate: %q", reason)
+	}
+	thirdPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeRotate, protocol.Rotate{PublicKey: thirdPub, Signature: ed25519.Sign(newPriv, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(newPub), thirdPub))})
+	ack = <-next
+	_ = json.Unmarshal(ack.Payload, &rotated)
+	if rotated.Code != "rotation_blocked" {
+		t.Fatalf("rotation after duplicate: %+v", rotated)
+	}
+	w = tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id, "", true)
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	if len(e.Alerts) != 1 || e.Alerts[0].Kind != "duplicate_connection" || !strings.Contains(e.Alerts[0].Details, "refused ") || !strings.Contains(e.Alerts[0].Details, "live socket held from ") {
+		t.Fatalf("duplicate alert must name both parties: %+v", e.Alerts)
+	}
+	if w := tenantRequest(s, admin, "POST", fmt.Sprintf("/api/organizations/a/endpoints/%s/events/%d/acknowledge", ag.id, e.Alerts[0].ID), "", true); w.Code != 204 {
+		t.Fatalf("event acknowledge: %d", w.Code)
 	}
 }

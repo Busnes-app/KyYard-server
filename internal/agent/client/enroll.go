@@ -14,19 +14,23 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
 )
 
 // Facts is the bounded enrollment report; the server keeps only the keys it knows.
-func Facts(name string) map[string]string {
+func Facts(runtimeVersion string) map[string]string {
 	host, _ := os.Hostname()
-	return map[string]string{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "cpus": strconv.Itoa(runtime.NumCPU()), "runtime_version": "unknown"}
+	if runtimeVersion == "" {
+		runtimeVersion = "unknown"
+	}
+	return map[string]string{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "cpus": strconv.Itoa(runtime.NumCPU()), "runtime_version": runtimeVersion}
 }
 
 // Enroll redeems a token for an identity and pins the server's instance fingerprint. The token
 // is used once and dropped; only the resulting identity is persisted.
-func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tokenB64 string) (*Identity, error) {
+func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tokenB64 string, runtimeVersion string) (*Identity, error) {
 	if _, err := checkServerOrigin(server); err != nil {
 		return nil, err
 	}
@@ -41,7 +45,7 @@ func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tok
 	body, _ := json.Marshal(map[string]any{
 		"token": strings.TrimSpace(tokenB64), "public_key": base64.RawURLEncoding.EncodeToString(pub),
 		"proof": base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, token))),
-		"name":  name, "facts": Facts(name),
+		"name":  name, "facts": Facts(runtimeVersion),
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server, "/")+"/api/agent/v1/enroll", bytes.NewReader(body))
 	if err != nil {
@@ -68,7 +72,7 @@ func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tok
 	if reply.Fingerprint != protocol.Fingerprint(pub) {
 		return nil, errors.New("server echoed a fingerprint that is not ours")
 	}
-	id := &Identity{EndpointID: reply.EndpointID, PrivateKey: priv, InstanceFingerprint: reply.InstanceFingerprint, Server: strings.TrimRight(server, "/")}
+	id := &Identity{EndpointID: reply.EndpointID, PrivateKey: priv, InstanceFingerprint: reply.InstanceFingerprint, Server: strings.TrimRight(server, "/"), RotatedAt: time.Now().UTC()}
 	if err := SaveIdentity(dir, id); err != nil {
 		return nil, err
 	}

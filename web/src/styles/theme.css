@@ -334,4 +334,7 @@ input:focus, select:focus, textarea:focus {
 .ky-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .ky-table th, .ky-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .ky-table th { color: var(--ink); font-weight: 600; }
+.ky-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13px; margin: 0; }
+.ky-facts dt { color: var(--ink); }
+.ky-facts dd { margin: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
