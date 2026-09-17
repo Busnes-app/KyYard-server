@@ -47,18 +47,21 @@ func (c *Client) Stats(ctx context.Context, running []string) protocol.Metrics {
 				Current int64 `json:"current"`
 			} `json:"pids_stats"`
 		}
-		// One slow container must not spend the whole budget.
+		// One slow container must not spend the whole budget, and its two calls share that
+		// budget: a daemon that answers slowly must cost a fixed slice per container, not one
+		// per request, or the tail of the list is starved the same way every cycle.
 		sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		err := c.get(sctx, "/containers/"+id+"/stats?stream=false&one-shot=true", &raw)
-		cancel()
 		if err != nil {
+			cancel()
 			if ctx.Err() != nil {
 				break
 			}
 			continue // a container that vanished between listing and sampling is not an error
 		}
 		seen[id] = true
-		s := protocol.Sample{ContainerID: id, CPUPercent: -1, MemoryBytes: raw.MemoryStats.Usage, MemoryLimit: raw.MemoryStats.Limit, Pids: raw.Pids.Current, RestartCount: c.restarts(ctx, id)}
+		s := protocol.Sample{ContainerID: id, CPUPercent: -1, MemoryBytes: raw.MemoryStats.Usage, MemoryLimit: raw.MemoryStats.Limit, Pids: raw.Pids.Current, RestartCount: c.restarts(sctx, id)}
+		cancel()
 		for _, n := range raw.Networks {
 			s.RxBytes += n.Rx
 			s.TxBytes += n.Tx
@@ -98,8 +101,9 @@ func (c *Client) Running(ctx context.Context) ([]string, error) {
 }
 
 // restarts reads the runtime's restart counter for one container. The stats endpoint does not
-// carry it, so this is a second bounded call inside the same per-container budget; a runtime
-// that does not answer yields -1, which reads as "no data" rather than "never restarted".
+// carry it, so this is a second call, and it inherits the caller's per-container deadline
+// rather than opening its own; a runtime that does not answer in time yields -1, which reads
+// as "no data" rather than "never restarted".
 func (c *Client) restarts(ctx context.Context, id string) int64 {
 	var inspected struct {
 		State struct {
@@ -107,9 +111,7 @@ func (c *Client) restarts(ctx context.Context, id string) int64 {
 		} `json:"State"`
 		RestartCount *int64 `json:"RestartCount"`
 	}
-	ictx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := c.get(ictx, "/containers/"+id+"/json", &inspected); err != nil {
+	if err := c.get(ctx, "/containers/"+id+"/json", &inspected); err != nil {
 		return -1
 	}
 	// Engine API keeps the counter at the top level; some runtimes report it under State.

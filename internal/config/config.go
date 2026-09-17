@@ -39,9 +39,12 @@ type ServerConfig struct {
 
 // DatabaseConfig holds connection settings for pluggable storage (SQLite, PostgreSQL, MySQL).
 type DatabaseConfig struct {
-	Driver          string        `json:"driver"` // "sqlite", "postgres", "mysql"
-	DSN             string        `json:"dsn"`    // Connection string or file path
-	DataDir         string        `json:"data_dir"`
+	Driver  string `json:"driver"` // "sqlite", "postgres", "mysql"
+	DSN     string `json:"dsn"`    // Connection string or file path
+	DataDir string `json:"data_dir"`
+	// SampleCeiling bounds stored metric rows per endpoint (docs/retention-policy.md). Zero
+	// means the built-in default; it is configured once, before the store opens.
+	SampleCeiling   int           `json:"sample_ceiling"`
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`

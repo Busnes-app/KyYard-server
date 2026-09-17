@@ -24,10 +24,8 @@ const (
 )
 
 // MaxSampleRowsPerEndpoint is the backstop against container-ID cardinality: 100 containers ×
-// 360 rows at the capacity targets, with headroom. It is a variable so a test can reach the
-// ceiling without writing a hundred thousand rows, which costs minutes against PostgreSQL; the
-// behaviour at the ceiling is what those tests are about, not the number.
-var MaxSampleRowsPerEndpoint = 100000
+// 360 rows at the capacity targets, with headroom.
+const MaxSampleRowsPerEndpoint = 100000
 
 var ErrSampleBudget = errors.New("endpoint sample budget exhausted")
 
@@ -98,7 +96,7 @@ func (t *tenancyStore) RecordSamples(ctx context.Context, endpointID string, m p
 	if len(writes) == 0 {
 		return tx.Commit()
 	}
-	offset := MaxSampleRowsPerEndpoint - len(writes)
+	offset := t.store.ceiling - len(writes)
 	if offset < 0 {
 		return ErrSampleBudget
 	}
