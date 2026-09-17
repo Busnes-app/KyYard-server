@@ -360,3 +360,100 @@ func TestPressureClearsWhenRetentionCannotReclaim(t *testing.T) {
 		t.Fatalf("the test did not isolate unreclaimable growth: %d samples, %v", samples, err)
 	}
 }
+
+// An hour's summary must say what the hour held, keep "no data" distinct from zero, and be
+// safe to compute twice: the loop runs it every minute over hours that still have raw rows.
+func TestRollUpSummarisesEndedHours(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	enrolled, err := ts.Enroll(ctx, EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := enrolled.ID
+	hour := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Hour)
+	tx, _ := st.db.BeginTx(ctx, nil)
+	stmt, err := tx.PrepareContext(ctx, st.rebind(`INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids,restart_count) VALUES (?,?,?,?,?,?,?,?,?,?)`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two answered samples and one the runtime would not answer for.
+	rows := []struct {
+		at            time.Time
+		cpu           float64
+		mem, rx, pids int64
+		restarts      int64
+	}{
+		{hour.Add(1 * time.Minute), 10, 100, 5, 3, 2},
+		{hour.Add(2 * time.Minute), 30, 300, 9, 7, 4},
+		{hour.Add(3 * time.Minute), -1, 200, 9, 1, -1},
+	}
+	for _, r := range rows {
+		if _, err := stmt.ExecContext(ctx, e, "c1", r.at, r.cpu, r.mem, 0, r.rx, 0, r.pids, r.restarts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A container whose every sample is unanswered must summarise as unknown, never as zero.
+	if _, err := stmt.ExecContext(ctx, e, "quiet", hour.Add(4*time.Minute), -1.0, 0, 0, 0, 0, 0, -1); err != nil {
+		t.Fatal(err)
+	}
+	// The hour still running is not summarised: it is incomplete by definition.
+	if _, err := stmt.ExecContext(ctx, e, "c1", time.Now().UTC(), 99.0, 1, 0, 0, 0, 0, 9); err != nil {
+		t.Fatal(err)
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ts.RollUp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.RollUp(ctx); err != nil { // idempotent: the loop runs it every minute
+		t.Fatal(err)
+	}
+	got, err := ts.ReadRollups(ctx, a, e, "c1", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected one ended hour, got %d: %+v", len(got), got)
+	}
+	h := got[0]
+	if h.Samples != 3 {
+		t.Fatalf("samples counted: %d", h.Samples)
+	}
+	if h.CPUAverage < 19.9 || h.CPUAverage > 20.1 || h.CPUPeak != 30 {
+		t.Fatalf("unanswered cpu was averaged in: avg %v peak %v", h.CPUAverage, h.CPUPeak)
+	}
+	if h.MemoryAvg != 200 || h.MemoryPeak != 300 || h.RxBytes != 9 || h.PidsPeak != 7 || h.RestartCount != 4 {
+		t.Fatalf("hour summarised wrong: %+v", h)
+	}
+	quiet, err := ts.ReadRollups(ctx, a, e, "quiet", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quiet) != 1 || quiet[0].CPUAverage != -1 || quiet[0].CPUPeak != -1 || quiet[0].RestartCount != -1 {
+		t.Fatalf("an hour of unanswered samples reported a number: %+v", quiet)
+	}
+
+	// Summaries outlive the samples they came from, and go at their own retention.
+	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE container_rollups SET hour=? WHERE container_id='quiet'`), time.Now().UTC().Add(-RollupRetention-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if left, err := ts.ReadRollups(ctx, a, e, "quiet", 0); err != nil || len(left) != 0 {
+		t.Fatalf("a summary past its retention survived: %+v %v", left, err)
+	}
+	if kept, err := ts.ReadRollups(ctx, a, e, "c1", 0); err != nil || len(kept) != 1 {
+		t.Fatalf("a summary inside its retention was pruned: %+v %v", kept, err)
+	}
+}

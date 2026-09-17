@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -20,7 +21,10 @@ const (
 	// 360 rows per container whatever an agent sends.
 	SampleCadence  = 50 * time.Second
 	EventRetention = 7 * 24 * time.Hour
-	PruneBatch     = 5000
+	// RollupRetention keeps an hour's summary long after its samples are gone, so a week of
+	// history costs 168 rows per container instead of the 10,080 the raw cadence would.
+	RollupRetention = 7 * 24 * time.Hour
+	PruneBatch      = 5000
 )
 
 // MaxSampleRowsPerEndpoint is the backstop against container-ID cardinality: 100 containers ×
@@ -216,6 +220,7 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 	}{
 		{`DELETE FROM container_samples WHERE (endpoint_id,container_id,observed_at) IN (SELECT endpoint_id,container_id,observed_at FROM container_samples WHERE observed_at<? LIMIT ?)`, now.Add(-samples)},
 		{`DELETE FROM endpoint_events WHERE id IN (SELECT id FROM endpoint_events WHERE created_at<? AND acknowledged_at IS NOT NULL LIMIT ?)`, now.Add(-EventRetention)},
+		{`DELETE FROM container_rollups WHERE (endpoint_id,container_id,hour) IN (SELECT endpoint_id,container_id,hour FROM container_rollups WHERE hour<? LIMIT ?)`, now.Add(-RollupRetention)},
 	} {
 		result, err := t.store.db.ExecContext(ctx, t.store.rebind(q.sql), q.arg, PruneBatch)
 		if err != nil {
@@ -245,4 +250,96 @@ func scanTime(v any) (time.Time, error) {
 	default:
 		return time.Time{}, fmt.Errorf("unexpected timestamp type %T", v)
 	}
+}
+
+// RollupRow is one container's hour, summarised. A sample the runtime would not answer for is
+// counted in neither average nor maximum, and an hour with nothing but such samples reports -1
+// for that measure rather than zero, so "no data" survives the summary.
+type RollupRow struct {
+	ContainerID  string    `json:"container_id"`
+	Hour         time.Time `json:"hour"`
+	Samples      int64     `json:"samples"`
+	CPUAverage   float64   `json:"cpu_avg"`
+	CPUPeak      float64   `json:"cpu_max"`
+	MemoryAvg    int64     `json:"memory_avg"`
+	MemoryPeak   int64     `json:"memory_max"`
+	RxBytes      int64     `json:"rx_bytes"`
+	TxBytes      int64     `json:"tx_bytes"`
+	PidsPeak     int64     `json:"pids_max"`
+	RestartCount int64     `json:"restart_count"`
+}
+
+// RollUp summarises whole hours of samples that the raw window is about to drop. It is
+// idempotent: an hour already summarised is recomputed from whatever raw rows remain, so a
+// pass that runs twice, or runs again after more samples land in the same hour, converges on
+// the same answer. Only hours that have ended are taken, because a running hour is incomplete
+// by definition. It returns the rows written.
+func (t *tenancyStore) RollUp(ctx context.Context) (int64, error) {
+	cutoff := time.Now().UTC().Truncate(time.Hour)
+	// SQLite keeps timestamps in the driver's own text form ("2006-01-02 15:04:05 +0000 UTC"),
+	// which its date functions cannot read, so the bucket is the first thirteen characters put
+	// back into that same form; scanTime reads it again on the way out.
+	hourExpr := `substr(observed_at,1,13) || ':00:00 +0000 UTC'`
+	if t.store.driver == "postgres" {
+		hourExpr = `date_trunc('hour', observed_at)`
+	}
+	// A negative reading is the runtime declining to answer: averaging it in would invent a
+	// number, so it is excluded from both the average and the peak.
+	q := `INSERT INTO container_rollups (endpoint_id,container_id,hour,samples,cpu_avg,cpu_max,memory_avg,memory_max,rx_bytes,tx_bytes,pids_max,restart_count)
+SELECT endpoint_id, container_id, ` + hourExpr + ` AS h, COUNT(*),
+  COALESCE(AVG(CASE WHEN cpu_percent>=0 THEN cpu_percent END), -1),
+  COALESCE(MAX(CASE WHEN cpu_percent>=0 THEN cpu_percent END), -1),
+  CAST(COALESCE(AVG(memory_bytes), 0) AS INTEGER), COALESCE(MAX(memory_bytes), 0),
+  COALESCE(MAX(rx_bytes), 0), COALESCE(MAX(tx_bytes), 0), COALESCE(MAX(pids), 0),
+  COALESCE(MAX(CASE WHEN restart_count>=0 THEN restart_count END), -1)
+FROM container_samples WHERE observed_at < ? GROUP BY endpoint_id, container_id, h
+ON CONFLICT (endpoint_id,container_id,hour) DO UPDATE SET
+  samples=excluded.samples, cpu_avg=excluded.cpu_avg, cpu_max=excluded.cpu_max,
+  memory_avg=excluded.memory_avg, memory_max=excluded.memory_max,
+  rx_bytes=excluded.rx_bytes, tx_bytes=excluded.tx_bytes, pids_max=excluded.pids_max,
+  restart_count=excluded.restart_count`
+	if t.store.driver == "postgres" {
+		q = strings.ReplaceAll(q, "CAST(COALESCE(AVG(memory_bytes), 0) AS INTEGER)", "CAST(COALESCE(AVG(memory_bytes), 0) AS BIGINT)")
+	}
+	result, err := t.store.db.ExecContext(ctx, t.store.rebind(q), cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
+}
+
+// ReadRollups returns one container's hourly history, newest first, bounded by the retention
+// window and by a row cap so a request cannot ask for an unbounded scan.
+func (t *tenancyStore) ReadRollups(ctx context.Context, a TenantAccess, endpointID, containerID string, window time.Duration) ([]RollupRow, error) {
+	if window <= 0 || window > RollupRetention {
+		window = RollupRetention
+	}
+	out := []RollupRow{}
+	err := t.readTenant(ctx, a, permissions.EndpointRead, func(tx *sql.Tx) error {
+		if err := t.endpointInScope(ctx, tx, a, endpointID); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,hour,samples,cpu_avg,cpu_max,memory_avg,memory_max,rx_bytes,tx_bytes,pids_max,restart_count FROM container_rollups WHERE endpoint_id=? AND container_id=? AND hour>=? ORDER BY hour DESC LIMIT 200`), endpointID, containerID, time.Now().UTC().Add(-window))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r RollupRow
+			var raw any
+			if err := rows.Scan(&r.ContainerID, &raw, &r.Samples, &r.CPUAverage, &r.CPUPeak, &r.MemoryAvg, &r.MemoryPeak, &r.RxBytes, &r.TxBytes, &r.PidsPeak, &r.RestartCount); err != nil {
+				return err
+			}
+			if r.Hour, err = scanTime(raw); err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

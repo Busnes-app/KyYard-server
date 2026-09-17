@@ -470,8 +470,9 @@ func runRestore(args []string) {
 	}
 }
 
-// pruneLoop enforces retention (docs/retention-policy.md): every minute it deletes expired
-// samples and acknowledged events in bounded batches until a pass removes nothing, and
+// pruneLoop enforces retention (docs/retention-policy.md): every minute it summarises ended
+// hours, deletes expired samples, summaries and acknowledged events in bounded batches until a
+// pass removes nothing, and
 // publishes how close the database is to its budget so telemetry writes can back off.
 func pruneLoop(ctx context.Context, st store.Store) {
 	ticker := time.NewTicker(time.Minute)
@@ -482,6 +483,10 @@ func pruneLoop(ctx context.Context, st store.Store) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Summarise before pruning, or the raw rows leave without being counted.
+			if _, err := st.Tenancy().RollUp(ctx); err != nil {
+				log.Printf("[RETENTION] roll-up: %v", err)
+			}
 			for i := 0; i < 20; i++ {
 				n, err := st.Tenancy().Prune(ctx)
 				if err != nil {
