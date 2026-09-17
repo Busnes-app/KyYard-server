@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -74,7 +75,7 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 	// Busy, not gone: a frame just landed, so the loop is inside a handler and the reader
 	// cannot answer the probe. The newcomer is the duplicate.
 	incumbent.lastFrame.Store(time.Now().UnixNano())
-	busy, _, err := dialAgent(t, ctx, u.Host, e, priv)
+	busy, _, err := dialAgent(ctx, u.Host, e, priv)
 	var ce websocket.CloseError
 	if !errors.As(err, &ce) || ce.Reason != protocol.CloseDuplicate {
 		t.Fatalf("busy incumbent: expected %s refusal, got %+v %v", protocol.CloseDuplicate, busy, err)
@@ -91,7 +92,7 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 	// Silent: the last frame is old and the ping goes unanswered. The newcomer is admitted,
 	// the eviction is audited against the evicted address, and no alarm is raised.
 	incumbent.lastFrame.Store(0)
-	env, c, err := dialAgent(t, ctx, u.Host, e, priv)
+	env, c, err := dialAgent(ctx, u.Host, e, priv)
 	if err != nil {
 		t.Fatalf("reconnect after a silent drop was refused: %v", err)
 	}
@@ -155,17 +156,18 @@ func deadPeer(t *testing.T, ctx context.Context) *websocket.Conn {
 }
 
 // dialAgent runs the real handshake for an approved endpoint and returns the first frame after
-// auth, or the error that ended the socket.
-func dialAgent(t *testing.T, ctx context.Context, host string, e *store.Endpoint, priv ed25519.PrivateKey) (protocol.Envelope, *websocket.Conn, error) {
-	t.Helper()
+// auth, or the error that ended the socket. It never fails the test itself, so it is safe off
+// the test goroutine; a non-nil conn is the caller's to close.
+func dialAgent(ctx context.Context, host string, e *store.Endpoint, priv ed25519.PrivateKey) (protocol.Envelope, *websocket.Conn, error) {
+	var env protocol.Envelope
 	c, _, err := websocket.Dial(ctx, "ws://"+host+"/api/agent/v1/connect", nil)
 	if err != nil {
-		t.Fatal(err)
+		return env, nil, fmt.Errorf("dial: %w", err)
 	}
-	var env protocol.Envelope
 	_, raw, err := c.Read(ctx)
 	if err != nil {
-		t.Fatal(err)
+		c.CloseNow()
+		return env, nil, fmt.Errorf("challenge: %w", err)
 	}
 	_ = json.Unmarshal(raw, &env)
 	var ch protocol.Challenge
@@ -174,7 +176,8 @@ func dialAgent(t *testing.T, ctx context.Context, host string, e *store.Endpoint
 	authRaw, _ := json.Marshal(protocol.Auth{EndpointID: e.ID, Fingerprint: e.Fingerprint, Version: protocol.Version, Signature: sig})
 	frame, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeAuth, Payload: authRaw})
 	if err := c.Write(ctx, websocket.MessageText, frame); err != nil {
-		t.Fatal(err)
+		c.CloseNow()
+		return env, nil, fmt.Errorf("auth: %w", err)
 	}
 	_, raw, err = c.Read(ctx)
 	if err != nil {
@@ -249,14 +252,19 @@ func TestDuplicateConnectionEventIsRecordedOnce(t *testing.T) {
 	refused := make(chan error, n)
 	for i := 0; i < n; i++ {
 		go func() {
-			_, _, err := dialAgent(t, ctx, u.Host, e, priv)
+			_, _, err := dialAgent(ctx, u.Host, e, priv)
 			refused <- err
 		}()
 	}
 	for i := 0; i < n; i++ {
 		var ce websocket.CloseError
-		if err := <-refused; !errors.As(err, &ce) || ce.Reason != protocol.CloseDuplicate {
-			t.Fatalf("competitor %d not refused as a duplicate: %v", i, err)
+		select {
+		case err := <-refused:
+			if !errors.As(err, &ce) || ce.Reason != protocol.CloseDuplicate {
+				t.Fatalf("competitor %d not refused as a duplicate: %v", i, err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("only %d of %d competitors answered before the deadline", i, n)
 		}
 	}
 	view, err := ts.ReadEndpoint(ctx, org, e.ID)
