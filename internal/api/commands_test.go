@@ -209,3 +209,84 @@ func TestAnAgentCannotWriteExtraLinesIntoTheLog(t *testing.T) {
 		t.Fatalf("one result frame produced %d log lines:\n%s", n, out)
 	}
 }
+
+// Destroying a container is not a stronger form of stopping one. It needs its own permission,
+// a statement of what the actor saw, and the container's name typed back, and the preview an
+// operator confirms from must say what survives as well as what does not.
+func TestRemovingAContainerNeedsConfirmationAndItsOwnPermission(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	operator := loginAs(t, s, st, "operator", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_operator", Role: "operator", Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-rm")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	snap := protocol.Snapshot{
+		Generation: uint64(time.Now().Unix()),
+		Containers: []protocol.Container{{ID: "c1", Name: "web", Image: "nginx:1", State: "exited", Status: "Exited", ComposeProject: "shop", Ports: []protocol.Port{{Container: 80, Protocol: "tcp"}}, Labels: map[string]string{}, Networks: []string{}}},
+		Images:     []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, snap)
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+
+	// The preview names the consequences, including what survives.
+	w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/containers/web/removal", "", true)
+	if w.Code != 200 {
+		t.Fatalf("preview: %d %s", w.Code, w.Body.String())
+	}
+	var preview struct {
+		Consequences []string `json:"consequences"`
+		ConfirmWith  string   `json:"confirm_with"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &preview)
+	joined := strings.Join(preview.Consequences, " | ")
+	if !strings.Contains(joined, "writable layer") || !strings.Contains(joined, "left alone") || !strings.Contains(joined, "shop") {
+		t.Fatalf("the preview did not say what goes and what stays: %q", joined)
+	}
+	if preview.ConfirmWith != "web" {
+		t.Fatalf("the preview did not say what to type back: %q", preview.ConfirmWith)
+	}
+
+	path := "/api/organizations/a/endpoints/" + ag.id + "/commands"
+	// An operator may restart but not destroy: the matrix gives destroy to administrators.
+	if w := tenantRequest(s, operator, "POST", path, `{"action":"container.restart","container":"web"}`, true); w.Code != 202 {
+		t.Fatalf("an operator could not restart: %d %s", w.Code, w.Body.String())
+	}
+	readEnvelope(t, ctx, sock.conn)
+	if w := tenantRequest(s, operator, "POST", path, `{"action":"container.remove","container":"web","confirm":"web","expects":{"state":"exited"}}`, true); w.Code != 403 {
+		t.Fatalf("an operator destroyed a container: %d", w.Code)
+	}
+	// An administrator still has to say what they saw and name it back.
+	if w := tenantRequest(s, admin, "POST", path, `{"action":"container.remove","container":"web","confirm":"web"}`, true); w.Code != 400 {
+		t.Fatalf("removal without a stated expectation: %d", w.Code)
+	}
+	if w := tenantRequest(s, admin, "POST", path, `{"action":"container.remove","container":"web","expects":{"state":"exited"}}`, true); w.Code != 400 {
+		t.Fatalf("removal without confirmation: %d", w.Code)
+	}
+	if w := tenantRequest(s, admin, "POST", path, `{"action":"container.remove","container":"web","confirm":"webb","expects":{"state":"exited"}}`, true); w.Code != 400 {
+		t.Fatalf("removal confirmed with the wrong name: %d", w.Code)
+	}
+	w = tenantRequest(s, admin, "POST", path, `{"action":"container.remove","container":"web","confirm":"web","expects":{"state":"exited"}}`, true)
+	if w.Code != 202 {
+		t.Fatalf("a confirmed removal by an administrator: %d %s", w.Code, w.Body.String())
+	}
+	frame := readEnvelope(t, ctx, sock.conn)
+	var sent protocol.Command
+	_ = json.Unmarshal(frame.Payload, &sent)
+	if sent.Action != protocol.ActionRemove || sent.Expects.State != "exited" {
+		t.Fatalf("the removal frame lost its action or its precondition: %+v", sent)
+	}
+	if strings.Contains(string(frame.Payload), "confirm") {
+		t.Fatal("the confirmation was sent to the agent; it is the server's check, not the agent's")
+	}
+}

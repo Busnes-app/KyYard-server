@@ -20,6 +20,9 @@ const (
 	// container that already exists. Destroying one is a separate action, because undoing it
 	// is not a matter of running the opposite command.
 	ContainerOperate Action = "container.operate"
+	// ContainerDestroy removes a container. It is separate from operating one because the
+	// opposite command does not undo it, and the matrix gives it to administrators only.
+	ContainerDestroy Action = "container.destroy"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -30,12 +33,12 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate:
+		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy:
 			return true
 		}
 	case "environment_admin":
 		switch action {
-		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate:
+		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy:
 			return true
 		}
 	case "operator":

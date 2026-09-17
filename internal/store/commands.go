@@ -51,18 +51,39 @@ func (c *Command) InFlight() bool { return c.Outcome == "" }
 // different Engine API route.
 var containerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 
-var commandActions = map[string]bool{
-	protocol.ActionStart:   true,
-	protocol.ActionStop:    true,
-	protocol.ActionRestart: true,
+// commandActions maps each action to the permission it needs. Removing a container is not a
+// stronger form of stopping one: it is a different thing to be allowed to do.
+var commandActions = map[string]permissions.Action{
+	protocol.ActionStart:   permissions.ContainerOperate,
+	protocol.ActionStop:    permissions.ContainerOperate,
+	protocol.ActionRestart: permissions.ContainerOperate,
+	protocol.ActionRemove:  permissions.ContainerDestroy,
 }
+
+// destructive actions cannot be undone by running the opposite one, so they carry two extra
+// requirements: the actor must say what they saw, and must name the resource back.
+var destructive = map[string]bool{protocol.ActionRemove: true}
 
 // CreateCommand records the intent before anything is sent. The row exists first so that a
 // command which is dispatched and then lost still has somewhere to be marked unknown: an
 // operation the control plane cannot account for is worse than one that failed.
-func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpointID, action, containerID string, expects protocol.Expectation) (*Command, error) {
-	if !commandActions[action] {
+func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpointID, action, containerID, confirm string, expects protocol.Expectation) (*Command, error) {
+	needs, ok := commandActions[action]
+	if !ok {
 		return nil, fmt.Errorf("%w: unsupported action %q", ErrInvalid, action)
+	}
+	if destructive[action] {
+		if expects.State == "" {
+			// Without this the actor is asking to destroy whatever is there now, not the
+			// thing they looked at.
+			return nil, fmt.Errorf("%w: a destructive command must say what state it expects", ErrInvalid)
+		}
+		if confirm != containerID {
+			// Naming the container back is the confirmation the authorization matrix asks
+			// for. It is checked here rather than in the interface so that every caller,
+			// including a script, has to mean it.
+			return nil, fmt.Errorf("%w: confirm must repeat the container name", ErrInvalid)
+		}
 	}
 	if !containerName.MatchString(containerID) {
 		// Docker's own grammar for a name or ID. displaySafe is not enough for a value that
@@ -87,7 +108,7 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 		Deadline:    now.Add(CommandDeadline),
 		CreatedAt:   now,
 	}
-	err = t.withTenantTarget(ctx, a, permissions.ContainerOperate, endpointID, func(tx *sql.Tx) error {
+	err = t.withTenantTarget(ctx, a, needs, endpointID, func(tx *sql.Tx) error {
 		var state string
 		row := tx.QueryRowContext(ctx, t.store.rebind(`SELECT organization_id,environment_id,state FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
 			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID)

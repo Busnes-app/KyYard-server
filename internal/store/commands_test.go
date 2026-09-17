@@ -24,14 +24,14 @@ func TestCommandsRefuseAnIdentifierThatIsNotAContainerName(t *testing.T) {
 		"",
 		"-leading-dash",
 	} {
-		if _, err := ts.CreateCommand(ctx, a, "ep_any", protocol.ActionRestart, name, protocol.Expectation{}); err == nil {
+		if _, err := ts.CreateCommand(ctx, a, "ep_any", protocol.ActionRestart, name, "", protocol.Expectation{}); err == nil {
 			t.Fatalf("%q was accepted as a container name", name)
 		}
 	}
 	// A real name and a real ID both still work; the check must not be so tight it refuses
 	// what Docker itself hands out.
 	for _, name := range []string{"web", "my_app-1.2", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"} {
-		_, err := ts.CreateCommand(ctx, a, "ep_missing", protocol.ActionRestart, name, protocol.Expectation{})
+		_, err := ts.CreateCommand(ctx, a, "ep_missing", protocol.ActionRestart, name, "", protocol.Expectation{})
 		if err == nil {
 			t.Fatalf("%q reached an endpoint that does not exist", name)
 		}

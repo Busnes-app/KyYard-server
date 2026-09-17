@@ -55,6 +55,10 @@ const (
 	ActionStart   = "container.start"
 	ActionStop    = "container.stop"
 	ActionRestart = "container.restart"
+	// ActionRemove destroys a container. It is listed with the others because it travels the
+	// same path, but it carries a different permission and needs a confirmation the server
+	// checks before the frame is built.
+	ActionRemove = "container.remove"
 )
 
 // Close reasons the server sends in the WebSocket close frame.
