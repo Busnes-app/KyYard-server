@@ -23,6 +23,12 @@ const (
 	// ContainerDestroy removes a container. It is separate from operating one because the
 	// opposite command does not undo it, and the matrix gives it to administrators only.
 	ContainerDestroy Action = "container.destroy"
+	// ImagePull fetches an image onto an endpoint. It is not destructive, but it spends the
+	// host's disk and bandwidth and will later spend a registry credential, so the matrix
+	// stops at the operator.
+	ImagePull Action = "image.pull"
+	// ImageDestroy removes an image from an endpoint.
+	ImageDestroy Action = "image.destroy"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -33,19 +39,19 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy:
+		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy:
 			return true
 		}
 	case "environment_admin":
 		switch action {
-		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy:
+		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy:
 			return true
 		}
 	case "operator":
 		// Day-to-day operations, per docs/authorization-matrix.md: an operator restarts a
 		// container but does not destroy one.
 		switch action {
-		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate:
+		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate, ImagePull:
 			return true
 		}
 	case "developer", "read_only":

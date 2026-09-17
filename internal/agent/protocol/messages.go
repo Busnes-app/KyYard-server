@@ -57,6 +57,9 @@ const (
 	ActionStop    = "container.stop"
 	ActionRestart = "container.restart"
 	ActionRemove  = "container.remove"
+	// Image actions name a reference rather than a container, and travel in Reference.
+	ActionImagePull   = "image.pull"
+	ActionImageRemove = "image.remove"
 )
 
 // Close reasons the server sends in the WebSocket close frame.
@@ -177,15 +180,18 @@ func VerifyAuth(publicKey []byte, endpointID string, nonce []byte, serverHost st
 // acting twice. RequestID is the audit correlation ID, so an agent's logs join the audit trail.
 // The actor is never sent; who asked is recorded server-side only.
 type Command struct {
-	ID         string    `json:"id"`
-	RequestID  string    `json:"request_id"`
-	Org        string    `json:"org"`
-	Env        string    `json:"env"`
-	Endpoint   string    `json:"endpoint"`
-	Deadline   time.Time `json:"deadline"`
-	Action     string    `json:"action"`
-	Container  string    `json:"container"`
-	Capability string    `json:"capability,omitempty"`
+	ID        string    `json:"id"`
+	RequestID string    `json:"request_id"`
+	Org       string    `json:"org"`
+	Env       string    `json:"env"`
+	Endpoint  string    `json:"endpoint"`
+	Deadline  time.Time `json:"deadline"`
+	Action    string    `json:"action"`
+	Container string    `json:"container,omitempty"`
+	// Reference is the image an image action names, in Docker's own reference grammar. A
+	// command names a container or a reference, never both.
+	Reference  string `json:"reference,omitempty"`
+	Capability string `json:"capability,omitempty"`
 	// Expects is what the actor saw when they asked. Docker has no universal resource
 	// version, so this is operation-specific identity the agent re-checks immediately before
 	// acting: the same container, in the state the decision was made about.

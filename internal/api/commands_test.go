@@ -315,3 +315,72 @@ func TestRemovingAContainerNeedsConfirmationAndItsOwnPermission(t *testing.T) {
 		t.Fatal("the confirmation was sent to the agent; it is the server's check, not the agent's")
 	}
 }
+
+// Image actions name a reference, not a container, and carry their own permissions. Pulling
+// spends the host's disk and bandwidth, so the matrix stops at the operator; removing an image
+// is an administrator's action.
+func TestImageCommandsAreScopedAndValidated(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	operator := loginAs(t, s, st, "operator", "user")
+	viewer := loginAs(t, s, st, "viewer", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_operator", Role: "operator", Status: "active"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_viewer", Role: store.RoleReadOnly, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-img")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: uint64(time.Now().Unix()), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}})
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+	path := "/api/organizations/a/endpoints/" + ag.id + "/commands"
+
+	// An operator may pull.
+	w := tenantRequest(s, operator, "POST", path, `{"action":"image.pull","reference":"ghcr.io/busnes-app/kyyard:1.2.3"}`, true)
+	if w.Code != 202 {
+		t.Fatalf("an operator could not pull: %d %s", w.Code, w.Body.String())
+	}
+	var cmd store.Command
+	_ = json.Unmarshal(w.Body.Bytes(), &cmd)
+	if cmd.Reference != "ghcr.io/busnes-app/kyyard:1.2.3" || cmd.ContainerID != "" {
+		t.Fatalf("an image command recorded a container: %+v", cmd)
+	}
+	frame := readEnvelope(t, ctx, sock.conn)
+	var sent protocol.Command
+	_ = json.Unmarshal(frame.Payload, &sent)
+	if sent.Reference != cmd.Reference || sent.Container != "" {
+		t.Fatalf("the frame confused a reference with a container: %+v", sent)
+	}
+
+	// A read-only member may not, and removing an image is an administrator's action.
+	if w := tenantRequest(s, viewer, "POST", path, `{"action":"image.pull","reference":"nginx:1"}`, true); w.Code != 403 {
+		t.Fatalf("a read-only member pulled an image: %d", w.Code)
+	}
+	if w := tenantRequest(s, operator, "POST", path, `{"action":"image.remove","reference":"nginx:1"}`, true); w.Code != 403 {
+		t.Fatalf("an operator removed an image: %d", w.Code)
+	}
+	if w := tenantRequest(s, admin, "POST", path, `{"action":"image.remove","reference":"nginx:1"}`, true); w.Code != 202 {
+		t.Fatalf("an administrator could not remove an image: %d %s", w.Code, w.Body.String())
+	}
+	readEnvelope(t, ctx, sock.conn)
+
+	// A reference is not a container name, and neither grammar accepts the other's abuses.
+	for _, bad := range []string{
+		`{"action":"image.pull","reference":"nginx:1?all=1"}`,
+		`{"action":"image.pull","reference":"../../etc/passwd"}`,
+		`{"action":"image.pull","reference":""}`,
+		`{"action":"container.restart","container":"ghcr.io/busnes-app/kyyard:1.2.3"}`,
+	} {
+		if w := tenantRequest(s, admin, "POST", path, bad, true); w.Code != 400 {
+			t.Fatalf("%s was accepted: %d", bad, w.Code)
+		}
+	}
+}

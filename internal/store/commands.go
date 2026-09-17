@@ -33,7 +33,8 @@ type Command struct {
 	ActorID        string               `json:"actor_id"`
 	RequestID      string               `json:"request_id"`
 	Action         string               `json:"action"`
-	ContainerID    string               `json:"container_id"`
+	ContainerID    string               `json:"container_id,omitempty"`
+	Reference      string               `json:"reference,omitempty"`
 	Expects        protocol.Expectation `json:"expects"`
 	Deadline       time.Time            `json:"deadline"`
 	Outcome        string               `json:"outcome"`
@@ -54,11 +55,21 @@ var containerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 // commandActions maps each action to the permission it needs. Removing a container is not a
 // stronger form of stopping one: it is a different thing to be allowed to do.
 var commandActions = map[string]permissions.Action{
-	protocol.ActionStart:   permissions.ContainerOperate,
-	protocol.ActionStop:    permissions.ContainerOperate,
-	protocol.ActionRestart: permissions.ContainerOperate,
-	protocol.ActionRemove:  permissions.ContainerDestroy,
+	protocol.ActionStart:       permissions.ContainerOperate,
+	protocol.ActionStop:        permissions.ContainerOperate,
+	protocol.ActionRestart:     permissions.ContainerOperate,
+	protocol.ActionRemove:      permissions.ContainerDestroy,
+	protocol.ActionImagePull:   permissions.ImagePull,
+	protocol.ActionImageRemove: permissions.ImageDestroy,
 }
+
+// imageActions name a reference rather than a container.
+var imageActions = map[string]bool{protocol.ActionImagePull: true, protocol.ActionImageRemove: true}
+
+// imageReference is Docker's reference grammar, loosely: an optional registry host, a path,
+// and an optional tag or digest. It is anchored and bounded for the same reason the container
+// grammar is: this value becomes part of a URL query on the host's root-equivalent socket.
+var imageReference = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:\-]*(/[a-zA-Z0-9._\-]+)*(:[a-zA-Z0-9._\-]+|@sha256:[a-f0-9]{64})?$`)
 
 // CreateCommand records the intent before anything is sent. The row exists first so that a
 // command which is dispatched and then lost still has somewhere to be marked unknown: an
@@ -76,7 +87,11 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 		// they looked at.
 		return nil, fmt.Errorf("%w: a destructive command must say what state it expects", ErrInvalid)
 	}
-	if !containerName.MatchString(containerID) {
+	if imageActions[action] {
+		if !imageReference.MatchString(containerID) || len(containerID) > 512 {
+			return nil, fmt.Errorf("%w: image reference", ErrInvalid)
+		}
+	} else if !containerName.MatchString(containerID) {
 		// Docker's own grammar for a name or ID. displaySafe is not enough for a value that
 		// becomes part of a URL: it permits a slash, a query and a fragment.
 		return nil, fmt.Errorf("%w: container", ErrInvalid)
@@ -90,14 +105,20 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 	}
 	now := time.Now().UTC()
 	cmd := &Command{
-		ID:          uuid.NewString(),
-		EndpointID:  endpointID,
-		ActorID:     a.ActorID,
-		Action:      action,
-		ContainerID: containerID,
-		Expects:     expects,
-		Deadline:    now.Add(CommandDeadline),
-		CreatedAt:   now,
+		ID:         uuid.NewString(),
+		EndpointID: endpointID,
+		ActorID:    a.ActorID,
+		Action:     action,
+		Expects:    expects,
+		Deadline:   now.Add(CommandDeadline),
+		CreatedAt:  now,
+	}
+	// One target, named for what it is. An image reference is not a container ID, and a row
+	// that stores it in the container column would read as one to everything downstream.
+	if imageActions[action] {
+		cmd.Reference = containerID
+	} else {
+		cmd.ContainerID = containerID
 	}
 	err = t.withTenantTarget(ctx, a, needs, endpointID, func(tx *sql.Tx) error {
 		var state string
@@ -134,8 +155,8 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 			return fmt.Errorf("%w: it is %s", ErrEndpointOffline, state)
 		}
 		cmd.RequestID = a.CorrelationID
-		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_commands (id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,expects,deadline,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`),
-			cmd.ID, cmd.EndpointID, cmd.OrganizationID, cmd.EnvironmentID, cmd.ActorID, cmd.RequestID, cmd.Action, cmd.ContainerID, string(raw), cmd.Deadline, cmd.CreatedAt)
+		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_commands (id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
+			cmd.ID, cmd.EndpointID, cmd.OrganizationID, cmd.EnvironmentID, cmd.ActorID, cmd.RequestID, cmd.Action, cmd.ContainerID, cmd.Reference, string(raw), cmd.Deadline, cmd.CreatedAt)
 		return err
 	})
 	if err != nil {
@@ -231,7 +252,7 @@ func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpoin
 	return out, nil
 }
 
-const commandColumns = `SELECT id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,expects,deadline,outcome,detail,created_at,dispatched_at,settled_at FROM endpoint_commands`
+const commandColumns = `SELECT id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,outcome,detail,created_at,dispatched_at,settled_at FROM endpoint_commands`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -240,7 +261,7 @@ func scanCommand(row scanner) (*Command, error) {
 	var expects string
 	var deadline, created any
 	var dispatched, settled sql.NullTime
-	if err := row.Scan(&c.ID, &c.EndpointID, &c.OrganizationID, &c.EnvironmentID, &c.ActorID, &c.RequestID, &c.Action, &c.ContainerID, &expects, &deadline, &c.Outcome, &c.Detail, &created, &dispatched, &settled); err != nil {
+	if err := row.Scan(&c.ID, &c.EndpointID, &c.OrganizationID, &c.EnvironmentID, &c.ActorID, &c.RequestID, &c.Action, &c.ContainerID, &c.Reference, &expects, &deadline, &c.Outcome, &c.Detail, &created, &dispatched, &settled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}

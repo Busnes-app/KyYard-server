@@ -315,8 +315,11 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	var body struct {
-		Action    string `json:"action"`
+		Action string `json:"action"`
+		// A command names a container or an image, never both; the action says which field
+		// applies and the store validates it against that grammar.
 		Container string `json:"container"`
+		Reference string `json:"reference"`
 		// Confirm must repeat the container name for a destructive action. Requiring it here
 		// rather than in the interface means every caller has to mean it, scripts included.
 		Confirm string `json:"confirm"`
@@ -330,7 +333,11 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	expects := protocol.Expectation{ImageDigest: body.Expects.ImageDigest, State: body.Expects.State}
-	cmd, err := s.store.Tenancy().CreateCommand(r.Context(), a, id, body.Action, body.Container, body.Confirm, expects)
+	target := body.Container
+	if body.Reference != "" {
+		target = body.Reference
+	}
+	cmd, err := s.store.Tenancy().CreateCommand(r.Context(), a, id, body.Action, target, body.Confirm, expects)
 	if err != nil {
 		s.tenantError(w, err)
 		return
@@ -338,7 +345,7 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 	frame := envelope(protocol.TypeCommand, protocol.Command{
 		ID: cmd.ID, RequestID: cmd.RequestID, Org: cmd.OrganizationID, Env: cmd.EnvironmentID,
 		Endpoint: cmd.EndpointID, Deadline: cmd.Deadline, Action: cmd.Action,
-		Container: cmd.ContainerID, Expects: cmd.Expects,
+		Container: cmd.ContainerID, Reference: cmd.Reference, Expects: cmd.Expects,
 	})
 	if !s.agents.deliver(id, frame) {
 		// Never sent, so nothing needs reconciling: say so plainly rather than leaving a row

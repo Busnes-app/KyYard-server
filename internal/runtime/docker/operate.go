@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,6 +22,13 @@ const operationBudget = 30 * time.Second
 // digest, the same state. A precondition that no longer holds is a refusal, not a failure,
 // because nothing was attempted.
 func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, detail string) {
+	// Image actions name a reference, not a container, and have their own budgets.
+	switch cmd.Action {
+	case protocol.ActionImagePull:
+		return c.pullImage(ctx, cmd.Reference)
+	case protocol.ActionImageRemove:
+		return c.removeImage(ctx, cmd.Reference)
+	}
 	ctx, cancel := context.WithTimeout(ctx, operationBudget)
 	defer cancel()
 
@@ -130,4 +138,20 @@ func (c *Client) del(ctx context.Context, path string) (int, error) {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode, nil
+}
+
+// postBody sends an action request and returns the status and body. A pull reports late
+// failures inside a 200, so the body is part of the answer rather than something to discard.
+func (c *Client) postBody(ctx context.Context, path string) (int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, string(body), err
 }
