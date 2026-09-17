@@ -476,8 +476,9 @@ func TestErodedHoursDoNotOverwriteTheirSummary(t *testing.T) {
 	}
 	e := enrolled.ID
 
-	// An hour straddling the raw cutoff: the first half is already older than the window.
-	hour := time.Now().UTC().Add(-SampleRetention).Truncate(time.Hour)
+	// An hour comfortably inside the raw window, so what erodes it is this test rather than
+	// where the clock happens to sit: a skip here would prove nothing about the guard.
+	hour := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Hour)
 	tx, _ := st.db.BeginTx(ctx, nil)
 	stmt, err := tx.PrepareContext(ctx, st.rebind(`INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids,restart_count) VALUES (?,?,?,?,?,0,0,0,0,-1)`))
 	if err != nil {
@@ -502,18 +503,17 @@ func TestErodedHoursDoNotOverwriteTheirSummary(t *testing.T) {
 		t.Fatalf("first summary: %+v %v", before, err)
 	}
 
-	// Retention takes the older part of the hour, then the loop summarises again.
-	for i := 0; i < 5; i++ {
-		if _, err := ts.Prune(ctx); err != nil {
-			t.Fatal(err)
-		}
+	// Erode the hour from below exactly as retention does at the six-hour boundary, without
+	// depending on where wall-clock time sits inside the current hour.
+	if _, err := st.db.ExecContext(ctx, st.rebind(`DELETE FROM container_samples WHERE endpoint_id=? AND observed_at<?`), e, hour.Add(45*time.Minute)); err != nil {
+		t.Fatal(err)
 	}
 	var left int
 	if err := st.db.QueryRowContext(ctx, st.rebind(`SELECT COUNT(*) FROM container_samples WHERE endpoint_id=?`), e).Scan(&left); err != nil {
 		t.Fatal(err)
 	}
 	if left == 0 || left >= 60 {
-		t.Skipf("the hour was not partially pruned (%d of 60 rows left); nothing to prove", left)
+		t.Fatalf("the hour was not partially eroded: %d of 60 rows left", left)
 	}
 	if _, err := ts.RollUp(ctx, time.Time{}); err != nil {
 		t.Fatal(err)

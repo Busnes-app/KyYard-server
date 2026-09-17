@@ -478,6 +478,17 @@ const (
 	rollUpBudget = 30 * time.Second
 )
 
+// nextRollUpWindow narrows the catch-up window only after a pass has actually covered it. The
+// wide pass happens once, after a restart, so letting a failed one narrow the window would
+// leave the hours between two and six hours old unsummarised until retention deleted them, and
+// nothing would ever go back for them. Repeating a wide pass is safe: an hour may only widen.
+func nextRollUpWindow(current time.Duration, err error) time.Duration {
+	if err != nil {
+		return current
+	}
+	return recentHours
+}
+
 // pruneLoop enforces retention (docs/retention-policy.md): every minute it summarises ended
 // hours, deletes expired samples, summaries and acknowledged events in bounded batches until a
 // pass removes nothing, and
@@ -501,11 +512,12 @@ func pruneLoop(ctx context.Context, st store.Store) {
 			// SQLite serves the process from one connection, and everything else waits behind
 			// a long one.
 			rollCtx, cancelRoll := context.WithTimeout(ctx, rollUpBudget)
-			if _, err := st.Tenancy().RollUp(rollCtx, time.Now().UTC().Add(-rollUpWindow)); err != nil {
+			_, err := st.Tenancy().RollUp(rollCtx, time.Now().UTC().Add(-rollUpWindow))
+			cancelRoll()
+			rollUpWindow = nextRollUpWindow(rollUpWindow, err)
+			if err != nil {
 				log.Printf("[RETENTION] roll-up: %v", err)
 			}
-			cancelRoll()
-			rollUpWindow = recentHours
 			for i := 0; i < 20; i++ {
 				n, err := st.Tenancy().Prune(ctx)
 				if err != nil {
