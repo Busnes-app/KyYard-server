@@ -18,13 +18,16 @@ const (
 	// SampleCadence is the documented 60 s reporting interval; a container gains at most one
 	// row per cadence (with a little slack for jitter), so the six-hour window holds about
 	// 360 rows per container whatever an agent sends.
-	SampleCadence = 50 * time.Second
-	// MaxSampleRowsPerEndpoint is the backstop against container-ID cardinality: 100
-	// containers × 360 rows at the capacity targets, with headroom.
-	MaxSampleRowsPerEndpoint = 100000
-	EventRetention           = 7 * 24 * time.Hour
-	PruneBatch               = 5000
+	SampleCadence  = 50 * time.Second
+	EventRetention = 7 * 24 * time.Hour
+	PruneBatch     = 5000
 )
+
+// MaxSampleRowsPerEndpoint is the backstop against container-ID cardinality: 100 containers ×
+// 360 rows at the capacity targets, with headroom. It is a variable so a test can reach the
+// ceiling without writing a hundred thousand rows, which costs minutes against PostgreSQL; the
+// behaviour at the ceiling is what those tests are about, not the number.
+var MaxSampleRowsPerEndpoint = 100000
 
 var ErrSampleBudget = errors.New("endpoint sample budget exhausted")
 
