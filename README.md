@@ -318,6 +318,6 @@ remove it.
 `docs/RESTORE.md` is the runbook: opening a capsule with the custodians' cards, putting the
 result in service, and what to distrust afterwards. Drill it once a quarter with real cards.
 
-## Upgrading from ghcr.io/busness-app
+## Upgrading after the Busnes-app owner move
 
-The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr.io/busnes-app/kyyard`. The project no longer controls `ghcr.io/busness-app`; GHCR does not redirect it, and anything served under that name must be treated as untrusted. If `KY_IMAGE` in `.env` still names the old namespace, re-pinning is required, not optional: run the digest procedure in `docs/RESTORE.md`, which resolves the commit you choose to a digest, verifies its attestation and writes the pin, then `docker compose pull`.
+The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr.io/busnes-app/kyyard`. The project no longer controls `ghcr.io/busness-app`; GHCR does not redirect it, and anything served under that name must be treated as untrusted. If `KY_IMAGE` in `.env` still names the old namespace, re-pinning is required, not optional: inspect `git remote -v` before any `git pull`, `make ci`, or `docker compose` command, and replace a retired-owner remote with `https://github.com/Busnes-app/KyYard-server.git` (prefer a fresh clone plus a known commit). Then remove `KY_IMAGE` to follow the compose default or verify and pin a digest using `docs/RESTORE.md` before pulling.

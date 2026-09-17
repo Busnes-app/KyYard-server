@@ -148,7 +148,7 @@ git commit -m "docs: establish Shamir interoperability across suite implementati
 ## Task 2: Create the `ky-primitives` module
 
 > **Amended 2026-09-02:** the prefix here is correct and confirmed against GitHub —
-> `gh api orgs/Busness-app --jq .login` returns `Busness-app`. Go module paths are
+> `gh api orgs/Busnes-app --jq .login` returns `Busness-app`. Go module paths are
 > case-sensitive, so every plan in this directory now uses this exact casing; a lowercase
 > variant would be a different module to the toolchain. See
 > [the module path migration plan](2026-09-02-module-path-migration.md), which brings all

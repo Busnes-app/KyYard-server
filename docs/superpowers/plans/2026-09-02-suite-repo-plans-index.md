@@ -110,8 +110,8 @@ the API rather than a remote URL, because remote URLs are case-insensitive and p
 nothing:
 
 ```bash
-gh api orgs/Busness-app --jq .login          # -> Busness-app
-gh api orgs/Busness-app/repos --jq '.[].name'
+gh api orgs/Busnes-app --jq .login          # -> Busness-app
+gh api orgs/Busnes-app/repos --jq '.[].name'
 ```
 
 Go module paths are case-sensitive — an uppercase letter is escaped as `!b` in the module
