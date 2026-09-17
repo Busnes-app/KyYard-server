@@ -174,9 +174,21 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 					_ = opts.save(id)
 					return errSwitchKey
 				}
+			case protocol.CloseRevoked:
+				// An unknown candidate and a revoked endpoint share this response. After a
+				// key-retired switch, try the retained candidates before giving up; on a cold
+				// connect this remains terminal and never changes key material.
+				if id.Recovering && id.switchKey() {
+					_ = opts.save(id)
+					return errSwitchKey
+				}
 			}
 		}
 		return closeReason(err)
+	}
+	if id.Recovering {
+		id.Recovering = false
+		_ = opts.save(id)
 	}
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {

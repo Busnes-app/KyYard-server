@@ -548,7 +548,6 @@ func TestLateAcknowledgementAfterTheAgentForgotTheOffer(t *testing.T) {
 	defer cancel()
 	ts := st.Tenancy()
 	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
-	offered := ""
 	run := func(untilPending bool) {
 		runCtx, stop := context.WithCancel(ctx)
 		done := make(chan error, 1)
@@ -558,19 +557,8 @@ func TestLateAcknowledgementAfterTheAgentForgotTheOffer(t *testing.T) {
 		deadline := time.Now().Add(8 * time.Second)
 		for {
 			e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
-			if e != nil && e.State == "active" {
-				if untilPending && e.PendingFingerprint != "" {
-					break
-				}
-				if !untilPending {
-					// The second run must finish the rotation_pending round-trip before the
-					// test acknowledges the retained offer; otherwise it can race the
-					// agent's restoration and intermittently authenticate with the wrong key.
-					stored, loadErr := client.LoadIdentity(dir)
-					if loadErr == nil && stored.PendingFingerprint == offered && len(stored.LapsedPrivateKey) == 0 {
-						break
-					}
-				}
+			if e != nil && e.State == "active" && (!untilPending || e.PendingFingerprint != "") {
+				break
 			}
 			if time.Now().After(deadline) {
 				t.Fatalf("session did not reach the expected state: %+v", e)
@@ -584,7 +572,7 @@ func TestLateAcknowledgementAfterTheAgentForgotTheOffer(t *testing.T) {
 	}
 	id.RotatedAt = time.Time{}
 	run(true)
-	offered = id.PendingFingerprint
+	offered := id.PendingFingerprint
 	// Only the agent's clock says the offer lapsed; the server still accepts it.
 	id.PendingSince = time.Now().Add(-client.PendingKeyLife - time.Minute)
 	if err := client.SaveIdentity(dir, id); err != nil {

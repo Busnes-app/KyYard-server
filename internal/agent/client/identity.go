@@ -32,6 +32,7 @@ type Identity struct {
 	// gone (by recording a new offer), because with skewed clocks the server may still
 	// acknowledge it, and key_retired must then be able to promote it.
 	LapsedPrivateKey []byte    `json:"lapsed_private_key,omitempty"`
+	Recovering       bool      `json:"recovering,omitempty"`
 	RotatedAt        time.Time `json:"rotated_at"`
 }
 
@@ -45,6 +46,7 @@ func (id *Identity) Promote() {
 	id.PendingFingerprint = ""
 	id.PendingSince = time.Time{}
 	id.LapsedPrivateKey = nil
+	id.Recovering = false
 }
 
 // switchKey moves to the next candidate when the current key is refused: the live offer
@@ -62,6 +64,7 @@ func (id *Identity) switchKey() bool {
 		return false
 	}
 	id.RotatedAt = time.Now().UTC()
+	id.Recovering = true
 	return true
 }
 
