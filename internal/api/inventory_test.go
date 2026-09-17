@@ -2,8 +2,11 @@ package api_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -221,6 +224,37 @@ func TestFastClockGenerationIsRefusedThenRecovers(t *testing.T) {
 		}
 		return false
 	})
+	// A duplicate connection raises its alert while the session stands (the frame just sent
+	// proves the incumbent live). A flood of skewed snapshots must neither pile up events nor
+	// push that alert out of the operator's view.
+	u, _ := url.Parse(httpSrv.URL)
+	dup, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authAs(t, ctx, dup, u.Host, ag)
+	var ce websocket.CloseError
+	if _, _, err := dup.Read(ctx); !errors.As(err, &ce) || ce.Reason != protocol.CloseDuplicate {
+		t.Fatalf("second socket was not refused as a duplicate: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		fast.Generation++
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, fast)
+		if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError {
+			t.Fatalf("flood frame %d: %+v", i, e)
+		}
+	}
+	view, err = ts.ReadEndpoint(ctx, org, ag.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]int{}
+	for _, al := range view.Alerts {
+		kinds[al.Kind]++
+	}
+	if kinds["generation_rejected"] != 1 || kinds["duplicate_connection"] != 1 {
+		t.Fatalf("alerts after the flood: %v", kinds)
+	}
 	sane := empty
 	sane.Generation = uint64(time.Now().Unix())
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, sane)
@@ -231,4 +265,15 @@ func TestFastClockGenerationIsRefusedThenRecovers(t *testing.T) {
 	if w.Code != 200 || inv.Generation != sane.Generation {
 		t.Fatalf("sane snapshot not accepted after the skewed one: %d %s", w.Code, w.Body.String())
 	}
+}
+
+// authAs answers the challenge on a raw socket with the agent's key and leaves the next read to
+// the caller, so a refusal can be inspected.
+func authAs(t *testing.T, ctx context.Context, c *websocket.Conn, host string, ag enrolledAgent) {
+	t.Helper()
+	env := readEnvelope(t, ctx, c)
+	var ch protocol.Challenge
+	_ = json.Unmarshal(env.Payload, &ch)
+	sig := ed25519.Sign(ag.priv, protocol.AuthPreimage(ag.id, ch.Nonce, host, protocol.Version))
+	writeEnvelope(t, ctx, c, protocol.TypeAuth, protocol.Auth{EndpointID: ag.id, Fingerprint: ag.fp, Version: protocol.Version, Signature: sig})
 }

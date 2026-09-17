@@ -99,11 +99,14 @@ func (t *tenancyStore) AcknowledgeEndpointKey(ctx context.Context, a TenantAcces
 	})
 }
 
+// RecordEndpointEvent raises an operator-facing event. One unacknowledged event per kind per
+// endpoint stands at a time: a repeat while it stands is dropped, so a flood of one kind can
+// neither grow the table nor push other alerts out of the operator's view.
 func (t *tenancyStore) RecordEndpointEvent(ctx context.Context, e *Endpoint, severity, kind, details string) error {
 	if !displaySafe(kind) || !displaySafe(details) || (severity != "info" && severity != "high") {
 		return ErrInvalid
 	}
-	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_events (endpoint_id,organization_id,environment_id,severity,kind,details,created_at) VALUES (?,?,?,?,?,?,?)`), e.ID, e.OrganizationID, e.EnvironmentID, severity, kind, details, time.Now().UTC())
+	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_events (endpoint_id,organization_id,environment_id,severity,kind,details,created_at) SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM endpoint_events WHERE endpoint_id=? AND kind=? AND acknowledged_at IS NULL)`), e.ID, e.OrganizationID, e.EnvironmentID, severity, kind, details, time.Now().UTC(), e.ID, kind)
 	return err
 }
 
