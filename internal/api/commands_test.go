@@ -1,9 +1,12 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -155,5 +158,54 @@ func TestCommandsLeftUnansweredBecomeUnknown(t *testing.T) {
 	}
 	if !strings.Contains(got.Detail, "connection ended") {
 		t.Fatalf("the unknown outcome should say why: %q", got.Detail)
+	}
+}
+
+// An agent is not a trusted author of operator-facing logs. A result frame carrying an
+// unrecognised outcome reaches a log line, so the identifier in it must not be able to forge
+// or reorder what an operator reads.
+func TestAnAgentCannotWriteExtraLinesIntoTheLog(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-log")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+
+	var captured bytes.Buffer
+	log.SetOutput(&captured)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	// An outcome outside the closed set is refused by the store, which is the branch that
+	// logs; the ID carries newlines and a forged line.
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeResult, protocol.Result{
+		ID:      "cmd\n2026/09/17 12:00:00 [SECURITY] all endpoints revoked by operator\nx",
+		Outcome: "not-an-outcome",
+	})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	readEnvelope(t, ctx, sock.conn) // the session continues, so the log line has been written
+
+	out := captured.String()
+	t.Logf("captured log (%d settling lines):\n%s", strings.Count(out, "settling command"), out)
+	// Other goroutines log legitimately, so the question is not how many lines there are but
+	// whether any of them is one the agent wrote.
+	if strings.Contains(out, "[SECURITY]") || strings.Contains(out, "revoked by operator") {
+		t.Fatalf("an agent forged a line in the operator's log:\n%s", out)
+	}
+	if !strings.Contains(out, "settling command") {
+		t.Fatalf("the refusal was not reported at all: %q", out)
+	}
+	// One frame, one line: neither split by the agent's text nor repeated.
+	if n := strings.Count(out, "settling command"); n != 1 {
+		t.Fatalf("one result frame produced %d log lines:\n%s", n, out)
 	}
 }

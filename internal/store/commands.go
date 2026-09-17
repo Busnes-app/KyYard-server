@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -45,6 +46,11 @@ type Command struct {
 // InFlight reports whether the command is still waiting for an answer.
 func (c *Command) InFlight() bool { return c.Outcome == "" }
 
+// containerName is Docker's grammar for a container name or ID, anchored and length-bounded.
+// Anything outside it cannot name a container, and several things outside it can name a
+// different Engine API route.
+var containerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
 var commandActions = map[string]bool{
 	protocol.ActionStart:   true,
 	protocol.ActionStop:    true,
@@ -58,7 +64,9 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 	if !commandActions[action] {
 		return nil, fmt.Errorf("%w: unsupported action %q", ErrInvalid, action)
 	}
-	if containerID == "" || len(containerID) > 128 || !displaySafe(containerID) {
+	if !containerName.MatchString(containerID) {
+		// Docker's own grammar for a name or ID. displaySafe is not enough for a value that
+		// becomes part of a URL: it permits a slash, a query and a fragment.
 		return nil, fmt.Errorf("%w: container", ErrInvalid)
 	}
 	if !displaySafe(expects.ImageDigest) || !displaySafe(expects.State) {

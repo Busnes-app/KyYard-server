@@ -14,6 +14,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 )
 
 const (
@@ -435,7 +436,13 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		// The first answer wins, and an answer for a command this endpoint was never given
 		// changes nothing: the update is scoped to both.
 		if err := ts.SettleCommand(fctx, c.endpointID, res.ID, res.Outcome, res.Detail); err != nil {
-			log.Printf("agent %s: settling command %s: %v", c.endpointID, res.ID, err)
+			// The identifier is server-minted, so anything else is the agent's invention and
+			// none of it reaches the line: an agent does not get to write the operator's log.
+			id := "an unrecognised id"
+			if _, uErr := uuid.Parse(res.ID); uErr == nil {
+				id = res.ID
+			}
+			log.Printf("agent %s: settling command %s: %v", c.endpointID, id, err)
 		}
 	case protocol.TypeMetrics:
 		if pending {

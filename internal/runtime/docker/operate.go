@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -23,13 +24,18 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	ctx, cancel := context.WithTimeout(ctx, operationBudget)
 	defer cancel()
 
+	// Escaped at every use: the identifier comes from a request body, and a value carrying a
+	// slash or a query would otherwise choose which Engine API route the agent calls rather
+	// than which container it acts on. The server constrains the grammar as well; neither
+	// check is allowed to be the only one.
+	container := url.PathEscape(cmd.Container)
 	var inspected struct {
 		Image string `json:"Image"`
 		State struct {
 			Status string `json:"Status"`
 		} `json:"State"`
 	}
-	if err := c.get(ctx, "/containers/"+cmd.Container+"/json", &inspected); err != nil {
+	if err := c.get(ctx, "/containers/"+container+"/json", &inspected); err != nil {
 		if strings.Contains(err.Error(), "404") {
 			return protocol.OutcomeDenied, "the container no longer exists"
 		}
@@ -45,11 +51,11 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	var path string
 	switch cmd.Action {
 	case protocol.ActionStart:
-		path = "/containers/" + cmd.Container + "/start"
+		path = "/containers/" + container + "/start"
 	case protocol.ActionStop:
-		path = "/containers/" + cmd.Container + "/stop"
+		path = "/containers/" + container + "/stop"
 	case protocol.ActionRestart:
-		path = "/containers/" + cmd.Container + "/restart"
+		path = "/containers/" + container + "/restart"
 	default:
 		return protocol.OutcomeDenied, "unsupported action"
 	}
