@@ -399,6 +399,57 @@ CREATE TABLE agent_enrollment_tokens (
 	{Version: 8, Name: "endpoint_inventory", SQLite: `ALTER TABLE endpoints ADD COLUMN inventory_generation INTEGER NOT NULL DEFAULT 0;
 `, Postgres: `ALTER TABLE endpoints ADD COLUMN inventory_generation BIGINT NOT NULL DEFAULT 0;
 `},
+	{Version: 9, Name: "endpoint_events", SQLite: `CREATE TABLE endpoint_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ severity TEXT NOT NULL CHECK (severity IN ('info','high')),
+ kind TEXT NOT NULL,
+ details TEXT NOT NULL DEFAULT '',
+ created_at DATETIME NOT NULL,
+ acknowledged_at DATETIME
+);
+CREATE INDEX idx_endpoint_events_endpoint ON endpoint_events(endpoint_id, created_at);
+CREATE TABLE endpoint_capabilities (
+ endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+ capability TEXT NOT NULL,
+ PRIMARY KEY (endpoint_id, capability)
+);
+`, Postgres: `CREATE TABLE endpoint_events (
+ id BIGSERIAL PRIMARY KEY,
+ endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ severity TEXT NOT NULL CHECK (severity IN ('info','high')),
+ kind TEXT NOT NULL,
+ details TEXT NOT NULL DEFAULT '',
+ created_at TIMESTAMPTZ NOT NULL,
+ acknowledged_at TIMESTAMPTZ
+);
+CREATE INDEX idx_endpoint_events_endpoint ON endpoint_events(endpoint_id, created_at);
+CREATE TABLE endpoint_capabilities (
+ endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+ capability TEXT NOT NULL,
+ PRIMARY KEY (endpoint_id, capability)
+);
+`},
+	{Version: 10, Name: "endpoint_inventory", SQLite: `CREATE TABLE endpoint_inventory (
+ endpoint_id TEXT PRIMARY KEY REFERENCES endpoints(id) ON DELETE CASCADE,
+ generation INTEGER NOT NULL,
+ observed_at DATETIME NOT NULL,
+ received_at DATETIME NOT NULL,
+ snapshot TEXT NOT NULL
+);
+`, Postgres: `CREATE TABLE endpoint_inventory (
+ endpoint_id TEXT PRIMARY KEY REFERENCES endpoints(id) ON DELETE CASCADE,
+ generation BIGINT NOT NULL,
+ observed_at TIMESTAMPTZ NOT NULL,
+ received_at TIMESTAMPTZ NOT NULL,
+ snapshot TEXT NOT NULL
+);
+`},
+	{Version: 11, Name: "endpoint_events_open_unique", SQLite: `CREATE UNIQUE INDEX idx_endpoint_events_open ON endpoint_events(endpoint_id, kind) WHERE acknowledged_at IS NULL;`, Postgres: `CREATE UNIQUE INDEX idx_endpoint_events_open ON endpoint_events(endpoint_id, kind) WHERE acknowledged_at IS NULL;`},
 }
 
 // Run executes all pending migrations for the specified database driver.

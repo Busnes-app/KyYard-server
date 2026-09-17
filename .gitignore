@@ -27,3 +27,6 @@ coverage.out
 .env.*
 !.env.example
 kyyard-agent
+
+# git worktrees for PR branches
+.worktrees/

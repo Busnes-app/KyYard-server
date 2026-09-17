@@ -224,9 +224,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/endpoints", s.tenantRoute(s.handleTenantEndpoints))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleTenantEndpoint))
 	s.mux.HandleFunc("PATCH /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleRenameEndpoint))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/inventory", s.tenantRoute(s.handleEndpointInventory))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/approve", s.tenantRoute(s.handleApproveEndpoint))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/reject", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RejectEndpoint)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/revoke", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RevokeEndpoint)))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/keys/{fingerprint}/acknowledge", s.tenantRoute(s.handleAcknowledgeKey))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/events/{event}/acknowledge", s.tenantRoute(s.handleAcknowledgeEvent))
 	s.mux.HandleFunc("POST /api/agent/v1/enroll", s.handleAgentEnroll)
 	s.mux.HandleFunc("GET /api/agent/v1/connect", s.handleAgentConnect)
 	s.mux.HandleFunc("/api/agent/", func(w http.ResponseWriter, r *http.Request) {

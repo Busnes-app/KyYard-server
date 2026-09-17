@@ -97,7 +97,7 @@ Registry credentials and Compose secrets are delivered only inside the command t
 |---|---|---|
 | Transport | Outbound WebSocket over TLS, JSON envelopes, `coder/websocket` | decided: spike passed on Caddy and nginx (section 2) |
 | Connection auth | Ed25519 challenge-response per connection with domain-separated messages, no bearer tokens; duplicate connections refused | proposed |
-| Identity | Ed25519 keypair in an agent volume, fingerprint reviewed at approval; a rotated key authenticates only after an operator acknowledges it, one pending key at a time | proposed |
+| Identity | Ed25519 keypair in an agent volume, fingerprint reviewed at approval; a rotated key authenticates only after an operator acknowledges it, one pending key at a time | implemented (rotation slice) |
 | Token | 32 random bytes, SHA-256 stored, single use, 15 min | proposed |
 | Heartbeat / offline | 30 s / 3 missed; must stay under nginx's 60 s default read timeout | implemented (PR 09) |
 | Unknown outcome | Reconcile from inventory before any retry; destructive never auto-retried | required by handoff |

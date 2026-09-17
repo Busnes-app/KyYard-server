@@ -35,6 +35,20 @@ func Fingerprint(publicKey []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// RawFingerprint is the 32-byte digest the rotation preimage carries; Fingerprint is its hex.
+func RawFingerprint(publicKey []byte) []byte {
+	sum := sha256.Sum256(publicKey)
+	return sum[:]
+}
+
+// VerifyRotation checks that the current key signed the new one under the rotation context.
+func VerifyRotation(currentKey, currentRawFingerprint, newKey, signature []byte) bool {
+	if len(currentKey) != ed25519.PublicKeySize || len(newKey) != ed25519.PublicKeySize || len(signature) != ed25519.SignatureSize {
+		return false
+	}
+	return ed25519.Verify(ed25519.PublicKey(currentKey), Preimage(ContextRotate, currentRawFingerprint, newKey), signature)
+}
+
 // VerifyEnrollment checks the agent's proof of possession over the raw token.
 func VerifyEnrollment(publicKey, token, proof []byte) bool {
 	if len(publicKey) != ed25519.PublicKeySize || len(token) != TokenSize || len(proof) != ed25519.SignatureSize {
