@@ -70,7 +70,7 @@ func (t *tenancyStore) RotateEndpointKey(ctx context.Context, endpointID string,
 		}
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_events (endpoint_id,organization_id,environment_id,severity,kind,details,created_at) VALUES (?,?,?,'high','rotation_pending',?,?)`), endpointID, e.OrganizationID, e.EnvironmentID, "approved="+hex.EncodeToString(oldFP[:])+" pending="+newFP, now); err != nil {
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_events (endpoint_id,organization_id,environment_id,severity,kind,details,created_at) VALUES (?,?,?,'high','rotation_pending',?,?) ON CONFLICT DO NOTHING`), endpointID, e.OrganizationID, e.EnvironmentID, "approved="+hex.EncodeToString(oldFP[:])+" pending="+newFP, now); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?,?)`), "agent:"+endpointID, "endpoint.rotate", endpointID, "approved="+hex.EncodeToString(oldFP[:])+" pending="+newFP, ip, now, "organization", e.OrganizationID, e.EnvironmentID, uuid.NewString(), "success"); err != nil {
@@ -100,13 +100,14 @@ func (t *tenancyStore) AcknowledgeEndpointKey(ctx context.Context, a TenantAcces
 }
 
 // RecordEndpointEvent raises an operator-facing event. One unacknowledged event per kind per
-// endpoint stands at a time: a repeat while it stands is dropped, so a flood of one kind can
-// neither grow the table nor push other alerts out of the operator's view.
+// endpoint stands at a time, enforced by the partial unique index of migration 11 so parallel
+// writers cannot slip past a prior read: a repeat while one stands is dropped, and a flood of
+// one kind can neither grow the table nor push other alerts out of the operator's view.
 func (t *tenancyStore) RecordEndpointEvent(ctx context.Context, e *Endpoint, severity, kind, details string) error {
 	if !displaySafe(kind) || !displaySafe(details) || (severity != "info" && severity != "high") {
 		return ErrInvalid
 	}
-	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_events (endpoint_id,organization_id,environment_id,severity,kind,details,created_at) SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM endpoint_events WHERE endpoint_id=? AND kind=? AND acknowledged_at IS NULL)`), e.ID, e.OrganizationID, e.EnvironmentID, severity, kind, details, time.Now().UTC(), e.ID, kind)
+	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_events (endpoint_id,organization_id,environment_id,severity,kind,details,created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`), e.ID, e.OrganizationID, e.EnvironmentID, severity, kind, details, time.Now().UTC())
 	return err
 }
 

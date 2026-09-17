@@ -449,6 +449,7 @@ CREATE TABLE endpoint_capabilities (
  snapshot TEXT NOT NULL
 );
 `},
+	{Version: 11, Name: "endpoint_events_open_unique", SQLite: `CREATE UNIQUE INDEX idx_endpoint_events_open ON endpoint_events(endpoint_id, kind) WHERE acknowledged_at IS NULL;`, Postgres: `CREATE UNIQUE INDEX idx_endpoint_events_open ON endpoint_events(endpoint_id, kind) WHERE acknowledged_at IS NULL;`},
 }
 
 // Run executes all pending migrations for the specified database driver.
