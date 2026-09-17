@@ -176,7 +176,9 @@ Ed25519 identity in `--identity-dir` (default `/var/lib/kyyard-agent`, 0700), pi
 plane's instance fingerprint, and holds one outbound WebSocket to `/api/agent/v1/connect` with a
 30-second heartbeat, reconnecting with backoff. Plaintext `http://` is refused except to loopback.
 It stays `pending` until approved, becomes `active` on its first inventory report, is shown
-`offline` after three missed heartbeats, and exits when revoked. Every 30 days (`--rotate-every`)
+`offline` after three missed heartbeats, and exits when revoked. It reports a bounded inventory snapshot (engine facts, containers, images, networks, volumes;
+never container environment) from `--docker-socket` at connect and every `--inventory-every`
+(default one minute); the endpoint screen shows it with its age. Every 30 days (`--rotate-every`)
 it offers a new key; the old key keeps working until an administrator acknowledges the new
 fingerprint on the environment screen, and a second live connection for the same endpoint is
 refused, flagged, and blocks rotation until cleared. Behind nginx add the standard

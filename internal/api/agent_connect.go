@@ -376,16 +376,33 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		if pending {
 			return false
 		}
-		var inv protocol.Inventory
+		var inv protocol.Snapshot
+		if len(f.Payload) > protocol.MaxSnapshotBytes {
+			// A data problem, not an availability one: say so and keep the session so
+			// heartbeats continue and the endpoint stays visible.
+			if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "snapshot_too_large", "limit_bytes": protocol.MaxSnapshotBytes})); err != nil {
+				return true
+			}
+			return false
+		}
 		if err := json.Unmarshal(f.Payload, &inv); err != nil {
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
-		accepted, err := ts.AcceptInventory(fctx, c.endpointID, inv.Generation)
+		if inv.ObservedAt.IsZero() {
+			inv.ObservedAt = time.Now().UTC()
+		}
+		// Store the schema-conforming re-encoding, never the agent's bytes.
+		protocol.Clamp(&inv)
+		body := protocol.Shrink(&inv)
+		accepted, err := ts.AcceptInventory(fctx, c.endpointID, inv.Generation, inv.ObservedAt, body)
 		if err != nil {
 			log.Printf("agent %s: inventory: %v", c.endpointID, err)
 		} else if !accepted {
-			log.Printf("agent %s: inventory generation %d not newer than the stored one; snapshot ignored", c.endpointID, inv.Generation)
+			log.Printf("agent %s: inventory generation %d not accepted (not newer, or implausible); snapshot ignored", c.endpointID, inv.Generation)
+			if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "generation_rejected", "generation": inv.Generation})); err != nil {
+				return true
+			}
 		}
 	default:
 		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]string{"code": "unsupported_type", "type": f.Type})); err != nil {

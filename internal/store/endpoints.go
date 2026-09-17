@@ -240,7 +240,10 @@ func (t *tenancyStore) ApproveEndpoint(ctx context.Context, a TenantAccess, id, 
 			}
 			return err
 		}
-		_, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoints SET state='approved',approved_at=?,approved_by=? WHERE id=?`), now, a.ActorID, id)
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoints SET state='approved',approved_at=?,approved_by=?,inventory_generation=0 WHERE id=?`), now, a.ActorID, id); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM endpoint_inventory WHERE endpoint_id=?`), id)
 		return err
 	})
 }
@@ -260,8 +263,11 @@ func (t *tenancyStore) RevokeEndpoint(ctx context.Context, a TenantAccess, id st
 // terminate is the one transition into the terminal state; keys retire with it.
 func (t *tenancyStore) terminate(ctx context.Context, tx *sql.Tx, org, id, condition string) error {
 	now := time.Now().UTC()
-	result, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoints SET state='revoked',revoked_at=? WHERE organization_id=? AND id=? AND `+condition), now, org, id)
+	result, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoints SET state='revoked',revoked_at=?,inventory_generation=0 WHERE organization_id=? AND id=? AND `+condition), now, org, id)
 	if err := tenantChangeResult(result, err); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM endpoint_inventory WHERE endpoint_id=?`), id); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_keys SET state='retired',retired_at=? WHERE endpoint_id=? AND state<>'retired'`), now, id)

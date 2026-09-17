@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/Busness-app/kyyard-server/internal/agent/client"
+	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busness-app/kyyard-server/internal/runtime/docker"
 )
 
 var version = "dev"
@@ -26,12 +28,27 @@ func main() {
 	dir := flag.String("identity-dir", "/var/lib/kyyard-agent", "directory holding the agent identity (0700)")
 	name := flag.String("name", "", "endpoint name to propose at enrollment (default: hostname)")
 	rotate := flag.Duration("rotate-every", 30*24*time.Hour, "offer a new identity key this often (0 disables)")
+	socket := flag.String("docker-socket", "/var/run/docker.sock", "Docker Engine socket to inventory (empty disables)")
+	inventoryEvery := flag.Duration("inventory-every", time.Minute, "how often to report a fresh inventory snapshot")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	httpClient := &http.Client{Timeout: 30 * time.Second}
+	// The Docker adapter is optional at start: a host whose daemon is down still enrolls and
+	// reports facts, and the snapshot call keeps retrying the socket on its own schedule.
+	var snapshot func(context.Context) (*protocol.Snapshot, error)
+	runtimeVersion := ""
+	if *socket != "" {
+		engine := docker.New(*socket)
+		if facts, err := engine.Engine(ctx); err != nil {
+			log.Printf("docker at %s not reachable (%v); reporting facts only until it is", *socket, err)
+		} else {
+			runtimeVersion = facts.Version
+		}
+		snapshot = engine.Snapshot
+	}
 
 	id, err := client.LoadIdentity(*dir)
 	if err != nil {
@@ -48,7 +65,7 @@ func main() {
 		if *name == "" {
 			*name, _ = os.Hostname()
 		}
-		id, err = client.Enroll(ctx, httpClient, *server, *dir, *name, token)
+		id, err = client.Enroll(ctx, httpClient, *server, *dir, *name, token, runtimeVersion)
 		if err != nil {
 			log.Fatalf("enrollment: %v", err)
 		}
@@ -56,7 +73,7 @@ func main() {
 	} else if *server != "" && *server != id.Server {
 		log.Fatalf("identity is enrolled with %s, not %s; remove %s to re-enroll", id.Server, *server, *dir)
 	}
-	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate}); err != nil {
+	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, InventoryEvery: *inventoryEvery}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var (
@@ -135,7 +136,8 @@ type TenancyStore interface {
 	ReadEndpointRaw(ctx context.Context, endpointID string) (*Endpoint, error)
 	RecordAgentConnect(ctx context.Context, endpoint *Endpoint, ip, result string) error
 	TouchEndpoint(ctx context.Context, endpointID string) error
-	AcceptInventory(ctx context.Context, endpointID string, generation uint64) (bool, error)
+	AcceptInventory(ctx context.Context, endpointID string, generation uint64, observedAt time.Time, snapshot []byte) (bool, error)
+	ReadInventory(ctx context.Context, access TenantAccess, endpointID string) (*Inventory, error)
 	MarkEndpointOffline(ctx context.Context, endpointID string) error
 	EndpointState(ctx context.Context, endpointID string) (string, error)
 

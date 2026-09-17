@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { secureFetch } from '../api';
 import { tenantWrite, useTenantResource, type Endpoint, type EnrollmentToken } from '../tenant';
 import { EmptyNotice, StateNotice } from './StateNotice';
+import { Link } from './Link';
+import { endpointPath } from '../router';
 
 const terminal = (s: string) => s === 'revoked' || s === 'expired';
 
@@ -90,7 +92,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
             <tbody>
               {endpoints.data.map((e) => (
                 <tr key={e.id}>
-                  <td>{e.name} <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span></td>
+                  <td><Link to={endpointPath(org, e.id)}>{displayName(e.name)}</Link> <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span></td>
                   <td><span className={`badge ${e.state === 'pending' ? 'badge-accent' : terminal(e.state) ? 'badge-danger' : 'badge-success'}`}>{e.state}</span></td>
                   <td>{e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? ''}</span></td>
                   <td className="font-mono" style={{ fontSize: 11 }}>

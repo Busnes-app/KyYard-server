@@ -7,6 +7,16 @@ export interface Member { user_id: string; username: string; role: string; statu
 export interface EndpointAlert { id: number; kind: string; details: string; created_at: string }
 export interface Endpoint { id: string; environment_id: string; name: string; runtime: string; state: string; facts: Record<string, string>; fingerprint: string; pending_fingerprint?: string; capabilities: string[]; alerts: EndpointAlert[]; created_at: string; approved_by?: string }
 export interface EnrollmentToken { id: string; runtime: string; expires_at: string; token: string; command?: string; image?: string; note?: string; disclosure: string }
+export interface Port { host_ip?: string; host?: number; container: number; protocol: string }
+export interface Container { id: string; name: string; image: string; image_id: string; state: string; status: string; created_at: string; ports: Port[]; labels: Record<string, string>; networks: string[]; compose_project?: string }
+export interface Snapshot {
+  generation: number; observed_at: string;
+  engine: { runtime: string; version: string; api_version: string; os: string; arch: string; kernel: string; cpus: number; memory_bytes: number; hostname: string };
+  containers: Container[]; images: { id: string; tags: string[]; digests: string[]; size_bytes: number; created_at: string }[];
+  networks: { id: string; name: string; driver: string; scope: string }[]; volumes: { name: string; driver: string; mountpoint: string; created_at: string }[];
+  truncated?: string[];
+}
+export interface Inventory { endpoint_id: string; state: string; generation: number; observed_at: string; received_at: string; snapshot: Snapshot }
 export interface AuditRecord { id: number; user_id: string; action: string; resource: string; environment_id: string; correlation_id: string; result: string; created_at: string }
 
 export const tenantRoles = ['organization_admin', 'environment_admin', 'operator', 'developer', 'read_only'] as const;

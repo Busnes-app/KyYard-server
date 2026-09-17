@@ -9,6 +9,7 @@ import { Settings } from './pages/Settings';
 import { Organization } from './pages/Organization';
 import { Members } from './pages/Members';
 import { Environment } from './pages/Environment';
+import { EndpointPage } from './pages/EndpointPage';
 import { AuditList } from './components/AuditList';
 import { Link } from './components/Link';
 import './styles/theme.css';
@@ -115,6 +116,7 @@ const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, s
     case 'organization': return <Organization org={route.org} />;
     case 'members': return <Members org={route.org} />;
     case 'environment': return <Environment org={route.org} env={route.env} />;
+    case 'endpoint': return <EndpointPage org={route.org} endpoint={route.endpoint} />;
     case 'audit': return (
       <div className="ky-page">
         <h1 style={{ fontSize: 24 }}>Organization audit</h1>

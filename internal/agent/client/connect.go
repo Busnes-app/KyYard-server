@@ -35,6 +35,10 @@ type Options struct {
 	IdentityDir string
 	// RotateEvery is how often the agent offers a new key; zero disables rotation.
 	RotateEvery time.Duration
+	// Snapshot reads the runtime; nil reports facts only (no runtime reachable).
+	Snapshot func(ctx context.Context) (*protocol.Snapshot, error)
+	// InventoryEvery is how often a fresh snapshot is sent while connected.
+	InventoryEvery time.Duration
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -187,17 +191,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		return err
 	}
 	if hello.State != "pending" {
-		// Generations must rise across restarts, or a restarted agent's first snapshot would be
-		// ignored and the endpoint would stay offline. Wall-clock seeding covers a lost file.
-		gen := id.Generation + 1
-		if now := uint64(time.Now().Unix()); now > gen {
-			gen = now
-		}
-		if err := write(ctx, conn, protocol.TypeInventory, protocol.Inventory{Generation: gen, Facts: Facts("")}); err != nil {
+		if err := sendInventory(ctx, conn, id, opts); err != nil {
 			return err
 		}
-		id.Generation = gen
-		_ = opts.save(id)
 		if id.PendingFingerprint != "" && time.Since(id.PendingSince) > PendingKeyLife {
 			// Forget the offer but keep the key material until a new offer replaces it: if a
 			// late acknowledgement retires the current key anyway, key_retired can still promote.
@@ -241,6 +237,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	}()
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
+	inventoryEvery := opts.InventoryEvery
+	if inventoryEvery <= 0 {
+		inventoryEvery = 60 * time.Second
+	}
+	inventory := time.NewTicker(inventoryEvery)
+	defer inventory.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -249,6 +251,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		case <-ticker.C:
 			if err := write(ctx, conn, protocol.TypeHeartbeat, nil); err != nil {
 				return err
+			}
+		case <-inventory.C:
+			if hello.State != "pending" {
+				if err := sendInventory(ctx, conn, id, opts); err != nil {
+					return err
+				}
 			}
 		case err := <-readErr:
 			// The operator acknowledged our rotated key and the server ended this session on
@@ -372,4 +380,35 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 	}
 	sig := ed25519.Sign(current, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(current.Public().(ed25519.PublicKey)), pub))
 	return write(ctx, conn, protocol.TypeRotate, protocol.Rotate{PublicKey: pub, Signature: sig})
+}
+
+// sendInventory reads the runtime (or reports facts only) under a generation that rises across
+// restarts: a restarted agent's first snapshot must not be ignored, so the wall clock seeds it
+// when the persisted counter is behind.
+func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options) error {
+	gen := id.Generation + 1
+	if now := uint64(time.Now().Unix()); now > gen {
+		gen = now
+	}
+	var snap *protocol.Snapshot
+	if opts.Snapshot != nil {
+		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		s, err := opts.Snapshot(sctx)
+		cancel()
+		if err != nil {
+			opts.Log.Printf("runtime snapshot failed: %v; reporting facts only", err)
+		} else {
+			snap = s
+		}
+	}
+	if snap == nil {
+		snap = &protocol.Snapshot{ObservedAt: time.Now().UTC(), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
+	}
+	snap.Generation = gen
+	if err := write(ctx, conn, protocol.TypeInventory, snap); err != nil {
+		return err
+	}
+	id.Generation = gen
+	opts.save(id)
+	return nil
 }
