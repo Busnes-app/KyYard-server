@@ -175,14 +175,17 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	if e, err := ts.ReadEndpointRaw(ctx, ag.id); err != nil || e.State != "pending" {
 		t.Fatalf("pending endpoint moved by inventory: %+v", e)
 	}
-	// A second socket for the same endpoint is refused while the first is live.
+	// A second socket for the same endpoint is refused while the first is live; the incumbent
+	// is pinged first, so keep a reader active like a real agent.
+	next := make(chan protocol.Envelope, 1)
+	go func() { next <- readEnvelope(t, ctx, sock.conn) }()
 	if _, reason := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version); reason != protocol.CloseDuplicate {
 		t.Fatalf("duplicate: %q", reason)
 	}
 	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
 		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
 	}
-	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeApproved {
+	if e := <-next; e.Type != protocol.TypeApproved {
 		t.Fatalf("approval notice: %+v", e)
 	}
 	sock.conn.Close(websocket.StatusNormalClosure, "approved")
@@ -363,9 +366,23 @@ func TestAgentRotationOverTheSocket(t *testing.T) {
 	if notice.Type != protocol.TypeRotated || rotated.Fingerprint != e.PendingFingerprint {
 		t.Fatalf("rotated notice: %+v", notice)
 	}
-	// The agent reconnects as soon as it sees the notice; the server must free the slot before
+	// The session on the retired key ends in the same request as the acknowledgement, and a
+	// heartbeat on it can no longer advance last_seen_at.
+	before, _ := ts.ReadEndpointRaw(ctx, ag.id)
+	_, _, err := sock.conn.Read(ctx)
+	var retired websocket.CloseError
+	if !errorsAs(err, &retired) || retired.Reason != protocol.CloseKeyRetired {
+		t.Fatalf("acknowledgement did not close the old key's session: %v", err)
+	}
+	raw, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeHeartbeat})
+	_ = sock.conn.Write(ctx, websocket.MessageText, raw)
+	time.Sleep(100 * time.Millisecond)
+	after, _ := ts.ReadEndpointRaw(ctx, ag.id)
+	if before.LastSeenAt != nil && after.LastSeenAt != nil && after.LastSeenAt.After(*before.LastSeenAt) {
+		t.Fatal("a heartbeat on the retired key advanced last_seen_at")
+	}
+	// The agent reconnects as soon as it sees the close; the server must free the slot before
 	// any database write so this never reads as a duplicate connection.
-	sock.conn.Close(websocket.StatusNormalClosure, "rotated")
 	if _, reason := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version); reason != protocol.CloseKeyRetired {
 		t.Fatalf("old key after acknowledgement: %q", reason)
 	}
@@ -390,13 +407,16 @@ func TestAgentRotationOverTheSocket(t *testing.T) {
 	if len(e.Capabilities) != 1 || e.Capabilities[0] != "docker.containers" {
 		t.Fatalf("second hello rewrote capabilities: %+v", e.Capabilities)
 	}
-	// A duplicate connection records an alert and blocks a further rotation.
+	// A duplicate connection records an alert and blocks a further rotation. The incumbent is
+	// probed first, so a reader must be active for it to answer the ping like a real agent.
+	next := make(chan protocol.Envelope, 1)
+	go func() { next <- readEnvelope(t, ctx, sock.conn) }()
 	if _, reason := connect(t, ctx, httpSrv.URL, ag, newPriv, protocol.Version); reason != protocol.CloseDuplicate {
 		t.Fatalf("duplicate: %q", reason)
 	}
 	thirdPub, _, _ := ed25519.GenerateKey(rand.Reader)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeRotate, protocol.Rotate{PublicKey: thirdPub, Signature: ed25519.Sign(newPriv, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(newPub), thirdPub))})
-	ack = readEnvelope(t, ctx, sock.conn)
+	ack = <-next
 	_ = json.Unmarshal(ack.Payload, &rotated)
 	if rotated.Code != "rotation_blocked" {
 		t.Fatalf("rotation after duplicate: %+v", rotated)

@@ -14,8 +14,9 @@ import (
 // authenticate it. Pending endpoints authenticate with their key under review so they can
 // receive the approval notice; nothing else is granted to them.
 type AgentIdentity struct {
-	Endpoint  Endpoint
-	PublicKey []byte
+	Endpoint    Endpoint
+	PublicKey   []byte
+	Fingerprint string
 }
 
 // Sentinel errors let the handshake tell a retired key (the agent should switch to its
@@ -60,7 +61,7 @@ func (t *tenancyStore) AgentIdentity(ctx context.Context, endpointID, fingerprin
 	if err != nil {
 		return nil, err
 	}
-	return &AgentIdentity{Endpoint: *e, PublicKey: key}, nil
+	return &AgentIdentity{Endpoint: *e, PublicKey: key, Fingerprint: fingerprint}, nil
 }
 
 // ReadEndpointRaw is a trusted helper for the handshake's own audit row; it is not authorized.

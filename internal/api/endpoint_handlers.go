@@ -208,6 +208,9 @@ func (s *Server) handleAcknowledgeKey(w http.ResponseWriter, r *http.Request, a 
 		return
 	}
 	s.agents.notify(id, envelope(protocol.TypeRotated, protocol.Rotated{Fingerprint: fp}))
+	// The acknowledged key is now the only one; a session on the retired key ends here, in
+	// the same request, whether or not its holder honours the notice.
+	s.agents.closeEndpoint(id, protocol.CloseKeyRetired)
 	w.WriteHeader(http.StatusNoContent)
 }
 

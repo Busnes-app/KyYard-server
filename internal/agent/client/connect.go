@@ -158,14 +158,17 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	f, err = read(hctx, conn)
 	if err != nil {
 		var ce websocket.CloseError
-		if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired {
-			if id.promotable() {
-				// The operator acknowledged our rotated key while we were away.
-				id.Promote()
-				_ = opts.save(id)
-				return errSwitchKey
+		if errors.As(err, &ce) {
+			switch strings.TrimSpace(ce.Reason) {
+			case protocol.CloseKeyRetired, protocol.CloseRevoked:
+				// Our key was retired (an acknowledged rotation while we were away) or is not
+				// known at all (a candidate that was never recorded). Try the next candidate;
+				// only with none left is the endpoint really gone.
+				if id.switchKey() {
+					_ = opts.save(id)
+					return errSwitchKey
+				}
 			}
-			return ErrRevoked // nothing left to authenticate with; re-enrollment is the only way back
 		}
 		return closeReason(err)
 	}
@@ -248,6 +251,13 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				return err
 			}
 		case err := <-readErr:
+			// The operator acknowledged our rotated key and the server ended this session on
+			// the old one: switch now instead of waiting for the next backoff.
+			var ce websocket.CloseError
+			if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired && id.switchKey() {
+				_ = opts.save(id)
+				return errSwitchKey
+			}
 			return closeReason(err)
 		case f := <-frames:
 			switch f.Type {

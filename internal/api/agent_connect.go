@@ -25,13 +25,24 @@ const (
 
 // agentConn is one live socket. The registry holds at most one per endpoint.
 type agentConn struct {
-	endpointID string
-	ip         string
-	conn       *websocket.Conn
-	send       chan protocol.Envelope
-	closed     chan struct{}
-	closeOnce  sync.Once
-	reason     string
+	endpointID  string
+	fingerprint string // the key that authenticated this session
+	ip          string
+	conn        *websocket.Conn
+	send        chan protocol.Envelope
+	closed      chan struct{}
+	closeOnce   sync.Once
+	reason      string
+}
+
+// alive pings the socket with a short deadline; a peer that cannot answer is not a competitor.
+func (c *agentConn) alive(ctx context.Context) bool {
+	if c.conn == nil {
+		return false
+	}
+	pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return c.conn.Ping(pctx) == nil
 }
 
 func (c *agentConn) close(reason string) {
@@ -140,8 +151,18 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(agentFrameLimit)
-	c := &agentConn{endpointID: identity.Endpoint.ID, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	c := &agentConn{endpointID: identity.Endpoint.ID, fingerprint: identity.Fingerprint, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
 	if incumbent := s.agents.add(c); incumbent != nil {
+		// The incumbent may be a socket the network dropped without a FIN: the agent gives up
+		// after two heartbeats and redials before the server's three-heartbeat timeout. Probe
+		// it; a dead incumbent is evicted and the newcomer admitted with no event.
+		if !incumbent.alive(ctx) {
+			incumbent.close(protocol.CloseTimeout)
+			s.agents.remove(incumbent)
+			if again := s.agents.add(c); again == nil {
+				goto admitted
+			}
+		}
 		// A second live socket is the signature of a copied identity volume: audit it, raise
 		// an operator-facing event naming both parties (the refused one is usually the real
 		// host, the holder is the one to doubt), and block rotation until someone looks.
@@ -150,6 +171,7 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		conn.Close(websocket.StatusPolicyViolation, protocol.CloseDuplicate)
 		return
 	}
+admitted:
 	defer s.agents.remove(c)
 	if s.stopping.Load() {
 		conn.Close(websocket.StatusGoingAway, protocol.CloseShutdown)
@@ -293,10 +315,19 @@ func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c *agentConn, f protocol.Envelope, pending bool, helloSeen *bool) bool {
 	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer fcancel()
-	// Revocation between frames must not be outrun by a cached state.
+	// Revocation between frames must not be outrun by a cached state, and neither must the
+	// retirement of the key that authenticated this session.
 	state, err := ts.EndpointState(fctx, c.endpointID)
 	if err != nil || state == "revoked" {
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
+		return true
+	}
+	if _, err := ts.AgentIdentity(fctx, c.endpointID, c.fingerprint); err != nil {
+		reason := protocol.CloseRevoked
+		if errors.Is(err, store.ErrKeyRetired) {
+			reason = protocol.CloseKeyRetired
+		}
+		c.conn.Close(websocket.StatusPolicyViolation, reason)
 		return true
 	}
 	switch f.Type {

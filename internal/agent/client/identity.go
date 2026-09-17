@@ -47,12 +47,27 @@ func (id *Identity) Promote() {
 	id.LapsedPrivateKey = nil
 }
 
-// promotable is the key a key_retired refusal should switch to: the live offer, else a lapsed one.
-func (id *Identity) promotable() bool {
-	if len(id.PendingPrivateKey) != ed25519.PrivateKeySize && len(id.LapsedPrivateKey) == ed25519.PrivateKeySize {
-		id.PendingPrivateKey = id.LapsedPrivateKey
+// switchKey moves to the next candidate when the current key is refused: the live offer
+// first, then a lapsed one. The other candidate is kept so a wrong guess can still fall back.
+// It returns false when nothing is left to try.
+func (id *Identity) switchKey() bool {
+	switch {
+	case len(id.PendingPrivateKey) == ed25519.PrivateKeySize:
+		id.PrivateKey = id.PendingPrivateKey
+		id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
+	case len(id.LapsedPrivateKey) == ed25519.PrivateKeySize:
+		id.PrivateKey = id.LapsedPrivateKey
+		id.LapsedPrivateKey = nil
+	default:
+		return false
 	}
-	return len(id.PendingPrivateKey) == ed25519.PrivateKeySize
+	id.RotatedAt = time.Now().UTC()
+	return true
+}
+
+// promotable reports whether a refusal of the current key has somewhere to go.
+func (id *Identity) promotable() bool {
+	return len(id.PendingPrivateKey) == ed25519.PrivateKeySize || len(id.LapsedPrivateKey) == ed25519.PrivateKeySize
 }
 
 // pendingFingerprint derives the fingerprint from the retained pending key, so an offer whose
