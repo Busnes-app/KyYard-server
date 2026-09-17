@@ -17,6 +17,7 @@ type SQLStore struct {
 	db       *sql.DB
 	driver   string
 	budget   int64        // bytes of telemetry allowed; zero disables the check
+	lastUsed atomic.Int64 // bytes at the previous evaluation, to tell growth from a plateau
 	ceiling  int          // stored sample rows allowed per endpoint
 	pressure atomic.Int32 // current Pressure, read on every telemetry write
 	users    *userStore
@@ -925,22 +926,78 @@ func errorsIs(err, target error) bool {
 	return err == target || strings.Contains(err.Error(), target.Error())
 }
 
-// Usage reports the bytes the database occupies. SQLite answers from its own page accounting,
-// which counts the main file; PostgreSQL reports the whole database.
+// telemetryTables are what the disk budget is about: the growing, droppable data. Audit is
+// listed because it shares the budget's disk, never because it may be refused.
+var telemetryTables = []string{"container_samples", "endpoint_events", "endpoint_inventory", "audit_records"}
+
+// Usage reports the bytes held in live data, a number that must be able to fall: a measure
+// that only ever rises would make pressure a latch rather than a state. SQLite counts its
+// pages minus the freelist, so a delete lowers it at once. PostgreSQL sizes the telemetry
+// relations in the current schema rather than the whole database file, so space the engine
+// reclaims is visible; a plain delete leaves pages with the table until its vacuum runs.
 func (s *SQLStore) Usage(ctx context.Context) (int64, error) {
 	if s.driver == "postgres" {
 		var n int64
-		err := s.db.QueryRowContext(ctx, "SELECT pg_database_size(current_database())").Scan(&n)
+		err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(pg_total_relation_size(c.oid)),0) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relname=ANY($1)`, telemetryTables).Scan(&n)
 		return n, err
 	}
-	var pages, size int64
+	var pages, free, size int64
 	if err := s.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&free); err != nil {
 		return 0, err
 	}
 	if err := s.db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&size); err != nil {
 		return 0, err
 	}
-	return pages * size, nil
+	if free > pages {
+		free = pages
+	}
+	return (pages - free) * size, nil
+}
+
+// EvaluatePressure re-reads usage and settles the level, returning it. Degrading at 95 % leaves
+// room to prune before anything must stop; the threshold divides before multiplying so a very
+// large budget cannot overflow into a negative one.
+//
+// What raises the level is being over budget *and still growing*. What releases it is a prune
+// pass that actually freed rows, or a smaller reading.
+//
+// Release cannot wait for bytes to fall. A delete returns pages to the table, not to the file,
+// and on PostgreSQL a plain vacuum does not shrink the indexes at all, so a byte-only rule
+// would refuse telemetry forever although the expired data is gone. Once retention has taken
+// everything it is owed, that is the best the system can do, so the level clears; if the data
+// comes back the level comes back with it. At the boundary this throttles rather than latches,
+// which is what a budget is for.
+func (s *SQLStore) EvaluatePressure(ctx context.Context, freed int64) (Pressure, error) {
+	current := s.Pressure()
+	if s.budget <= 0 {
+		return current, nil
+	}
+	used, err := s.Usage(ctx)
+	if err != nil {
+		return current, err
+	}
+	implied := PressureNormal
+	switch {
+	case used >= s.budget:
+		implied = PressureStopped
+	case used >= s.budget/100*95:
+		implied = PressureDegraded
+	}
+	next := current
+	switch {
+	case implied > current && used > s.lastUsed.Load():
+		next = implied
+	case implied < current:
+		next = implied
+	case freed > 0 && current > PressureNormal:
+		next = PressureNormal
+	}
+	s.lastUsed.Store(used)
+	s.SetPressure(next)
+	return next, nil
 }
 
 // Budget is the configured ceiling, zero when the check is disabled.

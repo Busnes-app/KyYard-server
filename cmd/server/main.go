@@ -476,49 +476,43 @@ func runRestore(args []string) {
 func pruneLoop(ctx context.Context, st store.Store) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	measure(ctx, st)
+	measure(ctx, st, 0)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			measure(ctx, st)
+			var freed int64
 			for i := 0; i < 20; i++ {
 				n, err := st.Tenancy().Prune(ctx)
 				if err != nil {
 					log.Printf("[RETENTION] prune: %v", err)
 					break
 				}
+				freed += n
 				if n == 0 {
 					break
 				}
 			}
+			measure(ctx, st, freed)
 		}
 	}
 }
 
-// measure sets the retention pressure from what the database occupies against its budget.
-// Degrading at 95 % leaves room to prune before anything must stop, and a level is logged on
-// change rather than every minute, so an operator sees the transition.
-func measure(ctx context.Context, st store.Store) {
-	budget := st.Budget()
-	if budget <= 0 {
+// measure settles the retention pressure and reports a change, so an operator sees the
+// transition rather than a line every minute.
+func measure(ctx context.Context, st store.Store, freed int64) {
+	if st.Budget() <= 0 {
 		return
 	}
-	used, err := st.Usage(ctx)
+	prev := st.Pressure()
+	next, err := st.EvaluatePressure(ctx, freed)
 	if err != nil {
 		log.Printf("[RETENTION] usage: %v", err)
 		return
 	}
-	next := store.PressureNormal
-	switch {
-	case used >= budget:
-		next = store.PressureStopped
-	case used >= budget*95/100:
-		next = store.PressureDegraded
-	}
-	if prev := st.Pressure(); prev != next {
-		log.Printf("[RETENTION] %d of %d bytes used: telemetry %s (was %s)", used, budget, next, prev)
-		st.SetPressure(next)
+	if next != prev {
+		used, _ := st.Usage(ctx)
+		log.Printf("[RETENTION] %d of %d bytes in use: telemetry %s (was %s)", used, st.Budget(), next, prev)
 	}
 }

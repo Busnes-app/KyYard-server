@@ -41,6 +41,7 @@ type Store interface {
 	// audit is never refused, whatever the pressure.
 	Usage(ctx context.Context) (int64, error)
 	Budget() int64
+	EvaluatePressure(ctx context.Context, freed int64) (Pressure, error)
 	Pressure() Pressure
 	SetPressure(p Pressure)
 }

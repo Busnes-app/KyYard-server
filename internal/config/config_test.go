@@ -160,3 +160,44 @@ func TestAgentImageMustBeDigestPinned(t *testing.T) {
 		t.Fatalf("empty image must be allowed: %v", err)
 	}
 }
+
+// A control that is silently off is worse than one that refuses to start: zero is the only
+// documented way to disable the budget, so every other unusable value must be refused.
+func TestDiskBudgetRejectsNonsense(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		want        int64
+		wantErr     bool
+	}{
+		{name: "default when unset", value: "", want: 2 << 30},
+		{name: "zero disables", value: "0", want: 0},
+		{name: "documented default", value: "2147483648", want: 2 << 30},
+		{name: "negative is refused", value: "-1", wantErr: true},
+		{name: "absurd is refused", value: "9223372036854775807", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KY_DATA_DIR", t.TempDir())
+			t.Setenv("KY_APP_URL", "http://localhost:8080")
+			if tc.value != "" {
+				t.Setenv("KY_RETENTION_DISK_BUDGET", tc.value)
+			}
+			cfg, err := config.LoadFromEnv()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("%q was accepted, arming nothing", tc.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Database.DiskBudget != tc.want {
+				t.Fatalf("budget %d, want %d", cfg.Database.DiskBudget, tc.want)
+			}
+			// The 95 % threshold must stay positive, or every pass reads as over budget.
+			if cfg.Database.DiskBudget > 0 && cfg.Database.DiskBudget/100*95 <= 0 {
+				t.Fatalf("threshold underflowed for budget %d", cfg.Database.DiskBudget)
+			}
+		})
+	}
+}

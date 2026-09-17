@@ -37,6 +37,10 @@ type ServerConfig struct {
 	WriteTimeout time.Duration `json:"write_timeout"`
 }
 
+// maxDiskBudget is a petabyte: past this the value is a typo, not a policy, and an operator
+// who means "no limit" has 0 for that.
+const maxDiskBudget = 1 << 50
+
 // DatabaseConfig holds connection settings for pluggable storage (SQLite, PostgreSQL, MySQL).
 type DatabaseConfig struct {
 	Driver  string `json:"driver"` // "sqlite", "postgres", "mysql"
@@ -185,6 +189,14 @@ func LoadFromEnv() (*Config, error) {
 		defaultDSN = "postgres://postgres:postgres@localhost:5432/ky_server?sslmode=disable"
 	}
 	diskBudget := int64(getEnvInt("KY_RETENTION_DISK_BUDGET", 2<<30))
+	// A negative budget would disable the control as quietly as zero does, and zero is the
+	// documented way to say so. An absurd one would only ever be a typo.
+	if diskBudget < 0 {
+		return nil, fmt.Errorf("KY_RETENTION_DISK_BUDGET: must not be negative (0 disables the check), got %d", diskBudget)
+	}
+	if diskBudget > maxDiskBudget {
+		return nil, fmt.Errorf("KY_RETENTION_DISK_BUDGET: %d is larger than any real disk; use 0 to disable the check", diskBudget)
+	}
 	dsn := getEnv("KY_DB_DSN", defaultDSN)
 
 	if err := secureDataDir(dataDir); err != nil {
