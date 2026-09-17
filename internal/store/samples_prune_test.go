@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
 // Retention is enforced from stored timestamps in bounded batches.

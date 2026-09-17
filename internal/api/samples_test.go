@@ -5,14 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 // Metrics frames land as bounded samples readable only inside the organization.
@@ -94,6 +94,11 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 	}
 	// At the row ceiling a frame is answered with an error frame and the session continues;
 	// a second frame inside the cadence is dropped before the store sees it.
+	// The behaviour at the ceiling is the subject, not its height: a hundred thousand rows
+	// costs minutes against PostgreSQL and says nothing more than a hundred do.
+	ceiling := store.MaxSampleRowsPerEndpoint
+	store.MaxSampleRowsPerEndpoint = 100
+	t.Cleanup(func() { store.MaxSampleRowsPerEndpoint = ceiling })
 	fillSamples(t, cfg.Database, ag.id, store.MaxSampleRowsPerEndpoint-2)
 	waitFor(t, func() bool { return !s.Connected(ag.id) })
 	sock, _ = connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)

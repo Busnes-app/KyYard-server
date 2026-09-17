@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kyyard-server/internal/runtime/docker"
+	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
 )
 
 // CPU share is a delta against the previous call; the first call has no interval and says so.
