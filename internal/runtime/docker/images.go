@@ -1,8 +1,11 @@
 package docker
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,36 +28,99 @@ func (c *Client) pullImage(ctx context.Context, reference string) (outcome, deta
 	ctx, cancel := context.WithTimeout(ctx, pullBudget)
 	defer cancel()
 	q := url.Values{"fromImage": {reference}}
-	status, body, err := c.postBody(ctx, "/images/create?"+q.Encode())
+	status, body, err := c.stream(ctx, "/images/create?"+q.Encode())
+	if body != nil {
+		defer body.Close()
+	}
 	switch {
 	case err != nil && ctx.Err() != nil:
 		return protocol.OutcomeTimedOut, "the pull did not finish in time"
 	case err != nil:
 		return protocol.OutcomeFailed, bound(err.Error(), protocol.MaxResultDetailBytes)
 	case status == http.StatusUnauthorized, status == http.StatusForbidden:
-		return protocol.OutcomeDenied, "this registry needs a credential, and registry credentials are not implemented yet"
+		return protocol.OutcomeDenied, credentialsMissing
 	case status == http.StatusNotFound:
 		return protocol.OutcomeDenied, "the registry has no such image or tag"
 	case status >= 400:
 		return protocol.OutcomeFailed, fmt.Sprintf("the registry or runtime refused with status %d", status)
 	}
-	// The Engine streams progress as JSON lines and reports a late failure in the body with a
-	// 200 already sent, so the body is what says whether the pull actually worked.
-	if line := lastErrorLine(body); line != "" {
-		if strings.Contains(strings.ToLower(line), "unauthorized") || strings.Contains(strings.ToLower(line), "denied") {
-			return protocol.OutcomeDenied, "this registry needs a credential, and registry credentials are not implemented yet"
+	return readPullStream(body)
+}
+
+// credentialsMissing is the same sentence wherever the registry asks for one, because an
+// operator should not have to work out that two different messages mean the same missing
+// feature.
+const credentialsMissing = "this registry needs a credential, and registry credentials are not implemented yet"
+
+// readPullStream decides what a pull did from the progress the Engine streams under a 200. It
+// reads to the end rather than buffering a slice of it: a stream cut short at a byte ceiling
+// would hide the trailing error line, and reporting success because the failure did not fit is
+// the worst direction to fail for the operation people use to apply a patched image.
+func readPullStream(body io.Reader) (outcome, detail string) {
+	if body == nil {
+		return protocol.OutcomeUnknown, "the runtime returned no progress to read"
+	}
+	scanner := bufio.NewScanner(body)
+	// One line per layer per update; a single line far past this is not progress we can read.
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	var failure string
+	for scanner.Scan() {
+		var event struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
 		}
-		return protocol.OutcomeFailed, bound(line, protocol.MaxResultDetailBytes)
+		// Decoded rather than searched for a substring: a progress line that merely mentions
+		// the word would otherwise read as a failure.
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		if event.Error != "" {
+			failure = event.Error
+			if event.ErrorDetail.Message != "" {
+				failure = event.ErrorDetail.Message
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		// The stream ended badly, so what the pull did is genuinely unknown. Saying so is the
+		// honest answer; saying "succeeded" would be a guess in the dangerous direction.
+		return protocol.OutcomeUnknown, bound("the progress stream ended early: "+err.Error(), protocol.MaxResultDetailBytes)
+	}
+	if failure != "" {
+		if lower := strings.ToLower(failure); strings.Contains(lower, "unauthorized") || strings.Contains(lower, "authentication required") || strings.Contains(lower, "denied") {
+			return protocol.OutcomeDenied, credentialsMissing
+		}
+		return protocol.OutcomeFailed, bound(failure, protocol.MaxResultDetailBytes)
 	}
 	return protocol.OutcomeSucceeded, ""
 }
 
 // removeImage deletes a reference from this host. An image a container still uses is refused
 // rather than forced: Docker would oblige with force and leave containers pointing at nothing.
-func (c *Client) removeImage(ctx context.Context, reference string) (outcome, detail string) {
+// The expected image ID is checked immediately before the delete, for the same reason a
+// container action re-reads its state: a tag is a label the host reassigns, and a pull between
+// the decision and the act would otherwise destroy something nobody looked at.
+func (c *Client) removeImage(ctx context.Context, reference, wantID string) (outcome, detail string) {
 	ctx, cancel := context.WithTimeout(ctx, operationBudget)
 	defer cancel()
-	status, err := c.del(ctx, "/images/"+url.PathEscape(reference))
+	escaped := url.PathEscape(reference)
+	if wantID != "" {
+		var inspected struct {
+			ID string `json:"Id"`
+		}
+		if err := c.get(ctx, "/images/"+escaped+"/json", &inspected); err != nil {
+			if strings.Contains(err.Error(), "404") {
+				return protocol.OutcomeDenied, "this host does not have that image"
+			}
+			return protocol.OutcomeFailed, bound("inspecting the image: "+err.Error(), protocol.MaxResultDetailBytes)
+		}
+		if inspected.ID != wantID {
+			return protocol.OutcomeDenied, "this reference now points at a different image than the one this was decided about"
+		}
+	}
+	status, err := c.del(ctx, "/images/"+escaped)
 	switch {
 	case err != nil && ctx.Err() != nil:
 		return protocol.OutcomeTimedOut, "the runtime did not answer in time"
@@ -68,16 +134,4 @@ func (c *Client) removeImage(ctx context.Context, reference string) (outcome, de
 		return protocol.OutcomeFailed, fmt.Sprintf("the runtime refused with status %d", status)
 	}
 	return protocol.OutcomeSucceeded, ""
-}
-
-// lastErrorLine finds the failure the Engine reported inside a 200 response. The stream is one
-// JSON object per line; anything carrying an "error" field is the reason the pull did not work.
-func lastErrorLine(body string) string {
-	var found string
-	for _, line := range strings.Split(body, "\n") {
-		if strings.Contains(line, `"error"`) {
-			found = strings.TrimSpace(line)
-		}
-	}
-	return found
 }

@@ -51,7 +51,8 @@ Every frame is one JSON object:
 - The agent persists a dedupe record `{id, outcome, result}` (result bounded to *proposed* 64 KiB) for every command it starts, in the identity volume, and returns the stored result for a repeated `id` after a restart. Records are pruned after *proposed* 24 hours or 10,000 entries.
 - Every command ends in exactly one of `succeeded`, `failed`, `denied`, `timed_out` or `unknown`. The server records `unknown` when the socket drops after dispatch and before a result. `unknown` is never silently retried: the server first requests a fresh inventory snapshot and compares it with `expects`, then either resolves the outcome or presents it to the operator.
 - Retryable commands (reads, inventory, non-destructive operations) are idempotent by construction and may be re-dispatched with the same `id`. Destructive commands (remove container, delete volume, prune, redeploy) are dispatched once; a retry is a new command with new preconditions that the operator confirms.
-- Docker has no universal resource version; preconditions are operation-specific (container ID, image digest, volume name plus creation time) and checked by the agent immediately before acting.
+- Docker has no universal resource version; preconditions are operation-specific (container ID, image digest, volume name plus creation time) and checked by the agent immediately before acting. For `image.remove` the precondition is server-set rather than caller-set: the control plane resolves the reference against the last inventory and sends the image ID it stood for.
+- An agent runs at most four commands at once, each off the session loop, and refuses further ones with `denied` while those are in flight. A command that takes as long as the network does must not cost the heartbeats that keep the endpoint manageable.
 
 ## 6. Inventory, events, metrics
 

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/coder/websocket"
 	"net/http"
@@ -1163,5 +1164,107 @@ func TestAnExhaustedWalkReturnsToTheIdentityKey(t *testing.T) {
 			t.Fatalf("agent never authenticated with its own key: %+v", e)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A command can take minutes -- a pull is bounded by the network, not by the daemon -- so it
+// runs off the session loop. If it did not, any principal allowed to pull could make an
+// endpoint miss its heartbeats, go offline, and stay unmanageable for as long as the pull ran.
+func TestCommandsDoNotStallTheSession(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	beats := make(chan struct{}, 64)
+	results := make(chan protocol.Result, 16)
+	release := make(chan struct{})
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		frame := func(typ string, payload any) []byte {
+			raw, _ := json.Marshal(payload)
+			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
+			return b
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
+		_, _, _ = c.Read(ctx)
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
+		// One more than the agent will run at once, so the last must be refused rather than
+		// queued behind the others.
+		for i := 0; i < 5; i++ {
+			_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeCommand, protocol.Command{
+				ID: fmt.Sprintf("cmd_%d", i), Endpoint: "ep_busy", Action: protocol.ActionStop,
+				Container: "c1", Deadline: time.Now().UTC().Add(time.Minute),
+			}))
+		}
+		for {
+			_, raw, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var e protocol.Envelope
+			_ = json.Unmarshal(raw, &e)
+			switch e.Type {
+			case protocol.TypeHeartbeat:
+				beats <- struct{}{}
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHeartbeat, nil))
+			case protocol.TypeResult:
+				var res protocol.Result
+				_ = json.Unmarshal(e.Payload, &res)
+				results <- res
+			}
+		}
+	}))
+	defer stub.Close()
+	id := &client.Identity{EndpointID: "ep_busy", PrivateKey: priv, InstanceFingerprint: strings.Repeat("a", 64), Server: stub.URL, RotatedAt: time.Now()}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	snapshot := func(context.Context) (*protocol.Snapshot, error) {
+		return &protocol.Snapshot{Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+	}
+	operate := func(protocol.Command) (string, string) {
+		<-release
+		return protocol.OutcomeSucceeded, "stopped"
+	}
+	go func() {
+		_ = client.Run(ctx, id, client.Options{
+			HTTPClient: stub.Client(), Snapshot: snapshot, InventoryEvery: time.Hour,
+			IdentityDir: t.TempDir(), Operate: operate,
+		})
+	}()
+
+	// While five commands sit in Operate, the loop still answers the heartbeat and still
+	// refuses the sixth-in-line immediately.
+	denied := 0
+	seen := 0
+	deadline := time.After(6 * time.Second)
+	for denied == 0 || seen < 3 {
+		select {
+		case <-beats:
+			seen++
+		case res := <-results:
+			if res.Outcome != protocol.OutcomeDenied {
+				t.Fatalf("a blocked command answered early: %+v", res)
+			}
+			denied++
+		case <-deadline:
+			t.Fatalf("%d heartbeats and %d refusals while commands blocked; the loop is starved", seen, denied)
+		}
+	}
+
+	close(release)
+	settled := 0
+	done := time.After(6 * time.Second)
+	for settled < 4 {
+		select {
+		case res := <-results:
+			if res.Outcome != protocol.OutcomeSucceeded {
+				t.Fatalf("a released command: %+v", res)
+			}
+			settled++
+		case <-beats:
+		case <-done:
+			t.Fatalf("only %d of 4 commands reported after they finished", settled)
+		}
 	}
 }

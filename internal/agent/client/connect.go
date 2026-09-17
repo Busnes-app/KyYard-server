@@ -197,6 +197,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		_ = opts.save(id)
 	}
 	commands := openLedger(opts.IdentityDir)
+	// Buffered to the in-flight limit, so a command finishing after the loop has gone never
+	// blocks a goroutine forever.
+	results := make(chan protocol.Result, maxInFlightCommands)
+	inFlight := 0
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
 		return errors.New("bad hello")
@@ -281,6 +285,11 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 					return err
 				}
 			}
+		case res := <-results:
+			inFlight--
+			if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
+				return err
+			}
 		case m := <-metricsOut:
 			if err := write(ctx, conn, protocol.TypeMetrics, m); err != nil {
 				return err
@@ -338,13 +347,23 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 					opts.Log.Printf("unreadable command frame")
 					break
 				}
-				// Answered on the session loop: a command is one bounded runtime call, and
-				// the ledger keeps a repeat from running twice rather than a queue keeping
-				// order. Streams, which are not bounded, arrive in M5's second half.
-				res := handleCommand(cmd, id, commands, opts)
-				if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
-					return err
+				// Run off the loop. A pull takes as long as the network does, and a session
+				// waiting for one sends no heartbeats, so the endpoint is marked offline and
+				// stops accepting the commands an operator needs during an incident. The
+				// agent's liveness must not depend on how long a runtime call takes.
+				if inFlight >= maxInFlightCommands {
+					// Refused rather than queued: an answer now beats an answer later, and a
+					// queue lets one caller spend the agent's memory.
+					res := protocol.Result{ID: cmd.ID, Outcome: protocol.OutcomeDenied, Detail: "this agent is already running as many commands as it will"}
+					if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
+						return err
+					}
+					break
 				}
+				inFlight++
+				go func(cmd protocol.Command) {
+					results <- handleCommand(cmd, id, commands, opts)
+				}(cmd)
 			case protocol.TypeHeartbeat:
 			case protocol.TypeError:
 				opts.Log.Printf("server error frame: %s", string(f.Payload))

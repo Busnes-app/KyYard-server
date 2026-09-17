@@ -6,6 +6,8 @@ The KyYard agent side of the fleet: `protocol` (wire helpers shared with the con
 ## Ownership
 Owns signed-message preimages, frame types, the agent's identity file, enrollment against `/api/agent/v1/enroll`, and the outbound WebSocket session against `/api/agent/v1/connect`. The control plane side (handshake, registry, state transitions) is owned by `internal/api` and `internal/store`.
 
+- Commands run off the session loop, at most `maxInFlightCommands` (4) at once, answering through a buffered channel the loop selects on. A pull is bounded by the network rather than by the daemon, so running one inline would cost heartbeats: any principal holding `image.pull` could push an endpoint offline and keep it unmanageable for as long as the pull ran. Past the limit a command is `denied` immediately rather than queued — an answer now beats an answer later, and a queue lets one caller spend the agent's memory.
+
 ## Local Contracts
 - `protocol.Preimage` length-prefixes the context and every field with 4 bytes; the three contexts are enrollment, connection and rotation and no signature verifies across them. `AuthPreimage` binds endpoint ID, nonce, the host the agent dialed and the protocol version.
 - Frames are JSON `Envelope`s with `v: 1`; the connection lifecycle uses `challenge`, `auth`, `hello`, `heartbeat`, `inventory`, `enrollment.approved` and `error`. Close reasons are the constants in `messages.go` and are the agent's only signal for terminal versus retryable failures.

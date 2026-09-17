@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -55,6 +56,76 @@ func TestPullReportsWhatActuallyHappened(t *testing.T) {
 	status, body = http.StatusNotFound, ""
 	if outcome, detail := c.Operate(context.Background(), pull); outcome != protocol.OutcomeDenied || !strings.Contains(detail, "no such image") {
 		t.Fatalf("a missing tag was reported as %s %q", outcome, detail)
+	}
+
+	// A busy pull emits megabytes of progress before it fails. Reading a prefix of the stream
+	// would discard the line that says so and report the failure as a success, which is the
+	// one direction this must never fail in: the operator would believe a patched image is on
+	// the host.
+	var chatty strings.Builder
+	for chatty.Len() < 4<<20 {
+		chatty.WriteString(`{"status":"Downloading","progressDetail":{"current":1,"total":2}}` + "\n")
+	}
+	chatty.WriteString(`{"error":"toomanyrequests: rate limit exceeded"}` + "\n")
+	status, body = 0, chatty.String()
+	if outcome, detail := c.Operate(context.Background(), pull); outcome != protocol.OutcomeFailed || !strings.Contains(detail, "rate limit") {
+		t.Fatalf("a failure after %d bytes of progress was reported as %s %q", chatty.Len(), outcome, detail)
+	}
+
+	// A line mentioning the word is not a failure; only an error field is.
+	body = `{"status":"Pulling fs layer error-handling:latest"}`
+	if outcome, detail := c.Operate(context.Background(), pull); outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("a progress line naming the word was read as %s %q", outcome, detail)
+	}
+}
+
+// A tag is a label the host reassigns. A removal decided against one image must not destroy
+// whatever the tag points at when the agent gets round to it.
+func TestRemovingAnImageChecksItIsStillTheSameImage(t *testing.T) {
+	const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	var present string
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleted = append(deleted, r.URL.EscapedPath())
+			return
+		}
+		if present == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"Id":"` + present + `"}`))
+	}))
+	defer srv.Close()
+	c := docker.NewHTTP(srv.Client(), srv.URL)
+	rm := protocol.Command{
+		Action:    protocol.ActionImageRemove,
+		Reference: "ghcr.io/busnes-app/kyyard:1.2.3",
+		Expects:   protocol.Expectation{ImageDigest: digest},
+	}
+
+	present = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	if outcome, detail := c.Operate(context.Background(), rm); outcome != protocol.OutcomeDenied || !strings.Contains(detail, "different image") {
+		t.Fatalf("a tag that had moved: %s %q", outcome, detail)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("the delete was sent anyway: %v", deleted)
+	}
+
+	present = ""
+	if outcome, detail := c.Operate(context.Background(), rm); outcome != protocol.OutcomeDenied || !strings.Contains(detail, "does not have that image") {
+		t.Fatalf("an image the host no longer has: %s %q", outcome, detail)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("the delete was sent anyway: %v", deleted)
+	}
+
+	present = digest
+	if outcome, detail := c.Operate(context.Background(), rm); outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("the image it was decided about: %s %q", outcome, detail)
+	}
+	if len(deleted) != 1 || !strings.HasSuffix(deleted[0], url.PathEscape("ghcr.io/busnes-app/kyyard:1.2.3")) {
+		t.Fatalf("what was deleted: %v", deleted)
 	}
 }
 

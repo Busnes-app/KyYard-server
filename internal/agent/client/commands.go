@@ -11,6 +11,11 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
+// maxInFlightCommands bounds what one agent runs at once. Commands are operator-initiated and
+// rare, so several at a time is generous; the limit is what keeps one caller from spending the
+// agent's memory or the host's disk with concurrent pulls.
+const maxInFlightCommands = 4
+
 // Command dedupe limits from docs/agent-protocol.md.
 const (
 	// dedupeLife is how long a finished command's answer is remembered, so a server that

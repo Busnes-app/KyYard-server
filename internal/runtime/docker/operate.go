@@ -27,7 +27,7 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	case protocol.ActionImagePull:
 		return c.pullImage(ctx, cmd.Reference)
 	case protocol.ActionImageRemove:
-		return c.removeImage(ctx, cmd.Reference)
+		return c.removeImage(ctx, cmd.Reference, cmd.Expects.ImageDigest)
 	}
 	ctx, cancel := context.WithTimeout(ctx, operationBudget)
 	defer cancel()
@@ -140,18 +140,17 @@ func (c *Client) del(ctx context.Context, path string) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// postBody sends an action request and returns the status and body. A pull reports late
-// failures inside a 200, so the body is part of the answer rather than something to discard.
-func (c *Client) postBody(ctx context.Context, path string) (int, string, error) {
+// stream sends an action request and hands back the live body. A pull reports late failures
+// inside a 200, so the caller reads the stream to its end; buffering a slice of it would hide
+// the line that says the pull failed.
+func (c *Client) stream(ctx context.Context, path string) (int, io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
 	if err != nil {
-		return 0, "", err
+		return 0, nil, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, nil, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, string(body), err
+	return resp.StatusCode, resp.Body, nil
 }

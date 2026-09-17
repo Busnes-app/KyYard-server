@@ -339,7 +339,8 @@ func TestImageCommandsAreScopedAndValidated(t *testing.T) {
 		t.Fatal("approve")
 	}
 	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: uint64(time.Now().Unix()), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}})
+	const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: uint64(time.Now().Unix()), Containers: []protocol.Container{}, Images: []protocol.Image{{ID: digest, Tags: []string{"nginx:1"}, Digests: []string{}}}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 	path := "/api/organizations/a/endpoints/" + ag.id + "/commands"
 
@@ -364,13 +365,29 @@ func TestImageCommandsAreScopedAndValidated(t *testing.T) {
 	if w := tenantRequest(s, viewer, "POST", path, `{"action":"image.pull","reference":"nginx:1"}`, true); w.Code != 403 {
 		t.Fatalf("a read-only member pulled an image: %d", w.Code)
 	}
-	if w := tenantRequest(s, operator, "POST", path, `{"action":"image.remove","reference":"nginx:1"}`, true); w.Code != 403 {
+	if w := tenantRequest(s, operator, "POST", path, `{"action":"image.remove","reference":"nginx:1","confirm":"nginx:1"}`, true); w.Code != 403 {
 		t.Fatalf("an operator removed an image: %d", w.Code)
 	}
-	if w := tenantRequest(s, admin, "POST", path, `{"action":"image.remove","reference":"nginx:1"}`, true); w.Code != 202 {
+	// Removing an image is irreversible, so it is confirmed against the inventory and refuses
+	// a caller-supplied expectation, which the server pins itself.
+	if w := tenantRequest(s, admin, "POST", path, `{"action":"image.remove","reference":"nginx:1"}`, true); w.Code != 400 {
+		t.Fatalf("an unconfirmed image removal: %d %s", w.Code, w.Body.String())
+	}
+	if w := tenantRequest(s, admin, "POST", path, `{"action":"image.remove","reference":"nginx:1","confirm":"nginx:1","expects":{"image_digest":"`+digest+`"}}`, true); w.Code != 400 {
+		t.Fatalf("a caller-supplied expectation on an image action: %d %s", w.Code, w.Body.String())
+	}
+	if w := tenantRequest(s, admin, "POST", path, `{"action":"image.remove","reference":"ghost:1","confirm":"ghost:1"}`, true); w.Code != 404 {
+		t.Fatalf("an image absent from inventory: %d %s", w.Code, w.Body.String())
+	}
+	w = tenantRequest(s, admin, "POST", path, `{"action":"image.remove","reference":"nginx:1","confirm":"nginx:1"}`, true)
+	if w.Code != 202 {
 		t.Fatalf("an administrator could not remove an image: %d %s", w.Code, w.Body.String())
 	}
-	readEnvelope(t, ctx, sock.conn)
+	removal := readEnvelope(t, ctx, sock.conn)
+	_ = json.Unmarshal(removal.Payload, &sent)
+	if sent.Reference != "nginx:1" || sent.Expects.ImageDigest != digest {
+		t.Fatalf("the removal frame did not pin the image it was decided about: %+v", sent)
+	}
 
 	// A reference is not a container name, and neither grammar accepts the other's abuses.
 	for _, bad := range []string{
