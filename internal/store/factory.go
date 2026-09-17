@@ -19,15 +19,15 @@ func Open(ctx context.Context, cfg config.DatabaseConfig) (Store, error) {
 	driver := strings.ToLower(cfg.Driver)
 	switch driver {
 	case "sqlite", "sqlite3", "":
-		return openSQLite(ctx, cfg.DSN)
+		return openSQLite(ctx, cfg.DSN, cfg.DiskBudget)
 	case "postgres", "postgresql", "pgx":
-		return openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime)
+		return openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime, cfg.DiskBudget)
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %q (supported: sqlite, postgres)", cfg.Driver)
 	}
 }
 
-func openSQLite(ctx context.Context, dsn string) (Store, error) {
+func openSQLite(ctx context.Context, dsn string, budget int64) (Store, error) {
 	filePath := dsn
 	if idx := strings.Index(dsn, "?"); idx != -1 {
 		filePath = dsn[:idx]
@@ -78,10 +78,10 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 		return nil, fmt.Errorf("SQLite foreign keys must be enabled; remove conflicting KY_DB_DSN pragmas or options")
 	}
 
-	return newSQLStore(ctx, db, "sqlite")
+	return newSQLStore(ctx, db, "sqlite", budget)
 }
 
-func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration) (Store, error) {
+func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration, budget int64) (Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open postgres database: %w", err)
@@ -106,5 +106,5 @@ func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLife
 		return nil, fmt.Errorf("failed to ping postgres database: %w", err)
 	}
 
-	return newSQLStore(ctx, db, "postgres")
+	return newSQLStore(ctx, db, "postgres", budget)
 }

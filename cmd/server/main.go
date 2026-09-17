@@ -471,15 +471,18 @@ func runRestore(args []string) {
 }
 
 // pruneLoop enforces retention (docs/retention-policy.md): every minute it deletes expired
-// samples and acknowledged events in bounded batches until a pass removes nothing.
+// samples and acknowledged events in bounded batches until a pass removes nothing, and
+// publishes how close the database is to its budget so telemetry writes can back off.
 func pruneLoop(ctx context.Context, st store.Store) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
+	measure(ctx, st)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			measure(ctx, st)
 			for i := 0; i < 20; i++ {
 				n, err := st.Tenancy().Prune(ctx)
 				if err != nil {
@@ -491,5 +494,31 @@ func pruneLoop(ctx context.Context, st store.Store) {
 				}
 			}
 		}
+	}
+}
+
+// measure sets the retention pressure from what the database occupies against its budget.
+// Degrading at 95 % leaves room to prune before anything must stop, and a level is logged on
+// change rather than every minute, so an operator sees the transition.
+func measure(ctx context.Context, st store.Store) {
+	budget := st.Budget()
+	if budget <= 0 {
+		return
+	}
+	used, err := st.Usage(ctx)
+	if err != nil {
+		log.Printf("[RETENTION] usage: %v", err)
+		return
+	}
+	next := store.PressureNormal
+	switch {
+	case used >= budget:
+		next = store.PressureStopped
+	case used >= budget*95/100:
+		next = store.PressureDegraded
+	}
+	if prev := st.Pressure(); prev != next {
+		log.Printf("[RETENTION] %d of %d bytes used: telemetry %s (was %s)", used, budget, next, prev)
+		st.SetPressure(next)
 	}
 }

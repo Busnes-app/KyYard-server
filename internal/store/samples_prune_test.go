@@ -158,3 +158,69 @@ func TestSamplesIngestCostIsBounded(t *testing.T) {
 		t.Fatalf("expected ErrSampleBudget, got %v", err)
 	}
 }
+
+// Under pressure the raw window closes as well as the door: refusing new writes alone never
+// gives space back, and the point of the budget is to recover, not merely to stop growing.
+func TestPressureShortensTheRawWindow(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	enrolled, err := ts.Enroll(ctx, EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := enrolled.ID
+	tx, _ := st.db.BeginTx(ctx, nil)
+	stmt, err := tx.PrepareContext(ctx, st.rebind(`INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES (?,?,?,0,0,0,0,0,0)`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two hours old: inside the six-hour window, outside the degraded one.
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	for i := 0; i < 10; i++ {
+		if _, err := stmt.ExecContext(ctx, e, fmt.Sprintf("c%d", i), old.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	count := func() int {
+		var n int
+		if err := st.db.QueryRowContext(ctx, st.rebind(`SELECT COUNT(*) FROM container_samples WHERE endpoint_id=?`), e).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n, err := ts.Prune(ctx); err != nil || n != 0 || count() != 10 {
+		t.Fatalf("normal pressure pruned inside the window: %d removed, %d left, %v", n, count(), err)
+	}
+	st.SetPressure(PressureDegraded)
+	if _, err := ts.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if left := count(); left != 0 {
+		t.Fatalf("degraded pressure left %d rows outside the shortened window", left)
+	}
+}
+
+// The budget is measured, not assumed: a real database reports real bytes.
+func TestUsageReportsBytesAndBudget(t *testing.T) {
+	st, _ := tenantAtomicStore(t)
+	used, err := st.Usage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used <= 0 {
+		t.Fatalf("usage reported %d bytes for a database with a schema in it", used)
+	}
+	if st.Pressure() != PressureNormal {
+		t.Fatalf("a fresh store started under pressure: %s", st.Pressure())
+	}
+}

@@ -33,6 +33,39 @@ type Store interface {
 	Driver() string
 	Ping(ctx context.Context) error
 	Close() error
+
+	// Usage reports the bytes the database occupies and Budget the ceiling it is measured
+	// against, zero when the check is disabled. Pressure says what that means for telemetry;
+	// audit is never refused, whatever the pressure.
+	Usage(ctx context.Context) (int64, error)
+	Budget() int64
+	Pressure() Pressure
+	SetPressure(p Pressure)
+}
+
+// Pressure is how close stored data is to its disk budget (docs/retention-policy.md).
+type Pressure int32
+
+const (
+	// PressureNormal accepts everything.
+	PressureNormal Pressure = iota
+	// PressureDegraded refuses metrics: they are the cheapest telemetry to lose and the
+	// fastest to grow. Inventory, heartbeats, endpoint state and audit continue.
+	PressureDegraded
+	// PressureStopped refuses inventory as well. Heartbeats, endpoint state and audit
+	// continue, so the fleet stays visible and every refusal is still recorded.
+	PressureStopped
+)
+
+func (p Pressure) String() string {
+	switch p {
+	case PressureDegraded:
+		return "degraded"
+	case PressureStopped:
+		return "stopped"
+	default:
+		return "normal"
+	}
 }
 
 // UserStore defines repository operations for accounts.

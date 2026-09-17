@@ -39,9 +39,12 @@ type ServerConfig struct {
 
 // DatabaseConfig holds connection settings for pluggable storage (SQLite, PostgreSQL, MySQL).
 type DatabaseConfig struct {
-	Driver          string        `json:"driver"` // "sqlite", "postgres", "mysql"
-	DSN             string        `json:"dsn"`    // Connection string or file path
-	DataDir         string        `json:"data_dir"`
+	Driver  string `json:"driver"` // "sqlite", "postgres", "mysql"
+	DSN     string `json:"dsn"`    // Connection string or file path
+	DataDir string `json:"data_dir"`
+	// DiskBudget bounds what telemetry may occupy (docs/retention-policy.md). Zero disables
+	// the check; the default is the documented 2 GiB.
+	DiskBudget      int64         `json:"disk_budget"`
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
@@ -178,6 +181,7 @@ func LoadFromEnv() (*Config, error) {
 		driver = "postgres"
 		defaultDSN = "postgres://postgres:postgres@localhost:5432/ky_server?sslmode=disable"
 	}
+	diskBudget := int64(getEnvInt("KY_RETENTION_DISK_BUDGET", 2<<30))
 	dsn := getEnv("KY_DB_DSN", defaultDSN)
 
 	if err := secureDataDir(dataDir); err != nil {
@@ -223,6 +227,7 @@ func LoadFromEnv() (*Config, error) {
 			Driver:          driver,
 			DSN:             dsn,
 			DataDir:         dataDir,
+			DiskBudget:      diskBudget,
 			MaxOpenConns:    getEnvInt("KY_DB_MAX_OPEN_CONNS", 25),
 			MaxIdleConns:    getEnvInt("KY_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: 15 * time.Minute,

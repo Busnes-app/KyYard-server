@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
@@ -15,6 +16,8 @@ import (
 type SQLStore struct {
 	db       *sql.DB
 	driver   string
+	budget   int64        // bytes of telemetry allowed; zero disables the check
+	pressure atomic.Int32 // current Pressure, read on every telemetry write
 	users    *userStore
 	sessions *sessionStore
 	devices  *deviceStore
@@ -24,7 +27,7 @@ type SQLStore struct {
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, budget int64) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
@@ -37,6 +40,7 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	s := &SQLStore{
 		db:     db,
 		driver: driver,
+		budget: budget,
 	}
 
 	s.users = &userStore{store: s}
@@ -915,3 +919,28 @@ func errorsIs(err, target error) bool {
 	}
 	return err == target || strings.Contains(err.Error(), target.Error())
 }
+
+// Usage reports the bytes the database occupies. SQLite answers from its own page accounting,
+// which counts the main file; PostgreSQL reports the whole database.
+func (s *SQLStore) Usage(ctx context.Context) (int64, error) {
+	if s.driver == "postgres" {
+		var n int64
+		err := s.db.QueryRowContext(ctx, "SELECT pg_database_size(current_database())").Scan(&n)
+		return n, err
+	}
+	var pages, size int64
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&size); err != nil {
+		return 0, err
+	}
+	return pages * size, nil
+}
+
+// Budget is the configured ceiling, zero when the check is disabled.
+func (s *SQLStore) Budget() int64 { return s.budget }
+
+func (s *SQLStore) Pressure() Pressure { return Pressure(s.pressure.Load()) }
+
+func (s *SQLStore) SetPressure(p Pressure) { s.pressure.Store(int32(p)) }

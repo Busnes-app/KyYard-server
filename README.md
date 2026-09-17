@@ -277,6 +277,7 @@ refused deposit does not remove the local copy.
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `KY_RETENTION_DISK_BUDGET` | `2147483648` (2 GiB) | Bytes of database the telemetry may occupy. At 95 % metrics are refused, at 100 % inventory too, and the raw sample window closes to one hour so pruning reclaims. Heartbeats, endpoint state and audit are never refused. `0` disables the check. |
 | `KY_BACKUP_DIR` | empty (off) | Directory for sealed local copies, `<escaped app name>.<capsule-id>.kycap` at mode 0600 (`KyYard.cap-KyYard-<n>.kycap` by default: bytes outside `[A-Za-z0-9-]` in the app name are hex-escaped). Pruning removes only this application's own prefix. |
 | `KY_BACKUP_KEEP` | `7` | Local copies to retain; below 1 refuses startup. |
 | `KY_BACKUP_DEPOSIT_INTERVAL` | `24h` | Default schedule only. The admin screen's setting wins; `0` is off; 15 minutes to 366 days otherwise. |
