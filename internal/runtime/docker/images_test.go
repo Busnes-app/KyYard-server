@@ -18,9 +18,10 @@ import (
 func TestPullReportsWhatActuallyHappened(t *testing.T) {
 	var status int
 	var body string
-	var gotQuery string
+	var gotQuery, gotTag string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query().Get("fromImage")
+		gotTag = r.URL.Query().Get("tag")
 		if status != 0 {
 			w.WriteHeader(status)
 		}
@@ -34,8 +35,17 @@ func TestPullReportsWhatActuallyHappened(t *testing.T) {
 	if outcome, detail := c.Operate(context.Background(), pull); outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("a clean pull: %s %q", outcome, detail)
 	}
-	if gotQuery != "ghcr.io/busnes-app/kyyard:1.2.3" {
-		t.Fatalf("the reference reached the daemon as %q", gotQuery)
+	// The name and the tag travel separately: an empty tag parameter means every tag in the
+	// repository, so a pull must never leave it out.
+	if gotQuery != "ghcr.io/busnes-app/kyyard" || gotTag != "1.2.3" {
+		t.Fatalf("the reference reached the daemon as %q tag %q", gotQuery, gotTag)
+	}
+	if outcome, _ := c.Operate(context.Background(), protocol.Command{Action: protocol.ActionImagePull, Reference: "nginx"}); outcome != protocol.OutcomeSucceeded || gotTag != "latest" {
+		t.Fatalf("a reference naming no tag pulled with tag %q", gotTag)
+	}
+	digest := "ghcr.io/busnes-app/kyyard@sha256:" + strings.Repeat("a", 64)
+	if outcome, _ := c.Operate(context.Background(), protocol.Command{Action: protocol.ActionImagePull, Reference: digest}); outcome != protocol.OutcomeSucceeded || gotTag != "sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("a digest reference pulled with tag %q", gotTag)
 	}
 
 	// A late failure inside a 200 is still a failure.

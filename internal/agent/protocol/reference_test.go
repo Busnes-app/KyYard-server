@@ -2,6 +2,21 @@ package protocol
 
 import "testing"
 
+func TestSplitImageReference(t *testing.T) {
+	for _, c := range []struct{ in, name, tag string }{
+		{"nginx", "nginx", ""},
+		{"nginx:1.2.3", "nginx", "1.2.3"},
+		{"registry.example.com:5000/team/app", "registry.example.com:5000/team/app", ""},
+		{"registry.example.com:5000/team/app:v1", "registry.example.com:5000/team/app", "v1"},
+		{"ghcr.io/a/b@sha256:abc", "ghcr.io/a/b", "sha256:abc"},
+	} {
+		name, tag := SplitImageReference(c.in)
+		if name != c.name || tag != c.tag {
+			t.Fatalf("%q split to %q %q, want %q %q", c.in, name, tag, c.name, c.tag)
+		}
+	}
+}
+
 func TestValidImageReference(t *testing.T) {
 	for _, good := range []string{
 		"nginx",

@@ -1,6 +1,9 @@
 package protocol
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // MaxImageReferenceBytes bounds a reference. Docker's own limit is far larger, but a reference
 // becomes part of a URL addressed to the host's root-equivalent socket, and nothing legitimate
@@ -19,6 +22,21 @@ var (
 	// An image ID as the daemon reports it, which is also a thing a removal may name.
 	imageID = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
+
+// SplitImageReference separates a reference into the image name and the tag or digest that
+// pins it to one image. An empty tag means the reference named neither, which is not a thing
+// this product sends to a runtime: the Engine API reads an empty tag as "every tag in the
+// repository", so "pull nginx" would fetch the whole repository onto the host.
+func SplitImageReference(s string) (name, tag string) {
+	if at := strings.LastIndex(s, "@"); at >= 0 {
+		return s[:at], s[at+1:]
+	}
+	// A colon before the last slash is a registry port, not a tag.
+	if colon := strings.LastIndex(s, ":"); colon > strings.LastIndex(s, "/") {
+		return s[:colon], s[colon+1:]
+	}
+	return s, ""
+}
 
 // ValidImageReference reports whether s can name an image. Both the control plane and the
 // agent check it: the agent is the last thing between a request body and the socket, and the

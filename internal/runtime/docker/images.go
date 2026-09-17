@@ -30,7 +30,15 @@ func (c *Client) pullImage(ctx context.Context, reference string) (outcome, deta
 	}
 	ctx, cancel := context.WithTimeout(ctx, pullBudget)
 	defer cancel()
-	q := url.Values{"fromImage": {reference}}
+	// The tag is always sent. The Engine reads an empty tag as every tag in the repository, so
+	// omitting it would turn "pull nginx" into fetching the whole repository onto the host --
+	// the obvious thing to type doing the worst thing. A reference that names none gets the
+	// same default `docker pull` uses.
+	name, tag := protocol.SplitImageReference(reference)
+	if tag == "" {
+		tag = "latest"
+	}
+	q := url.Values{"fromImage": {name}, "tag": {tag}}
 	status, body, err := c.stream(ctx, "/images/create?"+q.Encode())
 	if body != nil {
 		defer body.Close()

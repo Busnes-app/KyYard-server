@@ -92,6 +92,11 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 		if !protocol.ValidImageReference(containerID) {
 			return nil, fmt.Errorf("%w: image reference", ErrInvalid)
 		}
+		if _, tag := protocol.SplitImageReference(containerID); tag == "" && action == protocol.ActionImagePull {
+			// Recorded as what was actually asked for. A bare name means every tag in the
+			// repository to a runtime, so the record would say less than the command did.
+			return nil, fmt.Errorf("%w: a pull must name a tag or a digest", ErrInvalid)
+		}
 		if expects.ImageDigest != "" || expects.State != "" {
 			// An image has no state, and its digest is not the caller's to assert: a removal
 			// pins identity from the inventory below. Accepting an expectation here and

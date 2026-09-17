@@ -145,6 +145,10 @@ func TestRemovingAnImageIsConfirmedAndPinned(t *testing.T) {
 	if cmd.Reference != "ghcr.io/busnes-app/kyyard:1.2.3" || cmd.Expects.ImageDigest != digest {
 		t.Fatalf("the removal travels as %q expecting %q", cmd.Reference, cmd.Expects.ImageDigest)
 	}
+	// A pull must name what it is fetching: a bare name means every tag in the repository.
+	if _, err := ts.CreateCommand(ctx, a, id, protocol.ActionImagePull, "ghcr.io/busnes-app/kyyard", "", protocol.Expectation{}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a pull naming no tag: %v", err)
+	}
 	// Pulling is not destructive and needs no confirmation.
 	if _, err := ts.CreateCommand(ctx, a, id, protocol.ActionImagePull, "ghcr.io/busnes-app/kyyard:1.2.4", "", protocol.Expectation{}); err != nil {
 		t.Fatalf("a pull: %v", err)
