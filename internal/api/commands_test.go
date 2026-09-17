@@ -393,6 +393,8 @@ func TestImageCommandsAreScopedAndValidated(t *testing.T) {
 	for _, bad := range []string{
 		`{"action":"image.pull","reference":"nginx:1?all=1"}`,
 		`{"action":"image.pull","reference":"../../etc/passwd"}`,
+		`{"action":"image.pull","reference":"a/../../etc"}`,
+		`{"action":"image.pull","reference":"a/./b"}`,
 		`{"action":"image.pull","reference":""}`,
 		`{"action":"container.restart","container":"ghcr.io/busnes-app/kyyard:1.2.3"}`,
 		// A command names one or the other; preferring one silently would make the request

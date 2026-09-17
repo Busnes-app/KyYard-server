@@ -25,6 +25,9 @@ const pullBudget = 10 * time.Minute
 // answers with an authorization failure, which is reported as a refusal naming the reason
 // rather than as a generic failure an operator would have to guess at.
 func (c *Client) pullImage(ctx context.Context, reference string) (outcome, detail string) {
+	if !protocol.ValidImageReference(reference) {
+		return protocol.OutcomeDenied, "that is not an image reference"
+	}
 	ctx, cancel := context.WithTimeout(ctx, pullBudget)
 	defer cancel()
 	q := url.Values{"fromImage": {reference}}
@@ -103,6 +106,11 @@ func readPullStream(body io.Reader) (outcome, detail string) {
 // container action re-reads its state: a tag is a label the host reassigns, and a pull between
 // the decision and the act would otherwise destroy something nobody looked at.
 func (c *Client) removeImage(ctx context.Context, reference, wantID string) (outcome, detail string) {
+	// Checked here as well as at the control plane: this reference becomes a path segment on a
+	// root-equivalent socket, and PathEscape must not be the only thing standing in its way.
+	if !protocol.ValidImageReference(reference) {
+		return protocol.OutcomeDenied, "that is not an image reference"
+	}
 	ctx, cancel := context.WithTimeout(ctx, operationBudget)
 	defer cancel()
 	escaped := url.PathEscape(reference)

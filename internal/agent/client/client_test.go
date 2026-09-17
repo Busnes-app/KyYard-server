@@ -1396,19 +1396,38 @@ func TestTheInFlightLimitAndLedgerSurviveAReconnect(t *testing.T) {
 			t.Fatal("cmd_b1 never answered")
 		}
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "commands.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Polled rather than read once: the released commands record as they finish, and only one
+	// of them had to finish for cmd_b1 to get its slot. What is being asserted is that the
+	// ledger never loses an entry, not how soon each arrives.
 	var recorded map[string]struct {
 		Outcome string `json:"outcome"`
 	}
-	if err := json.Unmarshal(raw, &recorded); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"cmd_a0", "cmd_a1", "cmd_a2", "cmd_a3", "cmd_b1"} {
-		if recorded[want].Outcome == "" {
-			t.Fatalf("the ledger forgot %s after a reconnect: %v", want, recorded)
+	want := []string{"cmd_a0", "cmd_a1", "cmd_a2", "cmd_a3", "cmd_b1"}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		raw, err := os.ReadFile(filepath.Join(dir, "commands.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &recorded); err != nil {
+			t.Fatal(err)
+		}
+		missing := ""
+		for _, id := range want {
+			if recorded[id].Outcome == "" {
+				missing = id
+			}
+		}
+		if missing == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the ledger forgot %s after a reconnect: %v", missing, recorded)
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
 		}
 	}
 	close(sendMore)

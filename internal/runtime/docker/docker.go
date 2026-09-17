@@ -30,12 +30,34 @@ type Client struct {
 	cpuPrev map[string]cpuPoint
 }
 
+// callBudget bounds a call whose caller set no deadline of its own.
+//
+// It is a context deadline rather than an http.Client.Timeout because that timeout also covers
+// reading the body: it would cut a pull's progress stream at twenty seconds however generous
+// pullBudget was, and every pull of a real image would settle as unknown. Keeping every bound
+// in a context means the stated budget and the enforced budget cannot drift apart.
+const callBudget = 20 * time.Second
+
 // New returns an adapter for the Engine at socketPath (a Unix socket) or a TCP host.
 func New(socketPath string) *Client {
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	}}
-	return &Client{http: &http.Client{Transport: transport, Timeout: 20 * time.Second}, base: "http://docker/" + apiVersion}
+	return newClient(transport, "http://docker/"+apiVersion)
+}
+
+// newClient is what both New and the tests build, so a test exercises the settings production
+// runs with rather than settings a test invented.
+func newClient(transport http.RoundTripper, base string) *Client {
+	return &Client{http: &http.Client{Transport: transport}, base: base}
+}
+
+// bounded gives a call the default budget when its caller named none.
+func (c *Client) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, callBudget)
 }
 
 // NewHTTP is for tests and TCP daemons: base is the daemon origin.
@@ -44,6 +66,8 @@ func NewHTTP(c *http.Client, base string) *Client {
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
 		return err

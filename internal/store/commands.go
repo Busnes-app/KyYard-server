@@ -74,11 +74,6 @@ var destructivePermissions = map[permissions.Action]bool{
 // imageActions name a reference rather than a container.
 var imageActions = map[string]bool{protocol.ActionImagePull: true, protocol.ActionImageRemove: true}
 
-// imageReference is Docker's reference grammar, loosely: an optional registry host, a path,
-// and an optional tag or digest. It is anchored and bounded for the same reason the container
-// grammar is: this value becomes part of a URL query on the host's root-equivalent socket.
-var imageReference = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:\-]*(/[a-zA-Z0-9._\-]+)*(:[a-zA-Z0-9._\-]+|@sha256:[a-f0-9]{64})?$`)
-
 // CreateCommand records the intent before anything is sent. The row exists first so that a
 // command which is dispatched and then lost still has somewhere to be marked unknown: an
 // operation the control plane cannot account for is worse than one that failed.
@@ -94,7 +89,7 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 		return nil, fmt.Errorf("%w: a destructive command must say what state it expects", ErrInvalid)
 	}
 	if imageActions[action] {
-		if !imageReference.MatchString(containerID) || len(containerID) > 512 {
+		if !protocol.ValidImageReference(containerID) {
 			return nil, fmt.Errorf("%w: image reference", ErrInvalid)
 		}
 		if expects.ImageDigest != "" || expects.State != "" {
@@ -368,7 +363,7 @@ func (t *tenancyStore) confirmableImage(ctx context.Context, tx *sql.Tx, endpoin
 			if candidate != identifier {
 				continue
 			}
-			if !imageReference.MatchString(im.ID) || !imageReference.MatchString(candidate) {
+			if !protocol.ValidImageReference(im.ID) || !protocol.ValidImageReference(candidate) {
 				return "", "", fmt.Errorf("%w: the recorded image is not usable", ErrInvalid)
 			}
 			return candidate, im.ID, nil

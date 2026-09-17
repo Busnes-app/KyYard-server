@@ -87,6 +87,8 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 // post sends an action request and returns the status, which carries meaning of its own: 304
 // means the container was already where the caller wanted it.
 func (c *Client) post(ctx context.Context, path string) (int, error) {
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
 	if err != nil {
 		return 0, err
@@ -127,6 +129,8 @@ func (c *Client) remove(ctx context.Context, container, state string) (outcome, 
 }
 
 func (c *Client) del(ctx context.Context, path string) (int, error) {
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+path, nil)
 	if err != nil {
 		return 0, err
