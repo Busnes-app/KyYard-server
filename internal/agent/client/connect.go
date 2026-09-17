@@ -155,7 +155,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 	if ch.InstanceFingerprint != id.InstanceFingerprint {
 		return ErrInstanceChanged
 	}
-	sig := ed25519.Sign(ed25519.PrivateKey(id.PrivateKey), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
+	sig := ed25519.Sign(id.signingKey(), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
 	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Fingerprint: id.fingerprint(), Version: protocol.Version, Signature: sig}); err != nil {
 		return err
 	}
@@ -165,20 +165,21 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		if errors.As(err, &ce) {
 			switch strings.TrimSpace(ce.Reason) {
 			case protocol.CloseKeyRetired:
-				// Our key was retired (an acknowledged rotation while we were away). Try the
-				// next candidate; only with none left is the endpoint really gone.
-				if id.switchKey() {
+				// Our key was retired (an acknowledged rotation while we were away). Walk to
+				// the next candidate; only with none left is the endpoint really gone.
+				if id.tryNext() {
 					_ = opts.save(id)
 					return errSwitchKey
 				}
 			case protocol.CloseRevoked:
-				// Terminal for a key that has authenticated before: the server answers the
-				// same way for a signature mismatch or a store error, and a rotation window
-				// must not turn either into a lost identity. While recovering, the key in
-				// hand has only ever been refused, and an unknown key looks exactly like a
-				// revoked endpoint, so the remaining candidates are still worth one try
-				// each. A genuinely revoked endpoint refuses them all and we stop.
-				if id.Recovering && id.switchKey() {
+				// Terminal for the identity's own key: the server answers the same way for a
+				// signature mismatch or a store error, and a rotation window must not turn
+				// either into a lost identity. Mid-walk the key in hand has only ever been
+				// refused, and an unknown key looks exactly like a revoked endpoint, so the
+				// remaining candidates are still worth one try each. Nothing is overwritten
+				// on the way, so a server fault that refuses them all leaves every key where
+				// it was and the walk simply ends.
+				if id.recovering() && id.tryNext() {
 					_ = opts.save(id)
 					return errSwitchKey
 				}
@@ -186,9 +187,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		}
 		return closeReason(err)
 	}
-	// This key authenticated, so it is the identity, not a guess.
-	if id.Recovering {
-		id.Recovering = false
+	// The server accepted this key, which is the only proof that the old one is retired: the
+	// candidate becomes the identity and the others are dropped.
+	if id.recovering() {
+		id.commitCandidate()
 		_ = opts.save(id)
 	}
 	var hello protocol.Hello
@@ -278,7 +280,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			// The operator acknowledged our rotated key and the server ended this session on
 			// the old one: switch now instead of waiting for the next backoff.
 			var ce websocket.CloseError
-			if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired && id.switchKey() {
+			if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired && id.tryNext() {
 				_ = opts.save(id)
 				return errSwitchKey
 			}
@@ -389,7 +391,7 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 	if err != nil {
 		return err
 	}
-	current := ed25519.PrivateKey(id.PrivateKey)
+	current := id.signingKey()
 	id.PendingPrivateKey = priv
 	id.PendingFingerprint = protocol.Fingerprint(pub)
 	id.PendingSince = time.Now().UTC()

@@ -39,11 +39,11 @@ type Identity struct {
 	// more trustworthy for having waited.
 	LapsedPrivateKey []byte `json:"lapsed_private_key,omitempty"`
 	LapsedRecorded   bool   `json:"lapsed_recorded,omitempty"`
-	// Recovering says the key in use is a candidate promoted after a refusal, not a key that
-	// has ever authenticated. While it is set, another refusal may try the next candidate
-	// instead of concluding the endpoint is gone.
-	Recovering bool      `json:"recovering,omitempty"`
-	RotatedAt  time.Time `json:"rotated_at"`
+	// RecoveryAttempt is how far along the candidate list a refused key has walked. It is an
+	// index, not a promotion: no key is moved or overwritten until the server accepts one, so
+	// a server fault that refuses every candidate leaves the identity exactly as it was.
+	RecoveryAttempt int       `json:"recovery_attempt,omitempty"`
+	RotatedAt       time.Time `json:"rotated_at"`
 }
 
 // Promote makes the acknowledged pending key the current one.
@@ -57,45 +57,78 @@ func (id *Identity) Promote() {
 	id.PendingSince = time.Time{}
 	id.PendingRecorded = false
 	id.LapsedPrivateKey, id.LapsedRecorded = nil, false
-	id.Recovering = false
+	id.RecoveryAttempt = 0
 }
 
-// switchKey moves to the next candidate when the current key is refused. Every key the server
-// confirmed it holds is tried before any key it never answered for: the live offer, then a
-// lapsed one, then the same two unconfirmed. An unconfirmed key is kept as a late candidate
-// because the server may hold it and have lost the answer, but promoting one ahead of a
-// confirmed key strands the agent, since the server cannot tell an unknown key from a revoked
-// endpoint and answers both the same, which is terminal. Candidates not taken are kept, so a
-// wrong guess can still fall back. It returns false when nothing is left to try.
-func (id *Identity) switchKey() bool {
+// candidate is a key the agent may try when the current one is refused, and the slot holding
+// it, so a key the server accepts can be committed and the rest discarded.
+type candidate struct {
+	key    []byte
+	lapsed bool
+}
+
+// candidates lists the keys to try, in order. Every key the server confirmed it holds comes
+// before any key it never answered for, because a session killed between saving an offer and
+// reading the answer leaves a key the server may never have recorded, and an unknown key draws
+// exactly the refusal a revoked endpoint draws. An unconfirmed key is still worth a try, last.
+func (id *Identity) candidates() []candidate {
 	pending := len(id.PendingPrivateKey) == ed25519.PrivateKeySize
 	lapsed := len(id.LapsedPrivateKey) == ed25519.PrivateKeySize
-	switch {
-	case pending && id.PendingRecorded:
-		id.takePending()
-	case lapsed && id.LapsedRecorded:
-		id.takeLapsed()
-	case pending:
-		id.takePending()
-	case lapsed:
-		id.takeLapsed()
-	default:
+	var out []candidate
+	for _, want := range []bool{true, false} {
+		if pending && id.PendingRecorded == want {
+			out = append(out, candidate{key: id.PendingPrivateKey})
+		}
+		if lapsed && id.LapsedRecorded == want {
+			out = append(out, candidate{key: id.LapsedPrivateKey, lapsed: true})
+		}
+	}
+	return out
+}
+
+// tryNext advances to the next candidate. It moves no key: the walk is an index, so a server
+// answering every attempt with a refusal costs nothing but attempts, and the key that works is
+// still on disk when the fault clears. It returns false when the list is exhausted.
+func (id *Identity) tryNext() bool {
+	if id.RecoveryAttempt >= len(id.candidates()) {
 		return false
 	}
-	id.Recovering = true
-	id.RotatedAt = time.Now().UTC()
+	id.RecoveryAttempt++
 	return true
 }
 
-func (id *Identity) takePending() {
-	id.PrivateKey = id.PendingPrivateKey
-	id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
-	id.PendingRecorded = false
+// recovering reports whether the key in hand is a candidate rather than the identity's own key.
+func (id *Identity) recovering() bool { return id.RecoveryAttempt > 0 }
+
+// signingKey is the key this session authenticates with: the candidate under trial, or the
+// identity's own key when not recovering.
+func (id *Identity) signingKey() ed25519.PrivateKey {
+	if c := id.currentCandidate(); c != nil {
+		return ed25519.PrivateKey(c.key)
+	}
+	return ed25519.PrivateKey(id.PrivateKey)
 }
 
-func (id *Identity) takeLapsed() {
-	id.PrivateKey = id.LapsedPrivateKey
+func (id *Identity) currentCandidate() *candidate {
+	all := id.candidates()
+	if id.RecoveryAttempt < 1 || id.RecoveryAttempt > len(all) {
+		return nil
+	}
+	return &all[id.RecoveryAttempt-1]
+}
+
+// commitCandidate is called only once the server has accepted the candidate: that answer is the
+// proof the old key is retired, so the winner becomes the identity and the rest go.
+func (id *Identity) commitCandidate() {
+	c := id.currentCandidate()
+	id.RecoveryAttempt = 0
+	if c == nil {
+		return
+	}
+	id.PrivateKey = c.key
+	id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince, id.PendingRecorded = nil, "", time.Time{}, false
 	id.LapsedPrivateKey, id.LapsedRecorded = nil, false
+	id.RotatedAt = time.Now().UTC()
 }
 
 // promotable reports whether a refusal of the current key has somewhere to go.
@@ -113,7 +146,7 @@ func (id *Identity) pendingFingerprint() string {
 }
 
 func (id *Identity) fingerprint() string {
-	return protocol.Fingerprint(ed25519.PrivateKey(id.PrivateKey).Public().(ed25519.PublicKey))
+	return protocol.Fingerprint(id.signingKey().Public().(ed25519.PublicKey))
 }
 
 func identityPath(dir string) string { return filepath.Join(dir, "identity.json") }
