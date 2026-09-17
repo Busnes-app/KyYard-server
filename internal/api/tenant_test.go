@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kyyard-server/internal/api"
-	"github.com/Busness-app/kyyard-server/internal/auth"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 func tenantRequest(s *api.Server, cookie *http.Cookie, method, path, body string, csrf bool) *httptest.ResponseRecorder {

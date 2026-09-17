@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
 // Facts is the bounded enrollment report; the server keeps only the keys it knows.

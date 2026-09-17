@@ -15,13 +15,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/password"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/api"
-	"github.com/Busness-app/kyyard-server/internal/backup"
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/crypto"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/ky-primitives/password"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 // appVersion is what the capsule manifest records for this build.

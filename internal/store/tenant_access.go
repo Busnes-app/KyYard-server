@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Busness-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/google/uuid"
 )
 

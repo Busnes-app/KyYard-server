@@ -1,7 +1,7 @@
 package config_test
 
 import (
-	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"testing"
 )
 

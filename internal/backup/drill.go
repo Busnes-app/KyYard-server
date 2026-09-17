@@ -9,10 +9,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/keyfile"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/keyfile"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	_ "modernc.org/sqlite"
 )
 

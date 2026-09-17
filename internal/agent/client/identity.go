@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
 // Identity is everything the agent keeps between runs. The enrollment token is never in it.

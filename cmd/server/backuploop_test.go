@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 )
 
 // A deployment key that cannot seal is a configuration fault, not a run that might succeed

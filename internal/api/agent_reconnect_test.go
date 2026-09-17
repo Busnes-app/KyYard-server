@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/store"
-	"github.com/Busness-app/kyyard-server/internal/testdb"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
 	"github.com/coder/websocket"
 )
 

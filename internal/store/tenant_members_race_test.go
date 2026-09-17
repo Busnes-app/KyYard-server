@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 )
 
 // Two administrators demoting themselves at once must leave one in place. Each

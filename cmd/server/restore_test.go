@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
 )
 
 func sealFixture(t *testing.T, service string) (string, []string) {

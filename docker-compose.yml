@@ -14,17 +14,18 @@ services:
     # in full, so a failed check, an unreadable .env or a short write never replaces your
     # secrets. Re-run with a newer sha to move; delete the KY_IMAGE line to follow :latest
     # again. A source install is unaffected: the build overlay's image wins over this pin.
+#   Images built before 2026-09-16 cannot be verified by name any more (their owner is no longer held by this project); pin a later commit or build from source with docker-compose.build.yml.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
-    #     && gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
-    #          --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
-    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
-    #          --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
+    #   d=$(docker buildx imagetools inspect ghcr.io/busnes-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
+    #     && gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/KyYard-server \
+    #          --cert-identity https://github.com/Busnes-app/KyYard-server/.github/workflows/ci.yml@refs/heads/master \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/KyYard-server \
+    #          --cert-identity https://github.com/Busnes-app/KyYard-server/.github/workflows/ci.yml@refs/heads/master \
     #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
     #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-    #         && echo "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" >> "$t" && mv "$t" .env) \
-    #     && grep -qxF "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" .env
-    image: ${KY_IMAGE:-ghcr.io/busness-app/kyyard:latest}
+    #         && echo "KY_IMAGE=ghcr.io/busnes-app/kyyard@$d" >> "$t" && mv "$t" .env) \
+    #     && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/kyyard@$d" .env
+    image: ${KY_IMAGE:-ghcr.io/busnes-app/kyyard:latest}
     pull_policy: missing
     container_name: kyyard
     restart: unless-stopped

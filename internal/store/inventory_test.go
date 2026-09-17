@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
 // An implausible generation is refused and cannot pin the inventory; approval resets it.

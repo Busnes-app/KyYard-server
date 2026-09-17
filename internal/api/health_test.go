@@ -3,8 +3,8 @@ package api_test
 import (
 	"context"
 	"errors"
-	"github.com/Busness-app/kyyard-server/internal/api"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 	"net/http/httptest"
 	"strings"
 	"testing"

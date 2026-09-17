@@ -228,7 +228,7 @@ Every backup is one `.kycap` capsule: the database snapshot, the deployment's en
 the settings that describe the deployment, and the pinned suite recovery public key. It is
 sealed to the suite recovery key, which only the custodians' cards (k of n, split at the suite
 ceremony) can reconstruct. Nothing on this server, and nothing on KyRecovery, can open one.
-The mechanics are `github.com/Busness-app/ky-primitives/recoveryclient`; this repository
+The mechanics are `github.com/Busnes-app/ky-primitives/recoveryclient`; this repository
 supplies what it seals and how it checks a drill. New snapshots exclude sessions, pending
 MFA challenges and device pairings so restore requires fresh sign-in; live sessions remain
 untouched. The capsule preserves the instance identity and the active keys, including overrides.
@@ -322,3 +322,7 @@ remove it.
 
 `docs/RESTORE.md` is the runbook: opening a capsule with the custodians' cards, putting the
 result in service, and what to distrust afterwards. Drill it once a quarter with real cards.
+
+## Upgrading after the Busnes-app owner move
+
+The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr.io/busnes-app/kyyard`. The project no longer controls `ghcr.io/busness-app`; GHCR does not redirect it, and anything served under that name must be treated as untrusted. If `KY_IMAGE` in `.env` still names the old namespace, re-pinning is required, not optional: inspect `git remote -v` before any `git pull`, `make ci`, or `docker compose` command, and replace a retired-owner remote with `https://github.com/Busnes-app/KyYard-server.git` (prefer a fresh clone plus a known commit). Then remove `KY_IMAGE` to follow the compose default or verify and pin a digest using `docs/RESTORE.md` before pulling.

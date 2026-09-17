@@ -83,19 +83,19 @@ Tags are movable, `:<commit sha>` included, so the chain also checks that the at
 your commit as its source: the guarantee is the commit you named, not whatever the tag points at. The
 chain stops at the first failure and renames a same-directory staging file over `.env` only
 if the filtered copy was written in full, so your secrets are never truncated. The pin persists
-in `.env` after the drill: see the README's upgrade note for moving off it.
+in `.env` after the drill: see the README's upgrade note for moving off it. Images built before 2026-09-16 can no longer be verified by name: the owner they were attested under is not held by this project, so do not point `--repo` or `--cert-identity` at it. Pin a commit built after that date, or build that commit from source with `docker-compose.build.yml`.
 
 ```bash
 sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-d=$(docker buildx imagetools inspect ghcr.io/busness-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
-  && gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
-       --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
-  && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
-       --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
+d=$(docker buildx imagetools inspect ghcr.io/busnes-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
+  && gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/KyYard-server \
+       --cert-identity https://github.com/Busnes-app/KyYard-server/.github/workflows/ci.yml@refs/heads/master \
+  && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/KyYard-server \
+       --cert-identity https://github.com/Busnes-app/KyYard-server/.github/workflows/ci.yml@refs/heads/master \
        --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
   && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-      && echo "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" >> "$t" && mv "$t" .env) \
-  && grep -qxF "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" .env
+      && echo "KY_IMAGE=ghcr.io/busnes-app/kyyard@$d" >> "$t" && mv "$t" .env) \
+  && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/kyyard@$d" .env
 ```
 
 Then, in the same shell (the check compares against `$d`), refuse to go on unless the image in
@@ -105,7 +105,7 @@ two refusal messages are distinct on purpose: a broken invocation is not an unpi
 
 ```bash
 imgs=$(docker compose config --images) || { echo 'refusing: compose could not resolve the image'; false; }
-printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/kyyard@$d" || printf '%s\n' "$imgs" | grep -qxF 'kyyard:local' \
+printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busnes-app/kyyard@$d" || printf '%s\n' "$imgs" | grep -qxF 'kyyard:local' \
   || { echo "refusing: image in effect is '$imgs', not the digest verified above"; false; }
 ```
 

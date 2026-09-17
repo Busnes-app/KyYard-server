@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
-	"github.com/Busness-app/kyyard-server/internal/api"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/coder/websocket"
 )
 

@@ -30,7 +30,7 @@ jobs:
       - name: Check out ky-primitives default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: Busness-app/ky-primitives
+          repository: Busnes-app/ky-primitives
           path: ky-primitives
           persist-credentials: false
 
@@ -44,7 +44,7 @@ jobs:
 
       - name: Point this repository at that checkout
         working-directory: consumer
-        run: go mod edit -replace github.com/Busness-app/ky-primitives=../ky-primitives
+        run: go mod edit -replace github.com/Busnes-app/ky-primitives=../ky-primitives
 
       - name: Build
         working-directory: consumer

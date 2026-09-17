@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 func setupTenantAccess(t *testing.T) (store.Store, store.TenantAccess) {

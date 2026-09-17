@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 func rotateSig(current ed25519.PrivateKey, newPub ed25519.PublicKey) []byte {

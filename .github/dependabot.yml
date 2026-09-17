@@ -31,10 +31,10 @@ updates:
       default-days: 3
     groups:
       ky-primitives:
-        patterns: ["github.com/Busness-app/ky-primitives*"]
+        patterns: ["github.com/Busnes-app/ky-primitives*"]
       go:
         patterns: ["*"]
-        exclude-patterns: ["github.com/Busness-app/ky-primitives*"]
+        exclude-patterns: ["github.com/Busnes-app/ky-primitives*"]
     commit-message:
       prefix: "chore(deps)"
 

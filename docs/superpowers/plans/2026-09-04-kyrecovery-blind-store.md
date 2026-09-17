@@ -6,13 +6,13 @@
 
 **Architecture:** Deposit is raw container bytes checked against the pinned key ID through `capsule.ReadUnverifiedManifest` and hashed into an `auditchain` ledger. The ceremony is a `GOOS=js GOARCH=wasm` build of a tiny command over `recoverykey`, embedded and served to an admin tab; only the public key and ID come back. `internal/capsule`, `internal/adapter`, `internal/drill`, the decrypt ceremony and the plaintext push are deleted, not flagged.
 
-**Tech Stack:** Go 1.26.6, `github.com/Busness-app/ky-primitives v0.4.1` (`recoverykey`, `capsule`, `auditchain`, `password`, `keyfile`), SQLite via `modernc.org/sqlite`, embedded static SPA (`internal/server/static`), GitHub Actions.
+**Tech Stack:** Go 1.26.6, `github.com/Busnes-app/ky-primitives v0.4.1` (`recoverykey`, `capsule`, `auditchain`, `password`, `keyfile`), SQLite via `modernc.org/sqlite`, embedded static SPA (`internal/server/static`), GitHub Actions.
 
 **Spec:** `/home/yoshi/busness.app/ky-primitives/docs/superpowers/specs/2026-09-04-kyrecovery-blind-store-design.md` (Parts 1–9 and the claims register). Its opening section records what kyrecovery is today with file:line references; the plan below cites the same lines.
 
 ## Global Constraints
 
-- Repo: `/home/yoshi/busness.app/kyrecovery-server`, module `github.com/Busness-app/kyrecovery-server`, branch from `main` at `744dd37`.
+- Repo: `/home/yoshi/busness.app/kyrecovery-server`, module `github.com/Busnes-app/kyrecovery-server`, branch from `main` at `744dd37`.
 - **Prerequisite:** ky-primitives PR #11 merged and tagged `v0.4.1` (exports `capsule.MaxContainerBytes`, `MaxFiles`, `MaxFileBytes`, `MaxExpandedBytes`). If the tag does not exist when Task 1 starts, stop and say so; do not pin a commit hash and do not mirror the constants.
 - `go 1.26.6` in `go.mod` (the library's floor). `crypto/hpke` is stdlib in 1.26; nothing else needs a KEM.
 - **kyrecovery never holds a recovery private key, seed, share or plaintext payload.** Only `cmd/ceremony-wasm` (compiled to WASM, never linked into the server) and `_test.go` files may call `recoverykey.Generate`, `recoverykey.Split`, `recoverykey.Combine`, `recoverykey.FromSeed`, `capsule.Open`, `capsule.Seal` or `hpke.NewRecipient`. Task 8 pins this with a test.
@@ -60,14 +60,14 @@
 - Create: `.github/workflows/ci.yml`, `.github/workflows/ky-primitives-compat.yml`
 
 **Interfaces:**
-- Produces: a tree that builds and passes with no `internal/capsule`, `internal/adapter`, `internal/drill`, `internal/ceremony`, `internal/export`; `Server` struct without `runner`, `ceremonies`, `adapters`; `db.CapsuleRecord` unchanged for now (Task 3 extends it); `go.mod` on `go 1.26.6` with `github.com/Busness-app/ky-primitives v0.4.1`.
+- Produces: a tree that builds and passes with no `internal/capsule`, `internal/adapter`, `internal/drill`, `internal/ceremony`, `internal/export`; `Server` struct without `runner`, `ceremonies`, `adapters`; `db.CapsuleRecord` unchanged for now (Task 3 extends it); `go.mod` on `go 1.26.6` with `github.com/Busnes-app/ky-primitives v0.4.1`.
 
 - [ ] **Step 1: Bump Go and add the library**
 
 ```bash
 cd /home/yoshi/busness.app/kyrecovery-server
 go mod edit -go=1.26.6
-go get github.com/Busness-app/ky-primitives@v0.4.1
+go get github.com/Busnes-app/ky-primitives@v0.4.1
 ```
 
 If `go get` fails to find `v0.4.1`, stop and report; the tag is a prerequisite.
@@ -273,11 +273,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/kyrecovery-server/internal/audit"
-	"github.com/Busness-app/kyrecovery-server/internal/auth"
-	"github.com/Busness-app/kyrecovery-server/internal/db"
-	"github.com/Busness-app/kyrecovery-server/internal/server"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/kyrecovery-server/internal/audit"
+	"github.com/Busnes-app/kyrecovery-server/internal/auth"
+	"github.com/Busnes-app/kyrecovery-server/internal/db"
+	"github.com/Busnes-app/kyrecovery-server/internal/server"
 )
 
 // newAdminServer mirrors server_test.go's inline setup: in-memory DB, local admin login,
@@ -463,8 +463,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/kyrecovery-server/internal/db"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/kyrecovery-server/internal/db"
 )
 
 // recoveryKeyImport is the whole body the ceremony page may send. It has no field for
@@ -613,10 +613,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/kyrecovery-server/internal/pairing"
-	"github.com/Busness-app/kyrecovery-server/internal/server"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/kyrecovery-server/internal/pairing"
+	"github.com/Busnes-app/kyrecovery-server/internal/server"
 )
 
 // pairProduct generates a code as admin and claims it as the product, returning the token
@@ -876,8 +876,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/kyrecovery-server/internal/db"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/kyrecovery-server/internal/db"
 )
 
 // handleDeposit stores a sealed container. It reads the manifest without a key, decides on
@@ -1066,7 +1066,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
 )
 
 func TestVerifyDetectsAFlippedByte(t *testing.T) {
@@ -1145,7 +1145,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Busness-app/kyrecovery-server/internal/db"
+	"github.com/Busnes-app/kyrecovery-server/internal/db"
 )
 
 // verifyCapsule re-hashes the stored container against the digest recorded at deposit and
@@ -1247,8 +1247,8 @@ package audit_test
 import (
 	"testing"
 
-	"github.com/Busness-app/kyrecovery-server/internal/audit"
-	"github.com/Busness-app/kyrecovery-server/internal/db"
+	"github.com/Busnes-app/kyrecovery-server/internal/audit"
+	"github.com/Busnes-app/kyrecovery-server/internal/db"
 )
 
 func TestLedgerVerifiesAndDetectsTruncation(t *testing.T) {
@@ -1335,8 +1335,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/auditchain"
-	"github.com/Busness-app/kyrecovery-server/internal/db"
+	"github.com/Busnes-app/ky-primitives/auditchain"
+	"github.com/Busnes-app/kyrecovery-server/internal/db"
 )
 
 // fields is the order every record is hashed in. Changing it changes every digest.
@@ -1445,7 +1445,7 @@ func (l *Ledger) Verify(ctx context.Context) (auditchain.Anchor, error) {
 }
 ```
 
-Check `go doc github.com/Busness-app/ky-primitives/auditchain` for the genesis hash's exported name; if there is no `Genesis()` function, use the exported constant the package provides, or `auditchain.New(key).Anchor()` on a fresh chain to obtain the empty anchor. Do not hard-code the zero string.
+Check `go doc github.com/Busnes-app/ky-primitives/auditchain` for the genesis hash's exported name; if there is no `Genesis()` function, use the exported constant the package provides, or `auditchain.New(key).Anchor()` on a fresh chain to obtain the empty anchor. Do not hard-code the zero string.
 
 `handleAuditVerify` becomes:
 
@@ -1544,7 +1544,7 @@ import (
 	"encoding/base64"
 	"syscall/js"
 
-	"github.com/Busness-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
 )
 
 func ceremony(_ js.Value, args []js.Value) any {
@@ -1623,8 +1623,8 @@ package server_test
 import (
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky-primitives/shamir"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky-primitives/shamir"
 )
 
 // The WASM module calls exactly Generate and Split. This test pins that any k of the n

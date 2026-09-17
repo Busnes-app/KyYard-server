@@ -13,9 +13,9 @@ import (
 	"github.com/elimity-com/scim/optional"
 	"github.com/elimity-com/scim/schema"
 
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/crypto"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 type Server struct {

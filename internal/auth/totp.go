@@ -3,7 +3,7 @@ package auth
 import (
 	"time"
 
-	"github.com/Busness-app/ky-primitives/totp"
+	"github.com/Busnes-app/ky-primitives/totp"
 )
 
 // GenerateTOTPSecret returns a fresh base32 RFC 6238 secret.

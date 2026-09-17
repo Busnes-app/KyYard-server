@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/crypto"
-	"github.com/Busness-app/kyyard-server/internal/sso"
-	"github.com/Busness-app/kyyard-server/internal/store"
-	"github.com/Busness-app/kyyard-server/internal/testdb"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/sso"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
 )
 
 func TestOAuthAuthorizationURLUsesDiscoveryAndPKCE(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
 // An unacknowledged rotated key expires: it stops being "pending", cannot be acknowledged, and a

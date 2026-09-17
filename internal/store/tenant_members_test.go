@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 func TestMembershipManagementIsScopedAndGuarded(t *testing.T) {
