@@ -38,7 +38,7 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 	}
 	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 1, Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}})
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1", CPUPercent: 42, MemoryBytes: 512, MemoryLimit: 1024, RxBytes: 1, TxBytes: 2, Pids: 3}, {ContainerID: "c2", CPUPercent: -1}}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1", CPUPercent: 42, MemoryBytes: 512, MemoryLimit: 1024, RxBytes: 1, TxBytes: 2, Pids: 3, RestartCount: 7}, {ContainerID: "c2", CPUPercent: -1, RestartCount: -1}}})
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	readEnvelope(t, ctx, sock.conn)
 	oversized := protocol.Metrics{ObservedAt: time.Now(), Samples: make([]protocol.Sample, protocol.MaxSamples)}
@@ -63,7 +63,7 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &latest); err != nil {
 		t.Fatal(err)
 	}
-	if len(latest) != 2 || latest[0].ContainerID != "c1" || latest[0].CPUPercent != 42 || latest[1].CPUPercent != -1 {
+	if len(latest) != 2 || latest[0].ContainerID != "c1" || latest[0].CPUPercent != 42 || latest[1].CPUPercent != -1 || latest[0].RestartCount != 7 || latest[1].RestartCount != -1 {
 		t.Fatalf("latest samples: %+v", latest)
 	}
 	w = tenantRequest(s, viewer, "GET", "/api/organizations/a/endpoints/"+ag.id+"/containers/c1/samples?minutes=30", "", true)

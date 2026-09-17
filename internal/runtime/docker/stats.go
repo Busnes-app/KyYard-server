@@ -58,7 +58,7 @@ func (c *Client) Stats(ctx context.Context, running []string) protocol.Metrics {
 			continue // a container that vanished between listing and sampling is not an error
 		}
 		seen[id] = true
-		s := protocol.Sample{ContainerID: id, CPUPercent: -1, MemoryBytes: raw.MemoryStats.Usage, MemoryLimit: raw.MemoryStats.Limit, Pids: raw.Pids.Current}
+		s := protocol.Sample{ContainerID: id, CPUPercent: -1, MemoryBytes: raw.MemoryStats.Usage, MemoryLimit: raw.MemoryStats.Limit, Pids: raw.Pids.Current, RestartCount: c.restarts(ctx, id)}
 		for _, n := range raw.Networks {
 			s.RxBytes += n.Rx
 			s.TxBytes += n.Tx
@@ -95,4 +95,29 @@ func (c *Client) Running(ctx context.Context) ([]string, error) {
 		ids = append(ids, ct.ID)
 	}
 	return ids, nil
+}
+
+// restarts reads the runtime's restart counter for one container. The stats endpoint does not
+// carry it, so this is a second bounded call inside the same per-container budget; a runtime
+// that does not answer yields -1, which reads as "no data" rather than "never restarted".
+func (c *Client) restarts(ctx context.Context, id string) int64 {
+	var inspected struct {
+		State struct {
+			RestartCount *int64 `json:"RestartCount"`
+		} `json:"State"`
+		RestartCount *int64 `json:"RestartCount"`
+	}
+	ictx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := c.get(ictx, "/containers/"+id+"/json", &inspected); err != nil {
+		return -1
+	}
+	// Engine API keeps the counter at the top level; some runtimes report it under State.
+	switch {
+	case inspected.RestartCount != nil:
+		return *inspected.RestartCount
+	case inspected.State.RestartCount != nil:
+		return *inspected.State.RestartCount
+	}
+	return -1
 }

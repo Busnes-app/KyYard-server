@@ -478,6 +478,8 @@ CREATE INDEX idx_container_samples_observed ON container_samples(observed_at);
 CREATE INDEX idx_container_samples_observed ON container_samples(observed_at);
 `},
 	{Version: 13, Name: "container_samples_endpoint_time", SQLite: `CREATE INDEX idx_container_samples_endpoint_time ON container_samples(endpoint_id, observed_at, container_id);`, Postgres: `CREATE INDEX idx_container_samples_endpoint_time ON container_samples(endpoint_id, observed_at, container_id);`},
+	// -1 is "the runtime did not say", which existing rows cannot distinguish from zero either.
+	{Version: 14, Name: "container_samples_restarts", SQLite: `ALTER TABLE container_samples ADD COLUMN restart_count INTEGER NOT NULL DEFAULT -1;`, Postgres: `ALTER TABLE container_samples ADD COLUMN restart_count BIGINT NOT NULL DEFAULT -1;`},
 }
 
 // Run executes all pending migrations for the specified database driver.

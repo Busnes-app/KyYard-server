@@ -17,9 +17,9 @@ it('renders a fresh snapshot and flags staleness and truncation', async () => {
   const now = new Date();
   const old = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
   const snapshot = { generation: 7, observed_at: old, engine: { runtime: 'docker', version: '29.7.2', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 8, memory_bytes: 2 ** 31, hostname: 'h1' }, containers: [{ id: 'c1', name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [{ host: 8080, container: 80, protocol: 'tcp' }], labels: {}, networks: [], compose_project: 'shop' }], images: [], networks: [], volumes: [], truncated: ['images'] };
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 7, observed_at: old, received_at: old, snapshot }) : String(input).endsWith('/samples') ? json([{ container_id: 'c1', observed_at: old, cpu_percent: 12.34, memory_bytes: 3 * 2 ** 20, memory_limit: 0, rx_bytes: 0, tx_bytes: 0, pids: 1 }]) : json(endpoint)));
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 7, observed_at: old, received_at: old, snapshot }) : String(input).endsWith('/samples') ? json([{ container_id: 'c1', observed_at: old, cpu_percent: 12.34, memory_bytes: 3 * 2 ** 20, memory_limit: 0, rx_bytes: 0, tx_bytes: 0, pids: 1, restart_count: 3 }]) : json(endpoint)));
   render(<EndpointPage org="a" endpoint="ep_1" />);
-  expect(await screen.findByText('cpu 12.3% · mem 3 MiB')).toBeTruthy();
+  expect(await screen.findByText('cpu 12.3% · mem 3 MiB · 3 restarts')).toBeTruthy();
   const status = await screen.findByRole('status');
   expect(status.textContent).toContain('generation 7');
   expect(status.textContent).toContain('stale');
@@ -36,4 +36,13 @@ it('tells no data from zero usage', async () => {
   expect(await screen.findByText('no data')).toBeTruthy(); // running, never sampled
   expect(screen.getAllByText('—').length).toBeGreaterThan(0); // exited container shows a dash
   expect(screen.getByText('cpu — · mem 0 B')).toBeTruthy(); // first sample: no interval yet, memory really zero
+});
+
+it('says nothing about restarts when the runtime would not say', async () => {
+  const now = new Date().toISOString();
+  const snapshot = { generation: 2, observed_at: now, engine: { runtime: 'docker', version: '1', api_version: '1', os: 'linux', arch: 'x', kernel: 'k', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers: [{ id: 'c1', name: 'a', image: 'i', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: [] }], images: [], networks: [], volumes: [], truncated: [] };
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 2, observed_at: now, received_at: now, snapshot }) : String(input).endsWith('/samples') ? json([{ container_id: 'c1', observed_at: now, cpu_percent: 5, memory_bytes: 2 ** 20, memory_limit: 0, rx_bytes: 0, tx_bytes: 0, pids: 1, restart_count: -1 }]) : json({ id: 'ep_1', name: 'h', state: 'active', environment_id: 'env', runtime: 'docker', fingerprint: 'f', alerts: [], capabilities: [] })));
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  // A count of zero would be a claim; -1 is the runtime declining to answer.
+  expect(await screen.findByText('cpu 5.0% · mem 1 MiB')).toBeTruthy();
 });
