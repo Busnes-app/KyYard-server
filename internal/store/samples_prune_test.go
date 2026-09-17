@@ -109,3 +109,52 @@ func TestSamplesBoundedPerContainer(t *testing.T) {
 		t.Fatalf("rows after refused frame: %d %v", count, err)
 	}
 }
+
+// Ingest cost follows the frame, not the stored set: at the row ceiling, a thousand frames
+// naming a container that already has a fresh row cost one primary-key seek each.
+func TestSamplesIngestCostIsBounded(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	enrolled, err := ts.Enroll(ctx, EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := enrolled.ID
+	if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c"}}}); err != nil {
+		t.Fatal(err)
+	}
+	tx, _ := st.db.BeginTx(ctx, nil)
+	stmt, err := tx.PrepareContext(ctx, st.rebind(`INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES (?,?,?,0,0,0,0,0,0)`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-3 * time.Hour)
+	for i := 1; i < MaxSampleRowsPerEndpoint; i++ {
+		if _, err := stmt.ExecContext(ctx, e, "fill", old.Add(time.Duration(i)*time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	for i := 0; i < 1000; i++ {
+		if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if took := time.Since(started); took > 10*time.Second {
+		t.Fatalf("1000 cadence-dropped frames at the ceiling took %s", took)
+	}
+	// A frame that must write still meets the ceiling, and is refused without a close.
+	if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "new"}}}); !errors.Is(err, ErrSampleBudget) {
+		t.Fatalf("expected ErrSampleBudget, got %v", err)
+	}
+}

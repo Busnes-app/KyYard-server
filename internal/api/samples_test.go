@@ -2,8 +2,11 @@ package api_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"github.com/Busness-app/kyyard-server/internal/config"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +16,7 @@ import (
 
 // Metrics frames land as bounded samples readable only inside the organization.
 func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
-	s, st, _ := setupTestServer(t)
+	s, st, cfg := setupTestServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	ts := st.Tenancy()
@@ -75,5 +78,59 @@ func TestMetricsFramesAreStoredAndScoped(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &latest)
 	if len(latest) != 2 {
 		t.Fatalf("refused frame was stored: %d", len(latest))
+	}
+	// At the row ceiling a frame is answered with an error frame and the session continues;
+	// a second frame inside the cadence is dropped before the store sees it.
+	fillSamples(t, cfg.Database, ag.id, store.MaxSampleRowsPerEndpoint-2)
+	waitFor(t, func() bool { return !s.Connected(ag.id) })
+	sock, _ = connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c3"}, {ContainerID: "c4"}, {ContainerID: "c5"}}})
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "samples_budget_exhausted") {
+		t.Fatalf("ceiling not named: %+v", e)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c6"}}})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {
+		t.Fatalf("session did not continue at the ceiling: %+v", e)
+	}
+	w = tenantRequest(s, viewer, "GET", latestPath, "", true)
+	_ = json.Unmarshal(w.Body.Bytes(), &latest)
+	for _, r := range latest {
+		if strings.HasPrefix(r.ContainerID, "c3") || r.ContainerID == "c6" {
+			t.Fatalf("frame past the ceiling stored a row: %+v", r)
+		}
+	}
+}
+
+// fillSamples writes rows straight into container_samples so a test can reach the endpoint's
+// row ceiling in seconds rather than through a hundred thousand frames.
+func fillSamples(t *testing.T, dbCfg config.DatabaseConfig, endpointID string, n int) {
+	t.Helper()
+	driver, q := dbCfg.Driver, `INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES (?,?,?,0,0,0,0,0,0)`
+	if driver == "postgres" {
+		driver, q = "pgx", `INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES ($1,$2,$3,0,0,0,0,0,0)`
+	}
+	db, err := sql.Open(driver, dbCfg.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := tx.Prepare(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-3 * time.Hour)
+	for i := 0; i < n; i++ {
+		if _, err := stmt.Exec(endpointID, "fill", old.Add(time.Duration(i)*time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }
