@@ -750,3 +750,91 @@ func TestAnUnrecordedOfferDoesNotStrandTheAgent(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// The lapsed slot is not a mark of trust: an offer that lapsed without ever being confirmed
+// belongs behind one the server did record, whichever slot each sits in.
+func TestAnUnconfirmedLapsedKeyDoesNotOutrankARecordedOffer(t *testing.T) {
+	httpSrv, st, jar, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+
+	// One offer the server records, left in the pending slot.
+	id.RotatedAt = time.Time{}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.PendingFingerprint != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no rotation offer was recorded: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	recorded := id.PendingFingerprint
+
+	// On disk: the recorded offer still pending but with its provenance lost (an older agent
+	// wrote this file), and a key in the lapsed slot the server has never seen.
+	_, strayPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	saved["lapsed_private_key"] = []byte(strayPriv)
+	delete(saved, "lapsed_recorded")
+	delete(saved, "pending_recorded")
+	raw, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "identity.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/keys/"+recorded+"/acknowledge", jar, "")
+
+	reloaded, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx2, stop2 := context.WithCancel(ctx)
+	defer stop2()
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- client.Run(runCtx2, reloaded, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir})
+	}()
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.State == "active" && e.Fingerprint == recorded {
+			return
+		}
+		select {
+		case err := <-done2:
+			t.Fatalf("agent gave up instead of trying the acknowledged key: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never authenticated with the acknowledged key: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

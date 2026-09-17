@@ -166,17 +166,30 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			switch strings.TrimSpace(ce.Reason) {
 			case protocol.CloseKeyRetired:
 				// Our key was retired (an acknowledged rotation while we were away). Try the
-				// next candidate; only with none left is the endpoint really gone. A revoked
-				// close is terminal and never touches the key material: the server also uses
-				// it for a signature mismatch or a store error, and a rotation window must
-				// not turn either into a lost identity.
+				// next candidate; only with none left is the endpoint really gone.
 				if id.switchKey() {
+					_ = opts.save(id)
+					return errSwitchKey
+				}
+			case protocol.CloseRevoked:
+				// Terminal for a key that has authenticated before: the server answers the
+				// same way for a signature mismatch or a store error, and a rotation window
+				// must not turn either into a lost identity. While recovering, the key in
+				// hand has only ever been refused, and an unknown key looks exactly like a
+				// revoked endpoint, so the remaining candidates are still worth one try
+				// each. A genuinely revoked endpoint refuses them all and we stop.
+				if id.Recovering && id.switchKey() {
 					_ = opts.save(id)
 					return errSwitchKey
 				}
 			}
 		}
 		return closeReason(err)
+	}
+	// This key authenticated, so it is the identity, not a guess.
+	if id.Recovering {
+		id.Recovering = false
+		_ = opts.save(id)
 	}
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
@@ -200,7 +213,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			// Forget the offer but keep the key material until a new offer replaces it: if a
 			// late acknowledgement retires the current key anyway, key_retired can still promote.
 			opts.Log.Printf("pending key %s was never acknowledged; offer lapsed", id.PendingFingerprint)
-			id.LapsedPrivateKey = id.PendingPrivateKey
+			id.LapsedPrivateKey, id.LapsedRecorded = id.PendingPrivateKey, id.PendingRecorded
 			id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
 			id.PendingRecorded = false
 			_ = opts.save(id)
@@ -289,12 +302,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 						id.PendingFingerprint = id.pendingFingerprint()
 						id.PendingSince = time.Now().UTC()
 						id.PendingRecorded = true
-						id.LapsedPrivateKey = nil
+						id.LapsedPrivateKey, id.LapsedRecorded = nil, false
 					}
 					_ = opts.save(id)
 				} else {
 					// A recorded offer proves any lapsed key is retired server-side.
-					id.LapsedPrivateKey = nil
+					id.LapsedPrivateKey, id.LapsedRecorded = nil, false
 					id.PendingRecorded = true
 					_ = opts.save(id)
 					opts.Log.Printf("rotation recorded as %s; waiting for operator acknowledgement", ack.Fingerprint)

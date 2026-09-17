@@ -34,9 +34,16 @@ type Identity struct {
 	PendingRecorded bool `json:"pending_recorded,omitempty"`
 	// LapsedPrivateKey is an offer the agent gave up on. It is kept until the server proves it
 	// gone (by recording a new offer), because with skewed clocks the server may still
-	// acknowledge it, and key_retired must then be able to promote it.
-	LapsedPrivateKey []byte    `json:"lapsed_private_key,omitempty"`
-	RotatedAt        time.Time `json:"rotated_at"`
+	// acknowledge it, and key_retired must then be able to promote it. LapsedRecorded carries
+	// the same provenance PendingRecorded did, because an offer that lapsed unconfirmed is no
+	// more trustworthy for having waited.
+	LapsedPrivateKey []byte `json:"lapsed_private_key,omitempty"`
+	LapsedRecorded   bool   `json:"lapsed_recorded,omitempty"`
+	// Recovering says the key in use is a candidate promoted after a refusal, not a key that
+	// has ever authenticated. While it is set, another refusal may try the next candidate
+	// instead of concluding the endpoint is gone.
+	Recovering bool      `json:"recovering,omitempty"`
+	RotatedAt  time.Time `json:"rotated_at"`
 }
 
 // Promote makes the acknowledged pending key the current one.
@@ -49,40 +56,49 @@ func (id *Identity) Promote() {
 	id.PendingFingerprint = ""
 	id.PendingSince = time.Time{}
 	id.PendingRecorded = false
-	id.LapsedPrivateKey = nil
+	id.LapsedPrivateKey, id.LapsedRecorded = nil, false
+	id.Recovering = false
 }
 
-// switchKey moves to the next candidate when the current key is refused: the live offer
-// first, then a lapsed one. The other candidate is kept so a wrong guess can still fall back.
-// It returns false when nothing is left to try.
-// switchKey moves to the next key to try. A confirmed offer comes first, then a lapsed one the
-// server once recorded, and only then an offer the server never confirmed: promoting an
-// unrecorded key ahead of a recorded one strands the agent, because the server cannot tell an
-// unknown key from a revoked endpoint and answers both the same, which is terminal.
+// switchKey moves to the next candidate when the current key is refused. Every key the server
+// confirmed it holds is tried before any key it never answered for: the live offer, then a
+// lapsed one, then the same two unconfirmed. An unconfirmed key is kept as a late candidate
+// because the server may hold it and have lost the answer, but promoting one ahead of a
+// confirmed key strands the agent, since the server cannot tell an unknown key from a revoked
+// endpoint and answers both the same, which is terminal. Candidates not taken are kept, so a
+// wrong guess can still fall back. It returns false when nothing is left to try.
 func (id *Identity) switchKey() bool {
 	pending := len(id.PendingPrivateKey) == ed25519.PrivateKeySize
+	lapsed := len(id.LapsedPrivateKey) == ed25519.PrivateKeySize
 	switch {
 	case pending && id.PendingRecorded:
 		id.takePending()
-	case len(id.LapsedPrivateKey) == ed25519.PrivateKeySize:
-		id.PrivateKey = id.LapsedPrivateKey
-		id.LapsedPrivateKey = nil
+	case lapsed && id.LapsedRecorded:
+		id.takeLapsed()
 	case pending:
 		id.takePending()
+	case lapsed:
+		id.takeLapsed()
 	default:
 		return false
 	}
+	id.Recovering = true
 	id.RotatedAt = time.Now().UTC()
 	return true
 }
 
-// promotable reports whether a refusal of the current key has somewhere to go.
 func (id *Identity) takePending() {
 	id.PrivateKey = id.PendingPrivateKey
 	id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
 	id.PendingRecorded = false
 }
 
+func (id *Identity) takeLapsed() {
+	id.PrivateKey = id.LapsedPrivateKey
+	id.LapsedPrivateKey, id.LapsedRecorded = nil, false
+}
+
+// promotable reports whether a refusal of the current key has somewhere to go.
 func (id *Identity) promotable() bool {
 	return len(id.PendingPrivateKey) == ed25519.PrivateKeySize || len(id.LapsedPrivateKey) == ed25519.PrivateKeySize
 }
