@@ -85,6 +85,57 @@ type Hello struct {
 	AgentVersion     string   `json:"agent_version,omitempty"`
 }
 
+// UnmarshalHelloBounded limits capability count and total decoded text before
+// the caller hands it to the store.
+func UnmarshalHelloBounded(data []byte, h *Hello) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var raw struct {
+		State            string
+		HeartbeatSeconds int
+		Capabilities     []string
+		AgentVersion     string
+	}
+	if v, ok := fields["state"]; ok {
+		if err := json.Unmarshal(v, &raw.State); err != nil {
+			return err
+		}
+	}
+	if v, ok := fields["heartbeat_seconds"]; ok {
+		if err := json.Unmarshal(v, &raw.HeartbeatSeconds); err != nil {
+			return err
+		}
+	}
+	if v, ok := fields["agent_version"]; ok {
+		if err := json.Unmarshal(v, &raw.AgentVersion); err != nil {
+			return err
+		}
+	}
+	if v, ok := fields["capabilities"]; ok {
+		var err error
+		raw.Capabilities, _, err = decodeBounded[string](v, 64)
+		if err != nil {
+			return err
+		}
+	}
+	total := 0
+	for i, v := range raw.Capabilities {
+		if len(v) > 256 {
+			raw.Capabilities[i] = v[:256]
+		}
+		total += len(raw.Capabilities[i])
+		if total > 4096 {
+			raw.Capabilities = raw.Capabilities[:i+1]
+			raw.Capabilities[i] = raw.Capabilities[i][:len(raw.Capabilities[i])-(total-4096)]
+			break
+		}
+	}
+	h.State, h.HeartbeatSeconds, h.Capabilities, h.AgentVersion = raw.State, raw.HeartbeatSeconds, raw.Capabilities, raw.AgentVersion
+	return nil
+}
+
 // AuthPreimage binds the signature to this endpoint, this nonce, the host the agent dialed and
 // the version it speaks, so a capture cannot be replayed elsewhere or later.
 func AuthPreimage(endpointID string, nonce []byte, serverHost string, version int) []byte {

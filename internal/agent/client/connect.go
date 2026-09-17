@@ -164,7 +164,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		var ce websocket.CloseError
 		if errors.As(err, &ce) {
 			switch strings.TrimSpace(ce.Reason) {
-			case protocol.CloseKeyRetired, protocol.CloseRevoked:
+			case protocol.CloseKeyRetired:
 				// Our key was retired (an acknowledged rotation while we were away) or is not
 				// known at all (a candidate that was never recorded). Try the next candidate;
 				// only with none left is the endpoint really gone.

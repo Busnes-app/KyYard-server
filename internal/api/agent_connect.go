@@ -24,6 +24,7 @@ const (
 	agentReadTimeout  = 3 * agentHeartbeat // three missed heartbeats mark the endpoint offline
 	agentFrameLimit   = 4 << 20
 	preAuthFrameLimit = 4096
+	maxControlPayload = 64 << 10
 	handshakeTimeout  = 10 * time.Second
 )
 
@@ -343,6 +344,10 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		c.conn.Close(websocket.StatusPolicyViolation, reason)
 		return true
 	}
+	if f.Type != protocol.TypeInventory && len(f.Payload) > maxControlPayload {
+		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+		return true
+	}
 	switch f.Type {
 	case protocol.TypeHello:
 		// One hello per session: a second carries nothing new and must not rewrite the set.
@@ -351,7 +356,7 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		}
 		*helloSeen = true
 		var hello protocol.Hello
-		if json.Unmarshal(f.Payload, &hello) == nil && !pending {
+		if protocol.UnmarshalHelloBounded(f.Payload, &hello) == nil && !pending {
 			if err := ts.SetEndpointCapabilities(fctx, c.endpointID, hello.Capabilities); err != nil {
 				log.Printf("agent %s: capabilities: %v", c.endpointID, err)
 			}
@@ -398,7 +403,7 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			}
 			return false
 		}
-		if err := json.Unmarshal(f.Payload, &inv); err != nil {
+		if err := protocol.UnmarshalSnapshotBounded(f.Payload, &inv); err != nil {
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
