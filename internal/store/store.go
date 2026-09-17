@@ -31,6 +31,8 @@ type Store interface {
 	Settings() SettingsStore
 
 	Driver() string
+	// SampleCeiling is the stored metric rows allowed per endpoint.
+	SampleCeiling() int
 	Ping(ctx context.Context) error
 	Close() error
 }

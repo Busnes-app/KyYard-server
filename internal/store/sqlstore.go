@@ -15,6 +15,7 @@ import (
 type SQLStore struct {
 	db       *sql.DB
 	driver   string
+	ceiling  int // stored sample rows allowed per endpoint
 	users    *userStore
 	sessions *sessionStore
 	devices  *deviceStore
@@ -24,7 +25,7 @@ type SQLStore struct {
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, ceiling int) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
@@ -34,9 +35,13 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 		return nil, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
 
+	if ceiling <= 0 {
+		ceiling = MaxSampleRowsPerEndpoint
+	}
 	s := &SQLStore{
-		db:     db,
-		driver: driver,
+		db:      db,
+		driver:  driver,
+		ceiling: ceiling,
 	}
 
 	s.users = &userStore{store: s}
@@ -915,3 +920,6 @@ func errorsIs(err, target error) bool {
 	}
 	return err == target || strings.Contains(err.Error(), target.Error())
 }
+
+// SampleCeiling is the stored-rows-per-endpoint limit this store enforces.
+func (s *SQLStore) SampleCeiling() int { return s.ceiling }

@@ -24,10 +24,8 @@ const (
 )
 
 // MaxSampleRowsPerEndpoint is the backstop against container-ID cardinality: 100 containers ×
-// 360 rows at the capacity targets, with headroom. It is a variable so a test can reach the
-// ceiling without writing a hundred thousand rows, which costs minutes against PostgreSQL; the
-// behaviour at the ceiling is what those tests are about, not the number.
-var MaxSampleRowsPerEndpoint = 100000
+// 360 rows at the capacity targets, with headroom.
+const MaxSampleRowsPerEndpoint = 100000
 
 var ErrSampleBudget = errors.New("endpoint sample budget exhausted")
 
@@ -98,7 +96,7 @@ func (t *tenancyStore) RecordSamples(ctx context.Context, endpointID string, m p
 	if len(writes) == 0 {
 		return tx.Commit()
 	}
-	offset := MaxSampleRowsPerEndpoint - len(writes)
+	offset := t.store.ceiling - len(writes)
 	if offset < 0 {
 		return ErrSampleBudget
 	}
@@ -111,7 +109,7 @@ func (t *tenancyStore) RecordSamples(ctx context.Context, endpointID string, m p
 		return ErrSampleBudget
 	}
 	for _, s := range writes {
-		if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (endpoint_id,container_id,observed_at) DO NOTHING`), endpointID, s.ContainerID, observed, s.CPUPercent, s.MemoryBytes, s.MemoryLimit, s.RxBytes, s.TxBytes, s.Pids); err != nil {
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO container_samples (endpoint_id,container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids,restart_count) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT (endpoint_id,container_id,observed_at) DO NOTHING`), endpointID, s.ContainerID, observed, s.CPUPercent, s.MemoryBytes, s.MemoryLimit, s.RxBytes, s.TxBytes, s.Pids, s.RestartCount); err != nil {
 			return err
 		}
 	}
@@ -120,21 +118,22 @@ func (t *tenancyStore) RecordSamples(ctx context.Context, endpointID string, m p
 
 // SampleRow is a stored sample with its time; a missing row is "no data", never zero.
 type SampleRow struct {
-	ContainerID string    `json:"container_id"`
-	ObservedAt  time.Time `json:"observed_at"`
-	CPUPercent  float64   `json:"cpu_percent"`
-	MemoryBytes int64     `json:"memory_bytes"`
-	MemoryLimit int64     `json:"memory_limit"`
-	RxBytes     int64     `json:"rx_bytes"`
-	TxBytes     int64     `json:"tx_bytes"`
-	Pids        int64     `json:"pids"`
+	ContainerID  string    `json:"container_id"`
+	ObservedAt   time.Time `json:"observed_at"`
+	CPUPercent   float64   `json:"cpu_percent"`
+	MemoryBytes  int64     `json:"memory_bytes"`
+	MemoryLimit  int64     `json:"memory_limit"`
+	RxBytes      int64     `json:"rx_bytes"`
+	TxBytes      int64     `json:"tx_bytes"`
+	Pids         int64     `json:"pids"`
+	RestartCount int64     `json:"restart_count"`
 }
 
 func scanSamples(rows *sql.Rows) ([]SampleRow, error) {
 	out := []SampleRow{}
 	for rows.Next() {
 		var r SampleRow
-		if err := rows.Scan(&r.ContainerID, &r.ObservedAt, &r.CPUPercent, &r.MemoryBytes, &r.MemoryLimit, &r.RxBytes, &r.TxBytes, &r.Pids); err != nil {
+		if err := rows.Scan(&r.ContainerID, &r.ObservedAt, &r.CPUPercent, &r.MemoryBytes, &r.MemoryLimit, &r.RxBytes, &r.TxBytes, &r.Pids, &r.RestartCount); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -160,7 +159,7 @@ func (t *tenancyStore) LatestSamples(ctx context.Context, a TenantAccess, endpoi
 		if err := t.endpointInScope(ctx, tx, a, endpointID); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT s.container_id,s.observed_at,s.cpu_percent,s.memory_bytes,s.memory_limit,s.rx_bytes,s.tx_bytes,s.pids FROM container_samples s WHERE s.endpoint_id=? AND s.observed_at>? AND NOT EXISTS (SELECT 1 FROM container_samples newer WHERE newer.endpoint_id=s.endpoint_id AND newer.container_id=s.container_id AND newer.observed_at>s.observed_at) ORDER BY s.container_id LIMIT ?`), endpointID, time.Now().UTC().Add(-SampleRetention), MaxSamplesPerFrame)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT s.container_id,s.observed_at,s.cpu_percent,s.memory_bytes,s.memory_limit,s.rx_bytes,s.tx_bytes,s.pids,s.restart_count FROM container_samples s WHERE s.endpoint_id=? AND s.observed_at>? AND NOT EXISTS (SELECT 1 FROM container_samples newer WHERE newer.endpoint_id=s.endpoint_id AND newer.container_id=s.container_id AND newer.observed_at>s.observed_at) ORDER BY s.container_id LIMIT ?`), endpointID, time.Now().UTC().Add(-SampleRetention), MaxSamplesPerFrame)
 		if err != nil {
 			return err
 		}
@@ -184,7 +183,7 @@ func (t *tenancyStore) ReadSamples(ctx context.Context, a TenantAccess, endpoint
 		if err := t.endpointInScope(ctx, tx, a, endpointID); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids FROM container_samples WHERE endpoint_id=? AND container_id=? AND observed_at>? ORDER BY observed_at LIMIT 400`), endpointID, containerID, time.Now().UTC().Add(-window))
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,observed_at,cpu_percent,memory_bytes,memory_limit,rx_bytes,tx_bytes,pids,restart_count FROM container_samples WHERE endpoint_id=? AND container_id=? AND observed_at>? ORDER BY observed_at LIMIT 400`), endpointID, containerID, time.Now().UTC().Add(-window))
 		if err != nil {
 			return err
 		}

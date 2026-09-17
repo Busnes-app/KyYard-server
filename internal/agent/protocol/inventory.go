@@ -406,12 +406,16 @@ func ShrinkMetrics(m Metrics) Metrics {
 // Sample is one container's usage at ObservedAt. CPUPercent is the share of one core over the
 // interval since the previous sample (100 = one core busy); the first sample after a restart
 // has no interval and reports -1, which the UI shows as "no data" rather than zero.
+// RestartCount is the runtime's own counter for the container, cumulative since it was created,
+// so a rising series across samples is a container restarting. It is -1 when the runtime did
+// not answer, which is not the same as a container that has never restarted.
 type Sample struct {
-	ContainerID string  `json:"container_id"`
-	CPUPercent  float64 `json:"cpu_percent"`
-	MemoryBytes int64   `json:"memory_bytes"`
-	MemoryLimit int64   `json:"memory_limit"`
-	RxBytes     int64   `json:"rx_bytes"`
-	TxBytes     int64   `json:"tx_bytes"`
-	Pids        int64   `json:"pids"`
+	ContainerID  string  `json:"container_id"`
+	CPUPercent   float64 `json:"cpu_percent"`
+	MemoryBytes  int64   `json:"memory_bytes"`
+	MemoryLimit  int64   `json:"memory_limit"`
+	RxBytes      int64   `json:"rx_bytes"`
+	TxBytes      int64   `json:"tx_bytes"`
+	Pids         int64   `json:"pids"`
+	RestartCount int64   `json:"restart_count"`
 }

@@ -47,18 +47,21 @@ func (c *Client) Stats(ctx context.Context, running []string) protocol.Metrics {
 				Current int64 `json:"current"`
 			} `json:"pids_stats"`
 		}
-		// One slow container must not spend the whole budget.
+		// One slow container must not spend the whole budget, and its two calls share that
+		// budget: a daemon that answers slowly must cost a fixed slice per container, not one
+		// per request, or the tail of the list is starved the same way every cycle.
 		sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		err := c.get(sctx, "/containers/"+id+"/stats?stream=false&one-shot=true", &raw)
-		cancel()
 		if err != nil {
+			cancel()
 			if ctx.Err() != nil {
 				break
 			}
 			continue // a container that vanished between listing and sampling is not an error
 		}
 		seen[id] = true
-		s := protocol.Sample{ContainerID: id, CPUPercent: -1, MemoryBytes: raw.MemoryStats.Usage, MemoryLimit: raw.MemoryStats.Limit, Pids: raw.Pids.Current}
+		s := protocol.Sample{ContainerID: id, CPUPercent: -1, MemoryBytes: raw.MemoryStats.Usage, MemoryLimit: raw.MemoryStats.Limit, Pids: raw.Pids.Current, RestartCount: c.restarts(sctx, id)}
+		cancel()
 		for _, n := range raw.Networks {
 			s.RxBytes += n.Rx
 			s.TxBytes += n.Tx
@@ -95,4 +98,28 @@ func (c *Client) Running(ctx context.Context) ([]string, error) {
 		ids = append(ids, ct.ID)
 	}
 	return ids, nil
+}
+
+// restarts reads the runtime's restart counter for one container. The stats endpoint does not
+// carry it, so this is a second call, and it inherits the caller's per-container deadline
+// rather than opening its own; a runtime that does not answer in time yields -1, which reads
+// as "no data" rather than "never restarted".
+func (c *Client) restarts(ctx context.Context, id string) int64 {
+	var inspected struct {
+		State struct {
+			RestartCount *int64 `json:"RestartCount"`
+		} `json:"State"`
+		RestartCount *int64 `json:"RestartCount"`
+	}
+	if err := c.get(ctx, "/containers/"+id+"/json", &inspected); err != nil {
+		return -1
+	}
+	// Engine API keeps the counter at the top level; some runtimes report it under State.
+	switch {
+	case inspected.RestartCount != nil:
+		return *inspected.RestartCount
+	case inspected.State.RestartCount != nil:
+		return *inspected.State.RestartCount
+	}
+	return -1
 }

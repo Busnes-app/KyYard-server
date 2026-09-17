@@ -22,7 +22,10 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
     const s = latest.get(c.id);
     if (!s) return c.state === 'running' ? 'no data' : '—';
     const cpu = s.cpu_percent < 0 ? 'cpu —' : `cpu ${s.cpu_percent.toFixed(1)}%`;
-    return `${cpu} · mem ${bytes(s.memory_bytes)}`;
+    // A runtime that did not answer reports -1, and a server too old to send the field at all
+    // reports nothing; neither is a container that has never restarted, so both stay silent.
+    const restarts = typeof s.restart_count === 'number' && s.restart_count >= 0 ? ` · ${s.restart_count} restarts` : '';
+    return `${cpu} · mem ${bytes(s.memory_bytes)}${restarts}`;
   };
   const e = details.data;
   const inv = inventory.data;
