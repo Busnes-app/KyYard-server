@@ -145,8 +145,28 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 			r.Failures = append(r.Failures, "pressure was raised and not one write was shed for it")
 		}
 	}
-	if r.RollupErrors > 0 || r.PruneErrors > 0 {
-		r.Failures = append(r.Failures, fmt.Sprintf("retention failed during the run: %d roll-up errors, %d prune errors", r.RollupErrors, r.PruneErrors))
+	// One line per condition, whatever its count: a day-long run of a failing tick would
+	// otherwise print thousands of identical lines and bury the verdict under them.
+	if r.RollupErrors > 0 {
+		r.Failures = append(r.Failures, fmt.Sprintf("roll-up failed %d times, first: %s", r.RollupErrors, r.Examples["roll-up"]))
+	}
+	if r.PruneErrors > 0 {
+		r.Failures = append(r.Failures, fmt.Sprintf("prune failed %d times, first: %s", r.PruneErrors, r.Examples["prune"]))
+	}
+	if r.WriteErrors > 0 {
+		r.Failures = append(r.Failures, fmt.Sprintf("%d writes failed unexpectedly, first: %s", r.WriteErrors, r.Examples["write"]))
+	}
+	if r.ProbeErrors > 0 {
+		// Unproven is neither pass nor leak, and a run that could not evaluate its own
+		// tenancy probes has not answered the question it exists to ask.
+		for condition, example := range r.Examples {
+			if strings.HasPrefix(condition, "probe:") {
+				r.Failures = append(r.Failures, fmt.Sprintf("a %s probe could not be evaluated, first: %s", strings.TrimPrefix(condition, "probe:"), example))
+			}
+		}
+	}
+	if r.DenialsLeaked > 0 {
+		r.Failures = append(r.Failures, fmt.Sprintf("%d refusals leaked: a member renamed an endpoint they may not touch", r.DenialsLeaked))
 	}
 	// A run long enough to end an hour must have summarised one, or the roll-up half of the
 	// policy went untested while every check that reads summaries found none to read.
@@ -162,9 +182,7 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 	if r.DenialsRefused == 0 {
 		r.Failures = append(r.Failures, "no refusal was exercised, so the denial path proves nothing")
 	}
-	if r.DenialsLeaked > 0 {
-		r.Failures = append(r.Failures, fmt.Sprintf("%d refusals leaked through", r.DenialsLeaked))
-	}
+
 	if r.ReadP95 > 500*time.Millisecond {
 		r.Failures = append(r.Failures, fmt.Sprintf("p95 on the list screens was %s, past the 500ms target", r.ReadP95.Round(time.Millisecond)))
 	}
@@ -203,6 +221,7 @@ func (r *report) String() string {
 	fmt.Fprintf(&b, "  oldest summary       %s\n", r.OldestRollup.Round(time.Second))
 	fmt.Fprintf(&b, "  usage                %d peak, %d final, of %d bytes\n", r.PeakUsage, r.FinalUsage, r.Budget)
 	fmt.Fprintf(&b, "  p95 list read        %s over %d reads (%d failed)\n", r.ReadP95.Round(time.Millisecond), r.Ticks, r.ReadFailures)
+	fmt.Fprintf(&b, "  probes unevaluated   %d\n", r.ProbeErrors)
 	fmt.Fprintf(&b, "  not covered here     log-client memory (M5), the per-actor denial budget and per-organization audit ceiling (both still proposed)\n")
 	if len(r.Failures) == 0 {
 		fmt.Fprintf(&b, "  result               every bound held\n")

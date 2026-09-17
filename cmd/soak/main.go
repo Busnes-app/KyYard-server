@@ -51,6 +51,11 @@ type report struct {
 	ReadFailures    int64
 	RoleDenials     int64
 	CrossTenantLeak int64
+	ProbeErrors     int64
+	WriteErrors     int64
+	// One representative message per condition. A day-long run of a failing tick would
+	// otherwise print thousands of identical lines and bury the verdict underneath them.
+	Examples        map[string]string
 	DenialsRefused  int64
 	DenialsLeaked   int64
 	RollupRows      int64
@@ -117,7 +122,7 @@ func run(ctx context.Context, s settings) (*report, error) {
 		return nil, err
 	}
 
-	r := &report{Budget: s.budget, Duration: s.duration, PressureSeen: map[store.Pressure]int{}}
+	r := &report{Budget: s.budget, Duration: s.duration, PressureSeen: map[store.Pressure]int{}, Examples: map[string]string{}}
 	var mu sync.Mutex
 	var reads []time.Duration
 	runCtx, cancel := context.WithTimeout(ctx, s.duration)
@@ -158,7 +163,8 @@ func run(ctx context.Context, s settings) (*report, error) {
 						// in RecordSamples consults that.
 						r.CeilingRefusals++
 					case err != nil:
-						r.Failures = append(r.Failures, fmt.Sprintf("metrics refused for an unexpected reason: %v", err))
+						r.WriteErrors++
+						r.note("write", err)
 					default:
 						// Offered, not stored: the cadence rule drops most of these. What
 						// landed is counted from the database in check.
@@ -191,32 +197,35 @@ func run(ctx context.Context, s settings) (*report, error) {
 				// passes every role check, so only the scoping predicate in the statement can
 				// refuse. This is the probe that notices if that predicate is ever dropped.
 				boundary := st.Tenancy().RenameEndpoint(runCtx, fixture.readAdmin, fixture.endpoints[0], "nope")
+				if runCtx.Err() != nil {
+					continue
+				}
 				mu.Lock()
-				switch {
-				case runCtx.Err() != nil:
-				case errors.Is(fresh, store.ErrForbidden), errors.Is(fresh, store.ErrNotFound):
-					r.DenialsRefused++
-				case fresh == nil:
-					r.DenialsLeaked++
-					r.Failures = append(r.Failures, "a read-only member renamed an endpoint")
-				default:
-					r.Failures = append(r.Failures, fmt.Sprintf("denial path failed oddly: %v", fresh))
-				}
-				switch {
-				case runCtx.Err() != nil:
-				case errors.Is(role, store.ErrForbidden), errors.Is(role, store.ErrNotFound):
-					r.RoleDenials++
-				default:
-					r.DenialsLeaked++
-					r.Failures = append(r.Failures, fmt.Sprintf("a read-only member was allowed to rename an endpoint: %v", role))
-				}
-				switch {
-				case runCtx.Err() != nil:
-				case errors.Is(boundary, store.ErrNotFound), errors.Is(boundary, store.ErrForbidden):
-					r.DenialsRefused++
-				default:
-					r.CrossTenantLeak++
-					r.Failures = append(r.Failures, fmt.Sprintf("an administrator of another organization renamed an endpoint that is not theirs: %v", boundary))
+				for _, p := range []struct {
+					name string
+					err  error
+					leak *int64
+				}{
+					{"absent-target", fresh, &r.DenialsLeaked},
+					{"role gate", role, &r.DenialsLeaked},
+					{"organization boundary", boundary, &r.CrossTenantLeak},
+				} {
+					switch classify(p.err) {
+					case probeRefused:
+						if p.name == "role gate" {
+							r.RoleDenials++
+						} else {
+							r.DenialsRefused++
+						}
+					case probeLeaked:
+						*p.leak++
+					default:
+						// The probe could not be evaluated. Under contention on one SQLite
+						// connection that is an ordinary outcome, and calling it a leak would
+						// assert a boundary crossing that never happened.
+						r.ProbeErrors++
+						r.note("probe:"+p.name, p.err)
+					}
 				}
 				mu.Unlock()
 			}
@@ -245,7 +254,7 @@ func run(ctx context.Context, s settings) (*report, error) {
 					// A roll-up that fails every tick leaves no summaries at all, and a check
 					// that only looks at the summaries it finds would call that healthy.
 					r.RollupErrors++
-					r.Failures = append(r.Failures, fmt.Sprintf("roll-up failed: %v", err))
+					r.note("roll-up", err)
 				default:
 					window = 2 * time.Hour
 					r.RollupRows += n
@@ -256,7 +265,7 @@ func run(ctx context.Context, s settings) (*report, error) {
 					if err != nil && runCtx.Err() == nil {
 						mu.Lock()
 						r.PruneErrors++
-						r.Failures = append(r.Failures, fmt.Sprintf("prune failed: %v", err))
+						r.note("prune", err)
 						mu.Unlock()
 						break
 					}
@@ -341,4 +350,36 @@ func run(ctx context.Context, s settings) (*report, error) {
 		return r, err
 	}
 	return r, nil
+}
+
+// probeOutcome is what a refusal probe proved, if anything.
+type probeOutcome int
+
+const (
+	// probeRefused: the operation was turned away, which is the expected result.
+	probeRefused probeOutcome = iota
+	// probeLeaked: it succeeded, so the boundary it tests has moved.
+	probeLeaked
+	// probeUnproven: it failed for some other reason, so the probe says nothing either way.
+	// Treating this as a leak would assert a crossing that never happened.
+	probeUnproven
+)
+
+func classify(err error) probeOutcome {
+	switch {
+	case err == nil:
+		return probeLeaked
+	case errors.Is(err, store.ErrForbidden), errors.Is(err, store.ErrNotFound):
+		return probeRefused
+	default:
+		return probeUnproven
+	}
+}
+
+// note keeps the first message seen for a condition. The count says how often; one example
+// says what it looked like.
+func (r *report) note(condition string, err error) {
+	if _, seen := r.Examples[condition]; !seen {
+		r.Examples[condition] = err.Error()
+	}
 }

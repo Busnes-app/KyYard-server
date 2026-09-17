@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	_ "modernc.org/sqlite"
 	"path/filepath"
@@ -185,5 +187,47 @@ func TestSoakReportsWhenRetentionCannotRun(t *testing.T) {
 	}
 	if len(r.Failures) == 0 {
 		t.Fatalf("roll-up failed %d times and the run reported success:\n%s", r.RollupErrors, r.String())
+	}
+}
+
+// A probe that could not run is neither a pass nor a leak. Under contention on one SQLite
+// connection an odd error is an ordinary outcome, and calling it a leak would assert a
+// boundary crossing that never happened.
+func TestProbeClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want probeOutcome
+	}{
+		{name: "refused by role or scope", err: store.ErrForbidden, want: probeRefused},
+		{name: "refused by scope as not found", err: store.ErrNotFound, want: probeRefused},
+		{name: "wrapped refusal", err: fmt.Errorf("renaming: %w", store.ErrForbidden), want: probeRefused},
+		{name: "it succeeded", err: nil, want: probeLeaked},
+		{name: "deadline", err: context.DeadlineExceeded, want: probeUnproven},
+		{name: "locked database", err: errors.New("database is locked"), want: probeUnproven},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classify(tc.err); got != tc.want {
+				t.Fatalf("classified as %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// One line per condition, whatever its count: the verdict an operator reads after a day must
+// not sit under thousands of identical lines.
+func TestRepeatedFailuresAreSummarisedOnce(t *testing.T) {
+	r := &report{Budget: 1 << 30, PressureSeen: map[store.Pressure]int{}, Examples: map[string]string{}}
+	for i := 0; i < 500; i++ {
+		r.RollupErrors++
+		r.note("roll-up", fmt.Errorf("no such table: container_rollups"))
+	}
+	r.Failures = append(r.Failures, fmt.Sprintf("roll-up failed %d times, first: %s", r.RollupErrors, r.Examples["roll-up"]))
+	out := r.String()
+	if n := strings.Count(out, "roll-up failed"); n != 1 {
+		t.Fatalf("500 failures printed %d lines:\n%s", n, out)
+	}
+	if !strings.Contains(out, "500 times") || !strings.Contains(out, "no such table") {
+		t.Fatalf("the summary lost either the count or the example:\n%s", out)
 	}
 }
