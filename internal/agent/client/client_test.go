@@ -955,3 +955,118 @@ func TestAFaultyServerDoesNotConsumeKeyMaterial(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A walk that runs out of candidates must leave the agent on its own key. If the index
+// survived, every later cycle would sign with the last key the server refused, and the key
+// that works would sit unreachable on disk.
+func TestAnExhaustedWalkReturnsToTheIdentityKey(t *testing.T) {
+	httpSrv, st, _, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	approved, err := ts.ReadEndpointRaw(ctx, id.EndpointID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two candidates the server has never seen, both marked as offers it confirmed, either
+	// side of the identity's own key, which is the approved one.
+	_, stray1, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stray2, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	saved["pending_private_key"] = []byte(stray1)
+	saved["pending_fingerprint"] = protocol.Fingerprint(stray1.Public().(ed25519.PublicKey))
+	saved["pending_since"] = time.Now().UTC()
+	saved["pending_recorded"] = true
+	saved["lapsed_private_key"] = []byte(stray2)
+	saved["lapsed_recorded"] = true
+	raw, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "identity.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A server that retires the key in hand once, then refuses everything.
+	instance := id.InstanceFingerprint
+	var attempts atomic.Int64
+	faulty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		nonce := make([]byte, 32)
+		_, _ = rand.Read(nonce)
+		payload, _ := json.Marshal(protocol.Challenge{Nonce: nonce, InstanceFingerprint: instance, Versions: []int{protocol.Version}})
+		frame, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeChallenge, Payload: payload})
+		if err := c.Write(r.Context(), websocket.MessageText, frame); err != nil {
+			return
+		}
+		if _, _, err := c.Read(r.Context()); err != nil {
+			return
+		}
+		if attempts.Add(1) == 1 {
+			c.Close(websocket.StatusPolicyViolation, protocol.CloseKeyRetired)
+			return
+		}
+		c.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
+	}))
+	defer faulty.Close()
+
+	stuck, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck.Server = faulty.URL
+	if err := client.Run(ctx, stuck, client.Options{HTTPClient: faulty.Client(), IdentityDir: dir}); !errors.Is(err, client.ErrRevoked) {
+		t.Fatalf("expected the exhausted walk to end in ErrRevoked, got %v", err)
+	}
+	if n := attempts.Load(); n < 3 {
+		t.Fatalf("the walk did not try both candidates: %d attempts", n)
+	}
+	if stuck.RecoveryAttempt != 0 {
+		t.Fatalf("the walk left the index at %d, so the next cycle would sign with a refused key", stuck.RecoveryAttempt)
+	}
+	if reloaded, err := client.LoadIdentity(dir); err != nil || reloaded.RecoveryAttempt != 0 {
+		t.Fatalf("the index survived on disk: %+v %v", reloaded, err)
+	}
+
+	// The fault clears. The agent must be back on its own key, which is the approved one.
+	stuck.Server = httpSrv.URL
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, stuck, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir})
+	}()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		e, _ := ts.ReadEndpointRaw(ctx, id.EndpointID)
+		if e != nil && e.State == "active" && e.Fingerprint == approved.Fingerprint {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("agent gave up on its own key after the fault cleared: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never authenticated with its own key: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

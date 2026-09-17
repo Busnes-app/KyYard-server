@@ -168,7 +168,6 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				// Our key was retired (an acknowledged rotation while we were away). Walk to
 				// the next candidate; only with none left is the endpoint really gone.
 				if id.tryNext() {
-					_ = opts.save(id)
 					return errSwitchKey
 				}
 			case protocol.CloseRevoked:
@@ -180,7 +179,6 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				// on the way, so a server fault that refuses them all leaves every key where
 				// it was and the walk simply ends.
 				if id.recovering() && id.tryNext() {
-					_ = opts.save(id)
 					return errSwitchKey
 				}
 			}
@@ -281,7 +279,6 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			// the old one: switch now instead of waiting for the next backoff.
 			var ce websocket.CloseError
 			if errors.As(err, &ce) && strings.TrimSpace(ce.Reason) == protocol.CloseKeyRetired && id.tryNext() {
-				_ = opts.save(id)
 				return errSwitchKey
 			}
 			return closeReason(err)

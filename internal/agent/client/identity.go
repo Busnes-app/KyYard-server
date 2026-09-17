@@ -41,8 +41,10 @@ type Identity struct {
 	LapsedRecorded   bool   `json:"lapsed_recorded,omitempty"`
 	// RecoveryAttempt is how far along the candidate list a refused key has walked. It is an
 	// index, not a promotion: no key is moved or overwritten until the server accepts one, so
-	// a server fault that refuses every candidate leaves the identity exactly as it was.
-	RecoveryAttempt int       `json:"recovery_attempt,omitempty"`
+	// a fault that refuses every candidate leaves the stored identity as it was. It is never
+	// written to disk, because it only means anything against the candidate order computed in
+	// the same run: a restart must begin again at the identity's own key.
+	RecoveryAttempt int       `json:"-"`
 	RotatedAt       time.Time `json:"rotated_at"`
 }
 
@@ -88,9 +90,12 @@ func (id *Identity) candidates() []candidate {
 
 // tryNext advances to the next candidate. It moves no key: the walk is an index, so a server
 // answering every attempt with a refusal costs nothing but attempts, and the key that works is
-// still on disk when the fault clears. It returns false when the list is exhausted.
+// still on disk when the fault clears. An exhausted walk returns to the identity's own key, so
+// the next cycle starts from a key that has authenticated rather than the last one refused.
+// It returns false when the list is exhausted.
 func (id *Identity) tryNext() bool {
 	if id.RecoveryAttempt >= len(id.candidates()) {
+		id.RecoveryAttempt = 0
 		return false
 	}
 	id.RecoveryAttempt++
