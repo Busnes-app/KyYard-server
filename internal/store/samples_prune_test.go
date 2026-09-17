@@ -485,7 +485,9 @@ func TestErodedHoursDoNotOverwriteTheirSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 60; i++ {
-		cpu := float64(i) // the peak sits in the part that will be pruned away
+		// Descending, so the hour's peak sits at minute 0: inside the part erosion takes. A
+		// summary rebuilt from the survivors would report their smaller peak instead.
+		cpu := float64(59 - i)
 		if _, err := stmt.ExecContext(ctx, e, "c1", hour.Add(time.Duration(i)*time.Minute), cpu, int64(i)); err != nil {
 			t.Fatal(err)
 		}
@@ -501,6 +503,9 @@ func TestErodedHoursDoNotOverwriteTheirSummary(t *testing.T) {
 	before, err := ts.ReadRollups(ctx, a, e, "c1", 0)
 	if err != nil || len(before) != 1 {
 		t.Fatalf("first summary: %+v %v", before, err)
+	}
+	if before[0].Samples != 60 || before[0].CPUPeak != 59 {
+		t.Fatalf("the setup did not put the peak where erosion will take it: %+v", before[0])
 	}
 
 	// Erode the hour from below exactly as retention does at the six-hour boundary, without
