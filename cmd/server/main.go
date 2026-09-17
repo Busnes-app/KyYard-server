@@ -476,25 +476,23 @@ func runRestore(args []string) {
 func pruneLoop(ctx context.Context, st store.Store) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	measure(ctx, st, 0)
+	measure(ctx, st)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			var freed int64
 			for i := 0; i < 20; i++ {
 				n, err := st.Tenancy().Prune(ctx)
 				if err != nil {
 					log.Printf("[RETENTION] prune: %v", err)
 					break
 				}
-				freed += n
 				if n == 0 {
 					break
 				}
 			}
-			measure(ctx, st, freed)
+			measure(ctx, st)
 		}
 	}
 }
@@ -508,12 +506,12 @@ var lastReminder time.Time
 
 // measure settles the retention pressure, reports each change, and keeps saying so while the
 // database stays over its budget, because that needs an operator rather than a log line.
-func measure(ctx context.Context, st store.Store, freed int64) {
+func measure(ctx context.Context, st store.Store) {
 	if st.Budget() <= 0 {
 		return
 	}
 	prev := st.Pressure()
-	next, err := st.EvaluatePressure(ctx, freed)
+	next, err := st.EvaluatePressure(ctx)
 	if err != nil {
 		log.Printf("[RETENTION] usage: %v", err)
 		return

@@ -171,8 +171,10 @@ func TestTelemetryBacksOffUnderRetentionPressure(t *testing.T) {
 	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
 	empty := protocol.Snapshot{Engine: protocol.Engine{Runtime: "docker"}, Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
 
+	// Only the prune loop moves this level in production, so the test reaches past the
+	// interface rather than the interface offering a way to disarm the budget.
 	// Degraded: metrics are refused by name, inventory still lands.
-	st.SetPressure(store.PressureDegraded)
+	st.(*store.SQLStore).SetPressure(store.PressureDegraded)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1"}}})
 	e := readEnvelope(t, ctx, sock.conn)
 	if e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "retention_pressure") || !strings.Contains(string(e.Payload), "degraded") {
@@ -184,7 +186,7 @@ func TestTelemetryBacksOffUnderRetentionPressure(t *testing.T) {
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 
 	// Stopped: inventory is refused too, and the stored snapshot does not move.
-	st.SetPressure(store.PressureStopped)
+	st.(*store.SQLStore).SetPressure(store.PressureStopped)
 	later := empty
 	later.Generation = first.Generation + 1
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, later)
@@ -208,7 +210,7 @@ func TestTelemetryBacksOffUnderRetentionPressure(t *testing.T) {
 	if err != nil || len(records) == 0 {
 		t.Fatalf("audit refused under pressure: %d rows, %v", len(records), err)
 	}
-	st.SetPressure(store.PressureNormal)
+	st.(*store.SQLStore).SetPressure(store.PressureNormal)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeMetrics, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c1", RestartCount: 1}}})
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {

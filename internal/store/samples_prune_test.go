@@ -279,7 +279,7 @@ func TestPressureClearsAfterPruning(t *testing.T) {
 	stmt.Close()
 	must(tx.Commit())
 
-	if p, err := st.EvaluatePressure(ctx, 0); err != nil || p != PressureStopped {
+	if p, err := st.EvaluatePressure(ctx); err != nil || p != PressureStopped {
 		t.Fatalf("a database over its budget read as %s (%v)", p, err)
 	}
 	// Prune until it has nothing left to take, feeding each pass back in as the loop does.
@@ -292,7 +292,7 @@ func TestPressureClearsAfterPruning(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := st.EvaluatePressure(ctx, freed); err != nil {
+		if _, err := st.EvaluatePressure(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if freed == 0 && st.Pressure() == PressureNormal {
@@ -348,11 +348,11 @@ func TestPressureClearsWhenRetentionCannotReclaim(t *testing.T) {
 	if used < cfg.DiskBudget {
 		t.Skipf("audit rows did not exceed the budget (%d of %d); nothing to prove here", used, cfg.DiskBudget)
 	}
-	if p, _ := st.EvaluatePressure(ctx, 0); p != PressureStopped {
+	if p, _ := st.EvaluatePressure(ctx); p != PressureStopped {
 		t.Fatalf("a database over its budget read as %s", p)
 	}
 	// A pass with nothing to reclaim must not leave telemetry refused for good.
-	if p, err := st.EvaluatePressure(ctx, 0); err != nil || p == PressureStopped {
+	if p, err := st.EvaluatePressure(ctx); err != nil || p == PressureStopped {
 		t.Fatalf("pressure stuck at %s though retention has nothing left to take (%v)", p, err)
 	}
 	var samples int

@@ -968,7 +968,7 @@ func (s *SQLStore) Usage(ctx context.Context) (int64, error) {
 // The result at the ceiling is a throttle rather than a stop: telemetry resumes, usage grows,
 // the level returns. That is escapable by construction, and a condition that persists is
 // reported at intervals rather than once, because it needs an operator, not a log line.
-func (s *SQLStore) EvaluatePressure(ctx context.Context, freed int64) (Pressure, error) {
+func (s *SQLStore) EvaluatePressure(ctx context.Context) (Pressure, error) {
 	current := s.Pressure()
 	if s.budget <= 0 {
 		return current, nil
