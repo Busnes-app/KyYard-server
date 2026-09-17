@@ -30,15 +30,17 @@ const (
 
 // agentConn is one live socket. The registry holds at most one per endpoint.
 type agentConn struct {
-	endpointID  string
-	fingerprint string // the key that authenticated this session
-	ip          string
-	conn        *websocket.Conn
-	send        chan protocol.Envelope
-	closed      chan struct{}
-	closeOnce   sync.Once
-	reason      string
-	lastFrame   atomic.Int64 // unix nanoseconds of the last frame the reader delivered
+	endpointID     string
+	organizationID string
+	environmentID  string
+	fingerprint    string // the key that authenticated this session
+	ip             string
+	conn           *websocket.Conn
+	send           chan protocol.Envelope
+	closed         chan struct{}
+	closeOnce      sync.Once
+	reason         string
+	lastFrame      atomic.Int64 // unix nanoseconds of the last frame the reader delivered
 }
 
 // alive pings the socket with a short deadline; a peer that cannot answer is not a competitor.
@@ -163,7 +165,7 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(agentFrameLimit)
-	c := &agentConn{endpointID: identity.Endpoint.ID, fingerprint: identity.Fingerprint, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	c := &agentConn{endpointID: identity.Endpoint.ID, organizationID: identity.Endpoint.OrganizationID, environmentID: identity.Endpoint.EnvironmentID, fingerprint: identity.Fingerprint, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
 	if incumbent := s.agents.add(c); incumbent != nil {
 		// The incumbent may be a socket the network dropped without a FIN: the agent gives up
 		// after two heartbeats and redials before the server's three-heartbeat timeout. Probe
@@ -417,6 +419,11 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		if err != nil {
 			log.Printf("agent %s: inventory: %v", c.endpointID, err)
 		} else if !accepted {
+			if inv.Generation > uint64(time.Now().UTC().Add(store.GenerationSkew).Unix()) {
+				if err := ts.RecordEndpointEvent(fctx, &store.Endpoint{ID: c.endpointID, OrganizationID: c.organizationID, EnvironmentID: c.environmentID}, "high", "generation_rejected", "generation is ahead of the server clock"); err != nil {
+					log.Printf("agent %s: generation rejection audit: %v", c.endpointID, err)
+				}
+			}
 			log.Printf("agent %s: inventory generation %d not accepted (not newer, or implausible); snapshot ignored", c.endpointID, inv.Generation)
 			if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "generation_rejected", "generation": inv.Generation})); err != nil {
 				return true

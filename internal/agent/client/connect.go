@@ -385,13 +385,10 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 }
 
 // sendInventory reads the runtime (or reports facts only) under a generation that rises across
-// restarts: a restarted agent's first snapshot must not be ignored, so the wall clock seeds it
-// when the persisted counter is behind.
+// restarts. The persisted counter is the only source of truth: trusting a fast host wall clock
+// can create a generation the server rejects for being in the future and persist the wedge.
 func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options) error {
 	gen := id.Generation + 1
-	if now := uint64(time.Now().Unix()); now > gen {
-		gen = now
-	}
 	var snap *protocol.Snapshot
 	if opts.Snapshot != nil {
 		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
