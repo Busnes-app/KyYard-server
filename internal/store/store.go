@@ -8,11 +8,15 @@ import (
 )
 
 var (
-	ErrForbidden       = errors.New("tenant access denied")
-	ErrInvalid         = errors.New("invalid tenant input")
-	ErrNotFound        = errors.New("record not found")
-	ErrAlreadyExists   = errors.New("record already exists")
-	ErrLastAdmin       = errors.New("organization needs one active administrator")
+	ErrForbidden     = errors.New("tenant access denied")
+	ErrInvalid       = errors.New("invalid tenant input")
+	ErrNotFound      = errors.New("record not found")
+	ErrAlreadyExists = errors.New("record already exists")
+	ErrLastAdmin     = errors.New("organization needs one active administrator")
+	// ErrEndpointOffline says the endpoint is not connected, so there is nowhere to send a
+	// command. It is distinct from a bad request: the caller asked for something reasonable
+	// that cannot happen right now.
+	ErrEndpointOffline = errors.New("endpoint is not connected")
 	ErrInUse           = errors.New("record is still referenced")
 	ErrRotationPending = errors.New("a rotated key is already awaiting review")
 	ErrRotationBlocked = errors.New("rotation is blocked until a duplicate connection is cleared")
@@ -179,6 +183,14 @@ type TenancyStore interface {
 	ReadSamples(ctx context.Context, access TenantAccess, endpointID, containerID string, window time.Duration) ([]SampleRow, error)
 	// RollUp summarises ended hours before the raw window drops them; ReadRollups serves the
 	// week of history that summary buys.
+	// Commands are durable intent: the row exists before the frame is sent, so an operation
+	// the control plane loses track of can still be marked unknown rather than vanish.
+	CreateCommand(ctx context.Context, access TenantAccess, endpointID, action, containerID string, expects protocol.Expectation) (*Command, error)
+	MarkCommandDispatched(ctx context.Context, id string) error
+	SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error
+	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
+	ReadCommand(ctx context.Context, access TenantAccess, endpointID, id string) (*Command, error)
+	ListCommands(ctx context.Context, access TenantAccess, endpointID string, limit int) ([]Command, error)
 	RollUp(ctx context.Context, since time.Time) (int64, error)
 	ReadRollups(ctx context.Context, access TenantAccess, endpointID, containerID string, window time.Duration) ([]RollupRow, error)
 	Prune(ctx context.Context) (int64, error)

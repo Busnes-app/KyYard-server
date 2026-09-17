@@ -41,6 +41,9 @@ type Options struct {
 	Metrics func(ctx context.Context, running []string) protocol.Metrics
 	// InventoryEvery is how often a fresh snapshot is sent while connected.
 	InventoryEvery time.Duration
+	// Operate runs one container action and reports the outcome and a short reason. Nil means
+	// this agent has no runtime to operate, and every command is refused rather than dropped.
+	Operate func(cmd protocol.Command) (outcome, detail string)
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -193,6 +196,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		id.commitCandidate()
 		_ = opts.save(id)
 	}
+	commands := openLedger(opts.IdentityDir)
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
 		return errors.New("bad hello")
@@ -327,6 +331,19 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 					opts.Log.Printf("rotation acknowledged; reconnecting with the new key")
 					conn.Close(websocket.StatusNormalClosure, "rotated")
 					return errSwitchKey
+				}
+			case protocol.TypeCommand:
+				var cmd protocol.Command
+				if json.Unmarshal(f.Payload, &cmd) != nil || cmd.ID == "" {
+					opts.Log.Printf("unreadable command frame")
+					break
+				}
+				// Answered on the session loop: a command is one bounded runtime call, and
+				// the ledger keeps a repeat from running twice rather than a queue keeping
+				// order. Streams, which are not bounded, arrive in M5's second half.
+				res := handleCommand(cmd, id, commands, opts)
+				if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
+					return err
 				}
 			case protocol.TypeHeartbeat:
 			case protocol.TypeError:

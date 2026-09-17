@@ -513,6 +513,43 @@ CREATE INDEX idx_container_rollups_hour ON container_rollups(endpoint_id, hour);
 );
 CREATE INDEX idx_container_rollups_hour ON container_rollups(endpoint_id, hour);
 `},
+	{Version: 16, Name: "endpoint_commands", SQLite: `CREATE TABLE endpoint_commands (
+  id TEXT PRIMARY KEY,
+  endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+  organization_id TEXT NOT NULL,
+  environment_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  container_id TEXT NOT NULL,
+  expects TEXT NOT NULL,
+  deadline DATETIME NOT NULL,
+  outcome TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL,
+  dispatched_at DATETIME,
+  settled_at DATETIME
+);
+CREATE INDEX idx_endpoint_commands_endpoint ON endpoint_commands(endpoint_id, created_at);
+`, Postgres: `CREATE TABLE endpoint_commands (
+  id TEXT PRIMARY KEY,
+  endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+  organization_id TEXT NOT NULL,
+  environment_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  container_id TEXT NOT NULL,
+  expects TEXT NOT NULL,
+  deadline TIMESTAMPTZ NOT NULL,
+  outcome TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL,
+  dispatched_at TIMESTAMPTZ,
+  settled_at TIMESTAMPTZ
+);
+CREATE INDEX idx_endpoint_commands_endpoint ON endpoint_commands(endpoint_id, created_at);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

@@ -5,8 +5,10 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -296,6 +298,82 @@ func (s *Server) handleContainerSamples(w http.ResponseWriter, r *http.Request, 
 	}
 	minutes, _ := strconv.Atoi(r.URL.Query().Get("minutes"))
 	rows, err := s.store.Tenancy().ReadSamples(r.Context(), a, id, container, time.Duration(minutes)*time.Minute)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, rows)
+}
+
+// handleDispatchCommand records the intent, sends it, and answers with the record either way.
+// The row is written before the frame goes out, so a command that reaches the agent and then
+// loses its answer is still something the control plane can account for.
+func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	var body struct {
+		Action    string `json:"action"`
+		Container string `json:"container"`
+		Expects   struct {
+			ImageDigest string `json:"image_digest"`
+			State       string `json:"state"`
+		} `json:"expects"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	expects := protocol.Expectation{ImageDigest: body.Expects.ImageDigest, State: body.Expects.State}
+	cmd, err := s.store.Tenancy().CreateCommand(r.Context(), a, id, body.Action, body.Container, expects)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	frame := envelope(protocol.TypeCommand, protocol.Command{
+		ID: cmd.ID, RequestID: cmd.RequestID, Org: cmd.OrganizationID, Env: cmd.EnvironmentID,
+		Endpoint: cmd.EndpointID, Deadline: cmd.Deadline, Action: cmd.Action,
+		Container: cmd.ContainerID, Expects: cmd.Expects,
+	})
+	if !s.agents.deliver(id, frame) {
+		// Never sent, so nothing needs reconciling: say so plainly rather than leaving a row
+		// in flight that an operator would have to chase.
+		_ = s.store.Tenancy().SettleCommand(r.Context(), id, cmd.ID, protocol.OutcomeFailed, "the endpoint was not connected")
+		cmd.Outcome = protocol.OutcomeFailed
+		cmd.Detail = "the endpoint was not connected"
+		s.writeJSON(w, http.StatusConflict, cmd)
+		return
+	}
+	if err := s.store.Tenancy().MarkCommandDispatched(r.Context(), cmd.ID); err != nil {
+		log.Printf("command %s: marking dispatched: %v", cmd.ID, err)
+	}
+	s.writeJSON(w, http.StatusAccepted, cmd)
+}
+
+func (s *Server) handleReadCommand(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	cmd, err := s.store.Tenancy().ReadCommand(r.Context(), a, id, r.PathValue("command"))
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, cmd)
+}
+
+func (s *Server) handleListCommands(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	rows, err := s.store.Tenancy().ListCommands(r.Context(), a, id, limit)
 	if err != nil {
 		s.tenantError(w, err)
 		return

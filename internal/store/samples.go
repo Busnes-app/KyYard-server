@@ -225,6 +225,9 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 		{`DELETE FROM container_samples WHERE (endpoint_id,container_id,observed_at) IN (SELECT endpoint_id,container_id,observed_at FROM container_samples WHERE observed_at<? LIMIT ?)`, now.Add(-samples)},
 		{`DELETE FROM endpoint_events WHERE id IN (SELECT id FROM endpoint_events WHERE created_at<? AND acknowledged_at IS NOT NULL LIMIT ?)`, now.Add(-EventRetention)},
 		{`DELETE FROM container_rollups WHERE (endpoint_id,container_id,hour) IN (SELECT endpoint_id,container_id,hour FROM container_rollups WHERE hour<? LIMIT ?)`, now.Add(-rollups)},
+		// Settled commands only. One whose outcome nobody knows is the record an operator
+		// most needs, so it stays until they have dealt with it.
+		{`DELETE FROM endpoint_commands WHERE id IN (SELECT id FROM endpoint_commands WHERE settled_at IS NOT NULL AND settled_at<? LIMIT ?)`, now.Add(-CommandRetention)},
 	} {
 		result, err := t.store.db.ExecContext(ctx, t.store.rebind(q.sql), q.arg, PruneBatch)
 		if err != nil {
