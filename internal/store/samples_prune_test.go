@@ -308,3 +308,55 @@ func TestPressureClearsAfterPruning(t *testing.T) {
 		t.Fatalf("pressure stuck at %s after everything it measured was deleted", st.Pressure())
 	}
 }
+
+// Growth retention cannot reclaim must not hold telemetry down. Audit is never pruned and
+// never refused, so if it alone could pin the level, dropping every metric on the fleet would
+// never lift it again.
+func TestPressureClearsWhenRetentionCannotReclaim(t *testing.T) {
+	ctx := context.Background()
+	cfg := testdb.Config(t)
+	baseline, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := baseline.Usage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseline.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.DiskBudget = empty + 32<<10
+	opened, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	st := opened.(*SQLStore)
+
+	// Put the excess where Prune cannot go, and leave the samples table empty.
+	for i := 0; i < 4000; i++ {
+		if _, err := st.db.ExecContext(ctx, st.rebind(`INSERT INTO audit_records (user_id,action,resource,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`),
+			"actor", "audit.fill", fmt.Sprintf("r%d", i), "127.0.0.1", time.Now().UTC(), "platform", "", "", fmt.Sprintf("c%d", i), "success"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	used, err := st.Usage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used < cfg.DiskBudget {
+		t.Skipf("audit rows did not exceed the budget (%d of %d); nothing to prove here", used, cfg.DiskBudget)
+	}
+	if p, _ := st.EvaluatePressure(ctx, 0); p != PressureStopped {
+		t.Fatalf("a database over its budget read as %s", p)
+	}
+	// A pass with nothing to reclaim must not leave telemetry refused for good.
+	if p, err := st.EvaluatePressure(ctx, 0); err != nil || p == PressureStopped {
+		t.Fatalf("pressure stuck at %s though retention has nothing left to take (%v)", p, err)
+	}
+	var samples int
+	if err := st.db.QueryRowContext(ctx, st.rebind(`SELECT COUNT(*) FROM container_samples`)).Scan(&samples); err != nil || samples != 0 {
+		t.Fatalf("the test did not isolate unreclaimable growth: %d samples, %v", samples, err)
+	}
+}

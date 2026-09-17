@@ -499,8 +499,15 @@ func pruneLoop(ctx context.Context, st store.Store) {
 	}
 }
 
-// measure settles the retention pressure and reports a change, so an operator sees the
-// transition rather than a line every minute.
+// overBudgetReminder is how often a persistent over-budget condition is repeated. Telemetry
+// throttling clears itself every pass, so without this an operator would see the transitions
+// and never learn that the condition behind them has not gone away.
+const overBudgetReminder = 15 * time.Minute
+
+var lastReminder time.Time
+
+// measure settles the retention pressure, reports each change, and keeps saying so while the
+// database stays over its budget, because that needs an operator rather than a log line.
 func measure(ctx context.Context, st store.Store, freed int64) {
 	if st.Budget() <= 0 {
 		return
@@ -511,8 +518,15 @@ func measure(ctx context.Context, st store.Store, freed int64) {
 		log.Printf("[RETENTION] usage: %v", err)
 		return
 	}
+	used, err := st.Usage(ctx)
+	if err != nil {
+		return
+	}
 	if next != prev {
-		used, _ := st.Usage(ctx)
 		log.Printf("[RETENTION] %d of %d bytes in use: telemetry %s (was %s)", used, st.Budget(), next, prev)
+	}
+	if used >= st.Budget()/100*95 && time.Since(lastReminder) >= overBudgetReminder {
+		lastReminder = time.Now()
+		log.Printf("[RETENTION] %d of %d bytes in use: telemetry is being throttled and will stay throttled until the budget is raised, disk is added, or retention is shortened", used, st.Budget())
 	}
 }
