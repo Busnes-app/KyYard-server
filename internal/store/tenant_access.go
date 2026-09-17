@@ -26,10 +26,15 @@ func (t *tenancyStore) withTenantTarget(ctx context.Context, a TenantAccess, act
 	return t.run(ctx, a, action, target, true, op)
 }
 
+// auditedReads are the low-volume, sensitive reads that keep a success row: who looked at the
+// audit trail, and who enumerated the organization's members. Every other successful read
+// writes nothing (docs/authorization-matrix.md, "Read audit"); denials are always recorded.
+var auditedReads = map[permissions.Action]bool{permissions.AuditRead: true, permissions.MembersManage: true}
+
 // readTenant checks the same live authorization without locks; reads use a snapshot. A
-// successful read writes no audit row (docs/authorization-matrix.md, "Read audit"): inventory
-// and list reads arrive every few seconds per endpoint and would be the audit-growth threat
-// themselves. Denied and failed reads are still recorded.
+// successful read writes no audit row unless its action is in auditedReads: inventory and
+// list reads arrive every few seconds per endpoint and would be the audit-growth threat
+// themselves.
 func (t *tenancyStore) readTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
 	return t.run(ctx, a, action, "", false, op)
 }
@@ -97,7 +102,7 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 		}
 		return err
 	}
-	if !lock {
+	if !lock && !auditedReads[action] {
 		return tx.Commit()
 	}
 	record.Result = "success"

@@ -196,6 +196,9 @@ func TestAgentConnectionLifecycle(t *testing.T) {
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 10})
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: 9})
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "generation_rejected") {
+		t.Fatalf("stale generation was not named: %+v", e)
+	}
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	readEnvelope(t, ctx, sock.conn)
 	if e, _ := ts.ReadEndpointRaw(ctx, ag.id); e.LastSeenAt == nil {

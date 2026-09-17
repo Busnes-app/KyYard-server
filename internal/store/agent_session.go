@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Busness-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busness-app/kyyard-server/internal/permissions"
 
 	"github.com/google/uuid"
@@ -88,9 +89,13 @@ func (t *tenancyStore) TouchEndpoint(ctx context.Context, endpointID string) err
 	return err
 }
 
-// MaxSnapshotBytes bounds what one endpoint may store; the adapter's own caps keep real
-// snapshots far below it.
-const MaxSnapshotBytes = 1 << 20
+// MaxSnapshotBytes is the shared limit from the protocol package.
+const MaxSnapshotBytes = protocol.MaxSnapshotBytes
+
+// GenerationSkew is how far ahead of the server clock a generation (a Unix timestamp by
+// construction) may run; anything beyond is a broken or hostile clock and is refused so it
+// cannot pin the endpoint's inventory forever.
+const GenerationSkew = time.Hour
 
 // AcceptInventory applies a snapshot only when its generation is newer than the stored one, so
 // reordered or duplicate reports cannot roll state back, and stores the bounded snapshot in the
@@ -101,6 +106,9 @@ func (t *tenancyStore) AcceptInventory(ctx context.Context, endpointID string, g
 		return false, ErrInvalid
 	}
 	now := time.Now().UTC()
+	if generation > uint64(now.Add(GenerationSkew).Unix()) {
+		return false, nil
+	}
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err

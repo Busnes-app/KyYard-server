@@ -50,6 +50,9 @@ func TestInventoryIsStoredAndReadWithFreshness(t *testing.T) {
 	stale.Generation = 4
 	stale.Containers = nil
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, stale)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "generation_rejected") {
+		t.Fatalf("stale generation was not named: %+v", e)
+	}
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	readEnvelope(t, ctx, sock.conn)
 
@@ -75,39 +78,71 @@ func TestInventoryIsStoredAndReadWithFreshness(t *testing.T) {
 	if w := tenantRequest(s, viewer, "GET", "/api/organizations/a/environments/env-a2/endpoints", "", true); w.Code != 200 || strings.Contains(w.Body.String(), ag.id) {
 		t.Fatalf("endpoint listed under the wrong environment: %d %s", w.Code, w.Body.String())
 	}
-	// An oversized snapshot closes the socket rather than being stored.
+	// A dirty snapshot is stored as its clamped re-encoding: no undeclared key, no bidi
+	// control, no oversized label map.
+	bigLabels := map[string]string{}
+	for i := 0; i < protocol.MaxLabels*2; i++ {
+		bigLabels[strings.Repeat("k", i+1)] = "v"
+	}
+	dirty, _ := json.Marshal(map[string]any{"generation": 6, "observed_at": observed, "undeclared": "env=SECRET", "engine": map[string]any{"runtime": "docker"}, "containers": []any{map[string]any{"id": "c9", "name": "web\u202eevil", "env": []string{"SECRET=1"}, "labels": bigLabels, "ports": []any{}, "networks": []any{}}}, "images": []any{}, "networks": []any{}, "volumes": []any{}})
+	frame, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeInventory, Payload: dirty})
+	if err := sock.conn.Write(ctx, websocket.MessageText, frame); err != nil {
+		t.Fatal(err)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	readEnvelope(t, ctx, sock.conn)
+	w = tenantRequest(s, viewer, "GET", inventoryPath, "", true)
+	_ = json.Unmarshal(w.Body.Bytes(), &inv)
+	rawStored := string(inv.Snapshot)
+	if inv.Generation != 6 || strings.Contains(rawStored, "undeclared") || strings.Contains(rawStored, "SECRET") || strings.Contains(rawStored, "\u202e") || strings.Contains(rawStored, "‮") {
+		t.Fatalf("dirty snapshot stored verbatim: %s", rawStored[:200])
+	}
+	_ = json.Unmarshal(inv.Snapshot, &stored)
+	if len(stored.Containers) != 1 || stored.Containers[0].Name != "webevil" || len(stored.Containers[0].Labels) != protocol.MaxLabels {
+		t.Fatalf("clamp not applied: %+v", stored.Containers)
+	}
+	// An oversized frame gets an error frame and the session continues.
 	huge := snap
-	huge.Generation = 6
+	huge.Generation = 7
 	huge.Containers = nil
 	for i := 0; i < 6000; i++ {
 		huge.Containers = append(huge.Containers, protocol.Container{ID: strings.Repeat("x", 64), Name: strings.Repeat("n", 100), Status: strings.Repeat("s", 40), Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}})
 	}
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, huge)
-	if _, _, err := sock.conn.Read(ctx); err == nil {
-		t.Fatal("oversized snapshot was accepted")
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "snapshot_too_large") {
+		t.Fatalf("oversized snapshot: %+v", e)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeHeartbeat {
+		t.Fatal("session did not continue after an oversized snapshot")
 	}
 	w = tenantRequest(s, viewer, "GET", inventoryPath, "", true)
 	_ = json.Unmarshal(w.Body.Bytes(), &inv)
-	if inv.Generation != 5 {
+	if inv.Generation != 6 {
 		t.Fatalf("oversized snapshot changed the stored generation: %d", inv.Generation)
 	}
-	// Successful reads are not audited (non-members never produce rows, so the cross-tenant
-	// probe above leaves nothing either); the mutation trail is untouched.
+	// Successful inventory reads are not audited, but the sensitive low-volume reads are:
+	// one audit-trail read and one member enumeration each leave exactly one row.
+	orgAdmin := loginAs(t, s, st, "orgadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_orgadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	if w := tenantRequest(s, orgAdmin, "GET", "/api/organizations/a/audit", "", true); w.Code != 200 {
+		t.Fatalf("audit read: %d", w.Code)
+	}
+	if w := tenantRequest(s, orgAdmin, "GET", "/api/organizations/a/members", "", true); w.Code != 200 {
+		t.Fatalf("members read: %d", w.Code)
+	}
 	records, _, err := st.Audit().ListAuditRecords(ctx, 0, 500)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var readOK, approvals int
+	counts := map[string]int{}
 	for _, r := range records {
-		if r.Action == "endpoint.read" && r.Result == "success" {
-			readOK++
-		}
-		if r.Action == "endpoint.enroll" && r.Result == "success" {
-			approvals++
+		if r.Result == "success" {
+			counts[r.Action]++
 		}
 	}
-	if readOK != 0 || approvals == 0 {
-		t.Fatalf("read audit: reads=%d approvals=%d", readOK, approvals)
+	if counts["endpoint.read"] != 0 || counts["organization.audit.read"] != 1 || counts["organization.members.manage"] != 1 || counts["endpoint.enroll"] == 0 {
+		t.Fatalf("read audit: %v", counts)
 	}
 	_ = websocket.StatusNormalClosure
 }

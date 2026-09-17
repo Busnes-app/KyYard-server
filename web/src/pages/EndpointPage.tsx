@@ -4,6 +4,7 @@ import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { envPath, orgPath } from '../router';
 import { useTenantResource, type Endpoint, type Inventory } from '../tenant';
+import { displayName } from '../components/Endpoints';
 
 const bytes = (n: number) => n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GiB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(0)} MiB` : `${n} B`;
 const ago = (iso: string) => { const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000)); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
@@ -50,10 +51,10 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
-          <Table title="Containers" rows={inv.snapshot.containers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Ports', 'Project']} render={(c) => [c.name, c.image, `${c.state} · ${c.status}`, c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ?? '—']} />
-          <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID']} render={(i) => [i.tags.join(', ') || '<untagged>', bytes(i.size_bytes), i.id.slice(0, 19)]} />
-          <Table title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [n.name, n.driver, n.scope]} />
-          <Table title="Volumes" rows={inv.snapshot.volumes} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [v.name, v.driver, v.mountpoint]} />
+          <Table title="Containers" rows={inv.snapshot.containers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Ports', 'Project']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—']} />
+          <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), displayName(i.id).slice(0, 19)]} />
+          <Table title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />
+          <Table title="Volumes" rows={inv.snapshot.volumes} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [displayName(v.name), displayName(v.driver), displayName(v.mountpoint)]} />
         </>
       )}
     </div>

@@ -192,15 +192,13 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		snap.Volumes = snap.Volumes[:protocol.MaxVolumes]
 		snap.Truncated = append(snap.Truncated, "volumes")
 	}
+	// Conform to the declared schema and fit the shared byte limit before it leaves the host.
+	protocol.Clamp(snap)
+	_ = protocol.Shrink(snap)
 	return snap, nil
 }
 
-func bound(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
-	}
-	return s
-}
+func bound(s string, n int) string { return protocol.CleanText(s, n) }
 
 func nonNil(s []string) []string {
 	if s == nil {
