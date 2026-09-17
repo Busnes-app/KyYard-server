@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -654,5 +655,98 @@ func TestRevocationDoesNotSwitchKeys(t *testing.T) {
 	}
 	if !bytes.Equal(saved.PrivateKey, current) || len(saved.PendingPrivateKey) == 0 {
 		t.Fatalf("revocation rewrote the identity: current changed=%v pending kept=%v", !bytes.Equal(saved.PrivateKey, current), len(saved.PendingPrivateKey) != 0)
+	}
+}
+
+// A session killed between saving a rotation offer and hearing the answer leaves a key the
+// server may never have recorded. When a late acknowledgement then retires the current key,
+// the agent must reach the acknowledged key rather than strand itself on the unrecorded one:
+// the server answers an unknown key exactly as it answers a revoked endpoint, and that is
+// terminal.
+func TestAnUnrecordedOfferDoesNotStrandTheAgent(t *testing.T) {
+	httpSrv, st, jar, id, dir := approvedAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	view := store.TenantAccess{ActorID: "usr_admin", OrganizationID: "a"}
+
+	// One offer, recorded by the server.
+	id.RotatedAt = time.Time{}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(runCtx, id, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir, RotateEvery: 30 * time.Second})
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.PendingFingerprint != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no rotation offer was recorded: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	recorded := id.PendingFingerprint
+	recordedKey := append([]byte(nil), id.PendingPrivateKey...)
+
+	// The state a crash mid-offer leaves on disk: the recorded offer has lapsed out of the
+	// pending slot, and a newer offer sits there that the session died before hearing an
+	// answer for. Written as the file itself, the way a killed agent leaves it.
+	unrecordedPub, unrecordedPriv, _ := ed25519.GenerateKey(rand.Reader)
+	raw, err := os.ReadFile(filepath.Join(dir, "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	saved["lapsed_private_key"] = recordedKey
+	saved["pending_private_key"] = []byte(unrecordedPriv)
+	saved["pending_fingerprint"] = protocol.Fingerprint(unrecordedPub)
+	saved["pending_since"] = time.Now().UTC()
+	delete(saved, "pending_recorded")
+	raw, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "identity.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator acknowledges the offer the server actually holds.
+	post(t, httpSrv.URL+"/api/organizations/a/endpoints/"+id.EndpointID+"/keys/"+recorded+"/acknowledge", jar, "")
+
+	reloaded, err := client.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx2, stop2 := context.WithCancel(ctx)
+	defer stop2()
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- client.Run(runCtx2, reloaded, client.Options{HTTPClient: httpSrv.Client(), IdentityDir: dir})
+	}()
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		e, _ := ts.ReadEndpoint(ctx, view, id.EndpointID)
+		if e != nil && e.State == "active" && e.Fingerprint == recorded {
+			return
+		}
+		select {
+		case err := <-done2:
+			t.Fatalf("agent gave up instead of trying the recorded key: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never authenticated with the acknowledged key: %+v", e)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

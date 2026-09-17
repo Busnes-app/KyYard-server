@@ -202,6 +202,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 			opts.Log.Printf("pending key %s was never acknowledged; offer lapsed", id.PendingFingerprint)
 			id.LapsedPrivateKey = id.PendingPrivateKey
 			id.PendingPrivateKey, id.PendingFingerprint, id.PendingSince = nil, "", time.Time{}
+			id.PendingRecorded = false
 			_ = opts.save(id)
 		}
 		if opts.RotateEvery > 0 && id.PendingFingerprint == "" && time.Since(id.RotatedAt) >= opts.RotateEvery {
@@ -280,18 +281,21 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 				_ = json.Unmarshal(f.Payload, &ack)
 				if ack.Code != "" || ack.Fingerprint != id.PendingFingerprint {
 					opts.Log.Printf("rotation not recorded (%s); keeping the current key", ack.Code)
-					id.PendingPrivateKey, id.PendingFingerprint = nil, ""
+					id.PendingPrivateKey, id.PendingFingerprint, id.PendingRecorded = nil, "", false
 					if ack.Code == "rotation_pending" && len(id.LapsedPrivateKey) == ed25519.PrivateKeySize {
-						// The server still holds the offer we gave up on: it is the live one again.
+						// The server still holds the offer we gave up on: it is the live one again,
+						// and saying so is the server confirming it holds that key.
 						id.PendingPrivateKey = id.LapsedPrivateKey
 						id.PendingFingerprint = id.pendingFingerprint()
 						id.PendingSince = time.Now().UTC()
+						id.PendingRecorded = true
 						id.LapsedPrivateKey = nil
 					}
 					_ = opts.save(id)
 				} else {
 					// A recorded offer proves any lapsed key is retired server-side.
 					id.LapsedPrivateKey = nil
+					id.PendingRecorded = true
 					_ = opts.save(id)
 					opts.Log.Printf("rotation recorded as %s; waiting for operator acknowledgement", ack.Fingerprint)
 				}
@@ -376,6 +380,9 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 	id.PendingPrivateKey = priv
 	id.PendingFingerprint = protocol.Fingerprint(pub)
 	id.PendingSince = time.Now().UTC()
+	// Unconfirmed until the server answers: the save must come first so a key the server may
+	// record is never lost, but a key it never saw must not outrank a recorded one.
+	id.PendingRecorded = false
 	if err := opts.save(id); err != nil {
 		id.PendingPrivateKey, id.PendingFingerprint = nil, ""
 		return fmt.Errorf("rotation not offered: %w", err)
