@@ -13,13 +13,60 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 // A real Unix-socket Engine fixture exercises bootstrap, authenticated transport,
 // inventory, authorized commands, restart generation and live revocation together.
 func TestLocalDockerConnectsWithoutEnrollment(t *testing.T) {
+	testLocalDocker(t, 0, false)
+}
+
+func TestLocalDockerReconnectsAfterATransientStoreError(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		call  int32
+		state bool
+	}{
+		{"handshake", 1, false}, {"frame_identity", 3, false}, {"frame_state", 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testLocalDocker(t, tc.call, tc.state) })
+	}
+}
+
+type flakyLocalStore struct {
+	store.Store
+	tenancy store.TenancyStore
+}
+
+func (s flakyLocalStore) Tenancy() store.TenancyStore { return s.tenancy }
+
+type flakyLocalTenancy struct {
+	store.TenancyStore
+	calls  atomic.Int32
+	failAt int32
+	state  bool
+}
+
+func (s *flakyLocalTenancy) AgentIdentity(ctx context.Context, endpoint, fingerprint string) (*store.AgentIdentity, error) {
+	if !s.state && s.calls.Add(1) == s.failAt {
+		return nil, errors.New("temporary database failure")
+	}
+	return s.TenancyStore.AgentIdentity(ctx, endpoint, fingerprint)
+}
+func (s *flakyLocalTenancy) EndpointState(ctx context.Context, endpoint string) (string, error) {
+	if s.state && s.calls.Add(1) == s.failAt {
+		return "", errors.New("temporary database failure")
+	}
+	return s.TenancyStore.EndpointState(ctx, endpoint)
+}
+
+func testLocalDocker(t *testing.T, failAt int32, state bool) {
 	s, st, cfg := setupTestServer(t)
+	if failAt > 0 {
+		s = api.NewServer(cfg, flakyLocalStore{st, &flakyLocalTenancy{TenancyStore: st.Tenancy(), failAt: failAt, state: state}})
+	}
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {

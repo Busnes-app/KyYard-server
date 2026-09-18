@@ -252,19 +252,12 @@ func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *ht
 	}
 	identity, err := s.store.Tenancy().AgentIdentity(hctx, auth.EndpointID, auth.Fingerprint)
 	if err != nil {
-		// A retired or still-pending key is named so a legitimate agent picks the right one;
-		// unknown and revoked look the same and a revoked endpoint is audited.
-		switch {
-		case errors.Is(err, store.ErrKeyRetired):
-			return nil, protocol.CloseKeyRetired
-		case errors.Is(err, store.ErrKeyPendingReview):
-			return nil, protocol.CloseKeyPending
-		case errors.Is(err, store.ErrForbidden):
+		if errors.Is(err, store.ErrForbidden) {
 			if e, readErr := s.store.Tenancy().ReadEndpointRaw(hctx, auth.EndpointID); readErr == nil {
 				_ = s.store.Tenancy().RecordAgentConnect(hctx, e, s.requestIP(r), "denied", "")
 			}
 		}
-		return nil, protocol.CloseRevoked
+		return nil, agentStoreCloseReason(err)
 	}
 	if identity.Endpoint.State == "revoked" || identity.Endpoint.State == "expired" {
 		_ = s.store.Tenancy().RecordAgentConnect(hctx, &identity.Endpoint, s.requestIP(r), "denied", "")
@@ -275,6 +268,20 @@ func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *ht
 		return nil, protocol.CloseRevoked
 	}
 	return identity, ""
+}
+
+// Store outages fail closed for this connection, but must not revoke the identity.
+func agentStoreCloseReason(err error) string {
+	switch {
+	case errors.Is(err, store.ErrKeyRetired):
+		return protocol.CloseKeyRetired
+	case errors.Is(err, store.ErrKeyPendingReview):
+		return protocol.CloseKeyPending
+	case errors.Is(err, store.ErrForbidden), errors.Is(err, store.ErrNotFound):
+		return protocol.CloseRevoked
+	default:
+		return protocol.CloseProtocol
+	}
 }
 
 // serveAgent pumps frames both ways. A pending endpoint may only refresh facts and wait for
@@ -372,16 +379,16 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 	// Revocation between frames must not be outrun by a cached state, and neither must the
 	// retirement of the key that authenticated this session.
 	state, err := ts.EndpointState(fctx, c.endpointID)
-	if err != nil || state == "revoked" {
+	if err != nil {
+		c.conn.Close(websocket.StatusPolicyViolation, agentStoreCloseReason(err))
+		return true
+	}
+	if state == "revoked" {
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseRevoked)
 		return true
 	}
 	if _, err := ts.AgentIdentity(fctx, c.endpointID, c.fingerprint); err != nil {
-		reason := protocol.CloseRevoked
-		if errors.Is(err, store.ErrKeyRetired) {
-			reason = protocol.CloseKeyRetired
-		}
-		c.conn.Close(websocket.StatusPolicyViolation, reason)
+		c.conn.Close(websocket.StatusPolicyViolation, agentStoreCloseReason(err))
 		return true
 	}
 	if f.Type == protocol.TypeMetrics && len(f.Payload) > protocol.MaxMetricsBytes {
