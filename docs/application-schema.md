@@ -1,6 +1,6 @@
 # KyYard application schema
 
-**Status:** M6 Compose discovery and internal application/revision persistence are implemented. Public import/adoption, instances and deployment remain for following M6–M7 slices. Compose secret resolution is settled in M6 with a spike; everything here about secrets is the contract that spike must meet.
+**Status:** M6 Compose discovery and internal application/revision persistence are implemented. Bounded public draft import and encrypted environment resolution are implemented. Adoption, instances and deployment remain for following M6–M7 slices.
 
 ## Vocabulary
 
@@ -22,7 +22,13 @@ Desired configuration, observed runtime, drift and last deployment are stored an
 
 Migration 18 stores applications and immutable revision history. Application names are unique inside their environment; composite foreign keys keep revisions in the same organization and environment as their application. All store operations require explicit environment scope and live named permissions. Create commits revision 1 with the application and audit; edit appends using an expected head number, rejecting a stale concurrent edit. Edits never update an existing revision. Explicit draft discard is the sole deletion path in this foundation. Audit contains scope, actor, application/revision target and outcome, never configuration. The SHA-256 digest covers the exact deterministic JSON encoding stored for that revision; reads recompute it and return `ErrRevisionCorrupt` on mismatch. It is a consistency check, not a signature or semantic equivalence check.
 
-The initial typed `ApplicationSpec` is deliberately limited to `kind: compose.v1` and 1–100 uniquely named services, each with an image reference and optional environment entries of `{secret_ref: name}`. It has no raw YAML, arbitrary extensions or literal environment-value field. This is an internal storage contract, not a supported Compose importer: future import code must validate unsupported source fields before conversion rather than silently dropping them. Secret-reference existence, image digest resolution, broader Compose fields and deployment validation remain prerequisites for public import/deployment. No application persistence HTTP route is exposed yet.
+The typed `ApplicationSpec` holds `kind: compose.v1`, 1–100 uniquely named services, image references, optional restart/long-form ports and environment references. Raw YAML and literal values are never saved in the spec.
+
+## Implemented draft import
+
+The environment Applications view imports a single Compose document up to 64 KiB. The parser uses `go.yaml.in/yaml/v3` v3.0.4 with node/depth limits (8,192/16). Supported service fields are `image`, `environment` (explicit string map or `KEY=value` list), `restart` (`no`, `always`, `unless-stopped`, `on-failure`) and `ports` (at most 64 long-syntax entries with decimal `target`/`published`, optional IP `host_ip`, and `tcp`/`udp` protocol). Both ports must be 1–65535. No implicit environment/file lookup occurs. Interpolation is refused; literal dollars use `$$`, following [Compose escaping](https://docs.docker.com/reference/compose-file/interpolation/). Unsupported fields, multiple documents, duplicate keys, aliases, anchors and explicit tags are errors. Parser diagnostics contain fixed reasons and positions only.
+
+Every environment value becomes a deterministic service/key reference. Migration 20 stores its encrypted bundle in `application_revisions.secrets_enc`, omitted from ordinary DTOs. The bundle is limited to 64 KiB serialized and 16 KiB per value; exact reference coverage is required. AES-GCM uses a derived key bound to organization, environment, application, revision number and spec digest. Internal `ResolveApplicationSecrets` checks live `secret.reveal` authority (organization administrators only) and commits audit before returning plaintext; no HTTP reveal endpoint exists. SQLite recovery proves decryption using the payload's recovered encryption key. Import/discard have no runtime side effects. Broader Compose parsing, public revision editing and deployment are still future work.
 
 Admission limits are 100 applications per organization, 100 revisions per application and 64 KiB per encoded revision; an organization-row lock protects creation capacity across administrators. An environment containing an application cannot be removed. History is retained rather than automatically pruned. An administrator may explicitly discard an undeployed draft and all its saved revisions at an expected head using `application.destroy`; discard commits with audit, frees quota and permits deleting an emptied environment. Future instance foreign keys must restrict this operation once ownership/deployments exist. Managed application removal is a separate future workflow with retained deployment history. Both tables travel in the SQLite snapshot, verified by `TestApplicationRevisionsSurviveBackup`; PostgreSQL capsule limitations are unchanged.
 
@@ -46,13 +52,13 @@ revision {
 
 - The common model holds what both runtimes can express honestly. Runtime-specific fields live under `extensions` and are preserved verbatim through edits; the model never pretends unlike constructs are the same.
 - Image references are resolved to digests at preview time and recorded; the deploy uses the recorded digest, never the mutable tag.
-- Secret values are never in a revision. `secret_ref` names a secret in the organization's secret store; values are encrypted at rest and resolved only inside the deploy command to the agent (see `agent-protocol.md` section 8).
+- Plaintext secret values are never in a revision spec. `secret_ref` names a secret in the organization's secret store; values are encrypted at rest and resolved only inside the deploy command to the agent (see `agent-protocol.md` section 8).
 
-## Compose subset (*proposed*)
+## Target Compose subset (*proposed; not yet supported*)
 
 Supported in 0.1: `services` with `image`, `container_name`, `command`, `entrypoint`, `environment` (list or map), `env_file` (resolved at import; every value becomes a secret reference unless the operator explicitly marks the key as plain configuration, and inline `environment` keys matching `PASSWORD|SECRET|TOKEN|KEY|PRIVATE` are offered the same conversion before the revision is saved), `ports`, `expose`, `volumes` (named, bind, tmpfs), `networks`, `depends_on`, `restart`, `healthcheck`, `labels`, `user`, `working_dir`, `cap_add`/`cap_drop`, `privileged` (shown with a warning), `logging`; top-level `volumes` and `networks`. Rejected with a named reason: `build`, `extends`, `profiles`, `secrets`/`configs` file mounts from the host, `deploy` (swarm), `x-` extensions other than KyYard's own. Image building is never added silently.
 
-The exact Compose implementation and version range are recorded when M6 lands.
+The implemented subset above is intentionally narrower than this target; unsupported fields are refused.
 
 ## Adoption and import
 
@@ -88,7 +94,7 @@ The common model maps to Deployments/StatefulSets, Services, ConfigMaps, Secrets
 
 | Decision | Proposed | Status |
 |---|---|---|
-| Secret representation | named references resolved at deploy; values never in revisions, previews, diffs or backups of revisions | proposed, M6 spike |
+| Secret representation | reference-only specs, encrypted per-revision bundles in sealed backups; internal audited resolution | implemented for draft import; deploy resolution pending |
 | Compose subset | list above | proposed |
 | Unmanaged edits | require adoption | proposed (plan default) |
 | Preview validity | 10 minutes, preconditions on touched resources only | proposed |

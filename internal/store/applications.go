@@ -38,6 +38,10 @@ type ApplicationRevision struct {
 // CreateApplication commits the application, first revision and permission audit
 // atomically. It creates desired state only, not an adopted or deployed instance.
 func (t *tenancyStore) CreateApplication(ctx context.Context, a TenantAccess, name string, spec ApplicationSpec) (*Application, error) {
+	return t.createApplication(ctx, a, name, spec, nil, nil)
+}
+
+func (t *tenancyStore) createApplication(ctx context.Context, a TenantAccess, name string, spec ApplicationSpec, values map[string]string, key []byte) (*Application, error) {
 	app := Application{ID: uuid.NewString(), OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, Name: strings.TrimSpace(name), LatestRevision: 1, CreatedBy: a.ActorID, CreatedAt: time.Now().UTC()}
 	err := t.withTenantTarget(ctx, a, permissions.ApplicationImport, app.ID, func(tx *sql.Tx) error {
 		if a.EnvironmentID == "" || !validTenantName(app.Name) {
@@ -62,7 +66,13 @@ func (t *tenancyStore) CreateApplication(ctx context.Context, a TenantAccess, na
 		if err != nil {
 			return err
 		}
-		return t.insertApplicationRevision(ctx, tx, a, app.ID, 1, raw, digest, app.CreatedAt)
+		if err := t.insertApplicationRevision(ctx, tx, a, app.ID, 1, raw, digest, app.CreatedAt); err != nil {
+			return err
+		}
+		if values != nil {
+			return t.sealApplicationValues(ctx, tx, a, app.ID, spec, digest, values, key)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err

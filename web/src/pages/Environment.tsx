@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Server } from 'lucide-react';
+import { Applications } from '../components/Applications';
 import { Endpoints } from '../components/Endpoints';
 import { Link } from '../components/Link';
 import { StateNotice } from '../components/StateNotice';
@@ -9,6 +10,7 @@ import { tenantWrite, useTenantResource, type Environment as Env } from '../tena
 export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/environments/${encodeURIComponent(env)}`;
   const details = useTenantResource<Env>(base);
+  const [view, setView] = useState('hosts');
   const [name, setName] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -39,7 +41,11 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
       <StateNotice state={details.state} onRetry={details.reload} />
       {details.state === 'ready' && (
         <>
-          <Endpoints org={org} env={env} />
+          <nav className="ky-resource-tabs" aria-label="Environment resources">
+            <button aria-pressed={view === 'hosts'} onClick={() => setView('hosts')}>Hosts</button>
+            <button aria-pressed={view === 'applications'} onClick={() => setView('applications')}>Applications</button>
+          </nav>
+          {view === 'hosts' ? <Endpoints org={org} env={env} /> : <Applications key={`${org}/${env}`} org={org} env={env} />}
           <details className="panel"><summary>Environment settings</summary>
             <form onSubmit={rename} className="ky-inline-form">
               <label htmlFor="env-rename">Rename</label>

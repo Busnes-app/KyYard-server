@@ -62,7 +62,8 @@ export async function tenantWrite(url: string, method: string, body?: unknown): 
     if (payload.code === 'last_administrator') return 'At least one active administrator is required.';
     if (resp.status === 403) return 'You do not have permission to do that.';
     if (resp.status === 404) return 'Not found in this access scope.';
-    if (payload.code === 'environment_in_use') return 'Revoke every endpoint in this environment before deleting it.';
+    if (payload.code === 'environment_in_use') return 'Discard draft applications and revoke every endpoint in this environment before deleting it.';
+
     if (resp.status === 409) return 'That already exists.';
     return `Request failed (${resp.status}).`;
   } catch {
