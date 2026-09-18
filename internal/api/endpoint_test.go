@@ -62,7 +62,7 @@ func TestEnrollmentRoutes(t *testing.T) {
 	if !strings.Contains(minted.Command, minted.Token) || !strings.Contains(minted.Command, "docker.sock") || !strings.Contains(minted.Disclosure, "root-equivalent") || minted.ExpiresAt == "" {
 		t.Fatalf("enrollment command incomplete: %+v", minted)
 	}
-	if !strings.Contains(minted.Command, " "+agentImage+" ") || minted.Image != agentImage || strings.Contains(minted.Command, ":latest") {
+	if !strings.Contains(minted.Command, " '"+agentImage+"' ") || minted.Image != agentImage || strings.Contains(minted.Command, ":latest") {
 		t.Fatalf("command does not name exactly the configured digest-pinned image: %s", minted.Command)
 	}
 	tokenBytes, err := base64.RawURLEncoding.DecodeString(minted.Token)

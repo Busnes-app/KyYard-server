@@ -62,6 +62,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("identity: %v", err)
 	}
+	if id != nil && *enrollOnly {
+		log.Fatalf("already enrolled as %s with %s; refusing a new enrollment in %s; restart without --enroll-only to reuse this identity", id.EndpointID, id.Server, *dir)
+	}
 	if id == nil {
 		if *server == "" {
 			log.Fatal("--server is required for enrollment")

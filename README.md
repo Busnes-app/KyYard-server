@@ -225,6 +225,10 @@ docker run -d --name kyyard-agent --restart unless-stopped --pull never --no-hea
   -v kyyard-agent-identity:/var/lib/kyyard-agent "$image"
 ```
 
+A fresh enrollment command refuses an existing identity and names its endpoint/server; use the
+restart command above to reconnect it. To enroll into another environment, revoke the old
+endpoint and explicitly choose a new identity volume for the new enrollment.
+
 Keep the named identity volume; `docker rm -fv` removes anonymous volumes, not named ones.
 No new token or approval is needed for that existing identity. A revoked endpoint cannot be
 revived this way. Never share an identity volume between hosts or control planes. Use distinct

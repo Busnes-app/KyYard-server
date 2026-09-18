@@ -60,7 +60,7 @@ image=$(docker inspect --type container --format '{{.Image}}' "$server_id") &&
 	out["note"] = "Run on the Docker host running KyYard. If you renamed the server container, change server=kyyard. Compare the printed agent key fingerprint before approving below. After replacing the server container, recreate the agent with the same identity volume (see README)."
 	if image != "" && strings.HasPrefix(s.config.Server.AppURL, "https://") {
 		out["image"] = image
-		setup, options, imageArg, origin = "", "--network bridge", image, s.config.Server.AppURL
+		setup, options, imageArg, origin = "", "--network bridge", shellQuote(image), s.config.Server.AppURL
 		out["note"] = "Run on the Docker host to manage. Compare the printed agent key fingerprint before approving below."
 	}
 	// Detached docker run does not forward piped stdin. Enroll in an attached,

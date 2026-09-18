@@ -221,6 +221,14 @@ if [ -x "$AGENT" ]; then
   check "identity file is owner-only" "$(stat -c '%a' "$WORK/agent/identity.json")" "600"
   check "identity file never holds the token" \
     "$(if grep -q "$TOKEN" "$WORK/agent/identity.json"; then echo leaked; else echo clean; fi)" "clean"
+  SECOND_TOKEN_JSON="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"runtime":"docker"}' "$BASE/api/organizations/org_initial/environments/$ENV_ID/enrollment-tokens")"
+  SECOND_TOKEN="$(printf '%s' "$SECOND_TOKEN_JSON" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+  REENROLL_EXIT=0
+  printf '%s\n' "$SECOND_TOKEN" | "$AGENT" --server "$BASE" --identity-dir "$WORK/agent" --enroll-only >"$WORK/reenroll.log" 2>&1 || REENROLL_EXIT=$?
+  check "fresh enrollment refuses an existing identity" "$(test "$REENROLL_EXIT" -ne 0 && echo refused || echo accepted)" "refused"
+  contains "refusal identifies the existing endpoint" "$(cat "$WORK/reenroll.log")" "$EP_ID"
+  ENDPOINT_COUNT="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints" | grep -o '"id":"ep_' | wc -l | tr -d ' ')"
+  check "refused enrollment creates no second endpoint" "$ENDPOINT_COUNT" "1"
   check "approval binds the enrolled fingerprint" \
     "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"fingerprint":"'"$EP_FP"'"}' -X POST "$BASE/api/organizations/org_initial/endpoints/$EP_ID/approve")" "204"
   wait_state active || true
