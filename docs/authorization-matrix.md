@@ -67,7 +67,7 @@ Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.e
 | `container.logs` (implemented) | ✓ | ✓ | ✓ | ✓ | – | log bodies not stored | session metadata: one row per session naming the endpoint and the container asked for |
 | `container.operate` (start, stop, restart, pause) | ✓ | ✓ | ✓ | – | – | no | success/failure/unknown |
 | `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |
-| `container.exec` | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |
+| `container.exec` (implemented) | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |
 | `image.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
 | `image.pull` | ✓ | ✓ | ✓ | – | – | uses a registry credential without revealing it, and only when the reference's registry host exactly equals the credential's configured host (`application-schema.md`, Registry) | success/failure |
 | `image.destroy` | ✓ | ✓ | – | – | – | no | success/failure |
@@ -97,7 +97,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 ## Streams and revocation
 
 - A stream grant is issued at authorization time and lives *proposed* 60 seconds until the stream opens; then the stream's own timeouts apply.
-- Any of these closes the stream immediately: membership removal or disable, user disable, session revocation, endpoint revocation, password replacement. The check runs on every heartbeat (*proposed* 30 s) and on every server-side revocation event.
+- Any of these closes the stream immediately: membership removal or disable, user disable, session revocation, endpoint revocation, password replacement. Exec checks every 250 ms under a 500 ms deadline as well as on server-side membership/endpoint/shutdown events; session revocation and external account changes therefore fail closed within the one-second acceptance bound under normal scheduling. Log streams retain their separate recheck cadence.
 - Cross-organization subscriptions fail closed: an event stream is scoped to one organization and carries no rows from another.
 
 ## Audit

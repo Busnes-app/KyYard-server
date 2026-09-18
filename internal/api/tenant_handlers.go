@@ -235,6 +235,7 @@ func (s *Server) handlePutMembership(w http.ResponseWriter, r *http.Request, a s
 	// this request rather than whenever a stream happens to end. The stream re-checks its own
 	// authorization as well; this is what makes the change immediate.
 	s.logs.closeActorStreams(userID, "your access to this log was withdrawn")
+	s.execs.closeActor(userID)
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) handleRemoveMembership(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
@@ -248,5 +249,6 @@ func (s *Server) handleRemoveMembership(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	s.logs.closeActorStreams(userID, "your access to this log was withdrawn")
+	s.execs.closeActor(userID)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -47,6 +47,7 @@ type Server struct {
 	stopping atomic.Bool
 	agents   agentRegistry
 	logs     *logRegistry
+	execs    execRegistry
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -227,6 +228,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleListCommands))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands/{command}", s.tenantRoute(s.handleReadCommand))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/logs", s.tenantRoute(s.handleContainerLogs))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/exec", s.tracked(s.tenantRoute(s.handleContainerExec)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/approve", s.tenantRoute(s.handleApproveEndpoint))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/reject", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RejectEndpoint)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/revoke", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RevokeEndpoint)))

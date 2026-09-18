@@ -31,6 +31,7 @@ const (
 
 // agentConn is one live socket. The registry holds at most one per endpoint.
 type agentConn struct {
+	nonce          []byte
 	endpointID     string
 	organizationID string
 	environmentID  string
@@ -185,13 +186,18 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	identity, closeReason := s.agentHandshake(ctx, conn, r)
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		_ = conn.CloseNow()
+		return
+	}
+	identity, closeReason := s.agentHandshake(ctx, conn, r, nonce)
 	if identity == nil {
 		conn.Close(websocket.StatusPolicyViolation, closeReason)
 		return
 	}
 	conn.SetReadLimit(agentFrameLimit)
-	c := &agentConn{endpointID: identity.Endpoint.ID, organizationID: identity.Endpoint.OrganizationID, environmentID: identity.Endpoint.EnvironmentID, fingerprint: identity.Fingerprint, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	c := &agentConn{nonce: nonce, endpointID: identity.Endpoint.ID, organizationID: identity.Endpoint.OrganizationID, environmentID: identity.Endpoint.EnvironmentID, fingerprint: identity.Fingerprint, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
 	if incumbent := s.agents.add(c); incumbent != nil {
 		// The incumbent may be a socket the network dropped without a FIN: the agent gives up
 		// after two heartbeats and redials before the server's three-heartbeat timeout. Probe
@@ -220,6 +226,7 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 	}
 admitted:
 	defer s.agents.remove(c)
+	defer s.execs.closeAgent(c)
 	if s.stopping.Load() {
 		conn.Close(websocket.StatusGoingAway, protocol.CloseShutdown)
 		return
@@ -231,13 +238,9 @@ admitted:
 	s.serveAgent(ctx, c, identity.Endpoint.State == "pending")
 }
 
-func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *http.Request) (*store.AgentIdentity, string) {
+func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *http.Request, nonce []byte) (*store.AgentIdentity, string) {
 	hctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
-	nonce := make([]byte, 32)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, protocol.CloseProtocol
-	}
 	if err := s.writeFrame(hctx, conn, envelope(protocol.TypeChallenge, protocol.Challenge{Nonce: nonce, InstanceFingerprint: s.instanceFingerprint(), Versions: []int{protocol.Version}})); err != nil {
 		return nil, protocol.CloseProtocol
 	}
@@ -471,6 +474,10 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 				id = res.ID
 			}
 			log.Printf("agent %s: settling command %s: %v", c.endpointID, id, err)
+		}
+	case protocol.TypeExecReady, protocol.TypeExecOutput, protocol.TypeExecClose:
+		if !pending {
+			s.handleExecFrame(c, f)
 		}
 	case protocol.TypeLogChunk:
 		if pending {

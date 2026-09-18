@@ -10,6 +10,7 @@ import (
 // BeginShutdown makes readiness fail before the listener drains.
 func (s *Server) BeginShutdown() {
 	s.stopping.Store(true)
+	s.execs.closeAll()
 	// Agent sockets are hijacked connections http.Server.Shutdown does not know about.
 	s.agents.closeAll(protocol.CloseShutdown)
 }
