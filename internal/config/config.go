@@ -120,12 +120,17 @@ const MinDepositInterval = 15 * time.Minute
 // under it, so the restore CLI has to agree with it without loading a whole Config.
 const DefaultAppName = "KyYard"
 
+// DefaultPort is where KyYard listens when nothing says otherwise. It is deliberately not one
+// of the ports every other self-hosted tool wants: a homelab runs several, and a default that
+// collides is a setup step for everybody rather than a convenience for anybody.
+const DefaultPort = 9273
+
 // LoadFromEnv initializes a Config struct populated from environment variables with sensible defaults.
 // A mutable tag would let the registry decide what runs as root on every enrolled host.
 var agentImageRef = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(:[0-9]+)?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)+@sha256:[0-9a-f]{64}$`)
 
 func LoadFromEnv() (*Config, error) {
-	port, portErr := strconv.Atoi(getEnv("KY_PORT", getEnv("PORT", "8080")))
+	port, portErr := strconv.Atoi(getEnv("KY_PORT", getEnv("PORT", strconv.Itoa(DefaultPort))))
 	host := getEnv("KY_HOST", "127.0.0.1")
 	appURL := getEnv("KY_APP_URL", fmt.Sprintf("http://localhost:%d", port))
 	appName := getEnv("KY_APP_NAME", DefaultAppName)

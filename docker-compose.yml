@@ -33,14 +33,14 @@ services:
     # deposit already on the wire), so SIGKILL cannot land on a capsule mid-upload.
     stop_grace_period: 20m
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9273:9273"
     environment:
-      - KY_PORT=8080
+      - KY_PORT=9273
       - KY_HOST=0.0.0.0
       # A container-wide bind is safe here because the host publish above is loopback-only.
       - KY_ALLOW_PLAINTEXT_BIND=true
       - KY_APP_NAME=KyYard
-      - KY_APP_URL=http://localhost:8080
+      - KY_APP_URL=http://localhost:9273
       - KY_DB_DRIVER=sqlite
       - KY_DATA_DIR=/data
       # Disaster recovery. Sealed capsules land in KY_BACKUP_DIR (empty = no local copies);

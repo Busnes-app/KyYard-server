@@ -23,8 +23,8 @@ func TestConfigLoadDefaults(t *testing.T) {
 	if cfg.Server.AppName != "KyYard" {
 		t.Errorf("expected default product name KyYard, got %s", cfg.Server.AppName)
 	}
-	if cfg.Server.Port != 8080 {
-		t.Errorf("expected default port 8080, got %d", cfg.Server.Port)
+	if cfg.Server.Port != config.DefaultPort {
+		t.Errorf("expected default port %d, got %d", config.DefaultPort, cfg.Server.Port)
 	}
 	if cfg.Database.Driver != "sqlite" {
 		t.Errorf("expected default driver sqlite, got %s", cfg.Database.Driver)
