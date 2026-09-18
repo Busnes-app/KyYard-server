@@ -57,17 +57,27 @@ image=$(docker inspect --type container --format '{{.Image}}' "$server_id") &&
 	options := `--pull never --network "container:$server_id"`
 	imageArg := `"$image"`
 	origin := fmt.Sprintf("http://127.0.0.1:%d", s.config.Server.Port)
-	out["note"] = "Run on the Docker host running KyYard. If you renamed the server container, change server=kyyard. Compare the printed agent key fingerprint before approving below. After replacing the server container, recreate the agent with the same identity volume (see README)."
+	out["note"] = "Local Docker normally connects automatically with the standard installation. This command creates an additional agent on the Docker host running KyYard and uses sudo if Docker requires it. If you renamed the server container, change server=kyyard. Compare the printed agent key fingerprint before approving below. After replacing the server container, recreate the agent with the same identity volume (see README)."
 	if image != "" && strings.HasPrefix(s.config.Server.AppURL, "https://") {
 		out["image"] = image
 		setup, options, imageArg, origin = "", "--network bridge", shellQuote(image), s.config.Server.AppURL
-		out["note"] = "Run on the Docker host to manage. Compare the printed agent key fingerprint before approving below."
+		out["note"] = "Run on the additional Docker host to manage; the command uses sudo if Docker requires it. Compare the printed agent key fingerprint before approving below."
 	}
 	// Detached docker run does not forward piped stdin. Enroll in an attached,
 	// short-lived process, then start the persistent agent with its saved identity.
 	common := options + " --no-healthcheck --entrypoint /app/kyyard-agent -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent " + imageArg
-	out["command"] = setup + fmt.Sprintf("printf '%%s\\n' '%s' | docker run --rm -i --name kyyard-agent-enroll %s --server %s --name \"$(hostname)\" --enroll-only &&\n"+
-		"docker run -d --name kyyard-agent --restart unless-stopped %s", secret, common, shellQuote(origin), common)
+	// Check privileges before the token enters stdin. Some Docker installations
+	// require sudo for every inspect/run, not just the last command in the chain.
+	privileges := `if docker info >/dev/null 2>&1; then
+  kyyard_docker() { docker "$@"; }
+else
+  sudo -v && sudo docker info >/dev/null || exit 1
+  kyyard_docker() { sudo docker "$@"; }
+fi
+`
+	setup = strings.ReplaceAll(setup, "$(docker inspect", "$(kyyard_docker inspect")
+	out["command"] = privileges + setup + fmt.Sprintf("printf '%%s\\n' '%s' | kyyard_docker run --rm -i --name kyyard-agent-enroll %s --server %s --name \"$(hostname)\" --enroll-only &&\n"+
+		"kyyard_docker run -d --name kyyard-agent --restart unless-stopped %s", secret, common, shellQuote(origin), common)
 
 	s.writeJSON(w, http.StatusCreated, out)
 }

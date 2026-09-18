@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -175,5 +178,60 @@ func TestEnrollmentTokenWithoutImageUsesInstalledImage(t *testing.T) {
 	command, _ := out["command"].(string)
 	if !strings.Contains(command, "{{.Image}}") || !strings.Contains(command, "--pull never") || !strings.Contains(command, `--network "container:$server_id"`) || !strings.Contains(command, "/app/kyyard-agent") || out["token"] == "" || out["note"] == nil || out["disclosure"] == nil {
 		t.Fatalf("token without image: %v", out)
+	}
+}
+
+func TestEnrollmentCommandUsesSudoForWholeChain(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx := context.Background()
+	if err := st.Tenancy().CreateEnvironment(ctx, &store.Environment{ID: "env-sudo", OrganizationID: store.InitialOrganizationID, Name: "Extra host"}); err != nil {
+		t.Fatal(err)
+	}
+	admin := loginAs(t, s, st, "sudo-admin", "user")
+	if err := st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: store.InitialOrganizationID, UserID: "usr_sudo-admin", Role: store.RoleOrganizationAdmin, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w := tenantRequest(s, admin, "POST", "/api/organizations/org_initial/environments/env-sudo/enrollment-tokens", `{"runtime":"docker"}`, true)
+	if w.Code != 201 {
+		t.Fatal(w.Code)
+	}
+	var minted struct{ Command string }
+	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	trace := filepath.Join(dir, "trace")
+	scripts := map[string]string{
+		"sudo": `#!/bin/sh
+if [ "$1" = -v ]; then exit 0; fi
+KY_TEST_SUDO=1 exec "$@"
+`,
+		"docker": `#!/bin/sh
+[ "${KY_TEST_SUDO:-}" = 1 ] || exit 1
+printf '%s\n' "$*" >> "$KY_TEST_TRACE"
+case "$1" in
+ info) ;;
+ inspect) printf 'fixture-id\n' ;;
+ run) case "$*" in *--rm*) cat >/dev/null ;; esac ;;
+ *) exit 2 ;;
+esac
+`,
+	}
+	for name, body := range scripts {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("sh", "-c", minted.Command)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "KY_TEST_TRACE="+trace, "KY_TEST_SUDO=")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated command failed: %v %s", err, out)
+	}
+	raw, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(raw), "inspect ") != 2 || strings.Count(string(raw), "run ") != 2 {
+		t.Fatalf("missing privileged calls: %s", raw)
 	}
 }

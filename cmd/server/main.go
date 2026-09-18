@@ -125,6 +125,13 @@ func runServer() {
 	}
 
 	srv := api.NewServer(cfg, st)
+	localDone := make(chan struct{})
+	go func() {
+		defer close(localDone)
+		if err := srv.RunLocalDocker(ctx); err != nil {
+			log.Printf("[DOCKER] %v", err)
+		}
+	}()
 	backupDone := make(chan struct{})
 	go backupLoop(ctx, cfg, st, backupDone)
 	go pruneLoop(ctx, st)
@@ -161,7 +168,7 @@ func runServer() {
 	cancel()
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), backupWaitTimeout)
 	defer waitCancel()
-	waitForBackupWork(waitCtx, backupDone, srv.WaitDetached)
+	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; srv.WaitDetached() })
 	log.Println("[KYYARD] Server stopped")
 }
 

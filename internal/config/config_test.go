@@ -20,6 +20,9 @@ func TestConfigLoadDefaults(t *testing.T) {
 		t.Fatal("unsafe or non-minimal defaults")
 	}
 
+	if cfg.Server.DockerSocket != "/var/run/docker.sock" {
+		t.Fatalf("local Docker default: %q", cfg.Server.DockerSocket)
+	}
 	if cfg.Server.AppName != "KyYard" {
 		t.Errorf("expected default product name KyYard, got %s", cfg.Server.AppName)
 	}
@@ -40,6 +43,7 @@ func TestConfigLoadDefaults(t *testing.T) {
 func TestConfigLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("KY_DATA_DIR", t.TempDir())
 	t.Setenv("KY_PORT", "9090")
+	t.Setenv("KY_DOCKER_SOCKET", "")
 	t.Setenv("KY_DB_DRIVER", "postgres")
 	t.Setenv("KY_DB_DSN", "postgres://user:pass@localhost:5432/testdb")
 	t.Setenv("KY_APP_NAME", "CustomKyYard")
@@ -50,6 +54,9 @@ func TestConfigLoadFromEnvOverrides(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
+	if cfg.Server.DockerSocket != "" {
+		t.Fatal("empty socket did not disable local Docker")
+	}
 	if cfg.Server.Port != 9090 {
 		t.Errorf("expected port 9090, got %d", cfg.Server.Port)
 	}

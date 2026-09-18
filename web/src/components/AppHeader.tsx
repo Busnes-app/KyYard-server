@@ -1,6 +1,5 @@
 import React from 'react';
 import { LogOut, Container, Shield, Settings as SettingsIcon, LayoutDashboard } from 'lucide-react';
-import { ThemeSwitcher } from './ThemeSwitcher';
 import { OrganizationSelect } from './OrganizationSelect';
 import { Link } from './Link';
 import type { Route } from '../router';
@@ -45,7 +44,6 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ appName, route, user, onLo
 
         <div className="ky-header-row">
           {org && <OrganizationSelect current={org} />}
-          <ThemeSwitcher />
           {user && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--line)', paddingLeft: '12px' }}>
               <div style={{ fontSize: '13px', textAlign: 'right' }}>

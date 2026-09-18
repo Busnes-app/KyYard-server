@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { Container, Key, AlertCircle, LogIn } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget';
 import { SetupGuide } from '../components/SetupGuide';
-import { ThemeSwitcher } from '../components/ThemeSwitcher';
 
 interface LoginProps {
   onSuccess: (user: any) => void;
@@ -105,10 +104,6 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
         background: 'var(--bg)',
       }}
     >
-      <div style={{ position: 'absolute', top: 20, right: 20 }}>
-        <ThemeSwitcher />
-      </div>
-
       <div style={{ width: '100%', maxWidth: '420px' }}>
         <div style={{ textAlign: 'center', marginBottom: '24px' }}>
           <div

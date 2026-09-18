@@ -15,7 +15,7 @@ export function Dashboard({ mode = 'containers' }: { mode?: 'containers' | 'endp
     <StateNotice state={organizations.state} onRetry={organizations.reload} />
     {organizations.state === 'ready' && !org && <EmptyNotice>No organization access yet. Ask an organization administrator to add your account.</EmptyNotice>}
     {org && <>
-      <div className="ky-toolbar"><label htmlFor="fleet-org">Organization</label><select id="fleet-org" value={org.id} onChange={(e) => setSelected(e.target.value)} style={{ width: 'auto' }}>{orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select><Link to={orgPath(org.id)}>Manage environments & enroll a host</Link></div>
+      <div className="ky-toolbar"><label htmlFor="fleet-org">Organization</label><select id="fleet-org" value={org.id} onChange={(e) => setSelected(e.target.value)} style={{ width: 'auto' }}>{orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select><Link to={orgPath(org.id)}>Manage environments & add another host</Link></div>
       <Fleet key={`${org.id}-${mode}`} org={org.id} mode={mode} />
     </>}
   </div>;
@@ -33,7 +33,7 @@ function Fleet({ org, mode }: { org: string; mode: 'containers' | 'endpoints' })
       <button className="btn-secondary" disabled={endpoints.state !== 'ready' || (endpoints.data?.length ?? 0) < 20} onClick={() => setOffset(offset + 20)}>Next hosts</button>
     </div>
     <StateNotice state={endpoints.state} onRetry={endpoints.reload} />
-    {endpoints.state === 'ready' && endpoints.data?.length === 0 && <EmptyNotice>No endpoints here yet. <Link to={orgPath(org)}>Create an environment or open an existing one to enroll your first Docker host.</Link></EmptyNotice>}
+    {endpoints.state === 'ready' && endpoints.data?.length === 0 && <EmptyNotice>No hosts connected here yet. The standard installation connects local Docker automatically; check Docker access if it is missing. <Link to={orgPath(org)}>Add another Docker host.</Link></EmptyNotice>}
     {endpoints.state === 'ready' && endpoints.data?.map((e) => <section className="panel" key={e.id}>
       <div className="panel-header"><h2><Link to={endpointPath(org, e.id)}>{e.name}</Link></h2><span className={`badge ${e.state === 'active' ? 'badge-success' : 'badge-secondary'}`}>{e.state}</span></div>
       <p>{e.facts.hostname || e.runtime} · <Link to={endpointPath(org, e.id)}>Open containers & resources</Link></p>
@@ -50,7 +50,7 @@ function HostContainers({ org, endpoint, search }: { org: string; endpoint: stri
     <StateNotice state={inventory.state} onRetry={inventory.reload} />
     {inventory.state === 'ready' && inv && <>
       <p style={{ margin: '12px 0', fontSize: 12 }}>Observed {new Date(inv.received_at).toLocaleString()}{Date.now() - Date.parse(inv.received_at) > 180000 ? ' · stale inventory' : ''}{inv.snapshot.truncated?.includes('containers') ? ' · container list truncated' : ''} <button className="btn-secondary" onClick={inventory.reload}>Refresh</button></p>
-      {rows.length ? <div style={{ overflowX: 'auto' }}><table className="ky-table"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Ports</th></tr></thead><tbody>{rows.map((c) => <tr key={c.id}><td><Link to={endpointPath(org, endpoint)}>{c.name}</Link></td><td>{c.image}</td><td><span className={`badge ${c.state === 'running' ? 'badge-success' : 'badge-secondary'}`}>{c.state}</span></td><td>{c.ports.map((p) => `${p.host ? `${p.host} → ` : ''}${p.container}/${p.protocol}`).join(', ') || '—'}</td></tr>)}</tbody></table></div> : <EmptyNotice>{search ? 'No matching containers on this host.' : 'No containers on this host.'}</EmptyNotice>}
+      {rows.length ? <div style={{ overflowX: 'auto' }}><table className="ky-table"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Ports</th></tr></thead><tbody>{rows.map((c) => <tr key={c.id}><td><Link to={endpointPath(org, endpoint)}>{c.name}</Link></td><td>{c.image}</td><td><span className={`badge ${c.state === 'running' ? 'badge-success' : 'badge-secondary'}`}>{c.state}</span></td><td>{c.ports.map((p) => `${p.host ? `${p.host} → ` : ''}${p.container}/${p.protocol}`).join(', ') || '—'}</td></tr>)}</tbody></table></div> : <EmptyNotice>{search ? 'No matching containers on this host.' : inv.snapshot.engine && !inv.snapshot.engine.version ? 'Docker is unavailable. Check the host’s Docker service and socket access.' : 'No containers on this host.'}</EmptyNotice>}
     </>}
   </>;
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the generated same-host command against a built image and real Docker.
+"""Exercise automatic local Docker and manual enrollment against a built image.
 
 Usage: python3 scripts/agent-install-test.py kyyard:ci
 Creates uniquely named containers/volumes and removes only those fixtures.
@@ -32,7 +32,7 @@ def wait_for(fn, description):
             value = fn()
             if value:
                 return value
-        except (urllib.error.URLError, ConnectionError):
+        except (urllib.error.URLError, ConnectionError, TypeError):
             pass
         time.sleep(0.5)
     raise RuntimeError("Timed out: " + description)
@@ -50,13 +50,18 @@ def api(path, body=None):
         return json.loads(raw) if raw else None
 
 
-def start_server():
+def refresh_base():
     global base
-    server_id = docker("run", "-d", "--name", server, "--network", "bridge",
-                       "-p", "127.0.0.1::9273", "-v", data + ":/data",
-                       "-e", "KY_ALLOW_PLAINTEXT_BIND=true", "-e", "KY_CAPTCHA_PROVIDER=none", image)
     port = docker("port", server, "9273/tcp").rsplit(":", 1)[1]
     base = "http://127.0.0.1:" + port
+
+
+def start_server():
+    server_id = docker("run", "-d", "--name", server, "--network", "bridge",
+                       "-p", "127.0.0.1::9273", "-v", data + ":/data",
+                       "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                       "-e", "KY_ALLOW_PLAINTEXT_BIND=true", "-e", "KY_CAPTCHA_PROVIDER=none", image)
+    refresh_base()
     wait_for(lambda: api("/health/ready"), "server readiness")
     return server_id
 
@@ -69,6 +74,19 @@ try:
     api("/api/auth/change-password", {"current_password": password, "new_password": replacement})
     api("/api/auth/login", {"username": "admin", "password": replacement})
     org = "/api/organizations/org_initial"
+    local_ep = org + "/endpoints/ep_local_docker"
+
+    def local_inventory():
+        inv = api(local_ep + "/inventory")
+        return inv if server_id in {c["id"] for c in inv["snapshot"]["containers"]} else None
+
+    first_local = wait_for(local_inventory, "automatic local container inventory without enrollment")
+    assert len(api(org + "/endpoints")) == 1
+    assert api(local_ep)["state"] == "active"
+    docker("restart", server)
+    refresh_base()
+    wait_for(lambda: api("/health/ready"), "readiness after restart")
+    wait_for(lambda: local_inventory()["generation"] > first_local["generation"], "automatic local reconnect after restart")
     env = api(org + "/environments", {"name": "Installation test"})["id"]
     minted = api(org + "/environments/" + env + "/enrollment-tokens", {"runtime": "docker"})
     # Only fixture names change; execute the actual API-generated command.
@@ -81,7 +99,7 @@ try:
         # Never print the command, because it carries the enrollment token.
         raise RuntimeError("Generated command failed: " + result.stderr)
     assert minted["token"] not in result.stdout, "Token leaked during enrollment"
-    endpoint = wait_for(lambda: next(iter(api(org + "/endpoints")), None), "pending enrollment")
+    endpoint = wait_for(lambda: next((e for e in api(org + "/endpoints") if e["environment_id"] == env), None), "pending enrollment")
     assert endpoint["state"] == "pending", endpoint["state"]
     fingerprint = wait_for(lambda: re.search(r"agent key fingerprint: ([0-9a-f]{64})", docker("logs", agent)), "host fingerprint").group(1)
     assert endpoint["fingerprint"] == fingerprint, "Approval fingerprint mismatch"
@@ -99,22 +117,28 @@ try:
     assert docker("inspect", "--format", "{{.HostConfig.NetworkMode}}", server) == "bridge"
     docker("restart", agent)
     wait_for(lambda: api(ep + "/inventory")["received_at"] != inventory["received_at"], "fresh inventory after agent restart")
-    assert len(api(org + "/endpoints")) == 1, "Restart enrolled a second endpoint"
+    assert len(api(org + "/endpoints")) == 2, "Restart duplicated an endpoint"
     # Replacing the server changes its network namespace; exercise the README's
     # agent recreation with the retained identity and no new enrollment token.
     docker("rm", "-fv", agent)
     docker("stop", server)
     docker("rm", "-v", server)
     server_id = start_server()
-    reconnect = command[:command.index("printf ")] + command[command.index("docker run -d "):]
+    wait_for(local_inventory, "automatic local reconnect after server replacement")
+    reconnect = command[:command.index("printf ")] + command[command.index("kyyard_docker run -d "):]
     assert minted["token"] not in reconnect
     result = subprocess.run(["sh", "-c", reconnect], capture_output=True, text=True, timeout=30)
     if result.returncode:
         raise RuntimeError("Agent recreation failed: " + result.stderr)
     wait_for(inventory_has_fixtures, "inventory after server replacement")
-    assert len(api(org + "/endpoints")) == 1, "Replacement lost the existing identity"
+    assert len(api(org + "/endpoints")) == 2, "Replacement duplicated an endpoint"
     assert "agent key fingerprint: " + fingerprint in docker("logs", agent)
-    print("PASS: packaged agent, generated command, fingerprint approval, container discovery, restart and server replacement")
+    api(local_ep + "/revoke", {})
+    docker("restart", server)
+    refresh_base()
+    wait_for(lambda: api("/health/ready"), "readiness after revoked local restart")
+    assert api(local_ep)["state"] == "revoked", "Restart restored revoked local authority"
+    print("PASS: automatic local inventory/restart/replacement/revocation and manual agent enrollment/approval/reconnect")
 finally:
     for name in (agent + "-enroll", agent, server):
         subprocess.run(["docker", "rm", "-fv", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

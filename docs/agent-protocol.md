@@ -114,3 +114,19 @@ Registry credentials and Compose secrets are delivered only inside the command t
 | Heartbeat / offline | 30 s / 3 missed; must stay under nginx's 60 s default read timeout | implemented (PR 09) |
 | Unknown outcome | Reconcile from inventory before any retry; destructive never auto-retried | required by handoff |
 | Compatibility | Current and previous major version | proposed |
+
+## Built-in local Docker connection
+
+The standard installation mounts its host Docker socket and starts the existing agent client
+inside the server process. Trusted startup atomically creates one approved local endpoint in
+the initial organization and audits it; there is no browser enrollment bypass or reusable token.
+The client authenticates on a private loopback agent-only listener using an HMAC-SHA256
+domain-separated Ed25519 seed derived from the persisted instance key (`kyyard/local-docker-agent/v1`).
+Its public key, lifecycle and inventory remain in the ordinary tenant-scoped tables. A durable
+settings marker prevents restart or endpoint/environment deletion from undoing revocation.
+Generation resumes from SQL; the command ledger stays under `data/local-agent`, and the derived
+identity is never written separately. Instance key and SQLite rows already travel in recovery
+capsules; unresolved/restored commands retain their existing unknown-outcome semantics.
+The local endpoint refers to the Docker socket mounted into this installation, including after
+moving/restoring it to a different host; do not run restored clones beside their source.
+Additional hosts still enroll and receive explicit fingerprint approval.

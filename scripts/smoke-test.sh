@@ -39,8 +39,11 @@ contains() { # contains <description> <haystack> <needle>
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 start_server() { # start_server <captcha-provider>
+  # Automatic local Docker is covered by agent-install-test.py with isolated containers.
+  # Keep this auth/manual-enrollment fixture independent of the runner's Docker access.
   KY_SESSION_SECRET='' \
     KY_ENCRYPTION_KEY='' \
+    KY_DOCKER_SOCKET='' \
     KY_PORT="$PORT" \
     KY_HOST=127.0.0.1 \
     KY_DATA_DIR="$WORK/data" \
