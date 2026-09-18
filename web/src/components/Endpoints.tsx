@@ -76,7 +76,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
         <button disabled={busy} onClick={() => void mint()}>Enroll a host</button>
       </div>
       {token && (
-        <div className="dr-alert dr-alert-warn" role="region" aria-label="Enrollment command">
+        <div className="dr-alert dr-alert-warn ky-enrollment" role="region" aria-label="Enrollment command">
           <p><strong>Shown once.</strong> {token.command ? 'Run this on the remote host before' : 'Source enrollment token expires at'} {new Date(token.expires_at).toLocaleTimeString()}:</p>
           <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{token.command ?? token.token}</pre>
           {token.note && <p>{token.note}</p>}
@@ -93,15 +93,15 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
       <StateNotice state={endpoints.state} onRetry={endpoints.reload} />
       {endpoints.state === 'ready' && endpoints.data && (endpoints.data.length === 0 ? <EmptyNotice>No endpoints yet. Enroll a host to begin.</EmptyNotice> : (
         <div style={{ overflowX: 'auto' }}>
-          <table className="ky-table">
+          <table className="ky-table ky-responsive-table">
             <thead><tr><th>Name</th><th>State</th><th>Host</th><th>Fingerprint</th><th><span className="sr-only">Actions</span></th></tr></thead>
             <tbody>
               {endpoints.data.map((e) => (
                 <tr key={e.id}>
-                  <td><Link to={endpointPath(org, e.id)}>{displayName(e.name)}</Link> <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span></td>
-                  <td><span className={`badge ${e.state === 'pending' ? 'badge-accent' : terminal(e.state) ? 'badge-danger' : 'badge-success'}`}>{e.state}</span></td>
-                  <td>{e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? ''}</span></td>
-                  <td className="font-mono" style={{ fontSize: 11 }}>
+                  <td data-label="Name"><Link to={endpointPath(org, e.id)}>{displayName(e.name)}</Link> <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span></td>
+                  <td data-label="State"><span className={`badge ${e.state === 'pending' ? 'badge-accent' : e.state === 'active' ? 'badge-success' : 'badge-danger'}`}>{e.state}</span></td>
+                  <td data-label="Host">{e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? ''}</span></td>
+                  <td data-label="Fingerprint" className="font-mono" style={{ fontSize: 11 }}>
                     <span title={e.fingerprint}>{e.fingerprint ? e.fingerprint.slice(0, 16) + '…' : '—'}</span>
                     {e.pending_fingerprint && <div><span className="badge badge-accent">rotation pending</span> <span title={e.pending_fingerprint}>{e.pending_fingerprint.slice(0, 16)}…</span></div>}
                     {e.alerts.filter((a) => a.kind !== 'rotation_pending').map((a) => (
@@ -110,7 +110,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
                       </div>
                     ))}
                   </td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
+                  <td data-label="Actions">
                     {e.state === 'pending' && <>
                       <button disabled={busy} onClick={() => void act(e, 'approve')}>Approve</button>{' '}
                       <button className="btn-secondary" disabled={busy} onClick={() => void act(e, 'reject')}>Reject</button>
