@@ -604,6 +604,8 @@ CREATE TABLE application_revisions (
 );
 CREATE INDEX idx_applications_org ON applications(organization_id);
 `},
+	{Version: 19, Name: "audit_resource_bound", SQLite: `CREATE TRIGGER audit_resource_bound BEFORE INSERT ON audit_records
+ WHEN length(CAST(NEW.resource AS BLOB))>255 BEGIN SELECT RAISE(ABORT,'audit resource exceeds 255 bytes'); END;`, Postgres: `ALTER TABLE audit_records ADD CONSTRAINT audit_resource_bound CHECK(octet_length(resource)<=255) NOT VALID;`},
 }
 
 // Run executes all pending migrations for the specified database driver.

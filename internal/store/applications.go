@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -76,8 +77,13 @@ func (t *tenancyStore) insertApplicationRevision(ctx context.Context, tx *sql.Tx
 // AppendApplicationRevision rejects edits based on an old head. The conditional
 // update serializes writers even when their membership locks are different rows.
 func (t *tenancyStore) AppendApplicationRevision(ctx context.Context, a TenantAccess, id string, expected int, spec ApplicationSpec) (int, error) {
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return 0, ErrInvalid
+	}
+	id = parsed.String()
 	next := expected + 1
-	err := t.withTenantTarget(ctx, a, permissions.ApplicationEdit, id+"/revisions/"+strconv.Itoa(next), func(tx *sql.Tx) error {
+	err = t.withTenantTarget(ctx, a, permissions.ApplicationEdit, id+"/revisions/"+strconv.Itoa(next), func(tx *sql.Tx) error {
 		if a.EnvironmentID == "" || expected < 1 || expected > MaxApplicationRevisions {
 			return ErrInvalid
 		}
@@ -153,10 +159,49 @@ func (t *tenancyStore) ReadApplicationRevision(ctx context.Context, a TenantAcce
 		if err != nil {
 			return err
 		}
+		if subtle.ConstantTimeCompare([]byte(applicationSpecDigest([]byte(raw))), []byte(revision.Digest)) != 1 {
+			return ErrRevisionCorrupt
+		}
 		return json.Unmarshal([]byte(raw), &revision.Spec)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &revision, nil
+}
+
+// DiscardApplication explicitly deletes an undeployed draft and its revision history.
+// No instances exist in this slice. Future instance foreign keys must RESTRICT
+// this deletion; managed removal must preserve deployment history separately.
+func (t *tenancyStore) DiscardApplication(ctx context.Context, a TenantAccess, id string, expected int) error {
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return ErrInvalid
+	}
+	id = parsed.String()
+	return t.withTenantTarget(ctx, a, permissions.ApplicationDestroy, id, func(tx *sql.Tx) error {
+		if a.EnvironmentID == "" || expected < 1 || expected > MaxApplicationRevisions {
+			return ErrInvalid
+		}
+		query := `SELECT latest_revision FROM applications WHERE organization_id=? AND environment_id=? AND id=?`
+		if t.store.driver == "postgres" {
+			query += " FOR UPDATE"
+		}
+		var head int
+		err := tx.QueryRowContext(ctx, t.store.rebind(query), a.OrganizationID, a.EnvironmentID, id).Scan(&head)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if head != expected {
+			return ErrRevisionConflict
+		}
+		if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=?`), a.OrganizationID, a.EnvironmentID, id); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM applications WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, id)
+		return err
+	})
 }

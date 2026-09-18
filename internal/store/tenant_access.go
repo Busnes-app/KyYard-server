@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/google/uuid"
 )
@@ -59,6 +60,7 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 	if target != "" {
 		record.Resource = target
 	}
+	record.Resource = protocol.CleanText(record.Resource, 255)
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

@@ -4,21 +4,22 @@ package permissions
 type Action string
 
 const (
-	ApplicationRead   Action = "application.read"
-	ApplicationImport Action = "application.import"
-	ApplicationEdit   Action = "application.edit"
-	PlatformAdmin     Action = "platform.admin"
-	OrganizationRead  Action = "organization.read"
-	MembersManage     Action = "organization.members.manage"
-	EnvironmentRead   Action = "environment.read"
-	EnvironmentCreate Action = "environment.create"
-	EnvironmentUpdate Action = "environment.update"
-	EnvironmentDelete Action = "environment.delete"
-	AuditRead         Action = "organization.audit.read"
-	EndpointRead      Action = "endpoint.read"
-	EndpointEnroll    Action = "endpoint.enroll"
-	EndpointUpdate    Action = "endpoint.update"
-	EndpointRevoke    Action = "endpoint.revoke"
+	ApplicationRead    Action = "application.read"
+	ApplicationImport  Action = "application.import"
+	ApplicationEdit    Action = "application.edit"
+	ApplicationDestroy Action = "application.destroy"
+	PlatformAdmin      Action = "platform.admin"
+	OrganizationRead   Action = "organization.read"
+	MembersManage      Action = "organization.members.manage"
+	EnvironmentRead    Action = "environment.read"
+	EnvironmentCreate  Action = "environment.create"
+	EnvironmentUpdate  Action = "environment.update"
+	EnvironmentDelete  Action = "environment.delete"
+	AuditRead          Action = "organization.audit.read"
+	EndpointRead       Action = "endpoint.read"
+	EndpointEnroll     Action = "endpoint.enroll"
+	EndpointUpdate     Action = "endpoint.update"
+	EndpointRevoke     Action = "endpoint.revoke"
 	// ContainerOperate is start, stop and restart: reversible lifecycle actions on a
 	// container that already exists. Destroying one is a separate action, because undoing it
 	// is not a matter of running the opposite command.
@@ -48,12 +49,12 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationRead, ApplicationImport, ApplicationEdit, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "environment_admin":
 		switch action {
-		case ApplicationRead, ApplicationImport, ApplicationEdit, OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "operator":

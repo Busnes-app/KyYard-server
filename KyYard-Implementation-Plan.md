@@ -214,7 +214,7 @@ Merged PR #40 (`feat/browser-exec`): browser terminal and server authorization, 
 
 Merged PR #41 (`feat/applications`): read-only Compose project discovery on the endpoint screen, grouped reported containers, explicit unmanaged state and navigation into existing container controls. Reuses authorized inventory without a new API, ownership record or runtime mutation.
 
-Current M6 slice (`feat/application-revisions`): application and immutable revision persistence, tenant/environment constraints, named permissions, expected-head concurrency, admission bounds and SQLite backup coverage. Initial typed specs hold service image references and environment secret references only; there is no raw Compose importer or public persistence route.
+Current M6 slice (`feat/application-revisions`): application and immutable revision persistence, tenant/environment constraints, named permissions, expected-head concurrency, digest consistency checks, admission bounds, explicit draft discard and SQLite backup coverage. Initial typed specs hold service image references and environment secret references only; there is no raw Compose importer or public persistence route.
 
 Next M6 slice: validated Compose import and secret resolution, then explicit instance/resource adoption (the remainder of planned PR 14), followed by preview/reconcile (planned PR 15). The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

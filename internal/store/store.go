@@ -9,6 +9,7 @@ import (
 )
 
 var (
+	ErrRevisionCorrupt  = errors.New("application revision digest mismatch")
 	ErrRevisionConflict = errors.New("application revision changed")
 	ErrApplicationLimit = errors.New("application storage limit reached")
 	ErrForbidden        = errors.New("tenant access denied")
@@ -146,6 +147,7 @@ type SettingsStore interface {
 // TenancyStore provides authorized operations through TenantAccess. The raw methods
 // below Initialize are trusted persistence helpers for bootstrap and management.
 type TenancyStore interface {
+	DiscardApplication(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int) error
 	CreateApplication(ctx context.Context, access TenantAccess, name string, spec ApplicationSpec) (*Application, error)
 	AppendApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int, spec ApplicationSpec) (int, error)
 	ListApplications(ctx context.Context, access TenantAccess, offset, limit int) ([]Application, error)

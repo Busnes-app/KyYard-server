@@ -252,3 +252,62 @@ func TestApplicationOrganizationQuotaAcrossEditors(t *testing.T) {
 		t.Fatalf("success=%d limited=%d", success, limited)
 	}
 }
+
+func TestApplicationDiscardReleasesQuotaAndEnvironment(t *testing.T) {
+	ctx := context.Background()
+	st, a := setupTenantAccess(t)
+	a.EnvironmentID = "env-a"
+	ts := st.Tenancy()
+	var last *store.Application
+	for i := 0; i < store.MaxApplicationsPerOrganization; i++ {
+		app, err := ts.CreateApplication(ctx, a, fmt.Sprint("app-", i), desired("nginx:1"))
+		mustTenant(t, err)
+		last = app
+	}
+	if err := ts.DiscardApplication(ctx, a, last.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.ReadApplicationRevision(ctx, a, last.ID, 1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("discarded revision: %v", err)
+	}
+	if _, err := ts.CreateApplication(ctx, a, "replacement", desired("nginx:1")); err != nil {
+		t.Fatal(err)
+	}
+	apps, err := ts.ListApplications(ctx, a, 0, 200)
+	mustTenant(t, err)
+	for _, app := range apps {
+		mustTenant(t, ts.DiscardApplication(ctx, a, app.ID, 1))
+	}
+	mustTenant(t, ts.RemoveEnvironment(ctx, a))
+}
+
+func TestApplicationDiscardAuthorizationAndStaleHead(t *testing.T) {
+	ctx := context.Background()
+	st, a := setupTenantAccess(t)
+	a.EnvironmentID = "env-a"
+	ts := st.Tenancy()
+	app, err := ts.CreateApplication(ctx, a, "shop", desired("nginx:1"))
+	mustTenant(t, err)
+	_, err = ts.AppendApplicationRevision(ctx, a, app.ID, 1, desired("nginx:2"))
+	mustTenant(t, err)
+	if err = ts.DiscardApplication(ctx, a, app.ID, 1); !errors.Is(err, store.ErrRevisionConflict) {
+		t.Fatalf("discard stale head: %v", err)
+	}
+	tenantUser(t, st, "reader", "admin", "local", "active")
+	for _, role := range []store.TenantRole{store.RoleOperator, store.RoleDeveloper, store.RoleReadOnly} {
+		mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "reader", Role: role, Status: "active"}))
+		reader := a
+		reader.ActorID = "reader"
+		if err = ts.DiscardApplication(ctx, reader, app.ID, 2); !errors.Is(err, store.ErrForbidden) {
+			t.Fatalf("discard %s: %v", role, err)
+		}
+	}
+	other := a
+	other.EnvironmentID = "env-b"
+	if err = ts.DiscardApplication(ctx, other, app.ID, 2); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("cross-scope discard: %v", err)
+	}
+	_, err = ts.ReadApplicationRevision(ctx, a, app.ID, 2)
+	mustTenant(t, err)
+	mustTenant(t, ts.DiscardApplication(ctx, a, app.ID, 2))
+}

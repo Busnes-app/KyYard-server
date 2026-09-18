@@ -55,6 +55,10 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 	if err != nil || len(raw) > MaxApplicationSpecBytes {
 		return nil, "", ErrInvalid
 	}
+	return raw, applicationSpecDigest(raw), nil
+}
+
+func applicationSpecDigest(raw []byte) string {
 	digest := sha256.Sum256(raw)
-	return raw, "sha256:" + hex.EncodeToString(digest[:]), nil
+	return "sha256:" + hex.EncodeToString(digest[:])
 }

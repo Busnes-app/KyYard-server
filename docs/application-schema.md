@@ -20,11 +20,11 @@ Desired configuration, observed runtime, drift and last deployment are stored an
 
 ## Implemented persistence foundation
 
-Migration 18 stores applications and immutable revision history. Application names are unique inside their environment; composite foreign keys keep revisions in the same organization and environment as their application. All store operations require explicit environment scope and live named permissions. Create commits revision 1 with the application and audit; edit appends using an expected head number, rejecting a stale concurrent edit. No method updates or deletes an existing revision. Audit contains scope, actor, application/revision target and outcome, never configuration. The SHA-256 digest covers the exact deterministic JSON encoding stored for that revision; it is not a semantic equivalence check.
+Migration 18 stores applications and immutable revision history. Application names are unique inside their environment; composite foreign keys keep revisions in the same organization and environment as their application. All store operations require explicit environment scope and live named permissions. Create commits revision 1 with the application and audit; edit appends using an expected head number, rejecting a stale concurrent edit. Edits never update an existing revision. Explicit draft discard is the sole deletion path in this foundation. Audit contains scope, actor, application/revision target and outcome, never configuration. The SHA-256 digest covers the exact deterministic JSON encoding stored for that revision; reads recompute it and return `ErrRevisionCorrupt` on mismatch. It is a consistency check, not a signature or semantic equivalence check.
 
 The initial typed `ApplicationSpec` is deliberately limited to `kind: compose.v1` and 1–100 uniquely named services, each with an image reference and optional environment entries of `{secret_ref: name}`. It has no raw YAML, arbitrary extensions or literal environment-value field. This is an internal storage contract, not a supported Compose importer: future import code must validate unsupported source fields before conversion rather than silently dropping them. Secret-reference existence, image digest resolution, broader Compose fields and deployment validation remain prerequisites for public import/deployment. No application persistence HTTP route is exposed yet.
 
-Admission limits are 100 applications per organization, 100 revisions per application and 64 KiB per encoded revision; an organization-row lock protects creation capacity across administrators. An environment containing an application cannot be removed. History is retained rather than automatically pruned. Both tables travel in the SQLite snapshot, verified by `TestApplicationRevisionsSurviveBackup`; PostgreSQL capsule limitations are unchanged.
+Admission limits are 100 applications per organization, 100 revisions per application and 64 KiB per encoded revision; an organization-row lock protects creation capacity across administrators. An environment containing an application cannot be removed. History is retained rather than automatically pruned. An administrator may explicitly discard an undeployed draft and all its saved revisions at an expected head using `application.destroy`; discard commits with audit, frees quota and permits deleting an emptied environment. Future instance foreign keys must restrict this operation once ownership/deployments exist. Managed application removal is a separate future workflow with retained deployment history. Both tables travel in the SQLite snapshot, verified by `TestApplicationRevisionsSurviveBackup`; PostgreSQL capsule limitations are unchanged.
 
 ## Target common revision model
 
@@ -69,7 +69,8 @@ The exact Compose implementation and version range are recorded when M6 lands.
 
 ## Delete semantics
 
-- Removing an application stops and removes its containers and networks, keeps named volumes and images, and marks the application `removed` with its revisions retained for *proposed* 90 days.
+- Discarding an undeployed draft explicitly deletes its saved configuration/history and changes no runtime resources.
+- Removing a managed application (future deployment slice) stops and removes its containers and networks, keeps named volumes and images, and marks the application `removed` with its revisions retained for *proposed* 90 days.
 - Volume deletion is a separate action (`volume.destroy`) with its own confirmation naming the data.
 - Deleting an environment requires that it holds no applications and no unrevoked endpoints; the store enforces both conditions.
 
