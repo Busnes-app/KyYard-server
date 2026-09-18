@@ -76,6 +76,7 @@ func newExecStreams(ctx context.Context, endpoint string, nonce []byte, b *execB
 
 var errExecProtocol = errors.New("invalid exec frame")
 var errExecCapacity = errors.New("exec stream limit reached")
+var errExecUnavailable = errors.New("this agent has no exec runtime; not started")
 
 // handle runs on the socket loop. Runtime I/O runs only in workers; full input
 // queues cancel the attachment instead of delaying heartbeat or revocation frames.
@@ -100,13 +101,16 @@ func (s *execStreams) handle(f protocol.Envelope, active bool) error {
 		if _, used := s.seen[req.Stream]; used || s.live[req.Stream] != nil {
 			return errExecProtocol
 		}
-		if !active || s.opts.Exec == nil {
+		if !active {
 			return errExecProtocol
 		}
 		if len(s.seen) >= 1024 {
 			return errExecCapacity
 		}
 		s.seen[req.Stream] = req.Expires
+		if s.opts.Exec == nil {
+			return errExecUnavailable
+		}
 		if !s.budget.take(req.Actor) {
 			return errExecCapacity
 		}

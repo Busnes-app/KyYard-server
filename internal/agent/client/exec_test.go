@@ -156,11 +156,16 @@ func TestExecGrantRefusalBeforeRuntime(t *testing.T) {
 		})
 	}
 	s := newExecStreams(context.Background(), "endpoint", make([]byte, 32), &execBudget{}, &Options{}, make(chan outFrame, 8))
-	if s.handle(execFrame(protocol.TypeExecOpen, execRequest()), true) == nil {
-		t.Fatal("nil runtime accepted")
+	if err := s.handle(execFrame(protocol.TypeExecOpen, execRequest()), true); !errors.Is(err, errExecUnavailable) {
+		t.Fatal("nil runtime did not return graceful refusal", err)
+	}
+	if !errors.Is(s.handle(execFrame(protocol.TypeExecOpen, execRequest()), true), errExecProtocol) {
+		t.Fatal("unsupported grant not consumed")
 	}
 	s.opts.Exec = func(context.Context, protocol.ExecSpec) (ExecSession, error) { panic("pending agent executed") }
-	if s.handle(execFrame(protocol.TypeExecOpen, execRequest()), false) == nil {
+	pending := execRequest()
+	pending.Stream = "pending-stream"
+	if !errors.Is(s.handle(execFrame(protocol.TypeExecOpen, pending), false), errExecProtocol) {
 		t.Fatal("pending agent accepted")
 	}
 	for _, f := range []protocol.Envelope{
@@ -463,4 +468,82 @@ func TestExecOutputStallClosesAttachment(t *testing.T) {
 		t.Fatal(closed)
 	}
 	waitExecBudget(t, s.budget, 0)
+}
+
+func TestExecSocketWithoutRuntimeRemainsResponsive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	checked := make(chan error, 1)
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			checked <- err
+			return
+		}
+		defer conn.CloseNow()
+		if err = write(ctx, conn, protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: "instance", Versions: []int{1}}); err != nil {
+			checked <- err
+			return
+		}
+		if _, err = read(ctx, conn); err != nil {
+			checked <- err
+			return
+		}
+		if err = write(ctx, conn, protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}); err != nil {
+			checked <- err
+			return
+		}
+		if err = write(ctx, conn, protocol.TypeExecOpen, execRequest()); err != nil {
+			checked <- err
+			return
+		}
+		refused, beats := false, 0
+		for beats < 2 {
+			f, err := read(ctx, conn)
+			if err != nil {
+				checked <- err
+				return
+			}
+			switch f.Type {
+			case protocol.TypeExecClose:
+				var closed protocol.ExecClose
+				if json.Unmarshal(f.Payload, &closed) != nil || closed.Stream != "stream" || closed.ExitCode != nil || closed.Reason != "this agent has no exec runtime; not started" {
+					checked <- fmt.Errorf("incorrect refusal: %+v", closed)
+					return
+				}
+				refused = true
+			case protocol.TypeHeartbeat:
+				if refused {
+					beats++
+				}
+				if err = write(ctx, conn, protocol.TypeHeartbeat, nil); err != nil {
+					checked <- err
+					return
+				}
+			}
+		}
+		checked <- nil
+	}))
+	defer stub.Close()
+	_, key, _ := ed25519.GenerateKey(nil)
+	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
+	target, _ := ConnectURL(stub.URL)
+	opts := &Options{HTTPClient: stub.Client(), Log: log.New(io.Discard, "", 0)}
+	ledger := openLedger(t.TempDir())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = session(ctx, id, target, opts, ledger, newBudget(), &execBudget{}) }()
+	select {
+	case err := <-checked:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("session survived cancellation")
+	}
 }

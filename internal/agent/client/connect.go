@@ -406,12 +406,15 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				}(cmd)
 			case protocol.TypeExecOpen, protocol.TypeExecInput, protocol.TypeExecResize, protocol.TypeExecCancel:
 				if err := terminals.handle(f, hello.State == "active"); err != nil {
-					if !errors.Is(err, errExecCapacity) {
+					reason := "exec stream limit reached; not started"
+					if errors.Is(err, errExecUnavailable) {
+						reason = errExecUnavailable.Error()
+					} else if !errors.Is(err, errExecCapacity) {
 						return err
 					}
 					var req protocol.ExecOpen
 					_ = json.Unmarshal(f.Payload, &req)
-					if err := write(ctx, conn, protocol.TypeExecClose, protocol.ExecClose{Stream: req.Stream, Reason: "exec stream limit reached; not started"}); err != nil {
+					if err := write(ctx, conn, protocol.TypeExecClose, protocol.ExecClose{Stream: req.Stream, Reason: reason}); err != nil {
 						return err
 					}
 				}
