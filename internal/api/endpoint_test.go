@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -186,7 +187,7 @@ func TestEnrollmentTokenWithoutHTTPSExplainsRemoteSetup(t *testing.T) {
 func TestEnrollmentCommandRunsOneRemoteContainer(t *testing.T) {
 	s, st, cfg := setupTestServer(t)
 	cfg.Server.AgentImage = ""
-	cfg.Server.DockerSocket = installedImageSocket(t)
+	cfg.Server.DockerSocket, _ = installedImageSocket(t)
 	cfg.Server.AppURL = "https://yard.example"
 	ctx := context.Background()
 	if err := st.Tenancy().CreateEnvironment(ctx, &store.Environment{ID: "env-sudo", OrganizationID: store.InitialOrganizationID, Name: "Extra host"}); err != nil {
@@ -244,7 +245,8 @@ esac
 	}
 }
 
-func installedImageSocket(t *testing.T) string {
+func installedImageSocket(t *testing.T) (string, *atomic.Int32) {
+	requests := new(atomic.Int32)
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	listener, err := net.Listen("unix", socket)
@@ -257,6 +259,7 @@ func installedImageSocket(t *testing.T) string {
 	}
 	imageID := "sha256:" + strings.Repeat("b", 64)
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		switch r.URL.Path {
 		case "/v1.41/containers/" + host + "/json":
 			_ = json.NewEncoder(w).Encode(map[string]string{"Image": imageID})
@@ -268,7 +271,7 @@ func installedImageSocket(t *testing.T) string {
 	})}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })
-	return socket
+	return socket, requests
 }
 
 func TestEnrollmentWithoutPublishedImageRequiresPin(t *testing.T) {
@@ -291,5 +294,34 @@ func TestEnrollmentWithoutPublishedImageRequiresPin(t *testing.T) {
 	}
 	if out.Image != "" || out.Command != "" || !strings.Contains(out.Note, "KY_AGENT_IMAGE") {
 		t.Fatal("missing digest did not fail closed")
+	}
+}
+
+func TestEnrollmentDenialDoesNotTouchDocker(t *testing.T) {
+	s, st, cfg := setupTestServer(t)
+	cfg.Server.AppURL = "https://yard.example"
+	cfg.Server.AgentImage = ""
+	socket, requests := installedImageSocket(t)
+	cfg.Server.DockerSocket = socket
+	ctx := context.Background()
+	if err := st.Tenancy().CreateEnvironment(ctx, &store.Environment{ID: "env-denied", OrganizationID: store.InitialOrganizationID, Name: "Denied"}); err != nil {
+		t.Fatal(err)
+	}
+	outsider := loginAs(t, s, st, "outsider-pin", "admin")
+	viewer := loginAs(t, s, st, "viewer-pin", "user")
+	if err := st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: store.InitialOrganizationID, UserID: "usr_viewer-pin", Role: store.RoleReadOnly, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, cookie := range map[string]*http.Cookie{"nonmember": outsider, "read-only": viewer} {
+		t.Run(name, func(t *testing.T) {
+			requests.Store(0)
+			w := tenantRequest(s, cookie, "POST", "/api/organizations/org_initial/environments/env-denied/enrollment-tokens", `{"runtime":"docker"}`, true)
+			if w.Code != 403 {
+				t.Fatalf("status %d, want 403", w.Code)
+			}
+			if requests.Load() != 0 {
+				t.Fatalf("unauthorized request made %d Docker calls", requests.Load())
+			}
+		})
 	}
 }

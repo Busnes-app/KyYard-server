@@ -42,6 +42,10 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 	}
 	image := s.config.Server.AgentImage
 	if image == "" && strings.HasPrefix(s.config.Server.AppURL, "https://") && s.config.Server.DockerSocket != "" {
+		if err := s.store.Tenancy().CheckEnrollmentAccess(r.Context(), a); err != nil {
+			s.tenantError(w, err)
+			return
+		}
 		// Use bytes already installed by the operator, not a registry tag that can move.
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		host, _ := os.Hostname()
