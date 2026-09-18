@@ -186,6 +186,7 @@ type TenancyStore interface {
 	// Commands are durable intent: the row exists before the frame is sent, so an operation
 	// the control plane loses track of can still be marked unknown rather than vanish.
 	CreateCommand(ctx context.Context, access TenantAccess, endpointID, action, containerID, confirm string, expects protocol.Expectation) (*Command, error)
+	OpenLogTarget(ctx context.Context, access TenantAccess, endpointID, identifier string) (*LogTarget, error)
 	MarkCommandDispatched(ctx context.Context, id string) error
 	SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)

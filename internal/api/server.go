@@ -48,6 +48,7 @@ type Server struct {
 	detached detachedCounter
 	stopping atomic.Bool
 	agents   agentRegistry
+	logs     *logRegistry
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -153,6 +154,7 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		scim:     scimSrv,
 		recovery: recovery,
 		mux:      http.NewServeMux(),
+		logs:     newLogRegistry(),
 		attempts: make(map[string]attemptWindow),
 	}
 
@@ -232,6 +234,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleDispatchCommand))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleListCommands))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands/{command}", s.tenantRoute(s.handleReadCommand))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/logs", s.tenantRoute(s.handleContainerLogs))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/approve", s.tenantRoute(s.handleApproveEndpoint))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/reject", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RejectEndpoint)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/revoke", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RevokeEndpoint)))

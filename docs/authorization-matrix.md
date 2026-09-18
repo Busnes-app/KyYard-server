@@ -64,7 +64,7 @@ Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.e
 | Action | OA | EA | Op | Dev | RO | Secret | Audit |
 |---|---|---|---|---|---|---|---|
 | `container.read` (inspect, stats) | ✓ | ✓ | ✓ | ✓ | ✓ | redacted env/labels | – |
-| `container.logs` | ✓ | ✓ | ✓ | ✓ | – | log bodies not stored | session metadata |
+| `container.logs` (implemented) | ✓ | ✓ | ✓ | ✓ | – | log bodies not stored | session metadata: one row per session naming the endpoint and the container asked for |
 | `container.operate` (start, stop, restart, pause) | ✓ | ✓ | ✓ | – | – | no | success/failure/unknown |
 | `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |
 | `container.exec` | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |
@@ -102,7 +102,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 
 ## Audit
 
-**Read audit (proposed change):** master records a `success` row for every successful tenant read, which at fleet scale (inventory lists every few seconds) is the audit-growth threat itself. From M4, successful reads are not audited except `container.logs` and `container.exec` session metadata and any read that reveals a one-time secret; denied reads by members remain audited. The change lands with the first read-heavy API and updates `internal/store/AGENTS.md`.
+**Read audit (proposed change):** master records a `success` row for every successful tenant read, which at fleet scale (inventory lists every few seconds) is the audit-growth threat itself. From M4, successful reads are not audited except `container.logs` (implemented: `auditedReads` in `internal/store/tenant_access.go`) and `container.exec` session metadata and any read that reveals a one-time secret; denied reads by members remain audited. The change lands with the first read-heavy API and updates `internal/store/AGENTS.md`.
 
 Every mutating action and every denied attempt by a member is recorded in organization scope with result `success`, `denied`, `failure` or `unknown`. Non-members produce no tenant audit row. Exec sessions and secret-revealing operations (enrollment command, backup pairing token) carry explicit `disclosure=one_time` details. Details never include secrets, request bodies or SQL text.
 

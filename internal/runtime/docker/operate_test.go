@@ -26,10 +26,16 @@ func TestAContainerIdentifierCannotShapeTheURL(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := docker.NewHTTP(srv.Client(), srv.URL)
-	c.Operate(context.Background(), protocol.Command{
+	// An identifier that is not a container name is refused before anything is sent: the
+	// agent checks the grammar itself rather than trusting the control plane to have done it.
+	if outcome, detail := c.Operate(context.Background(), protocol.Command{
 		Action:    protocol.ActionRestart,
 		Container: "c1/../../images/json?all=1#x",
-	})
+	}); outcome != protocol.OutcomeDenied || len(paths) != 0 {
+		t.Fatalf("a shaping identifier was answered %s %q after %d requests", outcome, detail, len(paths))
+	}
+	// Escaping is the second layer, and it holds for every identifier the grammar does admit.
+	c.Operate(context.Background(), protocol.Command{Action: protocol.ActionRestart, Container: "web.api_2-x"})
 	if len(paths) == 0 {
 		t.Fatal("the adapter made no request")
 	}

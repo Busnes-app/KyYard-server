@@ -46,6 +46,10 @@ type Options struct {
 	// The context ends when the session that carried the command does, so a dropped socket
 	// stops work nobody is waiting for rather than leaving it running blind against the host.
 	Operate func(ctx context.Context, cmd protocol.Command) (outcome, detail string)
+	// Logs streams one container's log to sink until the log ends, the context is cancelled
+	// or sink refuses. Nil means this agent has no runtime, and a request for logs is closed
+	// with that reason rather than left open.
+	Logs func(ctx context.Context, req protocol.LogRequest, sink func([]byte) error) error
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -212,6 +216,11 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	// than the buffer: results already sitting here are not counted against a slot, so more
 	// senders than the buffer holds is an ordinary state.
 	results := make(chan protocol.Result, maxInFlightCommands)
+	// Log chunks are session state: the reader waiting for them is an HTTP request the server
+	// holds open on this same socket, so a stream that outlived the session would be reading
+	// the host for nobody.
+	outbound := make(chan outFrame, logQueueDepth)
+	live := newStreams()
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
 		return errors.New("bad hello")
@@ -300,6 +309,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 			if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
 				return err
 			}
+		case f := <-outbound:
+			if err := write(ctx, conn, f.Type, f.Payload); err != nil {
+				return err
+			}
 		case m := <-metricsOut:
 			if err := write(ctx, conn, protocol.TypeMetrics, m); err != nil {
 				return err
@@ -386,6 +399,33 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 					defer release()
 					deliver(ctx, results, handleCommand(ctx, cmd, id, commands, opts))
 				}(cmd)
+			case protocol.TypeLogOpen:
+				var req protocol.LogRequest
+				if json.Unmarshal(f.Payload, &req) != nil || req.Stream == "" {
+					opts.Log.Printf("unreadable log request")
+					break
+				}
+				if req.Tail <= 0 || req.Tail > protocol.MaxLogTail {
+					req.Tail = protocol.MaxLogTail
+				}
+				sctx, stop := context.WithCancel(ctx)
+				if !live.start(req.Stream, stop) {
+					stop()
+					refused := protocol.LogClose{Stream: req.Stream, Reason: "this agent is already reading as many logs as it will", Failed: true}
+					if err := write(ctx, conn, protocol.TypeLogClose, refused); err != nil {
+						return err
+					}
+					break
+				}
+				go func(req protocol.LogRequest) {
+					defer live.stop(req.Stream)
+					readLog(sctx, req, opts, outbound)
+				}(req)
+			case protocol.TypeLogCancel:
+				var cancel protocol.LogCancel
+				if json.Unmarshal(f.Payload, &cancel) == nil {
+					live.stop(cancel.Stream)
+				}
 			case protocol.TypeHeartbeat:
 			case protocol.TypeError:
 				opts.Log.Printf("server error frame: %s", string(f.Payload))

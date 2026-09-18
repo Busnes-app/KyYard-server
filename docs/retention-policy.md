@@ -20,7 +20,7 @@
 | Command records | settled: 7 days; unsettled: kept until an operator resolves them | one row per dispatched command | – | an outcome nobody knows is never pruned away |
 | Metrics samples (CPU, memory, network, restarts) | 6 hours at 60 s (time limit, per-container cadence cap, query bound, per-sample restart counts, the 95 % disk-budget stop and hourly roll-ups implemented); hourly roll-ups for 7 days | per container: 360 raw samples, 168 roll-ups (about 1.3 million rows at the capacity targets) | 6 h raw or 7 d roll-up per request | "no data" versus "0" rendered differently |
 | Inventory snapshots | current generation only; previous kept until the next accepted one | one per endpoint | n/a | observed-at age and offline state |
-| Container logs | never stored; streamed on demand | per request 10,000 lines or 4 MiB, whichever first; follow buffer 1 MiB per stream with explicit gap markers | 10,000 lines | truncation and gap markers inline |
+| Container logs | never stored; streamed on demand (implemented) | per request 10,000 lines or 4 MiB, whichever first, counted over every line read rather than only the ones a filter matched; follow buffer 1 MiB per stream with explicit gap markers; a following stream ends after an hour | 10,000 lines | truncation and gap markers inline, marked as the control plane speaking rather than the container |
 | Agent dedupe records (on the agent) | 24 hours | 10,000 entries | n/a | n/a |
 | Agent queued metrics while disconnected | 5 minutes | dropped beyond | n/a | gap in the chart |
 | Enrollment tokens | 15 minutes unconsumed; consumed tokens deleted after 24 hours | n/a | n/a | expired shown once, then gone |

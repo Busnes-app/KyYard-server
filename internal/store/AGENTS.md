@@ -43,3 +43,5 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `DeviceStore`, 
 
 ## Child DOX Index
 None.
+
+- `OpenLogTarget` authorizes `container.logs`, refuses an endpoint that is not connected, and resolves the identifier against the last inventory the way a destructive command does, answering with the container ID the stream must name. It is a read that writes an audit row (`auditedReads`): log bodies are never stored, so the record of who read one is the only trace there is.

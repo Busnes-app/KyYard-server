@@ -39,7 +39,7 @@ func (c *Client) pullImage(ctx context.Context, reference string) (outcome, deta
 		tag = "latest"
 	}
 	q := url.Values{"fromImage": {name}, "tag": {tag}}
-	status, body, err := c.stream(ctx, "/images/create?"+q.Encode())
+	status, body, err := c.stream(ctx, http.MethodPost, "/images/create?"+q.Encode())
 	if body != nil {
 		defer body.Close()
 	}

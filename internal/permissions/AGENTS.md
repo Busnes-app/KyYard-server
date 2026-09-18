@@ -18,3 +18,5 @@ Owns the permission matrix; store owns live membership checks and transactional 
 
 ## Child DOX Index
 None.
+
+- `container.logs` is separate from `container.read` because a log is the application's own output, which is where credentials and customer data turn up. Every role but the read-only member holds it, including the developer, who operates nothing else.
