@@ -80,3 +80,57 @@ func (s *Server) handleDiscardApplication(w http.ResponseWriter, r *http.Request
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (s *Server) handleAdoptionPreview(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	p, err := s.store.Tenancy().PreviewApplicationAdoption(r.Context(), a, r.PathValue("application"), r.URL.Query().Get("endpoint"), r.URL.Query().Get("project"))
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, p)
+}
+func (s *Server) handleAdoption(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	var input store.AdoptionRequest
+	if strictJSON(r, &input) != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	instance, err := s.store.Tenancy().AdoptApplication(r.Context(), a, r.PathValue("application"), input)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, instance)
+}
+func (s *Server) handleReleaseApplication(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	var input struct {
+		InstanceID string `json:"instance_id"`
+		Confirm    string `json:"confirm"`
+	}
+	if strictJSON(r, &input) != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	if err := s.store.Tenancy().ReleaseApplication(r.Context(), a, r.PathValue("application"), input.InstanceID, input.Confirm); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) handleApplicationInstances(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	endpoint := r.PathValue("endpoint")
+	if endpoint != "" {
+		e, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, endpoint)
+		if err != nil {
+			s.tenantError(w, err)
+			return
+		}
+		a.EnvironmentID = e.EnvironmentID
+	}
+	rows, err := s.store.Tenancy().ListApplicationInstances(r.Context(), a, endpoint)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, rows)
+}

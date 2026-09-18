@@ -203,6 +203,11 @@ func (s *Server) requestIP(r *http.Request) string {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}", s.tenantRoute(s.handleTenantOrganization))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/instances", s.tenantRoute(s.handleApplicationInstances))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/applications", s.tenantRoute(s.handleApplicationInstances))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleAdoptionPreview))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleAdoption))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleReleaseApplication))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications", s.tenantRoute(s.handleApplications))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications", s.tenantRoute(s.handleImportApplication))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/revisions/{revision}", s.tenantRoute(s.handleApplicationRevision))

@@ -607,6 +607,63 @@ CREATE INDEX idx_applications_org ON applications(organization_id);
 	{Version: 19, Name: "audit_resource_bound", SQLite: `CREATE TRIGGER audit_resource_bound BEFORE INSERT ON audit_records
  WHEN length(CAST(NEW.resource AS BLOB))>255 BEGIN SELECT RAISE(ABORT,'audit resource exceeds 255 bytes'); END;`, Postgres: `ALTER TABLE audit_records ADD CONSTRAINT audit_resource_bound CHECK(octet_length(resource)<=255) NOT VALID;`},
 	{Version: 20, Name: "application_revision_secrets", SQLite: `ALTER TABLE application_revisions ADD COLUMN secrets_enc TEXT NOT NULL DEFAULT '';`, Postgres: `ALTER TABLE application_revisions ADD COLUMN secrets_enc TEXT NOT NULL DEFAULT '';`},
+	{Version: 21, Name: "application_adoption", SQLite: `CREATE UNIQUE INDEX idx_endpoint_scope ON endpoints(organization_id,environment_id,id);
+CREATE TABLE application_instances (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL UNIQUE,
+ endpoint_id TEXT NOT NULL,
+ project TEXT NOT NULL,
+ revision INTEGER NOT NULL,
+ created_by TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ UNIQUE(endpoint_id,project),
+ UNIQUE(id,endpoint_id),
+ FOREIGN KEY(organization_id,environment_id,application_id) REFERENCES applications(organization_id,environment_id,id) ON DELETE RESTRICT,
+ FOREIGN KEY(organization_id,environment_id,endpoint_id) REFERENCES endpoints(organization_id,environment_id,id) ON DELETE RESTRICT,
+ FOREIGN KEY(application_id,revision) REFERENCES application_revisions(application_id,number) ON DELETE RESTRICT
+);
+CREATE TABLE application_resources (
+ instance_id TEXT NOT NULL,
+ endpoint_id TEXT NOT NULL,
+ container_id TEXT NOT NULL,
+ name TEXT NOT NULL,
+ image_id TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ PRIMARY KEY(endpoint_id,container_id),
+ FOREIGN KEY(instance_id,endpoint_id) REFERENCES application_instances(id,endpoint_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_application_resources_instance ON application_resources(instance_id);
+`, Postgres: `CREATE UNIQUE INDEX idx_endpoint_scope ON endpoints(organization_id,environment_id,id);
+CREATE TABLE application_instances (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL UNIQUE,
+ endpoint_id TEXT NOT NULL,
+ project TEXT NOT NULL,
+ revision INTEGER NOT NULL,
+ created_by TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL,
+ UNIQUE(endpoint_id,project),
+ UNIQUE(id,endpoint_id),
+ FOREIGN KEY(organization_id,environment_id,application_id) REFERENCES applications(organization_id,environment_id,id) ON DELETE RESTRICT,
+ FOREIGN KEY(organization_id,environment_id,endpoint_id) REFERENCES endpoints(organization_id,environment_id,id) ON DELETE RESTRICT,
+ FOREIGN KEY(application_id,revision) REFERENCES application_revisions(application_id,number) ON DELETE RESTRICT
+);
+CREATE TABLE application_resources (
+ instance_id TEXT NOT NULL,
+ endpoint_id TEXT NOT NULL,
+ container_id TEXT NOT NULL,
+ name TEXT NOT NULL,
+ image_id TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(endpoint_id,container_id),
+ FOREIGN KEY(instance_id,endpoint_id) REFERENCES application_instances(id,endpoint_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_application_resources_instance ON application_resources(instance_id);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

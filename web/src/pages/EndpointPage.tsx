@@ -1,3 +1,4 @@
+import type { ApplicationInstance } from '../components/ApplicationAdoption';
 import React, { useState } from 'react';
 import { usePagination } from '../components/Pagination';
 import { ComposeProjects } from '../components/ComposeProjects';
@@ -23,6 +24,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const details = useTenantResource<Endpoint>(base);
   const inventory = useTenantResource<Inventory>(`${base}/inventory`);
   const commands = useTenantResource<{ id: string; action: string; outcome: string; detail?: string; container_id?: string; reference?: string }[]>(`${base}/commands?limit=20`);
+  const ownership = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
   const samples = useTenantResource<Sample[]>(`${base}/samples`);
   const latest = new Map((Array.isArray(samples.data) ? samples.data : []).map((s) => [s.container_id, s]));
   // -1 is "no interval yet" and a missing row is "no data"; neither is zero usage.
@@ -51,7 +53,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
         <Server size={24} style={{ color: 'var(--accent)' }} /><span>{e?.name ?? endpoint}</span>
         {e && <span className={`badge ${e.state === 'active' ? 'badge-success' : e.state === 'pending' ? 'badge-accent' : 'badge-danger'}`}>{e.state}</span>}
       </h1>
-      <button className="btn-secondary" onClick={() => { details.reload(); inventory.reload(); samples.reload(); commands.reload(); }}>Refresh inventory</button>
+      <button className="btn-secondary" onClick={() => { details.reload(); inventory.reload(); samples.reload(); commands.reload(); ownership.reload(); }}>Refresh inventory</button>
       </div>
       <nav aria-label="Host resources" className="ky-resource-tabs">
         {['containers', 'projects', 'images', 'networks', 'volumes', 'activity', 'details'].map((item) => <button type="button" key={item} aria-pressed={view === item} onClick={() => setView(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}
@@ -78,10 +80,10 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
-          {view === 'projects' && <ComposeProjects containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
+          {view === 'projects' && <><StateNotice state={ownership.state} onRetry={ownership.reload} /><ComposeProjects ownership={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
             setProjectFilter({ base, name }); setView('containers');
             requestAnimationFrame(() => document.getElementById('endpoint-containers')?.focus());
-          }} />}
+          }} /></>}
           {view === 'containers' && <div id="endpoint-containers" tabIndex={-1}>
           <div className="ky-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{visibleContainers.length} containers</span></div>
           {selectedProject !== null && <p>Showing containers for <strong style={{ overflowWrap: 'anywhere' }}><bdi>{selectedProject}</bdi></strong>. <button className="btn-secondary" onClick={() => setProjectFilter(null)}>Show all containers</button></p>}

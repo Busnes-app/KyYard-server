@@ -181,8 +181,7 @@ func (t *tenancyStore) ReadApplicationRevision(ctx context.Context, a TenantAcce
 }
 
 // DiscardApplication explicitly deletes an undeployed draft and its revision history.
-// No instances exist in this slice. Future instance foreign keys must RESTRICT
-// this deletion; managed removal must preserve deployment history separately.
+// Adopted instances restrict deletion until ownership is explicitly released.
 func (t *tenancyStore) DiscardApplication(ctx context.Context, a TenantAccess, id string, expected int) error {
 	parsed, err := uuid.Parse(id)
 	if err != nil {
@@ -207,6 +206,13 @@ func (t *tenancyStore) DiscardApplication(ctx context.Context, a TenantAccess, i
 		}
 		if head != expected {
 			return ErrRevisionConflict
+		}
+		var adopted int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM application_instances WHERE application_id=?`), id).Scan(&adopted); err != nil {
+			return err
+		}
+		if adopted != 0 {
+			return ErrApplicationAdopted
 		}
 		if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=?`), a.OrganizationID, a.EnvironmentID, id); err != nil {
 			return err

@@ -1,3 +1,4 @@
+import { ApplicationAdoption, type ApplicationInstance } from './ApplicationAdoption';
 import { useState } from 'react';
 import { usePagination } from './Pagination';
 import { secureFetch } from '../api';
@@ -26,6 +27,8 @@ export function Applications({ org, env }: { org: string; env: string }) {
   const base = `/api/organizations/${encodeURIComponent(org)}/environments/${encodeURIComponent(env)}/applications`;
   // Admission caps the organization at 100, so one bounded page covers this environment.
   const drafts = useTenantResource<Draft[]>(`${base}?limit=100`);
+  const instances = useTenantResource<ApplicationInstance[]>(`${base}/instances`);
+  const refresh = () => { drafts.reload(); instances.reload(); setSelected(''); };
   const pagination = usePagination(drafts.data ?? [], base);
   const [name, setName] = useState('');
   const [source, setSource] = useState('');
@@ -55,22 +58,23 @@ export function Applications({ org, env }: { org: string; env: string }) {
   };
   return <section className="panel" aria-label="Applications">
     <div className="panel-header"><h2 style={{ fontSize: 16 }}>Applications</h2></div>
-    <p>Saved drafts are not deployed or linked to existing containers. Importing changes no running workloads.</p>
-    <button type="button" className="btn-secondary" disabled={busy} onClick={drafts.reload}>Refresh drafts</button>
+    <p>Import saves a draft. Adoption explicitly associates existing containers; neither operation deploys or changes running workloads.</p>
+    <button type="button" className="btn-secondary" disabled={busy} onClick={refresh}>Refresh applications</button>
     {uncertain && <button type="button" disabled={busy || drafts.state !== 'ready'} onClick={() => setUncertain(false)}>I checked the drafts; enable changes</button>}
+    <StateNotice state={instances.state} onRetry={instances.reload} />
     <StateNotice state={drafts.state} onRetry={drafts.reload} />
     {pagination.controls}
     {drafts.state === 'ready' && <ul className="ky-list">
       {drafts.data?.length === 0 && <li>No saved applications in this environment.</li>}
       {pagination.rows.map((draft) => <li key={draft.id}>
-        <strong>{draft.name}</strong> · Draft · Revision {draft.latest_revision}
+        <strong>{draft.name}</strong> · {instances.state !== 'ready' ? 'Ownership unavailable' : instances.data?.some((i) => i.application_id === draft.id) ? 'Adopted' : 'Draft'} · Revision {draft.latest_revision}
         <div className="ky-inline-form">
           <button type="button" className="btn-secondary" onClick={() => setSelected(selected === draft.id ? '' : draft.id)}>View configuration for {draft.name}</button>
-          <button type="button" className="btn-danger" disabled={busy || uncertain} onClick={() => {
+          <button type="button" className="btn-danger" disabled={busy || uncertain || instances.state !== 'ready' || instances.data?.some((i) => i.application_id === draft.id)} onClick={() => {
             if (window.confirm(`Discard draft "${draft.name}" and all its saved revisions? Running containers are unchanged.`)) void write('DELETE', `${base}/${encodeURIComponent(draft.id)}`, { expected_revision: draft.latest_revision });
           }}>Discard {draft.name}</button>
         </div>
-        {selected === draft.id && <RevisionView base={base} draft={draft} />}
+        {selected === draft.id && <><RevisionView base={base} draft={draft} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={refresh} />}</>}
       </li>)}
     </ul>}
     <details><summary>Import Compose draft</summary>

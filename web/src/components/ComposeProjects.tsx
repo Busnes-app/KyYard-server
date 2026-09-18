@@ -1,9 +1,11 @@
+import type { ApplicationInstance } from './ApplicationAdoption';
 import type { Container } from '../tenant';
 import { displayName } from './Endpoints';
 
 // Discovery is an observation from one endpoint snapshot, never an ownership claim.
-export function ComposeProjects({ containers, truncated, onSelect }: {
+export function ComposeProjects({ containers, truncated, onSelect, ownership }: {
   containers: Container[];
+  ownership?: ApplicationInstance[] | null;
   truncated: boolean;
   onSelect: (project: string) => void;
 }) {
@@ -23,11 +25,11 @@ export function ComposeProjects({ containers, truncated, onSelect }: {
       {[...projects].sort(([a], [b]) => a.localeCompare(b)).map(([name, members]) => (
         <details key={name} style={{ marginBlock: 12 }}>
           <summary style={{ cursor: 'pointer', overflowWrap: 'anywhere' }}>
-            <strong title={name}><bdi>{name}</bdi></strong> · {members.filter((c) => c.state === 'running').length}/{members.length} containers running · <span className="badge">Unmanaged</span>
+            <strong title={name}><bdi>{name}</bdi></strong> · {members.filter((c) => c.state === 'running').length}/{members.length} containers running · <span className="badge">{ownership === null ? 'Ownership unavailable' : ownership?.some((i) => i.project === name) ? 'Adopted snapshot' : 'Unmanaged'}</span>
           </summary>
           <ul className="ky-list">
             {members.map((c) => <li key={c.id} style={{ overflowWrap: 'anywhere' }}>
-              <strong>{displayName(c.name)}</strong> · {displayName(c.image)} · {displayName(c.state)}
+              <strong>{displayName(c.name)}</strong> · {displayName(c.image)} · {displayName(c.state)}{ownership?.some((i) => i.containers.some((r) => r.id === c.id)) ? ' · Adopted container' : ''}
             </li>)}
           </ul>
           <button className="btn-secondary" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }} onClick={() => onSelect(name)}>Show containers for <bdi>{name}</bdi></button>
