@@ -1,6 +1,6 @@
 # KyYard application schema
 
-**Status:** draft proposal for review (M3 PR 07); implemented in M6–M7. Compose secret resolution is settled in M6 with a spike; everything here about secrets is the contract that spike must meet.
+**Status:** M6 Compose discovery is implemented; revision persistence, import/adoption and deployment remain proposals for the following M6–M7 slices. Compose secret resolution is settled in M6 with a spike; everything here about secrets is the contract that spike must meet.
 
 ## Vocabulary
 
@@ -48,7 +48,7 @@ The exact Compose implementation and version range are recorded when M6 lands.
 
 ## Adoption and import
 
-- Discovery lists Compose projects on an endpoint as **unmanaged**. Inspect, import and adopt are distinct actions.
+- Discovery lists Compose projects on an endpoint as **unmanaged**. The endpoint UI groups the existing authorized snapshot by exact project name, shows observed container/running counts and lets the operator filter the existing container controls. Empty and truncated reports describe only the reported inventory; freshness remains visible. Inspection exposes container name, image and state, not arbitrary labels, environment values or host configuration files. This read-only slice creates no application records and changes no runtime ownership. Inspect, import and adopt are distinct actions.
 - **Import** reads the project into a new application and revision without changing the runtime. **Adopt** additionally marks the running resources as owned by the instance. Neither happens implicitly; unmanaged lifecycle actions (restart, logs) remain allowed by permission.
 - Adopted resources keep their names; the deploy preview shows what a first deploy would recreate.
 
