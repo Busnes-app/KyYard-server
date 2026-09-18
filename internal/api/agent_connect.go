@@ -194,6 +194,12 @@ func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		if !incumbent.alive(ctx) {
 			incumbent.close(protocol.CloseTimeout)
 			s.agents.remove(incumbent)
+			// A stream was opened against the session being displaced, and the successor has
+			// never heard of it: nothing will ever arrive on it again. Ending it here is what
+			// keeps every socket transition closing the endpoint's readers exactly once --
+			// the loser's unwind must not do it, because by then the successor's own readers
+			// would go with them.
+			s.logs.closeEndpointStreams(c.endpointID, "the endpoint reconnected")
 			if again := s.agents.add(c); again == nil {
 				_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, incumbent.ip, "failure", "evicted: unanswering socket displaced by "+s.requestIP(r))
 				goto admitted

@@ -89,6 +89,15 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A reader attached to the incumbent. The successor knows nothing of this stream, so
+	// nothing will ever arrive on it again: displacing the socket must end it rather than
+	// leave the reader waiting, holding its place on the endpoint, for an hour.
+	orphan, refusal := s.logs.open(e.ID, "admin")
+	if refusal != "" {
+		t.Fatalf("opening a stream: %s", refusal)
+	}
+	defer s.logs.release(orphan)
+
 	// Silent: the last frame is old and the ping goes unanswered. The newcomer is admitted,
 	// the eviction is audited against the evicted address, and no alarm is raised.
 	incumbent.lastFrame.Store(0)
@@ -114,6 +123,27 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 	}
 	if !s.Connected(e.ID) {
 		t.Fatal("newcomer not registered")
+	}
+	select {
+	case <-orphan.done:
+		if end := orphan.end.Load(); end == nil || end.Reason != "the endpoint reconnected" {
+			t.Fatalf("the displaced socket's reader was told %+v", end)
+		}
+	default:
+		t.Fatal("a reader of the displaced socket was left waiting for chunks nobody will send")
+	}
+	// A reader that arrives after the successor is admitted belongs to the live session and
+	// survives the loser's unwind.
+	fresh, refusal := s.logs.open(e.ID, "another-reader")
+	if refusal != "" {
+		t.Fatalf("opening a stream on the successor: %s", refusal)
+	}
+	defer s.logs.release(fresh)
+	s.markOffline(ctx, incumbent)
+	select {
+	case <-fresh.done:
+		t.Fatal("the displaced socket's unwind closed the successor's reader")
+	default:
 	}
 	records, err := ts.ReadAudit(ctx, org, 0, 100)
 	if err != nil {
