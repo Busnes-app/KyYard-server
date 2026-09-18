@@ -1,9 +1,10 @@
 **Repo:** Busnes-app/KyYard-server
+**PR:** #34 — https://github.com/Busnes-app/KyYard-server/pull/34
 **Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/image-controls (branch feat/image-controls)
 
 # KyYard implementation plan
 
-Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #33 is merged at `7d14097`. The `feat/image-controls` slice exposes existing image operations; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #33 is merged at `7d14097`. PR #34 (`feat/image-controls`) exposes existing image operations; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
@@ -198,7 +199,7 @@ Record success/failure, confusing steps and recovery outcomes. Any required docu
 
 M0–M4 infrastructure, M5 container/image commands and bounded logs, plus the product corrections and browser logs are merged through master `7d14097` (PR #33). The 24-hour capacity soak remains an unproven M4 gate.
 
-The `feat/image-controls` slice adds explicit-tag/digest pulls and full-ID image removal with a fresh server-inventory preview, dependency checks, confirmation and visible command outcomes. It reuses the existing server/agent authorization and commands without adding routes. Browser tests against a local agent proved image pull/removal; frontend tests cover stale/incomplete/dependent previews, cancellation, uncertain submissions and polling. Generated bundle diffs no longer consume review input; CI still verifies exact source/build correspondence.
+PR #34 (`feat/image-controls`) adds explicit-tag/digest pulls and full-ID image removal with a fresh server-inventory preview, dependency checks, confirmation and visible command outcomes. It reuses the existing server/agent authorization and commands without adding routes. Browser tests against a local agent proved image pull/removal; frontend tests cover stale/incomplete/dependent previews, cancellation, uncertain submissions and polling. Generated bundle diffs no longer consume review input; CI still verifies exact source/build correspondence.
 
 Next engineering slices: browser exec with the protocol's authorization, timeouts and revocation guarantees; M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
