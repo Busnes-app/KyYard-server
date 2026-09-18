@@ -26,6 +26,15 @@ var factKeys = map[string]bool{"hostname": true, "os": true, "runtime_version": 
 
 func validRuntime(r string) bool { return r == "docker" || r == "kubernetes" }
 
+// CheckEnrollmentAccess authorizes runtime discovery before minting a token.
+// Minting still repeats authorization atomically with its write and audit.
+func (t *tenancyStore) CheckEnrollmentAccess(ctx context.Context, a TenantAccess) error {
+	if a.EnvironmentID == "" {
+		return ErrInvalid
+	}
+	return t.readTenant(ctx, a, permissions.EndpointEnroll, func(*sql.Tx) error { return nil })
+}
+
 // CreateEnrollmentToken records the image reference the operator is handed with the token, so
 // the audit trail names the bytes that were authorized to run as root on the host.
 func (t *tenancyStore) CreateEnrollmentToken(ctx context.Context, a TenantAccess, runtime, agentImage string) (*EnrollmentToken, error) {

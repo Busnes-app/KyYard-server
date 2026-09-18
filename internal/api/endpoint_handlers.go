@@ -10,11 +10,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -38,6 +41,23 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	image := s.config.Server.AgentImage
+	if image == "" && strings.HasPrefix(s.config.Server.AppURL, "https://") && s.config.Server.DockerSocket != "" {
+		if err := s.store.Tenancy().CheckEnrollmentAccess(r.Context(), a); err != nil {
+			s.tenantError(w, err)
+			return
+		}
+		// Use bytes already installed by the operator, not a registry tag that can move.
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		host, _ := os.Hostname()
+		digests, _ := docker.New(s.config.Server.DockerSocket).ContainerImageDigests(ctx, host)
+		cancel()
+		for _, digest := range digests {
+			if strings.HasPrefix(digest, "ghcr.io/busnes-app/kyyard@sha256:") && config.IsPinnedAgentImage(digest) {
+				image = digest
+				break
+			}
+		}
+	}
 	tok, err := s.store.Tenancy().CreateEnrollmentToken(r.Context(), a, input.Runtime, image)
 	if err != nil {
 		s.tenantError(w, err)
@@ -48,36 +68,16 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		"id": tok.ID, "environment_id": tok.EnvironmentID, "runtime": tok.Runtime, "expires_at": tok.ExpiresAt,
 		"token": secret, "disclosure": socketDisclosure,
 	}
-	// Reuse the exact installed image on the same Docker host. Sharing the server's
-	// network namespace keeps HTTP on loopback and creates no Docker network.
-	setup := `server=kyyard
-server_id=$(docker inspect --type container --format '{{.Id}}' "$server") &&
-image=$(docker inspect --type container --format '{{.Image}}' "$server_id") &&
-`
-	options := `--pull never --network "container:$server_id"`
-	imageArg := `"$image"`
-	origin := fmt.Sprintf("http://127.0.0.1:%d", s.config.Server.Port)
-	out["note"] = "Local Docker normally connects automatically with the standard installation. This command creates an additional agent on the Docker host running KyYard and uses sudo if Docker requires it. If you renamed the server container, change server=kyyard. Compare the printed agent key fingerprint before approving below. After replacing the server container, recreate the agent with the same identity volume (see README)."
+	out["image"] = image
 	if image != "" && strings.HasPrefix(s.config.Server.AppURL, "https://") {
-		out["image"] = image
-		setup, options, imageArg, origin = "", "--network bridge", shellQuote(image), s.config.Server.AppURL
-		out["note"] = "Run on the additional Docker host to manage; the command uses sudo if Docker requires it. Compare the printed agent key fingerprint before approving below."
+		link := strings.TrimRight(s.config.Server.AppURL, "/") + "/#kyyard=" + secret
+		out["command"] = fmt.Sprintf("sudo docker run -d --name kyyard-agent --restart unless-stopped --pull always --no-healthcheck --entrypoint /app/kyyard-agent -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent %s --link %s --name \"$(hostname)\"", shellQuote(image), shellQuote(link))
+		out["note"] = "Run on the remote Docker host. This pulls the image, enrolls and keeps the agent running. Omit sudo if your account already has Docker access. Run sudo docker logs kyyard-agent and compare the agent key fingerprint before approving. Keep the identity volume for restarts."
+	} else if strings.HasPrefix(s.config.Server.AppURL, "https://") {
+		out["note"] = "Could not identify a published digest for this server image. Set KY_AGENT_IMAGE to a verified ghcr.io/busnes-app/kyyard@sha256:<digest> reference, then generate a new command. Source builds and custom container hostnames need this explicit image setting."
+	} else {
+		out["note"] = "Remote setup needs a reachable HTTPS address. Configure KY_APP_URL and your trusted reverse proxy, then generate a new command. Local Docker connects automatically; no local enrollment command is needed."
 	}
-	// Detached docker run does not forward piped stdin. Enroll in an attached,
-	// short-lived process, then start the persistent agent with its saved identity.
-	common := options + " --no-healthcheck --entrypoint /app/kyyard-agent -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent " + imageArg
-	// Check privileges before the token enters stdin. Some Docker installations
-	// require sudo for every inspect/run, not just the last command in the chain.
-	privileges := `if docker info >/dev/null 2>&1; then
-  kyyard_docker() { docker "$@"; }
-else
-  sudo -v && sudo docker info >/dev/null || exit 1
-  kyyard_docker() { sudo docker "$@"; }
-fi
-`
-	setup = strings.ReplaceAll(setup, "$(docker inspect", "$(kyyard_docker inspect")
-	out["command"] = privileges + setup + fmt.Sprintf("printf '%%s\\n' '%s' | kyyard_docker run --rm -i --name kyyard-agent-enroll %s --server %s --name \"$(hostname)\" --enroll-only &&\n"+
-		"kyyard_docker run -d --name kyyard-agent --restart unless-stopped %s", secret, common, shellQuote(origin), common)
 
 	s.writeJSON(w, http.StatusCreated, out)
 }

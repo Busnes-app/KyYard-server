@@ -21,6 +21,8 @@ type Identity struct {
 	PrivateKey          []byte `json:"private_key"`
 	InstanceFingerprint string `json:"instance_fingerprint"`
 	Server              string `json:"server"`
+	// EnrollmentHash binds restart arguments to the redeemed token without retaining it.
+	EnrollmentHash string `json:"enrollment_hash,omitempty"`
 	// Generation is the last inventory generation sent; it only rises, across restarts too.
 	Generation uint64 `json:"generation"`
 	// A rotated key waits here until the operator acknowledges it; the current key keeps

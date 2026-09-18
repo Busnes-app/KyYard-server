@@ -137,6 +137,9 @@ func TestAgentEnrollsConnectsAndStopsOnRevocation(t *testing.T) {
 	if err != nil || reloaded.Generation == 0 {
 		t.Fatalf("generation not persisted: %+v %v", reloaded, err)
 	}
+	if !reloaded.MatchesEnrollment(httpSrv.URL, tok.Token) || reloaded.MatchesEnrollment("https://another.example", tok.Token) || reloaded.MatchesEnrollment(httpSrv.URL, strings.Repeat("B", 43)) {
+		t.Fatal("enrollment binding lost or accepts different link")
+	}
 	runCtx, stopAgent = context.WithCancel(ctx)
 	defer stopAgent()
 	go func() {

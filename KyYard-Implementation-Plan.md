@@ -1,9 +1,9 @@
 **Repo:** Busnes-app/KyYard-server
-**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/local-docker (branch fix/local-docker)
+**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/remote-link (branch fix/remote-link)
 
 # KyYard implementation plan
 
-Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #37 is merged at `f1ce4ab`. The current `fix/local-docker` slice makes the local Docker connection automatic fixes privilege handling in additional-host commands, and removes upper-right theme dropdowns; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #38 is merged at `b0338f9`. The current `fix/remote-link` slice simplifies remote agent setup to one image-pulling Docker run with an enrollment link; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
@@ -206,7 +206,9 @@ Merged PR #36 (`feat/exec-runtime`): Docker exec PTY with immutable target check
 
 Merged PR #37 (`feat/exec-streams`): binary-safe agent exec frames, nonce-bound 60-second grants, replay refusal, four endpoint / one actor admission across reconnects, bounded input/output queues, cancellation and inspected exit reporting. Runtime work stays off the heartbeat loop. Race tests cover grant validation, binary I/O, queue pressure, cancellation, reconnect admission and live WebSocket responsiveness. The production runtime hook remains nil and no exec capability is advertised until the server authorization/revocation path lands.
 
-Current slice (`fix/local-docker`): automatic in-process local Docker connection, default Compose socket mounting, trusted one-time endpoint bootstrap, tenant-gated operations, durable revocation, restart/replacement inventory, and sudo-aware manual enrollment for additional hosts. Local connection requires no shell enrollment command or separate agent container, by user decision. Theme palettes remain in Settings; header/login dropdowns are removed.
+Merged PR #38 (`fix/local-docker`): automatic in-process local Docker connection, default Compose socket mounting, trusted one-time endpoint bootstrap, tenant-gated operations, durable revocation, restart/replacement inventory, and sudo-aware manual enrollment for additional hosts. Local connection requires no shell enrollment command or separate agent container, by user decision. Theme palettes remain in Settings; header/login dropdowns are removed.
+
+Current slice (`fix/remote-link`): single-container remote enrollment via HTTPS link, installed-image digest discovery by default, explicit digest-pinned override when discovery is unavailable, persistent identity and explicit approval; no same-host inspection or two-container setup chain.
 
 Next engineering slices: server and browser exec with the protocol's authorization, timeouts and revocation guarantees; M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

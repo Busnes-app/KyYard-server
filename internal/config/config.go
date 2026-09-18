@@ -26,13 +26,12 @@ type Config struct {
 
 // ServerConfig defines HTTP and network settings.
 type ServerConfig struct {
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	AppURL  string `json:"app_url"`
-	AppName string `json:"app_name"`
-	// AgentImage selects a digest-pinned image for remote HTTPS enrollment. Empty
-	// uses the installed server image for same-host Docker enrollment.
-	DockerSocket string        `json:"docker_socket"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	AppURL       string `json:"app_url"`
+	AppName      string `json:"app_name"`
+	DockerSocket string `json:"docker_socket"`
+	// AgentImage overrides installed-image discovery with a digest-pinned remote image.
 	AgentImage   string        `json:"agent_image"`
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`
@@ -126,17 +125,20 @@ const DefaultAppName = "KyYard"
 // collides is a setup step for everybody rather than a convenience for anybody.
 const DefaultPort = 9273
 
-// LoadFromEnv initializes a Config struct populated from environment variables with sensible defaults.
 // A mutable tag would let the registry decide what runs as root on every enrolled host.
 var agentImageRef = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(:[0-9]+)?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)+@sha256:[0-9a-f]{64}$`)
 
+// IsPinnedAgentImage applies the same immutable-reference policy to defaults and overrides.
+func IsPinnedAgentImage(image string) bool { return agentImageRef.MatchString(image) }
+
+// LoadFromEnv initializes a Config from environment variables and defaults.
 func LoadFromEnv() (*Config, error) {
 	port, portErr := strconv.Atoi(getEnv("KY_PORT", getEnv("PORT", strconv.Itoa(DefaultPort))))
 	host := getEnv("KY_HOST", "127.0.0.1")
 	appURL := getEnv("KY_APP_URL", fmt.Sprintf("http://localhost:%d", port))
 	appName := getEnv("KY_APP_NAME", DefaultAppName)
 	agentImage := getEnv("KY_AGENT_IMAGE", "")
-	if agentImage != "" && !agentImageRef.MatchString(agentImage) {
+	if agentImage != "" && !IsPinnedAgentImage(agentImage) {
 		return nil, fmt.Errorf("KY_AGENT_IMAGE: must be a digest-pinned reference like ghcr.io/org/kyyard-agent@sha256:<64 hex>, never a tag")
 	}
 

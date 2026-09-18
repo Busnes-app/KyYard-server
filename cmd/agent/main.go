@@ -25,6 +25,7 @@ import (
 var version = "dev"
 
 func main() {
+	link := flag.String("link", "", "enrollment link copied from KyYard (first start only)")
 	enrollOnly := flag.Bool("enroll-only", false, "enroll, print the key fingerprint and exit before connecting")
 	server := flag.String("server", "", "control plane origin, e.g. https://kyyard.example")
 	dir := flag.String("identity-dir", "/var/lib/kyyard-agent", "directory holding the agent identity (0700)")
@@ -34,6 +35,17 @@ func main() {
 	inventoryEvery := flag.Duration("inventory-every", time.Minute, "how often to report a fresh inventory snapshot")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.LUTC)
+	var linkToken string
+	if *link != "" {
+		if *server != "" {
+			log.Fatal("use --link or --server, not both")
+		}
+		origin, token, err := client.ParseLink(*link)
+		if err != nil {
+			log.Fatal(err)
+		}
+		*server, linkToken = origin, token
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -69,9 +81,12 @@ func main() {
 		if *server == "" {
 			log.Fatal("--server is required for enrollment")
 		}
-		token, err := client.ReadToken(os.Stdin)
-		if err != nil {
-			log.Fatalf("enrollment: %v", err)
+		token := linkToken
+		if token == "" {
+			token, err = client.ReadToken(os.Stdin)
+			if err != nil {
+				log.Fatalf("enrollment: %v", err)
+			}
 		}
 		if *name == "" {
 			*name, _ = os.Hostname()
@@ -81,6 +96,8 @@ func main() {
 			log.Fatalf("enrollment: %v", err)
 		}
 		log.Printf("enrolled as %s; waiting for approval", id.EndpointID)
+	} else if linkToken != "" && !id.MatchesEnrollment(*server, linkToken) {
+		log.Fatal("this identity volume belongs to another enrollment; reuse the original link or select a new identity volume")
 	} else if *server != "" && *server != id.Server {
 		log.Fatalf("identity is enrolled with %s, not %s; remove %s to re-enroll", id.Server, *server, *dir)
 	}

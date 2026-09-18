@@ -155,3 +155,25 @@ func (c *Client) removeImage(ctx context.Context, reference, wantID string) (out
 	}
 	return protocol.OutcomeSucceeded, ""
 }
+
+// ContainerImageDigests reads the immutable image ID of a container, then that
+// image's pullable repository digests. Tags are never resolved during discovery.
+func (c *Client) ContainerImageDigests(ctx context.Context, container string) ([]string, error) {
+	// Discovery uses a short-lived client; release its pooled daemon connection.
+	defer c.http.CloseIdleConnections()
+	if !protocol.ValidContainerID(container) {
+		return nil, fmt.Errorf("invalid container identifier")
+	}
+	var inspected struct{ Image string }
+	if err := c.get(ctx, "/containers/"+url.PathEscape(container)+"/json", &inspected); err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(inspected.Image, "sha256:") || len(inspected.Image) != 71 || !protocol.ValidImageReference(inspected.Image) {
+		return nil, fmt.Errorf("container has no immutable image ID")
+	}
+	var image struct{ RepoDigests []string }
+	if err := c.get(ctx, "/images/"+url.PathEscape(inspected.Image)+"/json", &image); err != nil {
+		return nil, err
+	}
+	return image.RepoDigests, nil
+}
