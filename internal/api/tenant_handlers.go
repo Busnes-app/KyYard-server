@@ -44,6 +44,10 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusNotFound, "Resource not found in this organization")
 	case errors.Is(err, store.ErrAlreadyExists):
 		s.writeError(w, http.StatusConflict, "Resource already exists")
+	case errors.Is(err, store.ErrAdoptionChanged):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Inventory or ownership changed; refresh and preview again", "code": "adoption_changed"})
+	case errors.Is(err, store.ErrApplicationAdopted):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Release adoption before discarding this application", "code": "application_adopted"})
 	case errors.Is(err, store.ErrApplicationLimit):
 		s.writeError(w, http.StatusConflict, "Application storage limit reached")
 	case errors.Is(err, store.ErrRevisionConflict):

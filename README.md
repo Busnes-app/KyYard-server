@@ -483,6 +483,14 @@ commands, anchors and aliases, are rejected rather than silently dropped.
 
 All environment values are encrypted. Saved configuration shows keys and references,
 not values. Administrators can import and discard drafts; discard deletes their
-saved history and changes no running containers. Adoption, editing and deployment
+saved history and changes no running containers. Editing and deployment
 will follow in later application milestones. See [the application contract](docs/application-schema.md)
 for the implemented limits and the separate target Compose feature set.
+
+To adopt an existing project, open an application's configuration, choose its host
+and Compose project, review the exact container identities, and type the project
+name. Adoption records an association only; it does not prove the imported revision
+matches the host or start a deployment. The host must be active with recent,
+complete inventory. Networks and volumes remain unowned. **Release adoption**
+removes that association without stopping containers; release it before discarding
+the draft. Replacement containers are not automatically adopted.

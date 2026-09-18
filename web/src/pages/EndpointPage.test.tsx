@@ -24,7 +24,7 @@ it('renders a fresh snapshot and flags staleness and truncation', async () => {
   expect(status.textContent).toContain('generation 7');
   expect(status.textContent).toContain('stale');
   expect(status.textContent).toContain('truncated: images');
-  expect(screen.getByText(/8080→80\/tcp/)).toBeTruthy();
+  expect(screen.getByText(/8080 → 80\/tcp/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Images' }));
   expect(screen.getByText('No images on this host.')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Details' }));

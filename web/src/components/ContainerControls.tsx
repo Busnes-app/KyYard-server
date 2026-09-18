@@ -5,6 +5,7 @@ import type { Container } from '../tenant';
 
 interface Command { id: string; action: string; outcome: string; detail?: string }
 export function ContainerControls({ base, container, active, scope, onRefresh }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void }) {
+  const actions = useRef<HTMLDetailsElement>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [command, setCommand] = useState<Command | null>(null);
@@ -53,13 +54,22 @@ export function ContainerControls({ base, container, active, scope, onRefresh }:
   };
   const disabled = busy || !active || (command !== null && !command.outcome);
   return <>
-    <div className="ky-container-actions">
+    <details ref={actions} className="ky-container-actions" onKeyDown={(event) => {
+      if (event.key === 'Escape' && actions.current?.open) { actions.current.open = false; actions.current.querySelector('summary')?.focus(); }
+    }}>
+      <summary aria-label={`Actions for ${container.name}`}>Actions</summary>
+      <div className="ky-container-action-list" onClick={(event) => {
+        if (event.target instanceof HTMLButtonElement && !event.target.disabled && actions.current) {
+          actions.current.open = false; actions.current.querySelector('summary')?.focus();
+        }
+      }}>
       {container.state !== 'running' && <button className="btn-secondary" disabled={disabled} onClick={() => void act('start')}>Start</button>}
       {container.state === 'running' && <><button className="btn-secondary" disabled={disabled} onClick={() => void act('stop')}>Stop</button><button className="btn-secondary" disabled={disabled} onClick={() => void act('restart')}>Restart</button></>}
       <button className="btn-secondary" disabled={!active || container.state !== 'running'} onClick={() => setShowTerminal(!showTerminal)}>{showTerminal ? 'Close terminal' : 'Terminal'}</button>
       <button className="btn-secondary" disabled={!active} onClick={() => setShowLogs(!showLogs)}>{showLogs ? 'Close logs' : 'Logs'}</button>
       <button className="btn-secondary" disabled={disabled || ['running', 'paused', 'restarting'].includes(container.state)} onClick={() => void act('remove')}>Remove</button>
-    </div>
+      </div>
+    </details>
     {message && <p role="status">{message}</p>}
     {showTerminal && <dialog ref={terminalDialog} className="modal-window" aria-label={`Terminal for ${container.name}`} onCancel={(event) => { event.preventDefault(); setShowTerminal(false); }} onClose={() => setShowTerminal(false)} style={{ color: 'var(--ink-strong)', width: 'min(960px, calc(100vw - 32px))', maxWidth: 'none', maxHeight: 'calc(100dvh - 32px)', margin: 'auto' }}>
       <button className="btn-secondary" onClick={() => setShowTerminal(false)}>Close terminal</button>

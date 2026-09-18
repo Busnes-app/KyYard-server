@@ -10,6 +10,7 @@ it('dispatches the observed ID and state with CSRF and never automatically retri
   const fetcher = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ id: 'cmd', action: 'container.restart', outcome: 'unknown' }), { status: 202 }));
   vi.stubGlobal('fetch', fetcher);
   render(<ContainerControls base="/api/org/endpoint" container={container} active scope="Team / Production / Host" onRefresh={() => {}} />);
+  fireEvent.click(screen.getByText('Actions'));
   fireEvent.click(screen.getByRole('button', { name: 'Restart' }));
   expect(await screen.findByText('container.restart: unknown')).toBeTruthy();
   expect(fetcher).toHaveBeenCalledTimes(1);
@@ -32,6 +33,7 @@ it('opens logs in a modal and closes the reader on Escape', () => {
  const show = vi.fn(function (this: HTMLDialogElement) { this.open = true; });
  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show });
  render(<ContainerControls base="/api/org/endpoint" container={container} active scope="Team / Production / Host" onRefresh={() => {}} />);
+ fireEvent.click(screen.getByText('Actions'));
  fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
  const dialog = screen.getByRole('dialog', { name: 'Logs for web' });
  expect(show).toHaveBeenCalledTimes(1);

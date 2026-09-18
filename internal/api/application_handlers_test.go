@@ -2,11 +2,15 @@ package api_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
@@ -47,6 +51,32 @@ func TestApplicationImportRoutes(t *testing.T) {
 	saved := request(admin, "POST", base, string(body), 201)
 	var app store.Application
 	must(json.Unmarshal([]byte(saved), &app))
+	a := store.TenantAccess{ActorID: "usr_importer", OrganizationID: "a", EnvironmentID: "env-a"}
+	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
+	must(err)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	ep, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
+	must(err)
+	must(ts.ApproveEndpoint(ctx, a, ep.ID, ep.Fingerprint))
+	snapshot, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: time.Now().UTC()}}})
+	_, err = ts.AcceptInventory(ctx, ep.ID, uint64(time.Now().Unix()), time.Now(), snapshot)
+	must(err)
+	adoption := base + "/" + app.ID + "/adoption"
+	var preview store.AdoptionPreview
+	must(json.Unmarshal([]byte(request(admin, "GET", adoption+"?endpoint="+ep.ID+"&project=shop", "", 200)), &preview))
+	adoptionBody, _ := json.Marshal(store.AdoptionRequest{EndpointID: ep.ID, Project: "shop", Digest: preview.Digest, Confirm: "shop"})
+	if w := tenantRequest(s, admin, "POST", adoption, string(adoptionBody), false); w.Code != 403 {
+		t.Fatal("adoption accepted without CSRF")
+	}
+	request(nil, "POST", adoption, string(adoptionBody), 401)
+	var instance store.ApplicationInstance
+	must(json.Unmarshal([]byte(request(admin, "POST", adoption, string(adoptionBody), 201)), &instance))
+	request(admin, "GET", base+"/instances", "", 200)
+	request(admin, "GET", "/api/organizations/a/endpoints/"+ep.ID+"/applications", "", 200)
+	request(admin, "DELETE", base+"/"+app.ID, `{"expected_revision":1}`, 409)
+	releaseBody, _ := json.Marshal(map[string]string{"instance_id": instance.ID, "confirm": "shop"})
+	request(admin, "DELETE", adoption, string(releaseBody), 204)
+	request(admin, "DELETE", adoption, string(releaseBody), 409)
 	request(admin, "GET", base, "", 200)
 	request(admin, "GET", base+"/"+app.ID+"/revisions/1", "", 200)
 	request(admin, "POST", base, string(body), 409)
@@ -58,6 +88,8 @@ func TestApplicationImportRoutes(t *testing.T) {
 	for _, role := range []store.TenantRole{store.RoleReadOnly, store.RoleDeveloper, store.RoleOperator} {
 		must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_importer", Role: role, Status: "active"}))
 		request(admin, "POST", base, string(body), 403)
+		request(admin, "POST", adoption, string(adoptionBody), 403)
+		request(admin, "DELETE", adoption, string(releaseBody), 403)
 		request(admin, "DELETE", base+"/"+app.ID, `{"expected_revision":1}`, 403)
 		request(admin, "GET", base+"/"+app.ID+"/revisions/1", "", 200)
 	}

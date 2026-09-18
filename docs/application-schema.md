@@ -1,6 +1,6 @@
 # KyYard application schema
 
-**Status:** M6 Compose discovery and internal application/revision persistence are implemented. Bounded public draft import and encrypted environment resolution are implemented. Adoption, instances and deployment remain for following M6–M7 slices.
+**Status:** M6 Compose discovery and internal application/revision persistence are implemented. Bounded public draft import and encrypted environment resolution are implemented. Explicit container-snapshot adoption and release are implemented. Deployment remains for following M6–M7 slices.
 
 ## Vocabulary
 
@@ -30,7 +30,7 @@ The environment Applications view imports a single Compose document up to 64 KiB
 
 Every environment value becomes a deterministic service/key reference. Migration 20 stores its encrypted bundle in `application_revisions.secrets_enc`, omitted from ordinary DTOs. The bundle is limited to 64 KiB serialized and 16 KiB per value; exact reference coverage is required. AES-GCM uses a derived key bound to organization, environment, application, revision number and spec digest. Internal `ResolveApplicationSecrets` checks live `secret.reveal` authority (organization administrators only) and commits audit before returning plaintext; no HTTP reveal endpoint exists. SQLite recovery proves decryption using the payload's recovered encryption key. Import/discard have no runtime side effects. Broader Compose parsing, public revision editing and deployment are still future work.
 
-Admission limits are 100 applications per organization, 100 revisions per application and 64 KiB per encoded revision; an organization-row lock protects creation capacity across administrators. An environment containing an application cannot be removed. History is retained rather than automatically pruned. An administrator may explicitly discard an undeployed draft and all its saved revisions at an expected head using `application.destroy`; discard commits with audit, frees quota and permits deleting an emptied environment. Future instance foreign keys must restrict this operation once ownership/deployments exist. Managed application removal is a separate future workflow with retained deployment history. Both tables travel in the SQLite snapshot, verified by `TestApplicationRevisionsSurviveBackup`; PostgreSQL capsule limitations are unchanged.
+Admission limits are 100 applications per organization, 100 revisions per application and 64 KiB per encoded revision; an organization-row lock protects creation capacity across administrators. An environment containing an application cannot be removed. History is retained rather than automatically pruned. An administrator may explicitly discard an undeployed draft and all its saved revisions at an expected head using `application.destroy`; discard commits with audit, frees quota and permits deleting an emptied environment. Instance foreign keys restrict draft discard until explicit release. Managed application removal is a separate future workflow with retained deployment history. Both tables travel in the SQLite snapshot, verified by `TestApplicationRevisionsSurviveBackup`; PostgreSQL capsule limitations are unchanged.
 
 ## Target common revision model
 
@@ -62,9 +62,17 @@ The implemented subset above is intentionally narrower than this target; unsuppo
 
 ## Adoption and import
 
-- Discovery lists Compose projects on an endpoint as **unmanaged**. The endpoint UI groups the existing authorized snapshot by exact project name, shows observed container/running counts and lets the operator filter the existing container controls. Empty and truncated reports describe only the reported inventory; freshness remains visible. Inspection exposes container name, image and state, not arbitrary labels, environment values or host configuration files. This read-only slice creates no application records and changes no runtime ownership. Inspect, import and adopt are distinct actions.
+- Discovery lists Compose projects on an endpoint and distinguishes recorded adoption from unmanaged observations. The endpoint UI groups the existing authorized snapshot by exact project name, shows observed container/running counts and lets the operator filter the existing container controls. Empty and truncated reports describe only the reported inventory; freshness remains visible. Inspection exposes container name, image and state, not arbitrary labels, environment values or host configuration files. Discovery itself creates no application records and changes no runtime ownership. Inspect, import and adopt are distinct actions.
 - **Import** reads the project into a new application and revision without changing the runtime. **Adopt** additionally marks the running resources as owned by the instance. Neither happens implicitly; unmanaged lifecycle actions (restart, logs) remain allowed by permission.
 - Adopted resources keep their names; the deploy preview shows what a first deploy would recreate.
+
+## Implemented adoption
+
+Migration 21 records one instance per application and one owner per endpoint/project and endpoint/container ID. The imported desired revision and observed container snapshot remain separate: adoption does not certify matching configuration, infer a service mapping, relabel containers, deploy, or claim shared networks/volumes. The revision number is an association anchor, not a deployed revision.
+
+An administrator selects a host/project, reviews all immutable container IDs, image IDs and creation times, and types the exact project name. The preview digest binds application ID/name/head, endpoint ID/name, project and sorted resource identities. POST recomputes it under application-then-endpoint locks. Identical later reports remain valid; changed/recreated resources or a changed application head invalidate confirmation. Require active Docker, nonempty complete container inventory received within three minutes and observed within five; truncated reports fail. At most 1,000 container ownership records per endpoint, at most one instance per application (100 applications per organization). SQL constraints serialize conflicting ownership and prevent cross-environment references; audit commits atomically.
+
+Explicit release removes only the reviewed instance ID and its resource associations. An old release cannot affect a replacement adoption. No runtime commands are sent by adoption or release. Once released, a draft may be discarded. A future deployment slice must prevent releasing in-flight/deployed history and recheck every touched identity; names/project labels are never authority to claim a replacement container. Both new tables are proven in SQLite snapshot recovery. Endpoint discovery labels registered identities as adopted and leaves newly observed IDs unclaimed.
 
 ## Deploy
 

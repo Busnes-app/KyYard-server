@@ -218,6 +218,8 @@ Current M6 slice (`feat/application-revisions`): application and immutable revis
 
 Current M6 slice: bounded Compose draft import with encrypted environment bundles, audited internal resolution, reference-only inspection and explicit discard. No runtime mutations or adoption. PR43 UI pagination/navigation is merged.
 
-Next M6 slice: explicit instance/resource adoption (the remainder of planned PR 14), followed by preview/reconcile (planned PR 15). The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
+Current M6 ownership slice: explicit adoption/release of an immutable Compose container snapshot into one application instance, with preview confirmation, scoped constraints, audit and restore coverage. No runtime mutations or inferred configuration parity.
+
+Next M6 slice: preview/reconcile (planned PR 15), including broader validated Compose support and explicit service/resource mapping before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
 The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.

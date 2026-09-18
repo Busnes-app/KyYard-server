@@ -7,6 +7,7 @@ it('puts container inventory on the home page and links to real endpoint operati
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role: 'operator' }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { containers: [{ id: 'c', name: 'web', image: 'nginx:1', state: 'running', ports: [] }] } }) : json([{ id: 'e', name: 'Docker host', state: 'active', runtime: 'docker', facts: {} }])));
   render(<Dashboard />);
   expect(await screen.findByText('web')).toBeTruthy();
+  fireEvent.click(screen.getByLabelText('Actions for web'));
   expect(screen.getByRole('button', { name: 'Logs' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
   expect(screen.queryByRole('combobox')).toBeNull();
@@ -36,6 +37,7 @@ it('names the target host when identical container names occur on different host
   await screen.findAllByText('web');
   const hostSelect = screen.queryByRole('combobox', { name: 'Docker host' });
   if (hostSelect) fireEvent.change(hostSelect, { target: { value: 'e1' } });
+  fireEvent.click(await screen.findByLabelText('Actions for web'));
   const buttons = await screen.findAllByRole('button', { name: 'Stop' });
   fireEvent.click(buttons[buttons.length - 1]);
   expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Second host'));

@@ -360,7 +360,14 @@ details[open] > summary { margin-bottom: 16px; }
 .ky-resource-name { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
 .ky-resource-name strong { font-weight: 600; }
 .ky-resource-name > span, .ky-resource-name small { color: var(--ink); font-size: 12px; overflow-wrap: anywhere; }
-.ky-container-actions { display: flex; flex-wrap: wrap; gap: 6px; max-width: 250px; }
+.ky-container-actions { min-width: 100px; max-width: 180px; }
+.ky-container-actions > summary { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-hover); font-size: 12px; }
+.ky-container-actions[open] > summary { margin-bottom: 6px; }
+.ky-container-action-list { display: grid; gap: 4px; }
+.ky-container-action-list button { justify-content: flex-start; }
+.ky-container-ports { list-style: none; display: grid; gap: 6px; font-size: 12px; }
+.ky-container-ports li { display: grid; gap: 1px; }
+.ky-container-ports small, .ky-muted { color: var(--ink); }
 .ky-container-actions button { font-size: 12px; padding: 6px 10px; min-height: 34px; }
 .badge { font-weight: 500; border-radius: 6px; padding: 3px 9px; white-space: nowrap; }
 .badge-secondary { color: var(--ink); background: var(--bg); border: 1px solid var(--line); }
@@ -420,4 +427,13 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-state-notice { flex-wrap: wrap; }
 @media (max-width: 380px) {
  .ky-nav-link { flex-direction: column; gap: 4px; padding: 7px 6px; font-size: 12px; }
+}
+
+/* Keep native keyboard behavior; older browsers retain their native picker. */
+@supports (appearance: base-select) {
+ select:not([multiple]):not([size]), select:not([multiple]):not([size])::picker(select) { appearance: base-select; }
+ select:not([multiple]):not([size])::picker(select) { background: var(--panel); color: var(--ink-strong); border: 1px solid var(--line-strong); border-radius: 6px; padding: 4px; }
+ select:not([multiple]):not([size]) option { width: 100%; padding: 8px 12px; border-radius: 3px; overflow-wrap: anywhere; }
+ select:not([multiple]):not([size]) option:checked { background: var(--accent-soft); color: var(--ink-strong); }
+ select:not([multiple]):not([size]) option:hover, select:not([multiple]):not([size]) option:focus { background: var(--panel-hover); outline: 2px solid var(--accent); outline-offset: -2px; }
 }
