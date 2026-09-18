@@ -219,7 +219,9 @@ Implemented M6 import: bounded Compose draft import with encrypted environment b
 
 Implemented M6 ownership: explicit adoption/release of an immutable Compose container snapshot into one application instance, with preview confirmation, scoped constraints, audit and restore coverage. No runtime mutations or inferred configuration parity.
 
-Current M6 comparison slice: read-only comparison of the latest definition with adopted identities and current project inventory. Explicitly distinguishes missing, changed and unowned containers; service labels and image-reference comparisons are advisory and configuration parity remains unverified. No deployment or runtime dispatch.
+Implemented M6 comparison: read-only comparison of the latest definition with adopted identities and current project inventory. Explicitly distinguishes missing, changed and unowned containers; service labels and image-reference comparisons are advisory and configuration parity remains unverified. No deployment or runtime dispatch.
+
+Current M6 revision editing: full-definition Compose replacements, revision-bound encrypted bundles, expected-head concurrency and immutable historical inspection. Saves never deploy; prior encrypted revisions survive recovery.
 
 Next M6 slice: executable preview/reconcile (planned PR 15), including broader validated Compose support and explicit service/resource mapping before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

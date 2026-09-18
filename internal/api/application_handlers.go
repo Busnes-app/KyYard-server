@@ -18,19 +18,8 @@ func (s *Server) handleImportApplication(w http.ResponseWriter, r *http.Request,
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
-	// Check admission before parsing source. Import rechecks transactionally.
-	if _, err := s.store.Tenancy().ReadEnvironment(r.Context(), a); err != nil {
-		s.tenantError(w, err)
-		return
-	}
-	imported, err := applications.ParseCompose(input.Compose)
-	if err != nil {
-		var diagnostic *applications.Diagnostic
-		if errors.As(err, &diagnostic) {
-			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Compose import refused", "diagnostic": diagnostic})
-			return
-		}
-		s.tenantError(w, err)
+	imported := s.parseApplicationCompose(w, r, a, input.Compose)
+	if imported == nil {
 		return
 	}
 	app, err := s.store.Tenancy().ImportApplication(r.Context(), a, input.Name, imported.Spec, imported.Values, s.config.Security.EncryptionKey)
@@ -142,4 +131,43 @@ func (s *Server) handleApplicationComparison(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.writeJSON(w, http.StatusOK, comparison)
+}
+
+func (s *Server) parseApplicationCompose(w http.ResponseWriter, r *http.Request, a store.TenantAccess, source string) *applications.Import {
+	// Check admission before parsing source. Import rechecks transactionally.
+	if _, err := s.store.Tenancy().ReadEnvironment(r.Context(), a); err != nil {
+		s.tenantError(w, err)
+		return nil
+	}
+	imported, err := applications.ParseCompose(source)
+	if err != nil {
+		var diagnostic *applications.Diagnostic
+		if errors.As(err, &diagnostic) {
+			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Compose import refused", "diagnostic": diagnostic})
+			return nil
+		}
+		s.tenantError(w, err)
+		return nil
+	}
+	return imported
+}
+func (s *Server) handleReplaceApplicationRevision(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	var input struct {
+		ExpectedRevision int    `json:"expected_revision"`
+		Compose          string `json:"compose"`
+	}
+	if strictJSON(r, &input) != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	imported := s.parseApplicationCompose(w, r, a, input.Compose)
+	if imported == nil {
+		return
+	}
+	number, err := s.store.Tenancy().ReplaceApplicationRevision(r.Context(), a, r.PathValue("application"), input.ExpectedRevision, imported.Spec, imported.Values, s.config.Security.EncryptionKey)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, map[string]int{"revision": number})
 }

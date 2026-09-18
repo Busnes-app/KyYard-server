@@ -1,0 +1,33 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { ApplicationRevisionEditor } from './ApplicationRevisionEditor';
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); document.cookie = 'ky_csrf=; Max-Age=0'; });
+it('saves complete input with the reviewed head and CSRF, and clears it on success', async () => {
+  document.cookie = 'ky_csrf=csrf';
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const saved = vi.fn();
+  const fetcher = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response('{"revision":3}', { status: 201 }));
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationRevisionEditor base="/app" name="Shop" expected={2} onSaved={saved} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+  fireEvent.change(screen.getByLabelText(/Replacement Compose YAML/), { target: { value: 'secret-canary' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save revision 3' }));
+  await vi.waitFor(() => expect(saved).toHaveBeenCalledOnce());
+  expect(fetcher).toHaveBeenCalledWith('/app/revisions', expect.objectContaining({ method: 'POST', body: JSON.stringify({ expected_revision: 2, compose: 'secret-canary' }) }));
+  expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get('X-CSRF-Token')).toBe('csrf');
+  expect(screen.getByLabelText(/Replacement Compose YAML/)).toHaveProperty('value', '');
+});
+it.each([409, 500])('blocks repeated saves on status %i without exposing response text', async (status) => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('secret-canary', { status })));
+  render(<ApplicationRevisionEditor base="/app" name="Shop" expected={2} onSaved={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+  fireEvent.change(screen.getByLabelText(/Replacement Compose YAML/), { target: { value: 'services: {}' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save revision 3' }));
+  await screen.findByRole('status');
+  expect(screen.getByRole('button', { name: 'Save revision 3' }).hasAttribute('disabled')).toBe(true);
+  expect(document.body.textContent).not.toContain('secret-canary');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel revision edit' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+  expect(screen.getByLabelText(/Replacement Compose YAML/)).toHaveProperty('value', '');
+});
