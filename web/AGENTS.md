@@ -14,6 +14,7 @@ Owns user interface components, service worker caching, PWA installation manifes
 - Container logs support bounded reads, search, timestamps, download and SSE follow. Browser display retains 256 KiB; follow closes on error without automatic reconnection, and unmount/filter changes cancel the reader. Server notices are separate from container output during follow.
 - A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion.
 - Login shows local setup/SSH/TLS guidance for HTTP installations and offers SSO only when enabled.
+- Site branding uses Lucide’s shipping-container outline in the header, login, favicon and install icons; retain its rounded line-art style and theme color inheritance inside the app. Static icon assets carry the Lucide license and are rasterized from the same geometry.
 - Product title, PWA name, and pre-settings fallback name are `KyYard`.
 - Strict TypeScript type safety without unused imports.
 - `theme.ts` carries the fifteen KyPost/KyDNS palettes. Settings shows visual swatches; header/login offer a compact selector. Apply before React renders, persist under `kyyard-theme`, synchronize selectors and tabs, and never write a personal theme to instance settings.

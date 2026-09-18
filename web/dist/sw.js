@@ -1,8 +1,12 @@
-const CACHE_NAME = 'kyyard-pwa-v2';
+const CACHE_NAME = 'kyyard-pwa-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/favicon.svg',
+  '/favicon.ico',
+  '/icon-192.png',
+  '/icon-512.png',
 ];
 
 self.addEventListener('install', (event) => {
