@@ -1,5 +1,5 @@
 import React from 'react';
-import { LogOut, Shield, Settings as SettingsIcon, LayoutDashboard } from 'lucide-react';
+import { LogOut, Container, Shield, Settings as SettingsIcon, LayoutDashboard } from 'lucide-react';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { OrganizationSelect } from './OrganizationSelect';
 import { Link } from './Link';
@@ -26,7 +26,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ appName, route, user, onLo
       <header className="ky-header">
         <div className="ky-header-row">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold', fontSize: '18px', color: 'var(--accent)' }}>
-            <Shield size={22} />
+            <Container size={22} />
             <span>{appName || 'KyYard'}</span>
           </div>
           <nav aria-label="Primary" className="ky-nav">

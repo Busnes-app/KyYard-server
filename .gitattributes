@@ -1,0 +1,3 @@
+# Review generated assets through their source. CI proves the committed build matches.
+web/dist/** -diff linguist-generated=true
+web/tsconfig.tsbuildinfo -diff linguist-generated=true

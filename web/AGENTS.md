@@ -7,12 +7,14 @@ React 19 + TypeScript + Vite PWA for fleet operations, provider sign-in, recover
 Owns user interface components, service worker caching, PWA installation manifests, and frontend theme switching.
 
 ## Local Contracts
+- Endpoint image controls pull explicit tags/digests and remove immutable image IDs after a fresh server-inventory preview and full-ID confirmation. Stale/incomplete dependency data or known container dependents block the preview. The agent rechecks before deletion; no force or automatic retries. Unknown submissions/results remain blocked until the operator checks activity and refreshes. The UI does not accept registry credentials.
 - Home lists container inventory for the selected membership, with host pagination (20/page), per-host error/freshness states, filtering and direct endpoint links. `/endpoints` lists hosts; environment enrollment appears before environment settings. No SCIM or mobile-pairing UI remains.
 - Settings offers provider configuration through admin-only `/api/settings/sso`, callback URLs from the server's advertised origin, and the shared theme swatches. Login renders only the public provider list.
 - Endpoint container controls use immutable IDs and observed image/state preconditions. Removal first fetches the server preview and requires the full observed name. Commands are never retried automatically; recent activity remains accessible for unknown outcomes.
 - Container logs support bounded reads, search, timestamps, download and SSE follow. Browser display retains 256 KiB; follow closes on error without automatic reconnection, and unmount/filter changes cancel the reader. Server notices are separate from container output during follow.
 - A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion.
 - Login shows local setup/SSH/TLS guidance for HTTP installations and offers SSO only when enabled.
+- Site branding uses Lucide’s shipping-container outline in the header, login, favicon and install icons; retain its rounded line-art style and theme color inheritance inside the app. Static icon assets carry the Lucide license and are rasterized from the same geometry.
 - Product title, PWA name, and pre-settings fallback name are `KyYard`.
 - Strict TypeScript type safety without unused imports.
 - `theme.ts` carries the fifteen KyPost/KyDNS palettes. Settings shows visual swatches; header/login offer a compact selector. Apply before React renders, persist under `kyyard-theme`, synchronize selectors and tabs, and never write a personal theme to instance settings.

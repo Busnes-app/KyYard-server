@@ -104,7 +104,7 @@ When the user requests a durable behavior change, record it here or in the relev
 CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `make lint` equivalent: gofmt, `go vet`, `go mod tidy`/`verify`
 - `go test -race` with coverage on SQLite, and the same suite against PostgreSQL 17
-- Frontend vitest suite, then typecheck/build plus a check that committed `web/dist` matches source (it is embedded in the binary)
+- Frontend vitest suite, then typecheck/build plus a check that committed `web/dist` matches source (it is embedded in the binary). Generated bundles and TypeScript build metadata use non-text diffs so review input includes source; the build comparison still fails on any artifact change.
 - `govulncheck` and `npm audit --audit-level=high`
 - `scripts/smoke-test.sh`: runs the built binaries and asserts CLI, auth, session, SPA behavior and the agent enroll/approve/connect/revoke path
 - `scripts/spikes/websocket-proxy/run.sh`: developer-run, not part of CI. The compatibility spike behind `docs/agent-protocol.md` section 2 (own Go module, needs Docker, binds loopback only); prints `RESULT <proxy> PASS` for Caddy and nginx. Re-run it when the transport decision or proxy guidance changes.

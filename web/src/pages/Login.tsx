@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, Key, AlertCircle, LogIn } from 'lucide-react';
+import { Container, Key, AlertCircle, LogIn } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget';
 import { SetupGuide } from '../components/SetupGuide';
 import { ThemeSwitcher } from '../components/ThemeSwitcher';
@@ -121,7 +121,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
               marginBottom: '12px',
             }}
           >
-            <Shield size={32} />
+            <Container size={32} />
           </div>
           <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>{appName || 'KyYard'}</h1>
           <p style={{ color: 'var(--ink)', fontSize: '14px', marginTop: '4px' }}>The simple control plane for your container fleet.</p>

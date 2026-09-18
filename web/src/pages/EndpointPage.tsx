@@ -1,4 +1,5 @@
 import React from 'react';
+import { ImageControls } from '../components/ImageControls';
 import { ContainerControls } from '../components/ContainerControls';
 import { Server } from 'lucide-react';
 import { Link } from '../components/Link';
@@ -68,7 +69,8 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
           <Table title="Containers" rows={inv.snapshot.containers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Usage', 'Ports', 'Project', 'Actions']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, usage(c), c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—', <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onRefresh={commands.reload} />]} />
-          <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), displayName(i.id).slice(0, 19)]} />
+          <section className="panel"><h2>Pull an image</h2><ImageControls key={base} kind="pull" base={base} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onActivity={commands.reload} /><p>Use an explicit tag or digest. A pull downloads an image; it does not update running containers.</p></section>
+          <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID', 'Actions']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), <span title={i.id}>{i.id.slice(0, 19)}</span>, <ImageControls key={`${base}/${i.id}`} kind="remove" imageID={i.id} base={base} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onActivity={commands.reload} />]} />
           <Table title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />
           <Table title="Volumes" rows={inv.snapshot.volumes} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [displayName(v.name), displayName(v.driver), displayName(v.mountpoint)]} />
         </>
