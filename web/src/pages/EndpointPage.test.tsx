@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EndpointPage } from './EndpointPage';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -10,7 +10,7 @@ it('distinguishes no inventory yet from an empty host', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ error: 'nope' }, 404) : String(input).endsWith('/samples') ? json([]) : json(endpoint)));
   render(<EndpointPage org="a" endpoint="ep_1" />);
   expect(await screen.findByText(/No inventory yet/)).toBeTruthy();
-  expect(screen.queryByText('Containers')).toBeNull();
+  expect(screen.queryByRole('table')).toBeNull();
 });
 
 it('renders a fresh snapshot and flags staleness and truncation', async () => {
@@ -24,8 +24,10 @@ it('renders a fresh snapshot and flags staleness and truncation', async () => {
   expect(status.textContent).toContain('generation 7');
   expect(status.textContent).toContain('stale');
   expect(status.textContent).toContain('truncated: images');
-  expect(screen.getByText('8080→80/tcp')).toBeTruthy();
+  expect(screen.getByText(/8080→80\/tcp/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Images' }));
   expect(screen.getByText('No images on this host.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Details' }));
   expect(screen.getByText('8 CPUs · 2.0 GiB')).toBeTruthy();
 });
 
@@ -55,6 +57,7 @@ it('discovers unmanaged projects, filters existing controls, and resets scope on
   const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', generation: 1, observed_at: now, received_at: now, snapshot }) : String(input).endsWith('/samples') || String(input).includes('/commands') ? json([]) : json(endpoint));
   vi.stubGlobal('fetch', fetcher);
   const view = render(<EndpointPage org="a" endpoint="ep_1" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
   const projects = await screen.findByRole('region', { name: 'Compose projects' });
   expect(projects.textContent).toContain('Compose projects (2)');
   expect(projects.textContent).toContain('1/2 containers running');
@@ -67,12 +70,13 @@ it('discovers unmanaged projects, filters existing controls, and resets scope on
   expect(table.textContent).toContain('shop-web');
   expect(table.textContent).not.toContain('mail-web');
   expect(table.textContent).not.toContain('standalone');
-  expect(document.activeElement).toBe(table);
+  await waitFor(() => expect(document.activeElement).toBe(table));
   fireEvent.click(screen.getByRole('button', { name: 'Show all containers' }));
   expect(table.textContent).toContain('standalone');
-  fireEvent.click(within(projects).getByRole('button', { name: 'Show containers for shop' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
+  fireEvent.click(within(screen.getByRole('region', { name: 'Compose projects' })).getByRole('button', { name: 'Show containers for shop', hidden: true }));
   view.rerender(<EndpointPage org="a" endpoint="ep_2" />);
-  await screen.findByRole('region', { name: 'Compose projects' });
+  await screen.findByText('mail-web');
   expect(screen.queryByRole('button', { name: 'Show all containers' })).toBeNull();
   expect(document.getElementById('endpoint-containers')?.textContent).toContain('mail-web');
   expect(fetcher.mock.calls.every((call) => call.length === 1)).toBe(true); // discovery only reads inventory

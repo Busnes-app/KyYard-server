@@ -14,7 +14,7 @@ export function SetupGuide({ appURL }: { appURL: string }) {
         address and <code>KY_TRUSTED_PROXIES</code> to the proxy’s address, then enable
         <code> docker-compose.proxy.yml</code> in <code>COMPOSE_FILE</code> and restart.</p>
       <p>Keep port {port} private. Do not publish this HTTP endpoint on your network.
-        Agent enrollment is not available yet; remote enrollment will require HTTPS.</p>
+        Local Docker connects automatically. Enroll additional hosts from Endpoints after configuring HTTPS.</p>
     </details>
   );
 }

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from './Link';
 import { navigate, orgPath } from '../router';
 import { useTenantResource, type MemberOrganization } from '../tenant';
 
@@ -9,6 +10,7 @@ export const OrganizationSelect: React.FC<{ current?: string }> = ({ current }) 
   if (state === 'loading') return <span style={{ fontSize: 13, color: 'var(--ink)' }}>Loading organizations…</span>;
   if (state !== 'ready' || !data) return <span style={{ fontSize: 13, color: 'var(--ink)' }}>Organizations unavailable</span>;
   if (data.length === 0) return <span style={{ fontSize: 13, color: 'var(--ink)' }}>No organizations</span>;
+  if (data.length === 1) return <Link className="ky-workspace" to={orgPath(data[0].id)}>{data[0].name}</Link>;
   const known = current && data.some((o) => o.id === current);
   return (
     <select

@@ -13,17 +13,17 @@ export const AuditList: React.FC<{ url: string }> = ({ url }) => {
       <StateNotice state={state} onRetry={reload} />
       {state === 'ready' && data && (data.length === 0 ? <EmptyNotice>No recorded activity on this page.</EmptyNotice> : (
         <div style={{ overflowX: 'auto' }}>
-          <table className="ky-table">
+          <table className="ky-table ky-responsive-table">
             <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Result</th><th>Request</th></tr></thead>
             <tbody>
               {data.map((r) => (
                 <tr key={r.id}>
-                  <td><time dateTime={r.created_at}>{new Date(r.created_at).toLocaleString()}</time></td>
-                  <td className="font-mono">{r.user_id}</td>
-                  <td className="font-mono">{r.action}</td>
-                  <td className="font-mono">{r.resource}</td>
-                  <td><span className={`badge ${r.result === 'success' ? 'badge-success' : r.result === 'denied' || r.result === 'failure' ? 'badge-danger' : ''}`}>{r.result}</span></td>
-                  <td className="font-mono" style={{ fontSize: 11 }}>{r.correlation_id}</td>
+                  <td data-label="Time"><time dateTime={r.created_at}>{new Date(r.created_at).toLocaleString()}</time></td>
+                  <td data-label="Actor" className="font-mono">{r.user_id}</td>
+                  <td data-label="Action" className="font-mono">{r.action}</td>
+                  <td data-label="Target" className="font-mono">{r.resource}</td>
+                  <td data-label="Result"><span className={`badge ${r.result === 'success' ? 'badge-success' : r.result === 'denied' || r.result === 'failure' ? 'badge-danger' : ''}`}>{r.result}</span></td>
+                  <td data-label="Request" className="font-mono" style={{ fontSize: 11 }}>{r.correlation_id}</td>
                 </tr>
               ))}
             </tbody>

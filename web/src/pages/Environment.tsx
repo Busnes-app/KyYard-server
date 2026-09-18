@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { Server } from 'lucide-react';
-import { AuditList } from '../components/AuditList';
 import { Endpoints } from '../components/Endpoints';
 import { Link } from '../components/Link';
 import { StateNotice } from '../components/StateNotice';
@@ -50,7 +49,7 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
             </form>
             {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
           </details>
-          <AuditList url={`${base}/audit`} />
+          <nav className="ky-subnav" aria-label="Administration"><Link to={orgPath(org, '/audit')}>View audit history</Link><Link to={orgPath(org, '/members')}>Manage members</Link></nav>
         </>
       )}
     </div>

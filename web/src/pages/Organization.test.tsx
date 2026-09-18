@@ -76,7 +76,8 @@ it('opens a deep link after sign-in and navigates with history', async () => {
   }));
   render(<App />);
   expect(await screen.findByRole('heading', { name: 'Members' })).toBeTruthy();
-  expect((await screen.findByLabelText('Organization') as HTMLSelectElement).value).toBe('a');
+  expect(await screen.findByRole('link', { name: 'Org A' })).toHaveProperty('pathname', '/organizations/a');
+  expect(screen.queryByLabelText('Organization')).toBeNull();
   fireEvent.click(screen.getByRole('link', { name: 'Back to organization' }));
   expect(await screen.findByRole('heading', { name: 'Org A' })).toBeTruthy();
   expect(window.location.pathname).toBe('/organizations/a');

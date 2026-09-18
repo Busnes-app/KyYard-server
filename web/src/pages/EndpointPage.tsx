@@ -5,7 +5,7 @@ import { ContainerControls } from '../components/ContainerControls';
 import { Server } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
-import { envPath, orgPath } from '../router';
+import { envPath } from '../router';
 import { useTenantResource, type Endpoint, type Inventory, type Sample } from '../tenant';
 import { displayName } from '../components/Endpoints';
 
@@ -16,6 +16,8 @@ const ago = (iso: string) => { const s = Math.max(0, Math.round((Date.now() - ne
 // flagged when it disagrees by more than five minutes.
 export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org, endpoint }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
+  const [view, setView] = useState('containers');
+  const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState<{ base: string; name: string } | null>(null);
   const details = useTenantResource<Endpoint>(base);
   const inventory = useTenantResource<Inventory>(`${base}/inventory`);
@@ -36,24 +38,26 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const inv = inventory.data;
   // A filter belongs to one endpoint and must not hide a refreshed or different host.
   const selectedProject = projectFilter?.base === base && inv?.snapshot.containers.some((c) => c.compose_project === projectFilter.name) ? projectFilter.name : null;
-  const visibleContainers = inv?.snapshot.containers.filter((c) => selectedProject === null || c.compose_project === selectedProject) ?? [];
+  const visibleContainers = inv?.snapshot.containers.filter((c) => selectedProject === null || c.compose_project === selectedProject).filter((c) => `${c.name} ${c.image}`.toLowerCase().includes(search.toLowerCase())) ?? [];
   const skew = inv ? Math.abs(new Date(inv.received_at).getTime() - new Date(inv.observed_at).getTime()) > 5 * 60 * 1000 : false;
   const stale = inv ? Date.now() - new Date(inv.received_at).getTime() > 3 * 60 * 1000 : false;
 
   return (
-    <div className="ky-page">
+    <div className="ky-page ky-endpoint-page">
+      <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link>{e && <><span>/</span><Link to={envPath(org, e.environment_id)}>Environment</Link></>}</nav>
+      <div className="ky-page-heading">
       <h1 style={{ fontSize: 24, display: 'flex', alignItems: 'center', gap: 10 }}>
         <Server size={24} style={{ color: 'var(--accent)' }} /><span>{e?.name ?? endpoint}</span>
         {e && <span className={`badge ${e.state === 'active' ? 'badge-success' : e.state === 'pending' ? 'badge-accent' : 'badge-danger'}`}>{e.state}</span>}
       </h1>
       <button className="btn-secondary" onClick={() => { details.reload(); inventory.reload(); samples.reload(); commands.reload(); }}>Refresh inventory</button>
-      <nav aria-label="Organization sections" className="ky-subnav">
-        <Link to={orgPath(org)}>Back to organization</Link>
-        {e && <Link to={envPath(org, e.environment_id)}>Environment</Link>}
+      </div>
+      <nav aria-label="Host resources" className="ky-resource-tabs">
+        {['containers', 'projects', 'images', 'networks', 'volumes', 'activity', 'details'].map((item) => <button type="button" key={item} aria-pressed={view === item} onClick={() => setView(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}
       </nav>
       <StateNotice state={details.state} onRetry={() => { details.reload(); inventory.reload(); }} />
-      {details.state === 'ready' && e && (
-        <details className="panel"><summary>Host details & identity</summary>
+      {view === 'details' && details.state === 'ready' && e && (
+        <section className="panel"><h2>Host details & identity</h2>
           <div className="panel-header"><h2 style={{ fontSize: 16 }}>Endpoint</h2></div>
           <dl className="ky-facts">
             <dt>Runtime</dt><dd>{e.runtime} {inv?.snapshot.engine.version ?? e.facts.runtime_version ?? ''}</dd>
@@ -62,9 +66,9 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             <dt>Key</dt><dd className="font-mono" style={{ fontSize: 11 }}>{e.fingerprint || '—'}</dd>
             <dt>Capabilities</dt><dd>{e.capabilities.length ? e.capabilities.join(', ') : 'none reported'}</dd>
           </dl>
-        </details>
+        </section>
       )}
-      <details className="panel"><summary>Recent activity</summary><button className="btn-secondary" onClick={commands.reload}>Refresh activity</button><StateNotice state={commands.state} onRetry={commands.reload} />{Array.isArray(commands.data) && <ul className="ky-list">{commands.data.map((c) => <li key={c.id}>{c.action} · {c.container_id || c.reference} · {c.outcome || 'pending'}{c.detail ? ` — ${c.detail}` : ''}</li>)}</ul>}</details>
+      {view === 'activity' && <section className="panel"><div className="panel-header"><h2>Recent activity</h2></div><button className="btn-secondary" onClick={commands.reload}>Refresh activity</button><StateNotice state={commands.state} onRetry={commands.reload} />{Array.isArray(commands.data) && <ul className="ky-list">{commands.data.map((c) => <li key={c.id}>{c.action} · {c.container_id || c.reference} · {c.outcome || 'pending'}{c.detail ? ` — ${c.detail}` : ''}</li>)}</ul>}{commands.state === 'ready' && Array.isArray(commands.data) && commands.data.length === 0 && <EmptyNotice>No recent activity on this host.</EmptyNotice>}</section>}
       {inventory.state === 'notfound' && details.state === 'ready' && <EmptyNotice>No inventory yet. It arrives with the agent's first report after approval.</EmptyNotice>}
       {inventory.state !== 'notfound' && <StateNotice state={inventory.state} onRetry={inventory.reload} />}
       {inventory.state === 'ready' && inv && (
@@ -73,18 +77,20 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
-          <ComposeProjects containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
-            setProjectFilter({ base, name });
-            document.getElementById('endpoint-containers')?.focus();
-          }} />
-          <div id="endpoint-containers" tabIndex={-1}>
+          {view === 'projects' && <ComposeProjects containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
+            setProjectFilter({ base, name }); setView('containers');
+            requestAnimationFrame(() => document.getElementById('endpoint-containers')?.focus());
+          }} />}
+          {view === 'containers' && <div id="endpoint-containers" tabIndex={-1}>
+          <div className="ky-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{visibleContainers.length} containers</span></div>
           {selectedProject !== null && <p>Showing containers for <strong style={{ overflowWrap: 'anywhere' }}><bdi>{selectedProject}</bdi></strong>. <button className="btn-secondary" onClick={() => setProjectFilter(null)}>Show all containers</button></p>}
-          <Table title="Containers" rows={visibleContainers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Usage', 'Ports', 'Project', 'Actions']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, usage(c), c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—', <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onRefresh={commands.reload} />]} />
-          </div>
-          <section className="panel"><h2>Pull an image</h2><ImageControls key={base} kind="pull" base={base} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onActivity={commands.reload} /><p>Use an explicit tag or digest. A pull downloads an image; it does not update running containers.</p></section>
+          <Table title="Containers" rows={visibleContainers} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'Status', 'Usage', 'Actions']} render={(c) => [<div className="ky-resource-name"><strong>{displayName(c.name)}</strong><span title={c.image}>{displayName(c.image)}</span><small>{c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || 'No published ports'}{c.compose_project ? ` · ${displayName(c.compose_project)}` : ''}</small></div>, <span className={`badge ${c.state === 'running' ? 'badge-success' : c.state === 'exited' || c.state === 'dead' ? 'badge-danger' : 'badge-secondary'}`} title={c.status}>{displayName(c.state)}</span>, usage(c), <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onRefresh={commands.reload} />]} />
+          </div>}
+          {view === 'images' && <><section className="panel"><h2>Pull an image</h2><ImageControls key={base} kind="pull" base={base} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onActivity={commands.reload} /><p>Use an explicit tag or digest. A pull downloads an image; it does not update running containers.</p></section>
           <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID', 'Actions']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), <span title={i.id}>{i.id.slice(0, 19)}</span>, <ImageControls key={`${base}/${i.id}`} kind="remove" imageID={i.id} base={base} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onActivity={commands.reload} />]} />
-          <Table title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />
-          <Table title="Volumes" rows={inv.snapshot.volumes} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [displayName(v.name), displayName(v.driver), displayName(v.mountpoint)]} />
+          </>}
+          {view === 'networks' && <Table title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />}
+          {view === 'volumes' && <Table title="Volumes" rows={inv.snapshot.volumes} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [displayName(v.name), displayName(v.driver), displayName(v.mountpoint)]} />}
         </>
       )}
     </div>
@@ -97,9 +103,9 @@ function Table<T>({ title, rows, empty, head, render }: { title: string; rows: T
       <div className="panel-header"><h2 style={{ fontSize: 16 }}>{title} <span style={{ color: 'var(--ink)', fontWeight: 400 }}>({rows.length})</span></h2></div>
       {rows.length === 0 ? <EmptyNotice>{empty}</EmptyNotice> : (
         <div style={{ overflowX: 'auto' }}>
-          <table className="ky-table">
+          <table className="ky-table ky-responsive-table">
             <thead><tr>{head.map((h) => <th key={h}>{h}</th>)}</tr></thead>
-            <tbody>{rows.map((r, i) => <tr key={i}>{render(r).map((cell, j) => <td key={j} className={j === head.length - 1 || head[j] === 'ID' ? 'font-mono' : ''}>{cell}</td>)}</tr>)}</tbody>
+            <tbody>{rows.map((r, i) => <tr key={i}>{render(r).map((cell, j) => <td key={j} data-label={head[j]}>{cell}</td>)}</tr>)}</tbody>
           </table>
         </div>
       )}

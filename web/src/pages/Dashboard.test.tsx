@@ -6,7 +6,10 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it('puts container inventory on the home page and links to real endpoint operations', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role: 'operator' }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { containers: [{ id: 'c', name: 'web', image: 'nginx:1', state: 'running', ports: [] }] } }) : json([{ id: 'e', name: 'Docker host', state: 'active', runtime: 'docker', facts: {} }])));
   render(<Dashboard />);
-  expect(await screen.findByRole('link', { name: 'web' })).toHaveProperty('pathname', '/organizations/a/endpoints/e');
+  expect(await screen.findByText('web')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Logs' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+  expect(screen.queryByRole('combobox')).toBeNull();
   expect(screen.queryByText(/Directory|Feature 0|Pluggable/)).toBeNull();
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } });
   expect(screen.getByText('No matching containers on this host.')).toBeTruthy();

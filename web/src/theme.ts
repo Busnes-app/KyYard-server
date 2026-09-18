@@ -14,7 +14,7 @@ export const themes = {
     "Forest": { bg: "#142018", panel: "#1f2f24", ink: "#c7dbc7", inkStrong: "#e3f0df", accent: "#8faa74", accentSoft: "#3a5837", line: "#4f694f", glow: "rgba(118, 148, 95, 0.24)", sidebarStart: "#18261c", sidebarEnd: "#223629", buttonText: "#12200f" },
     "Sun": { bg: "#fff3dc", panel: "#fff9ec", ink: "#5a4024", inkStrong: "#392611", accent: "#e0ab4f", accentSoft: "#f1d9a2", line: "#d4b27a", glow: "rgba(224, 171, 79, 0.28)", sidebarStart: "#f8e7c5", sidebarEnd: "#f2dab1", buttonText: "#2a1808" },
     "Patina Ky": { bg: "#0d0f14", panel: "#161a22", ink: "#94a3b8", inkStrong: "#e2e8f0", accent: "#4deeea", accentSoft: "#0e4a48", line: "#1e293b", glow: "rgba(77, 238, 234, 0.22)", sidebarStart: "#0d0f14", sidebarEnd: "#1b212c", buttonText: "#04120d" },
-    "Polished Ky": { bg: "#eef2f6", panel: "#ffffff", ink: "#475569", inkStrong: "#0f172a", accent: "#0891b2", accentSoft: "#cffafe", line: "#cbd5e1", glow: "rgba(8, 145, 178, 0.18)", sidebarStart: "#f1f5f9", sidebarEnd: "#e2e8f0", buttonText: "#042f2e" },
+    "Polished Ky": { bg: "#eef2f6", panel: "#ffffff", ink: "#475569", inkStrong: "#0f172a", accent: "#0891b2", accentSoft: "#cffafe", line: "#cbd5e1", glow: "rgba(8, 145, 178, 0.18)", sidebarStart: "#f1f5f9", sidebarEnd: "#e2e8f0", buttonText: "#021716" },
 };
 export type ThemeName = keyof typeof themes;
 export const themeNames = Object.keys(themes).filter(isThemeName);
@@ -33,7 +33,7 @@ export function applyTheme(name: ThemeName, persist = true) {
   const n = Number.parseInt(t.bg.slice(1), 16);
   const light = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255 > 0.55;
   root.style.colorScheme = light ? 'light' : 'dark';
-  root.style.setProperty('--panel-hover', t.accentSoft);
+  root.style.setProperty('--panel-hover', 'color-mix(in srgb, ' + t.panel + ' 92%, ' + t.inkStrong + ')');
   root.style.setProperty('--line-strong', t.ink);
   root.style.setProperty('--danger', light ? '#b91c1c' : '#f87171');
   root.style.setProperty('--success', light ? '#166534' : '#34d399');

@@ -76,6 +76,7 @@ Default section order:
 6. Report any docs intentionally left unchanged and why
 
 ## User Preferences
+- Keep the interface coherent across the whole site: clear operational navigation, consistent Ky design patterns, readable forms and tables, and reachable controls on mobile. Prioritize interface corrections over adding more UI clutter.
 - The local Docker host connects automatically in the standard installation, without an enrollment command, separate agent container or fingerprint approval. Additional hosts retain explicit enrollment.
 - Remote-host setup is one image-pulling Docker run command with an enrollment link; do not require inspecting a server container or running a separate enrollment container.
 - Containers and endpoints are the primary navigation and home-page content; administration stays in Settings.
