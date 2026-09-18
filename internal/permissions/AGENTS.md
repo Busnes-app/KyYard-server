@@ -7,6 +7,7 @@ Named actions and fixed role mappings for product authorization.
 Owns the permission matrix; store owns live membership checks and transactional enforcement, API owns session authentication and trusted request context.
 
 ## Local Contracts
+- application.adopt also gates explicit service mapping within an adopted instance. application.read may inspect mapping choices; only organization/environment administrators save them. Mapping is neither deployment nor secret authority.
 - `application.adopt` and `application.release` belong to organization/environment administrators only. They change recorded ownership without runtime operations or secret access.
 - `secret.reveal` permits only organization administrators to use the internal audited application-value resolver. Import authority does not imply reveal authority.
 - Application persistence: every active tenant role holds `application.read`; organization/environment administrators hold `application.import` and `application.destroy` (explicit draft discard); those administrators and developers hold `application.edit`. These permissions save desired state only and imply no adoption, deployment, secret-value read or platform-admin bypass.

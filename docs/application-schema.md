@@ -82,6 +82,16 @@ An administrator selects a host/project, reviews all immutable container IDs, im
 
 Explicit release removes only the reviewed instance ID and its resource associations. An old release cannot affect a replacement adoption. No runtime commands are sent by adoption or release. Once released, a draft may be discarded. A future deployment slice must prevent releasing in-flight/deployed history and recheck every touched identity; names/project labels are never authority to claim a replacement container. Both new tables are proven in SQLite snapshot recovery. Endpoint discovery labels registered identities as adopted and leaves newly observed IDs unclaimed.
 
+## Service mapping
+
+Migration22 stores mapping version and reviewed definition revision on each instance, and an optional service name on each adopted resource. A partial unique index enforces one container per service per instance; an unmapped resource has an empty name. Empty mappings are valid and never imply creation or removal. Existing adoptions start with no mapping.
+
+GET mapping under application.read returns current service names, confirmed assignments, mapping version and an adoption preview with only owned container choices. The digest still covers the complete observed project; new unowned IDs invalidate a stale review but never become choices. All adopted identities must remain in the project with their recorded image/creation identity (timestamps compare at microsecond precision). The same freshness/completeness gates as adoption apply.
+
+PUT replaces all assignments under application.adopt, requiring exact instance ID, mapping version, digest and typed project name. Services must exist in the latest digest-verified definition; IDs must already be adopted and unique in the submitted map. Application-then-endpoint locking rechecks revision/inventory, and an instance version CAS serializes competing administrators and release. Assignments, version and audit commit atomically. A changed definition leaves the prior mapped_revision visible; an administrator must review/save again. Removed service assignments are cleared by that explicit replacement. Release deletes all mappings with the adopted records; restore preserves them.
+
+Mapping records intent only: no Compose labels, runtime resources or secrets change. Observed comparison remains advisory and labels must not override confirmed assignments. Future executable previews must bind instance, mapping version, mapped revision and fresh immutable identities, resolve/pin images and reject unmapped or unsupported operations rather than guessing.
+
 ## Observed comparison
 
 The adopted application configuration provides an on-demand read-only comparison against its latest saved revision. It reads the scoped instance, head/digest, endpoint and inventory together, then the immutable resource records. A concurrent release with no remaining resources refuses the result. The returned instance ID lets the UI reject a comparison for a replacement adoption.

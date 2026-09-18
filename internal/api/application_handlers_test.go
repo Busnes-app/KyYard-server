@@ -71,12 +71,24 @@ func TestApplicationImportRoutes(t *testing.T) {
 	request(nil, "POST", adoption, string(adoptionBody), 401)
 	var instance store.ApplicationInstance
 	must(json.Unmarshal([]byte(request(admin, "POST", adoption, string(adoptionBody), 201)), &instance))
+	mapping := base + "/" + app.ID + "/mapping"
+	var mapped store.ApplicationMapping
+	must(json.Unmarshal([]byte(request(admin, "GET", mapping, "", 200)), &mapped))
+	mappingBody, _ := json.Marshal(store.MappingRequest{InstanceID: instance.ID, Version: mapped.Version, Digest: mapped.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": strings.Repeat("a", 64)}})
+	request(nil, "GET", mapping, "", 401)
+	if w := tenantRequest(s, admin, "PUT", mapping, string(mappingBody), false); w.Code != 403 {
+		t.Fatal("mapping without CSRF")
+	}
+	request(admin, "PUT", mapping, string(mappingBody), 204)
+	request(admin, "PUT", mapping, string(mappingBody), 409)
 	comparison := base + "/" + app.ID + "/comparison"
 	request(nil, "GET", comparison, "", 401)
 	request(admin, "GET", comparison, "", 200)
 	for _, role := range []store.TenantRole{store.RoleReadOnly, store.RoleDeveloper, store.RoleOperator} {
 		must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_importer", Role: role, Status: "active"}))
 		request(admin, "GET", comparison, "", 200)
+		request(admin, "GET", mapping, "", 200)
+		request(admin, "PUT", mapping, string(mappingBody), 403)
 	}
 	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_importer", Role: store.RoleOrganizationAdmin, Status: "active"}))
 	request(admin, "GET", "/api/organizations/b/environments/env-b/applications/"+app.ID+"/comparison", "", 403)

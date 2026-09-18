@@ -171,3 +171,24 @@ func (s *Server) handleReplaceApplicationRevision(w http.ResponseWriter, r *http
 	}
 	s.writeJSON(w, http.StatusCreated, map[string]int{"revision": number})
 }
+
+func (s *Server) handleApplicationMapping(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	result, err := s.store.Tenancy().ReadApplicationMapping(r.Context(), a, r.PathValue("application"))
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+func (s *Server) handleSetApplicationMapping(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	var input store.MappingRequest
+	if strictJSON(r, &input) != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	if err := s.store.Tenancy().SetApplicationMapping(r.Context(), a, r.PathValue("application"), input); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
