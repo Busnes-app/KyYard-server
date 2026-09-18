@@ -53,7 +53,10 @@ func (s *Server) RunLocalDocker(ctx context.Context) error {
 		return err
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/agent/v1/connect", s.tracked(s.handleAgentConnect))
+	mux.HandleFunc("GET /api/agent/v1/connect", s.tracked(func(w http.ResponseWriter, r *http.Request) {
+		// Public loopback/proxy traffic must not consume this listener's retry budget.
+		s.agentConnect(w, r, "builtin-agent-connect")
+	}))
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second}
 	served := make(chan struct{})
 	go func() { defer close(served); _ = server.Serve(listener) }()

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ import (
 // A real Unix-socket Engine fixture exercises bootstrap, authenticated transport,
 // inventory, authorized commands, restart generation and live revocation together.
 func TestLocalDockerConnectsWithoutEnrollment(t *testing.T) {
-	testLocalDocker(t, 0, false)
+	testLocalDocker(t, 0, false, nil)
 }
 
 func TestLocalDockerReconnectsAfterATransientStoreError(t *testing.T) {
@@ -31,8 +32,25 @@ func TestLocalDockerReconnectsAfterATransientStoreError(t *testing.T) {
 	}{
 		{"handshake", 1, false}, {"frame_identity", 3, false}, {"frame_state", 1, true},
 	} {
-		t.Run(tc.name, func(t *testing.T) { testLocalDocker(t, tc.call, tc.state) })
+		t.Run(tc.name, func(t *testing.T) { testLocalDocker(t, tc.call, tc.state, nil) })
 	}
+}
+
+func TestLocalDockerIgnoresPublicConnectionRateLimit(t *testing.T) {
+	testLocalDocker(t, 0, false, func(s *api.Server) {
+		for i := 0; i < 21; i++ {
+			r := httptest.NewRequest(http.MethodGet, "/api/agent/v1/connect", nil)
+			r.RemoteAddr = "127.0.0.1:12345"
+			w := httptest.NewRecorder()
+			s.ServeHTTP(w, r)
+			if i < 20 && w.Code == http.StatusTooManyRequests {
+				t.Fatalf("public limit reached early at %d", i)
+			}
+			if i == 20 && w.Code != http.StatusTooManyRequests {
+				t.Fatalf("public limit not enforced: %d", w.Code)
+			}
+		}
+	})
 }
 
 type flakyLocalStore struct {
@@ -62,10 +80,13 @@ func (s *flakyLocalTenancy) EndpointState(ctx context.Context, endpoint string) 
 	return s.TenancyStore.EndpointState(ctx, endpoint)
 }
 
-func testLocalDocker(t *testing.T, failAt int32, state bool) {
+func testLocalDocker(t *testing.T, failAt int32, state bool, before func(*api.Server)) {
 	s, st, cfg := setupTestServer(t)
 	if failAt > 0 {
 		s = api.NewServer(cfg, flakyLocalStore{st, &flakyLocalTenancy{TenancyStore: st.Tenancy(), failAt: failAt, state: state}})
+	}
+	if before != nil {
+		before(s)
 	}
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	listener, err := net.Listen("unix", socket)
