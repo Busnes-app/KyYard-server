@@ -6,8 +6,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/config"
 )
 
 // Probe without loading configuration: a healthcheck must never create keys or open a DB.
@@ -24,7 +27,7 @@ func healthcheck() error {
 		port = strings.TrimSpace(os.Getenv("PORT"))
 	}
 	if port == "" {
-		port = "8080"
+		port = strconv.Itoa(config.DefaultPort)
 	}
 	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()

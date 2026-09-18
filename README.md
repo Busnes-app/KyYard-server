@@ -23,7 +23,7 @@ docker compose up -d
 docker compose logs kyyard
 ```
 
-Open **http://localhost:8080** on the Docker host. Sign in as `admin` with the temporary
+Open **http://localhost:9273** on the Docker host. Sign in as `admin` with the temporary
 password printed in the logs and replace it. The HTTP port is published on loopback only.
 `docker compose ps` reports health; `docker compose exec kyyard /app/kyyard-server healthcheck`
 checks readiness. Restarting preserves accounts, sessions and keys. Do not use `down -v`
@@ -73,9 +73,9 @@ are not retroactively flagged, since the server cannot infer whether they still 
 
 ## Transport and advanced deployment
 
-The bare binary defaults to `127.0.0.1:8080`; the image listens on `0.0.0.0:8080` inside
-its container, while Compose publishes only `127.0.0.1:8080` on the host. `KY_APP_URL`
-defaults to `http://localhost:8080` (or the configured port). Use that exact origin in your
+The bare binary defaults to `127.0.0.1:9273`; the image listens on `0.0.0.0:9273` inside
+its container, while Compose publishes only `127.0.0.1:9273` on the host. `KY_APP_URL`
+defaults to `http://localhost:9273` (or the configured port). Use that exact origin in your
 browser: writes from a different origin are refused, including login. Cookies are HttpOnly
 for sessions and SameSite, and their Secure flag follows the advertised URL.
 `KY_COOKIE_SECURE`, if supplied, must agree with the URL scheme. HTTP advertised URLs are
@@ -83,12 +83,12 @@ accepted only for localhost/loopback. A non-loopback HTTP listen address (or a h
 resolution cannot be assumed safe) additionally requires `KY_ALLOW_PLAINTEXT_BIND=true`.
 Compose sets this beside its loopback-only host publish; the image deliberately does not.
 A bare `docker run` must either configure an HTTPS reverse proxy or explicitly set this
-acknowledgement and publish with `-p 127.0.0.1:8080:8080`. It does not add encryption or
+acknowledgement and publish with `-p 127.0.0.1:9273:9273`. It does not add encryption or
 restrict the socket: do not expose that HTTP backend port to a LAN or the internet.
 `KY_ENV` has been removed; there is no separate development/production security mode.
 
 For access from another machine during setup, forward the local port over SSH:
-`ssh -N -L 8080:127.0.0.1:8080 user@docker-host`, then open http://localhost:8080 locally.
+`ssh -N -L 9273:127.0.0.1:9273 user@docker-host`, then open http://localhost:9273 locally.
 For shared access, terminate TLS at your reverse proxy with a valid certificate, route to
 this private backend, and preserve the browser Host and Origin headers. Append
 `:docker-compose.proxy.yml` to `COMPOSE_FILE` in `.env` and set:

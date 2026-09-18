@@ -199,7 +199,7 @@ jobs:
 
       - name: Container serves the app
         run: |
-          docker run -d --name ky_ci -p 127.0.0.1:18080:8080 \
+          docker run -d --name ky_ci -p 127.0.0.1:18080:9273 \
             -e KY_ALLOW_PLAINTEXT_BIND=true \
             -e KY_ADMIN_PASSWORD='CiSmokeAdminPass123!' \
             -e KY_CAPTCHA_PROVIDER=none \
