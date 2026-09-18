@@ -28,3 +28,14 @@ it('bounds the browser log display and aborts its request on unmount', async () 
   expect(screen.getByRole('status').textContent).toContain('last 256 KiB');
   view.unmount();
 });
+it('opens logs in a modal and closes the reader on Escape', () => {
+ const show = vi.fn(function (this: HTMLDialogElement) { this.open = true; });
+ Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show });
+ render(<ContainerControls base="/api/org/endpoint" container={container} active scope="Team / Production / Host" onRefresh={() => {}} />);
+ fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
+ const dialog = screen.getByRole('dialog', { name: 'Logs for web' });
+ expect(show).toHaveBeenCalledTimes(1);
+ fireEvent(dialog, new Event('cancel', { cancelable: true }));
+ expect(screen.queryByRole('dialog')).toBeNull();
+ Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+});

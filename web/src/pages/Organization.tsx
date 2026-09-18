@@ -26,9 +26,9 @@ export const Organization: React.FC<{ org: string }> = ({ org }) => {
     <div className="ky-page">
       <h1 style={{ fontSize: 24, display: 'flex', alignItems: 'center', gap: 10 }}>
         <Building2 size={24} style={{ color: 'var(--accent)' }} />
-        <span>{details.data?.name ?? org}</span>
+        <span>Environments</span>
       </h1>
-      <nav aria-label="Organization sections" className="ky-subnav">
+      <nav aria-label="Administration" className="ky-subnav">
         <Link to={orgPath(org, '/members')}><Users size={14} /> Members</Link>
         <Link to={orgPath(org, '/audit')}><ScrollText size={14} /> Audit</Link>
       </nav>

@@ -10,6 +10,8 @@ export function ContainerControls({ base, container, active, scope, onRefresh }:
   const [command, setCommand] = useState<Command | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const logDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (showLogs) logDialog.current?.showModal(); }, [showLogs]);
   const terminalDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (showTerminal) terminalDialog.current?.showModal(); }, [showTerminal]);
   const alive = useRef(true);
@@ -51,7 +53,7 @@ export function ContainerControls({ base, container, active, scope, onRefresh }:
   };
   const disabled = busy || !active || (command !== null && !command.outcome);
   return <>
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+    <div className="ky-container-actions">
       {container.state !== 'running' && <button className="btn-secondary" disabled={disabled} onClick={() => void act('start')}>Start</button>}
       {container.state === 'running' && <><button className="btn-secondary" disabled={disabled} onClick={() => void act('stop')}>Stop</button><button className="btn-secondary" disabled={disabled} onClick={() => void act('restart')}>Restart</button></>}
       <button className="btn-secondary" disabled={!active || container.state !== 'running'} onClick={() => setShowTerminal(!showTerminal)}>{showTerminal ? 'Close terminal' : 'Terminal'}</button>
@@ -63,7 +65,10 @@ export function ContainerControls({ base, container, active, scope, onRefresh }:
       <button className="btn-secondary" onClick={() => setShowTerminal(false)}>Close terminal</button>
       <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${container.id}/${container.image_id}`} base={base} container={container} scope={scope} /></Suspense>
     </dialog>}
-    {showLogs && <ContainerLogs key={container.id} url={`${base}/containers/${encodeURIComponent(container.id)}/logs`} name={container.name} />}
+    {showLogs && <dialog ref={logDialog} className="modal-window ky-log-dialog" aria-label={`Logs for ${container.name}`} onCancel={(event) => { event.preventDefault(); setShowLogs(false); }} onClose={() => setShowLogs(false)}>
+      <button className="btn-secondary" onClick={() => setShowLogs(false)}>Close logs</button>
+      <ContainerLogs key={container.id} url={`${base}/containers/${encodeURIComponent(container.id)}/logs`} name={container.name} />
+    </dialog>}
   </>;
 }
 

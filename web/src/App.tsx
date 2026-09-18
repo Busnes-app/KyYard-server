@@ -94,10 +94,11 @@ export const App: React.FC = () => {
 
   const org = 'org' in route ? route.org : undefined;
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="ky-shell">
+      <a className="ky-skip" href="#main-content">Skip to content</a>
       <AppHeader appName={settings?.app_name || 'KyYard'} route={route} user={user} onLogout={handleLogout} />
       {/* Keying on the organization discards every tenant screen's state when the context changes. */}
-      <main style={{ flex: 1 }} key={org ?? ''}>
+      <main id="main-content" className="ky-main" tabIndex={-1} key={org ?? ''}>
         <Screen route={route} settings={settings} user={user} />
       </main>
     </div>
@@ -112,12 +113,12 @@ const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, s
     case 'settings': return <Settings settings={settings} />;
     case 'organization': return <Organization org={route.org} />;
     case 'members': return <Members org={route.org} />;
-    case 'environment': return <Environment org={route.org} env={route.env} />;
-    case 'endpoint': return <EndpointPage org={route.org} endpoint={route.endpoint} />;
+    case 'environment': return <Environment key={`${route.org}/${route.env}`} org={route.org} env={route.env} />;
+    case 'endpoint': return <EndpointPage key={`${route.org}/${route.endpoint}`} org={route.org} endpoint={route.endpoint} />;
     case 'audit': return (
       <div className="ky-page">
-        <h1 style={{ fontSize: 24 }}>Organization audit</h1>
-        <nav aria-label="Organization sections" className="ky-subnav"><Link to={`/organizations/${encodeURIComponent(route.org)}`}>Back to organization</Link></nav>
+        <h1 style={{ fontSize: 24 }}>Audit history</h1>
+        <nav aria-label="Administration" className="ky-subnav"><Link to={`/organizations/${encodeURIComponent(route.org)}`}>Environments</Link></nav>
         <AuditList url={`/api/organizations/${encodeURIComponent(route.org)}/audit`} />
       </div>
     );
