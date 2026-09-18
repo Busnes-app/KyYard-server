@@ -10,6 +10,8 @@ export function ContainerControls({ base, container, active, scope, onRefresh }:
   const [command, setCommand] = useState<Command | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const terminalDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (showTerminal) terminalDialog.current?.showModal(); }, [showTerminal]);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
@@ -57,7 +59,10 @@ export function ContainerControls({ base, container, active, scope, onRefresh }:
       <button className="btn-secondary" disabled={disabled || ['running', 'paused', 'restarting'].includes(container.state)} onClick={() => void act('remove')}>Remove</button>
     </div>
     {message && <p role="status">{message}</p>}
-    {showTerminal && <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${container.id}/${container.image_id}`} base={base} container={container} scope={scope} /></Suspense>}
+    {showTerminal && <dialog ref={terminalDialog} className="modal-window" aria-label={`Terminal for ${container.name}`} onCancel={(event) => { event.preventDefault(); setShowTerminal(false); }} onClose={() => setShowTerminal(false)} style={{ color: 'var(--ink-strong)', width: 'min(960px, calc(100vw - 32px))', maxWidth: 'none', maxHeight: 'calc(100dvh - 32px)', margin: 'auto' }}>
+      <button className="btn-secondary" onClick={() => setShowTerminal(false)}>Close terminal</button>
+      <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${container.id}/${container.image_id}`} base={base} container={container} scope={scope} /></Suspense>
+    </dialog>}
     {showLogs && <ContainerLogs key={container.id} url={`${base}/containers/${encodeURIComponent(container.id)}/logs`} name={container.name} />}
   </>;
 }
