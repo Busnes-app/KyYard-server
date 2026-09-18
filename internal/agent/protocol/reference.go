@@ -23,6 +23,11 @@ var (
 	imageID = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
+// IsImageAction reports whether an action names an image rather than a container.
+func IsImageAction(action string) bool {
+	return action == ActionImagePull || action == ActionImageRemove
+}
+
 // SplitImageReference separates a reference into the image name and the tag or digest that
 // pins it to one image. An empty tag means the reference named neither, which is not a thing
 // this product sends to a runtime: the Engine API reads an empty tag as "every tag in the

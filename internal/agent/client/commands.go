@@ -17,6 +17,58 @@ import (
 // agent's memory or the host's disk with concurrent pulls.
 const maxInFlightCommands = 4
 
+// maxInFlightImageCommands is the share of that limit image actions may hold. A pull is
+// bounded by a remote registry rather than by the daemon, so without a reserve of its own a
+// handful of them -- four ordinary large images, or one caller with only image.pull -- would
+// occupy every slot and make an administrator's emergency stop come back denied for minutes.
+// The endpoint you cannot manage during an incident is the outcome all of this exists to
+// prevent, and moving it from the heartbeat path to the command path would not be fixing it.
+const maxInFlightImageCommands = maxInFlightCommands / 2
+
+// budget is what one agent runs at once. It belongs to the agent rather than to a session: a
+// command outlives the socket it arrived on, so a per-session budget would grant a fresh set
+// with every redial.
+type budget struct {
+	all    chan struct{}
+	images chan struct{}
+}
+
+func newBudget() *budget {
+	return &budget{
+		all:    make(chan struct{}, maxInFlightCommands),
+		images: make(chan struct{}, maxInFlightImageCommands),
+	}
+}
+
+// take reserves capacity for one command. An image action needs both its own reserve and a
+// general slot, so container actions always have capacity left. The caller runs release when
+// the command is done with; not ok means the agent is full and the command must be refused
+// rather than queued.
+func (b *budget) take(action string) (release func(), ok bool) {
+	image := protocol.IsImageAction(action)
+	if image {
+		select {
+		case b.images <- struct{}{}:
+		default:
+			return nil, false
+		}
+	}
+	select {
+	case b.all <- struct{}{}:
+	default:
+		if image {
+			<-b.images
+		}
+		return nil, false
+	}
+	return func() {
+		<-b.all
+		if image {
+			<-b.images
+		}
+	}, true
+}
+
 // Command dedupe limits from docs/agent-protocol.md.
 const (
 	// dedupeLife is how long a finished command's answer is remembered, so a server that

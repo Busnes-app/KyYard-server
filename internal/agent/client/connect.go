@@ -104,10 +104,10 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	// grant four more with every reconnect, and a per-session ledger would serialise its stale
 	// view over the file and erase what the new session recorded.
 	commands := openLedger(opts.IdentityDir)
-	slots := make(chan struct{}, maxInFlightCommands)
+	running := newBudget()
 	delay := time.Second
 	for {
-		err := session(ctx, id, target, &opts, commands, slots)
+		err := session(ctx, id, target, &opts, commands, running)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -141,7 +141,7 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	}
 }
 
-func session(ctx context.Context, id *Identity, target string, opts *Options, commands *ledger, slots chan struct{}) error {
+func session(ctx context.Context, id *Identity, target string, opts *Options, commands *ledger, running *budget) error {
 	// Commands run under the session's own context, so when this returns the work it started
 	// is cancelled rather than left to finish against a host nobody is watching.
 	ctx, endSession := context.WithCancel(ctx)
@@ -372,12 +372,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				// waiting for one sends no heartbeats, so the endpoint is marked offline and
 				// stops accepting the commands an operator needs during an incident. The
 				// agent's liveness must not depend on how long a runtime call takes.
-				taken := false
-				select {
-				case slots <- struct{}{}:
-					taken = true
-				default:
-				}
+				release, taken := running.take(cmd.Action)
 				if !taken {
 					// Refused rather than queued: an answer now beats an answer later, and a
 					// queue lets one caller spend the agent's memory.
@@ -388,7 +383,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 					break
 				}
 				go func(cmd protocol.Command) {
-					defer func() { <-slots }()
+					defer release()
 					deliver(ctx, results, handleCommand(ctx, cmd, id, commands, opts))
 				}(cmd)
 			case protocol.TypeHeartbeat:

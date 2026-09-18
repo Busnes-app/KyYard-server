@@ -106,17 +106,20 @@ func TestTheLedgerIsBounded(t *testing.T) {
 // shutdown -- and a worker blocked forever on a loop that has gone would take a quarter of the
 // agent's capacity with it each time, until every command is refused.
 func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
-	slots := make(chan struct{}, maxInFlightCommands)
+	running := newBudget()
 	results := make(chan protocol.Result, maxInFlightCommands)
 	for i := 0; i < maxInFlightCommands; i++ {
 		results <- protocol.Result{ID: fmt.Sprintf("earlier_%d", i)}
 	}
 	ctx, endSession := context.WithCancel(context.Background())
-	slots <- struct{}{}
+	release, ok := running.take(protocol.ActionImagePull)
+	if !ok {
+		t.Fatal("a fresh budget had no room")
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		defer func() { <-slots }()
+		defer release()
 		deliver(ctx, results, protocol.Result{ID: "cmd_late", Outcome: protocol.OutcomeSucceeded})
 	}()
 	endSession()
@@ -125,7 +128,30 @@ func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the worker is still waiting to deliver a result nobody is reading")
 	}
-	if len(slots) != 0 {
-		t.Fatalf("%d in-flight slots were never returned", len(slots))
+	if len(running.all) != 0 || len(running.images) != 0 {
+		t.Fatalf("%d general and %d image slots were never returned", len(running.all), len(running.images))
+	}
+}
+
+// Image actions draw from a reserve of their own as well as a general slot, so a pull -- which
+// waits on a remote registry -- can never occupy the whole set and leave an operator unable to
+// stop a container during an incident.
+func TestImageActionsCannotTakeEveryCommandSlot(t *testing.T) {
+	running := newBudget()
+	for i := 0; i < maxInFlightImageCommands; i++ {
+		if _, ok := running.take(protocol.ActionImagePull); !ok {
+			t.Fatalf("pull %d was refused inside the image reserve", i)
+		}
+	}
+	if _, ok := running.take(protocol.ActionImageRemove); ok {
+		t.Fatal("an image action was admitted past the image reserve")
+	}
+	for i := 0; i < maxInFlightCommands-maxInFlightImageCommands; i++ {
+		if _, ok := running.take(protocol.ActionStop); !ok {
+			t.Fatalf("container action %d was refused while the general budget had room", i)
+		}
+	}
+	if _, ok := running.take(protocol.ActionStop); ok {
+		t.Fatal("a container action was admitted past the general limit")
 	}
 }

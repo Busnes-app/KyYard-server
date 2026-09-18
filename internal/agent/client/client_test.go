@@ -1189,14 +1189,19 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
 		_, _, _ = c.Read(ctx)
 		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
-		// One more than the agent will run at once, so the last must be refused rather than
-		// queued behind the others.
-		for i := 0; i < 5; i++ {
+		// More pulls than the image reserve holds, so the surplus must be refused rather than
+		// queued behind the others -- and then a container action, which must still get
+		// through: an operator's emergency stop cannot wait on a registry.
+		for i := 0; i < 4; i++ {
 			_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeCommand, protocol.Command{
-				ID: fmt.Sprintf("cmd_%d", i), Endpoint: "ep_busy", Action: protocol.ActionStop,
-				Container: "c1", Deadline: time.Now().UTC().Add(time.Minute),
+				ID: fmt.Sprintf("pull_%d", i), Endpoint: "ep_busy", Action: protocol.ActionImagePull,
+				Reference: "ghcr.io/busnes-app/kyyard:1.2.3", Deadline: time.Now().UTC().Add(time.Minute),
 			}))
 		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeCommand, protocol.Command{
+			ID: "stop_0", Endpoint: "ep_busy", Action: protocol.ActionStop,
+			Container: "c1", Deadline: time.Now().UTC().Add(time.Minute),
+		}))
 		for {
 			_, raw, err := c.Read(ctx)
 			if err != nil {
@@ -1222,9 +1227,11 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 	snapshot := func(context.Context) (*protocol.Snapshot, error) {
 		return &protocol.Snapshot{Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
 	}
-	operate := func(context.Context, protocol.Command) (string, string) {
+	started := make(chan string, 8)
+	operate := func(_ context.Context, cmd protocol.Command) (string, string) {
+		started <- cmd.ID
 		<-release
-		return protocol.OutcomeSucceeded, "stopped"
+		return protocol.OutcomeSucceeded, "done"
 	}
 	go func() {
 		_ = client.Run(ctx, id, client.Options{
@@ -1233,12 +1240,15 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 		})
 	}()
 
-	// While five commands sit in Operate, the loop still answers the heartbeat and still
-	// refuses the sixth-in-line immediately.
+	// maxInFlightImageCommands, which this package cannot see from outside.
+	const imageReserve = 2
+
+	// While the blocked commands sit in Operate, the loop still answers the heartbeat, refuses
+	// the pulls past the image reserve immediately, and never refuses the container action.
 	denied := 0
 	seen := 0
-	deadline := time.After(6 * time.Second)
-	for denied == 0 || seen < 3 {
+	deadline := time.After(15 * time.Second)
+	for denied < 4-imageReserve || seen < 3 {
 		select {
 		case <-beats:
 			seen++
@@ -1246,16 +1256,32 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 			if res.Outcome != protocol.OutcomeDenied {
 				t.Fatalf("a blocked command answered early: %+v", res)
 			}
+			if res.ID == "stop_0" {
+				t.Fatal("pulls waiting on a registry refused an operator's stop")
+			}
 			denied++
 		case <-deadline:
 			t.Fatalf("%d heartbeats and %d refusals while commands blocked; the loop is starved", seen, denied)
 		}
 	}
+	// The stop is running rather than refused, so it is one of the commands still blocked.
+	running := map[string]bool{}
+	for len(running) < imageReserve+1 {
+		select {
+		case id := <-started:
+			running[id] = true
+		case <-time.After(15 * time.Second):
+			t.Fatalf("only %v started", running)
+		}
+	}
+	if !running["stop_0"] {
+		t.Fatalf("the container action never ran: %v", running)
+	}
 
 	close(release)
 	settled := 0
-	done := time.After(6 * time.Second)
-	for settled < 4 {
+	done := time.After(15 * time.Second)
+	for settled < imageReserve+1 {
 		select {
 		case res := <-results:
 			if res.Outcome != protocol.OutcomeSucceeded {
@@ -1264,7 +1290,7 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 			settled++
 		case <-beats:
 		case <-done:
-			t.Fatalf("only %d of 4 commands reported after they finished", settled)
+			t.Fatalf("only %d of %d commands reported after they finished", settled, imageReserve+1)
 		}
 	}
 }
