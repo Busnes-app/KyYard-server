@@ -1,6 +1,6 @@
 # Compatibility overlay for existing COMPOSE_FILE chains. KyYard now uses Docker's
 # built-in bridge in the base file; there is no dedicated network or KY_PROXY_NETWORK.
-# A containerized proxy connects to KyYard's bridge IP at port 9273. Enable WebSockets.
+# Use a host-service or host-network proxy through 127.0.0.1:9273; see README.
 services:
   kyyard:
     network_mode: bridge

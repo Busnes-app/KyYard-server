@@ -104,12 +104,18 @@ this machine — arrives on loopback or through Docker's bridge gateway, and the
 stays where it is.
 
 KyYard uses Docker's existing default `bridge` network. Compose creates no KyYard network.
-For a containerized reverse proxy, point the upstream at KyYard's bridge IP and port 9273,
-with WebSocket support enabled. Obtain that IP with
-`docker inspect -f '{{.NetworkSettings.IPAddress}}' kyyard`.
-The built-in bridge does not resolve container names. Check the upstream IP after recreating
-KyYard, and set `KY_TRUSTED_PROXIES` to the proxy's actual peer IP. The backend is reachable
-by other containers on that bridge; the host publish stays loopback-only.
+The backend is reachable by other containers on that bridge; the host publish stays
+loopback-only. This deployment trusts co-resident containers and the Docker host. A loopback
+host publish does not isolate the container's own port from bridge peers. Do not use this
+packaging for mutually untrusted workloads without host-enforced isolation or a secured backend.
+
+Docker cannot pin container addresses on the default bridge; addresses are recycled. Do not
+put a dynamically allocated proxy address in `KY_TRUSTED_PROXIES`. Use a host-service proxy,
+or run your containerized proxy in the host network namespace, targeting `127.0.0.1:9273`
+with WebSocket support. Trust only the observed host/bridge-gateway peer and keep that gateway
+fixed in Docker daemon configuration; never trust the entire bridge subnet. A remote proxy
+needs a stable host address and a separately secured backend connection. Do not change the
+KyYard container bind to `127.0.0.1`: Docker port forwarding targets its bridge interface.
 `docker-compose.proxy-network.yml` remains a no-op compatibility overlay for existing
 `COMPOSE_FILE` chains; `KY_PROXY_NETWORK` is no longer used.
 
@@ -118,9 +124,18 @@ bind and DNS overlays already in use:
 
 - `docker-compose.bind.yml`: existing host directory at `./data` instead of the named volume.
 - `docker-compose.postgres.yml`: PostgreSQL 17 on the existing Docker bridge, without a
-  published database port. Set `KY_POSTGRES_PASSWORD` and `KY_DB_DSN` using the database's
-  reachable IP (not the `postgres` service name); re-check it after recreation. Capsule backups
-  support SQLite only. A separately managed PostgreSQL server with a stable address is also supported.
+  published database port. Set `KY_POSTGRES_PASSWORD`, `KY_POSTGRES_TLS_DIR` and `KY_DB_DSN`.
+  The TLS directory contains `server.crt`, `server.key` and `ca.crt`; the overlay enables
+  server TLS and mounts only the public CA file into KyYard at `/etc/kyyard-db-ca.crt`.
+  Use `sslmode=verify-full&sslrootcert=/etc/kyyard-db-ca.crt` in the DSN. Its host must match
+  the certificate SAN and resolve to the database (the bridge has no `postgres` service DNS).
+  A recycled IP then fails certificate verification before credentials are sent.
+  The PostgreSQL image's `postgres` user must own/read the key with mode 0600; alternatively
+  use root ownership, mode 0640 and that user's group. Prepare the files before starting;
+  missing or invalid certificates fail startup. See [PostgreSQL TLS setup](https://www.postgresql.org/docs/17/ssl-tcp.html).
+  Existing database volumes need the same TLS setup before enabling this overlay. Capsule
+  backups support SQLite only. A separately managed PostgreSQL server with a stable address
+  and verified TLS is also supported by setting the server's database environment directly.
 - SSO: configure providers in **Settings → Single sign-on**. OIDC discovery supports KyIdentity;
   OAuth 2 providers can supply explicit endpoints and JSON profile field mappings. Register the
   displayed callback URL with the provider. New identities require an organization membership

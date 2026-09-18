@@ -110,3 +110,15 @@ func TestComposeUsesExistingBridge(t *testing.T) {
 		}
 	}
 }
+
+func TestSharedBridgeCredentialGuidance(t *testing.T) {
+	example := read(t, filepath.Join("..", "..", ".env.example"))
+	if strings.Contains(example, "sslmode=disable") || strings.Contains(example, "compose-internal network") {
+		t.Fatal("shared bridge guidance must not advertise an isolated plaintext database")
+	}
+	for _, text := range []string{"sslmode=verify-full", "cannot pin", "host-network", "gateway"} {
+		if !strings.Contains(example, text) {
+			t.Errorf("missing shared bridge guidance: %s", text)
+		}
+	}
+}

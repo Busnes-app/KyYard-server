@@ -38,7 +38,8 @@ services:
     environment:
       - KY_PORT=9273
       - KY_HOST=0.0.0.0
-      # The existing Docker bridge reaches this bind; the host publish is loopback-only.
+      # Bridge peers can reach this plaintext bind. This deployment trusts the host and
+      # co-resident containers; the loopback host publish is not bridge isolation.
       - KY_ALLOW_PLAINTEXT_BIND=true
       - KY_APP_NAME=KyYard
       - KY_APP_URL=http://localhost:9273
