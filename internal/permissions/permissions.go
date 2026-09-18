@@ -34,6 +34,7 @@ const (
 	// workload prints, which is where credentials and customer data turn up, so the matrix
 	// stops it at the developer and audits every session.
 	ContainerLogs Action = "container.logs"
+	ContainerExec Action = "container.exec"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -44,7 +45,7 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "environment_admin":

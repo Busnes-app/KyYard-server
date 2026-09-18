@@ -446,3 +446,20 @@ result in service, and what to distrust afterwards. Drill it once a quarter with
 ## Upgrading after the Busnes-app owner move
 
 The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr.io/busnes-app/kyyard`. The project no longer controls `ghcr.io/busness-app`; GHCR does not redirect it, and anything served under that name must be treated as untrusted. If `KY_IMAGE` in `.env` still names the old namespace, re-pinning is required, not optional: inspect `git remote -v` before any `git pull`, `make ci`, or `docker compose` command, and replace a retired-owner remote with `https://github.com/Busnes-app/KyYard-server.git` (prefer a fresh clone plus a known commit). Then remove `KY_IMAGE` to follow the compose default or verify and pin a digest using `docs/RESTORE.md` before pulling.
+
+### Container terminals
+
+Open an endpoint, choose **Terminal** on a running container, enter the container user
+(for example `1000` or `app`), choose the shell executable, and confirm the container
+name. Only organization administrators can open terminals. Local and remote Docker
+hosts use the same authorization; remote agents must run a version with exec support.
+The browser must use the configured `KY_APP_URL` origin and the reverse proxy must
+forward WebSocket upgrades.
+
+Resize with the row/column controls. Closing the tab or withdrawing access disconnects
+the attachment; it does **not** guarantee termination of a process inside the container.
+There is no automatic reconnect or execution retry. Sessions expire after 15 minutes
+without input or eight hours total. Slow-client buffer limits also disconnect rather
+than silently lose terminal data. Audit records who connected, the target, selected
+user, duration and known exit status, without recording commands or terminal contents.
+An interrupted session without an inspected exit code remains unknown.

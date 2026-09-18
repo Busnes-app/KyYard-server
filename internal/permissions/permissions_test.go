@@ -53,3 +53,11 @@ func TestLogsAreReadableByEveryoneButTheReadOnlyMember(t *testing.T) {
 		}
 	}
 }
+
+func TestExecIsOrganizationAdminOnly(t *testing.T) {
+	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer", "read_only", "admin", "unknown", ""} {
+		if Allows(role, ContainerExec) != (role == "organization_admin") {
+			t.Errorf("unexpected exec permission: %s", role)
+		}
+	}
+}

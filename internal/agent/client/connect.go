@@ -53,8 +53,8 @@ type Options struct {
 	// or sink refuses. Nil means this agent has no runtime, and a request for logs is closed
 	// with that reason rather than left open.
 	Logs func(ctx context.Context, req protocol.LogRequest, sink func([]byte) error) error
-	// Exec opens a PTY attachment. Nil disables exec; production wiring waits for
-	// the control-plane authorization and revocation path.
+	// Exec opens a PTY attachment after a nonce-bound control-plane grant.
+	// Nil disables exec when no runtime adapter is configured.
 	Exec func(context.Context, protocol.ExecSpec) (ExecSession, error)
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
@@ -244,7 +244,11 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	if heartbeat <= 0 || heartbeat > 55*time.Second {
 		heartbeat = 30 * time.Second
 	}
-	if err := write(ctx, conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{}, AgentVersion: opts.Version}); err != nil {
+	capabilities := []string{}
+	if opts.Exec != nil {
+		capabilities = append(capabilities, "container.exec")
+	}
+	if err := write(ctx, conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities, AgentVersion: opts.Version}); err != nil {
 		return err
 	}
 	metricsOut := make(chan protocol.Metrics, 1)
@@ -412,7 +416,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 					deliver(ctx, results, handleCommand(ctx, cmd, id, commands, opts))
 				}(cmd)
 			case protocol.TypeExecOpen, protocol.TypeExecInput, protocol.TypeExecResize, protocol.TypeExecCancel:
-				if err := terminals.handle(f, hello.State == "active"); err != nil {
+				if err := terminals.handle(f, hello.State == "active" || hello.State == "approved" || hello.State == "offline"); err != nil {
 					reason := "exec stream limit reached; not started"
 					if errors.Is(err, errExecUnavailable) {
 						reason = errExecUnavailable.Error()

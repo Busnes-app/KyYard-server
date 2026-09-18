@@ -303,6 +303,12 @@ func TestExecSlowOutputIsBoundedAndDisconnectReleases(t *testing.T) {
 // Exercise the real socket loop: a stalled runtime cannot suppress heartbeats,
 // capacity refusal leaves the connection alive, and cancel reaches the worker.
 func TestExecSocketRemainsResponsive(t *testing.T) {
+	for _, state := range []string{"active", "approved", "offline"} {
+		t.Run(state, func(t *testing.T) { testExecSocketRemainsResponsive(t, state) })
+	}
+}
+
+func testExecSocketRemainsResponsive(t *testing.T, state string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	started := make(chan struct{})
@@ -323,7 +329,7 @@ func TestExecSocketRemainsResponsive(t *testing.T) {
 			checked <- err
 			return
 		}
-		if err = write(ctx, conn, protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}); err != nil {
+		if err = write(ctx, conn, protocol.TypeHello, protocol.Hello{State: state, HeartbeatSeconds: 1}); err != nil {
 			checked <- err
 			return
 		}
@@ -354,11 +360,9 @@ func TestExecSocketRemainsResponsive(t *testing.T) {
 			case protocol.TypeHello:
 				var hello protocol.Hello
 				_ = json.Unmarshal(f.Payload, &hello)
-				for _, capability := range hello.Capabilities {
-					if strings.Contains(capability, "exec") {
-						checked <- errors.New("exec advertised before control-plane wiring")
-						return
-					}
+				if len(hello.Capabilities) != 1 || hello.Capabilities[0] != "container.exec" {
+					checked <- errors.New("configured exec runtime not advertised")
+					return
 				}
 			case protocol.TypeHeartbeat:
 				beats++
