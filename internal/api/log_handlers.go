@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -23,9 +25,16 @@ const (
 	// at the runtime, because the runtime has no such filter and the bound on what is read
 	// must not depend on how many lines happen to match.
 	maxLogSearchBytes = 200
-	// followKeepalive keeps an idle follow from being dropped by whatever sits between the
-	// browser and this server. A quiet container is the common case.
-	followKeepalive = 25 * time.Second
+	// accessRecheck is both the keepalive for an idle follow -- a quiet container is the
+	// common case, and whatever sits between the browser and this server must not drop it --
+	// and how often a stream asks again whether its reader may still have it.
+	accessRecheck = 25 * time.Second
+	// historyBudget and followBudget match the agent's own budgets for the two shapes, so the
+	// response deadline is the one the design chose. deadlineSlack is how far ahead of now
+	// each write pushes it, bounded by the budget.
+	historyBudget = 90 * time.Second
+	followBudget  = time.Hour
+	deadlineSlack = 2 * accessRecheck
 )
 
 // handleContainerLogs streams one container's log to the caller: history, or history followed
@@ -77,9 +86,9 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	stream, ok := s.logs.open(id)
-	if !ok {
-		s.writeError(w, http.StatusTooManyRequests, "This endpoint already has as many log streams open as it will serve")
+	stream, refusal := s.logs.open(id, a.ActorID)
+	if refusal != "" {
+		s.writeError(w, http.StatusTooManyRequests, refusal)
 		return
 	}
 	defer s.logs.release(stream)
@@ -95,14 +104,26 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 	defer s.agents.deliver(id, envelope(protocol.TypeLogCancel, protocol.LogCancel{Stream: stream.id}))
 
 	out := newLogWriter(w, follow, download, target.Name)
-	out.head()
-	ticker := time.NewTicker(followKeepalive)
+	out.head(budgetFor(follow))
+	ticker := time.NewTicker(accessRecheck)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
+			// Authorization is not a thing that was true once. A membership taken away, a
+			// role narrowed, an account disabled or a session ended between one chunk and the
+			// next must end the stream; the event-driven closes are the fast path and this is
+			// the backstop for anything not wired to one.
+			if !s.stillAllowed(r, a, id) {
+				out.notice("your access to this log was withdrawn")
+				return
+			}
+			if out.expired() {
+				out.notice("this stream reached its time limit; open it again to carry on watching")
+				return
+			}
 			out.keepalive()
 		case chunk := <-stream.chunks:
 			out.gap(stream.gap())
@@ -158,6 +179,9 @@ type logWriter struct {
 	follow   bool
 	download bool
 	name     string
+	token    string
+	budget   time.Duration
+	deadline time.Time
 	pending  strings.Builder
 	lines    int
 	bytes    int
@@ -166,12 +190,45 @@ type logWriter struct {
 
 func newLogWriter(w http.ResponseWriter, follow, download bool, name string) *logWriter {
 	f, _ := w.(http.Flusher)
-	return &logWriter{w: w, flusher: f, follow: follow, download: download, name: name}
+	return &logWriter{w: w, flusher: f, follow: follow, download: download, name: name, token: crypto.RandomHex(8)}
 }
 
-func (l *logWriter) head() {
+// budgetFor is how long this shape of request may take, matched to the agent's own budget for
+// it, so the deadline that ends a stream is the one the design chose rather than a timeout
+// sized for a request that answers in a moment.
+func budgetFor(follow bool) time.Duration {
+	if follow {
+		return followBudget
+	}
+	return historyBudget
+}
+
+// extend pushes the response deadline out. It is called on every write for a following stream,
+// so a live stream stays alive, and it is bounded: the request's own budget ends it.
+func (l *logWriter) extend() {
+	if l.deadline.IsZero() {
+		l.deadline = time.Now().Add(l.budget)
+	}
+	next := time.Now().Add(deadlineSlack)
+	if next.After(l.deadline) {
+		next = l.deadline
+	}
+	_ = http.NewResponseController(l.w).SetWriteDeadline(next)
+}
+
+// head writes the response head and gives the response a deadline of its own. The server's
+// WriteTimeout is an absolute deadline for a whole response, and it is sized for a request
+// that answers: a stream that runs to the agent's budget would be severed by it mid-log, with
+// none of the markers this handler promises ever reaching the reader.
+func (l *logWriter) head(budget time.Duration) {
+	l.budget = budget
+	l.extend()
 	h := l.w.Header()
 	h.Set("Cache-Control", "no-store")
+	// The marker token is minted per request and announced here. A container can print
+	// anything, including a line shaped like one of this server's notices, so what
+	// distinguishes them is a token the container could not have known.
+	h.Set("X-KyYard-Notice-Token", l.token)
 	// Whatever sits between the browser and here must not hold a stream back waiting for a
 	// buffer to fill; a log arrives when it arrives.
 	h.Set("X-Accel-Buffering", "no")
@@ -192,7 +249,11 @@ func (l *logWriter) head() {
 // request has spent its budget.
 func (l *logWriter) write(data, search string) (done bool) {
 	for len(data) > 0 {
-		cut := strings.IndexByte(data, '\n')
+		// A bare carriage return ends a line too. The event-stream grammar says so -- a CR
+		// left inside a payload would end the data field and let container output introduce
+		// its own fields, including the one this server reserves for saying something -- and
+		// a progress bar produces the same corruption by accident.
+		cut := strings.IndexAny(data, "\n\r")
 		if cut < 0 {
 			l.pending.WriteString(data)
 			if l.pending.Len() >= maxLogLineBytes {
@@ -205,12 +266,16 @@ func (l *logWriter) write(data, search string) (done bool) {
 		}
 		line := data[:cut]
 		data = data[cut+1:]
+		// CRLF is one break, not two.
+		if data != "" && data[0] == '\n' && line == strings.TrimSuffix(line, "\n") && cut < len(line)+1 {
+			data = data[1:]
+		}
 		if l.pending.Len() > 0 {
 			l.pending.WriteString(line)
 			line = l.pending.String()
 			l.pending.Reset()
 		}
-		if l.emit(strings.TrimSuffix(line, "\r"), search) {
+		if l.emit(line, search) {
 			return true
 		}
 	}
@@ -235,6 +300,9 @@ func (l *logWriter) emit(line, search string) (done bool) {
 
 func (l *logWriter) line(text string) {
 	l.wroteAny = true
+	// Nothing the container printed may end this server's line. Whatever survived the split
+	// is text, not framing.
+	text = strings.NewReplacer("\r", "", "\n", "").Replace(text)
 	if l.follow {
 		fmt.Fprintf(l.w, "data: %s\n\n", text)
 	} else {
@@ -255,10 +323,13 @@ func (l *logWriter) gap(dropped int64) {
 // shapes, so nothing the control plane says can be mistaken for something the application
 // printed.
 func (l *logWriter) notice(text string) {
+	// The token makes the difference real rather than conventional: a container can print a
+	// line that looks like a notice, but not one carrying a token minted for this request and
+	// sent in a header the container never sees.
 	if l.follow {
-		fmt.Fprintf(l.w, "event: notice\ndata: %s\n\n", text)
+		fmt.Fprintf(l.w, "event: notice\ndata: [%s] %s\n\n", l.token, text)
 	} else {
-		fmt.Fprintf(l.w, "--- kyyard: %s ---\n", text)
+		fmt.Fprintf(l.w, "--- kyyard %s: %s ---\n", l.token, text)
 	}
 	l.flush()
 }
@@ -285,9 +356,16 @@ func (l *logWriter) end(closed *protocol.LogClose) {
 }
 
 func (l *logWriter) flush() {
+	l.extend()
 	if l.flusher != nil {
 		l.flusher.Flush()
 	}
+}
+
+// expired reports whether this request has spent its budget. A following stream ends on its
+// own rather than living as long as a browser tab stays open.
+func (l *logWriter) expired() bool {
+	return !l.deadline.IsZero() && time.Now().After(l.deadline)
 }
 
 // downloadName is a filename a browser will accept, built from the container name rather than
@@ -303,4 +381,14 @@ func downloadName(name string) string {
 		safe = "container"
 	}
 	return fmt.Sprintf("%s-%s.log", safe, time.Now().UTC().Format("20060102-150405"))
+}
+
+// stillAllowed asks again whether this reader may hold this stream: the session must still be
+// valid, and the membership behind it must still carry container.logs on this endpoint.
+// Neither is something that was settled when the stream opened.
+func (s *Server) stillAllowed(r *http.Request, a store.TenantAccess, endpointID string) bool {
+	if _, _, err := s.sessions.AuthenticateRequest(r); err != nil {
+		return false
+	}
+	return s.store.Tenancy().StillAllowed(r.Context(), a, permissions.ContainerLogs, endpointID) == nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -324,39 +325,163 @@ func TestAClosedReaderCancelsTheStreamOnTheEndpoint(t *testing.T) {
 	}
 }
 
-// An endpoint serves only so many streams at once. The limit is answered immediately, with a
-// reason, rather than by opening readers the host will not serve.
-func TestAnEndpointServesOnlySoManyStreams(t *testing.T) {
+// The limits are two: what one host will serve, and what one person may hold on it. The second
+// is what stops a member holding nothing but container.logs from denying an administrator the
+// logs of a host during an incident.
+func TestStreamLimitsAreHeldPerReaderAndPerEndpoint(t *testing.T) {
+	s, st, httpSrv := logServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	admin := loginAs(t, s, st, "envadmin", "user")
+	dev := loginAs(t, s, st, "dev", "user")
+	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_dev", Role: "developer", Status: "active"})
+	ag := connectedAgentWithContainer(t, ctx, s, st, admin, httpSrv.URL)
+	path := "/api/organizations/a/endpoints/" + ag.id + "/containers/web/logs?follow=1"
+
+	held, closeHeld := context.WithCancel(ctx)
+	defer closeHeld()
+	_, devDone := logRequest(held, s, dev, path)
+	awaitOpen(t, ctx, ag.conn)
+
+	// The same reader may not open a second one.
+	w := tenantRequest(s, dev, "GET", path, "", false)
+	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "already have") {
+		t.Fatalf("a second stream for the same reader: %d %s", w.Code, w.Body.String())
+	}
+	// Another member is unaffected: one person cannot spend the host's capacity.
+	go func() {
+		req := awaitOpen(t, ctx, ag.conn)
+		writeEnvelope(t, ctx, ag.conn, protocol.TypeLogClose, protocol.LogClose{Stream: req.Stream, Reason: "the log ended"})
+	}()
+	if w := tenantRequest(s, admin, "GET", path, "", false); w.Code != 200 {
+		t.Fatalf("an administrator was denied by another member's stream: %d %s", w.Code, w.Body.String())
+	}
+	closeHeld()
+	<-devDone
+}
+
+// Taking a role away ends what it was letting someone see, in the request that takes it rather
+// than whenever the stream happens to end.
+func TestWithdrawingAccessEndsALiveStream(t *testing.T) {
+	s, st, httpSrv := logServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	admin := loginAs(t, s, st, "envadmin", "user")
+	dev := loginAs(t, s, st, "dev", "user")
+	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_dev", Role: "developer", Status: "active"})
+	ag := connectedAgentWithContainer(t, ctx, s, st, admin, httpSrv.URL)
+	path := "/api/organizations/a/endpoints/" + ag.id + "/containers/web/logs?follow=1"
+
+	w, done := logRequest(ctx, s, dev, path)
+	awaitOpen(t, ctx, ag.conn)
+	if code := tenantRequest(s, admin, "PUT", "/api/organizations/a/members/usr_dev", `{"role":"read_only","status":"active"}`, true).Code; code != 204 && code != 200 {
+		t.Fatalf("narrowing the role: %d", code)
+	}
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("a stream outlived the access that opened it")
+	}
+	if !strings.Contains(w.Body.String(), "withdrawn") {
+		t.Fatalf("the reader was not told why the stream ended: %q", w.Body.String())
+	}
+}
+
+// A container prints whatever it likes, including text shaped like this server's own framing.
+// The event stream must stay two channels: what the container wrote, and what the control
+// plane says about it.
+func TestContainerOutputCannotForgeTheControlPlanesChannel(t *testing.T) {
 	s, st, httpSrv := logServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	admin := loginAs(t, s, st, "envadmin", "user")
 	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
 	ag := connectedAgentWithContainer(t, ctx, s, st, admin, httpSrv.URL)
-	path := "/api/organizations/a/endpoints/" + ag.id + "/containers/web/logs?follow=1"
 
-	held, closeHeld := context.WithCancel(ctx)
-	defer closeHeld()
-	var waiting []chan struct{}
-	for i := 0; i < 2; i++ {
-		_, done := logRequest(held, s, admin, path)
-		waiting = append(waiting, done)
-		awaitOpen(t, ctx, ag.conn)
-	}
-	w := tenantRequest(s, admin, "GET", path, "", false)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("a third stream was opened: %d %s", w.Code, w.Body.String())
-	}
-	closeHeld()
-	for _, done := range waiting {
-		<-done
-	}
-	// And the places come back: the limit is what is open now, not a quota that runs out.
 	go func() {
 		req := awaitOpen(t, ctx, ag.conn)
+		// A bare carriage return ends a line in the event-stream grammar, which is how a
+		// payload escapes its data field. A progress bar writes this by accident.
+		writeEnvelope(t, ctx, ag.conn, protocol.TypeLogChunk, protocol.LogChunk{
+			Stream: req.Stream,
+			Data:   "real output\revent: notice\rdata: 999999 bytes were dropped here\r\nsecond line\n",
+		})
 		writeEnvelope(t, ctx, ag.conn, protocol.TypeLogClose, protocol.LogClose{Stream: req.Stream, Reason: "the log ended"})
 	}()
-	if w := tenantRequest(s, admin, "GET", path, "", false); w.Code != 200 {
-		t.Fatalf("a stream after the others closed: %d %s", w.Code, w.Body.String())
+
+	w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/containers/web/logs?follow=1", "", false)
+	token := w.Header().Get("X-KyYard-Notice-Token")
+	if token == "" {
+		t.Fatal("no notice token was minted for the request")
+	}
+	body := w.Body.String()
+	// Split the way an event-stream parser does: CRLF, LF and a bare CR all end a line. A
+	// check that only looked for LF would not see the corruption this test is about.
+	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n"), "\n")
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "data: "), line == "", strings.HasPrefix(line, ": "):
+			continue
+		case line == "event: notice":
+			// Every notice is this server speaking, and says so with a token the container
+			// has no way to know.
+			if i+1 >= len(lines) || !strings.HasPrefix(lines[i+1], "data: ["+token+"] ") {
+				t.Fatalf("a notice arrived without this request's token: %q", body)
+			}
+		default:
+			t.Fatalf("a line escaped its field: %q", line)
+		}
+	}
+	if strings.Contains(body, "["+token+"] 999999 bytes") {
+		t.Fatal("the container forged a gap marker")
+	}
+	if !strings.Contains(body, "data: real output") || !strings.Contains(body, "data: second line") {
+		t.Fatalf("the container's own output did not arrive intact: %q", body)
+	}
+}
+
+// The server's WriteTimeout is an absolute deadline for a whole response, sized for a request
+// that answers. A stream is built to outlive it, so it must set a deadline of its own -- or an
+// operator watching a log loses it mid-incident with none of the markers this handler promises.
+func TestAStreamOutlivesTheServersWriteTimeout(t *testing.T) {
+	s, st, httpSrv := logServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	ag := connectedAgentWithContainer(t, ctx, s, st, admin, httpSrv.URL)
+
+	// A real server, with the timeout production runs with rather than one a test invented.
+	timed := httptest.NewUnstartedServer(s)
+	timed.Config.WriteTimeout = time.Second
+	timed.Start()
+	defer timed.Close()
+
+	go func() {
+		req := awaitOpen(t, ctx, ag.conn)
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		writeEnvelope(t, ctx, ag.conn, protocol.TypeLogChunk, protocol.LogChunk{Stream: req.Stream, Data: "late but arrived\n"})
+		writeEnvelope(t, ctx, ag.conn, protocol.TypeLogClose, protocol.LogClose{Stream: req.Stream, Reason: "the log ended"})
+	}()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", timed.URL+"/api/organizations/a/endpoints/"+ag.id+"/containers/web/logs?follow=1", nil)
+	req.AddCookie(admin)
+	resp, err := timed.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("the stream was severed after %q: %v", body, err)
+	}
+	if !strings.Contains(string(body), "late but arrived") {
+		t.Fatalf("a line written after the server's write timeout never arrived: %q", body)
 	}
 }

@@ -57,3 +57,40 @@ func (t *tenancyStore) OpenLogTarget(ctx context.Context, a TenantAccess, endpoi
 	}
 	return target, nil
 }
+
+// StillAllowed re-checks a live authorization without writing an audit row. It exists for work
+// that outlives the request that started it: a stream is authorized when it opens, and a
+// membership removed, a role narrowed or an account disabled while it runs must end it.
+//
+// No audit row, because this asks the same question every few seconds; the session that
+// answered it the first time is what the trail records.
+func (t *tenancyStore) StillAllowed(ctx context.Context, a TenantAccess, action permissions.Action, endpointID string) error {
+	if a.ActorID == "" || a.OrganizationID == "" {
+		return ErrForbidden
+	}
+	var status, memberStatus, role string
+	var restricted bool
+	err := t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT u.status,u.must_change_password,m.status,m.role FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=? AND m.organization_id=?`), a.ActorID, a.OrganizationID).
+		Scan(&status, &restricted, &memberStatus, &role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrForbidden
+	}
+	if err != nil {
+		return err
+	}
+	if status != "active" || restricted || memberStatus != "active" || !permissions.Allows(role, action) {
+		return ErrForbidden
+	}
+	if endpointID != "" {
+		var found int
+		err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
+			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID).Scan(&found)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -14,10 +14,14 @@ const (
 	// plane drops and reports the gap. A browser on a slow connection watching a chatty
 	// container is the ordinary case, and it must cost a bounded amount of memory here.
 	logQueueChunks = protocol.LogFollowBuffer / protocol.MaxLogChunkBytes
-	// maxStreamsPerEndpoint matches what the agent will read at once. Refusing here as well
-	// means the limit is answered immediately, with a reason, rather than by an agent closing
-	// a stream the reader has already been told is open.
-	maxStreamsPerEndpoint = 2
+	// maxStreamsPerEndpoint is what one host will serve at once, and it is deliberately above
+	// maxStreamsPerActor so that one member cannot fill it: a developer holding nothing but
+	// container.logs must not be able to deny an administrator the logs of a host during an
+	// incident. The agent enforces its own, lower limit as well.
+	maxStreamsPerEndpoint = 4
+	// maxStreamsPerActor is what one person may hold on one endpoint. One is enough to watch
+	// a container; a second is a tab someone forgot.
+	maxStreamsPerActor = 1
 )
 
 // logStream is one reader's view of one container's log. Chunks arrive from the endpoint's
@@ -25,6 +29,7 @@ const (
 type logStream struct {
 	id         string
 	endpointID string
+	actorID    string
 	chunks     chan protocol.LogChunk
 	done       chan struct{}
 	doneOnce   sync.Once
@@ -41,29 +46,36 @@ type logRegistry struct {
 	mu      sync.Mutex
 	streams map[string]*logStream
 	perEnd  map[string]int
+	perPair map[string]int // endpoint and actor together
 }
 
 func newLogRegistry() *logRegistry {
-	return &logRegistry{streams: map[string]*logStream{}, perEnd: map[string]int{}}
+	return &logRegistry{streams: map[string]*logStream{}, perEnd: map[string]int{}, perPair: map[string]int{}}
 }
 
-// open reserves a stream for an endpoint, or reports that this endpoint already has as many as
-// it will serve.
-func (r *logRegistry) open(endpointID string) (*logStream, bool) {
+func pairKey(endpointID, actorID string) string { return endpointID + "\x00" + actorID }
+
+// open reserves a stream, or says which limit stopped it: the host's, or this reader's own.
+func (r *logRegistry) open(endpointID, actorID string) (*logStream, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.perPair[pairKey(endpointID, actorID)] >= maxStreamsPerActor {
+		return nil, "You already have a log stream open on this endpoint"
+	}
 	if r.perEnd[endpointID] >= maxStreamsPerEndpoint {
-		return nil, false
+		return nil, "This endpoint already has as many log streams open as it will serve"
 	}
 	s := &logStream{
 		id:         uuid.NewString(),
 		endpointID: endpointID,
+		actorID:    actorID,
 		chunks:     make(chan protocol.LogChunk, logQueueChunks),
 		done:       make(chan struct{}),
 	}
 	r.streams[s.id] = s
 	r.perEnd[endpointID]++
-	return s, true
+	r.perPair[pairKey(endpointID, actorID)]++
+	return s, ""
 }
 
 // release forgets a stream. The reader calls it when it is done, however it ended.
@@ -74,6 +86,11 @@ func (r *logRegistry) release(s *logStream) {
 		r.perEnd[s.endpointID]--
 		if r.perEnd[s.endpointID] <= 0 {
 			delete(r.perEnd, s.endpointID)
+		}
+		key := pairKey(s.endpointID, s.actorID)
+		r.perPair[key]--
+		if r.perPair[key] <= 0 {
+			delete(r.perPair, key)
 		}
 	}
 	r.mu.Unlock()
@@ -92,13 +109,24 @@ func (r *logRegistry) find(endpointID, streamID string) *logStream {
 	return nil
 }
 
+// closeActorStreams ends every stream one person is holding, wherever it is. An administrator
+// who removes a member or takes a role away has decided they may not see this; the decision
+// takes effect in the same request rather than whenever the stream happens to end.
+func (r *logRegistry) closeActorStreams(actorID, reason string) {
+	r.closeMatching(func(s *logStream) bool { return s.actorID == actorID }, reason)
+}
+
 // closeEndpointStreams ends every stream an endpoint has open. A session that has gone cannot
 // finish them, and a reader waiting on a disconnected endpoint should be told so.
 func (r *logRegistry) closeEndpointStreams(endpointID, reason string) {
+	r.closeMatching(func(s *logStream) bool { return s.endpointID == endpointID }, reason)
+}
+
+func (r *logRegistry) closeMatching(match func(*logStream) bool, reason string) {
 	r.mu.Lock()
 	var ending []*logStream
 	for _, s := range r.streams {
-		if s.endpointID == endpointID {
+		if match(s) {
 			ending = append(ending, s)
 		}
 	}
