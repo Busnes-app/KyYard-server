@@ -418,3 +418,6 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-enrollment pre { background: var(--bg); padding: 14px; border-radius: 8px; }
 .ky-enrollment > button { margin-right: 8px; }
 .ky-state-notice { flex-wrap: wrap; }
+@media (max-width: 380px) {
+ .ky-nav-link { flex-direction: column; gap: 4px; padding: 7px 6px; font-size: 12px; }
+}
