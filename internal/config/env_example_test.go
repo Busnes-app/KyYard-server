@@ -70,6 +70,12 @@ func read(t *testing.T, path string) string {
 func TestThePackagedPortMatchesTheDefault(t *testing.T) {
 	root := filepath.Join("..", "..")
 	port := strconv.Itoa(config.DefaultPort)
+	// The guide the login page shows is the only place the product itself tells an operator
+	// what to keep private, so it must read the port from the origin rather than carry one.
+	guide := read(t, filepath.Join(root, "web", "src", "components", "SetupGuide.tsx"))
+	if !strings.Contains(guide, "Keep port {port} private") || !strings.Contains(guide, "localhost:{port}") {
+		t.Error("SetupGuide.tsx names a port of its own instead of the one it was given")
+	}
 	for _, want := range []struct{ file, text string }{
 		{"Dockerfile", "ENV KY_PORT=" + port},
 		{"Dockerfile", "EXPOSE " + port},
@@ -78,6 +84,7 @@ func TestThePackagedPortMatchesTheDefault(t *testing.T) {
 		{"docker-compose.yml", "KY_APP_URL=http://localhost:" + port},
 		{".env.example", "KY_PORT=" + port},
 		{"README.md", "http://localhost:" + port},
+		{filepath.Join("web", "vite.config.ts"), "http://localhost:" + port},
 	} {
 		if !strings.Contains(read(t, filepath.Join(root, want.file)), want.text) {
 			t.Errorf("%s does not carry %q, so the packaged port and the default disagree", want.file, want.text)
