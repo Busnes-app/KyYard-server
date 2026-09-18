@@ -50,6 +50,9 @@ type Options struct {
 	// or sink refuses. Nil means this agent has no runtime, and a request for logs is closed
 	// with that reason rather than left open.
 	Logs func(ctx context.Context, req protocol.LogRequest, sink func([]byte) error) error
+	// Exec opens a PTY attachment. Nil disables exec; production wiring waits for
+	// the control-plane authorization and revocation path.
+	Exec func(context.Context, protocol.ExecSpec) (ExecSession, error)
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -109,9 +112,10 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	// view over the file and erase what the new session recorded.
 	commands := openLedger(opts.IdentityDir)
 	running := newBudget()
+	execRunning := &execBudget{}
 	delay := time.Second
 	for {
-		err := session(ctx, id, target, &opts, commands, running)
+		err := session(ctx, id, target, &opts, commands, running, execRunning)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -145,7 +149,7 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	}
 }
 
-func session(ctx context.Context, id *Identity, target string, opts *Options, commands *ledger, running *budget) error {
+func session(ctx context.Context, id *Identity, target string, opts *Options, commands *ledger, running *budget, execRunning *execBudget) error {
 	// Commands run under the session's own context, so when this returns the work it started
 	// is cancelled rather than left to finish against a host nobody is watching.
 	ctx, endSession := context.WithCancel(ctx)
@@ -221,6 +225,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	// the host for nobody.
 	outbound := make(chan outFrame, logQueueDepth)
 	live := newStreams()
+	terminals := newExecStreams(ctx, id.EndpointID, ch.Nonce, execRunning, opts, outbound)
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
 		return errors.New("bad hello")
@@ -399,6 +404,20 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 					defer release()
 					deliver(ctx, results, handleCommand(ctx, cmd, id, commands, opts))
 				}(cmd)
+			case protocol.TypeExecOpen, protocol.TypeExecInput, protocol.TypeExecResize, protocol.TypeExecCancel:
+				if err := terminals.handle(f, hello.State == "active"); err != nil {
+					reason := "exec stream limit reached; not started"
+					if errors.Is(err, errExecUnavailable) {
+						reason = errExecUnavailable.Error()
+					} else if !errors.Is(err, errExecCapacity) {
+						return err
+					}
+					var req protocol.ExecOpen
+					_ = json.Unmarshal(f.Payload, &req)
+					if err := write(ctx, conn, protocol.TypeExecClose, protocol.ExecClose{Stream: req.Stream, Reason: reason}); err != nil {
+						return err
+					}
+				}
 			case protocol.TypeLogOpen:
 				var req protocol.LogRequest
 				if json.Unmarshal(f.Payload, &req) != nil || req.Stream == "" {

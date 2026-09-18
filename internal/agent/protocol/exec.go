@@ -73,3 +73,65 @@ type ExecStatus struct {
 	Running  bool `json:"running"`
 	ExitCode *int `json:"exit_code,omitempty"`
 }
+
+// Exec grants travel only over the authenticated agent socket. Connection is the
+// handshake nonce, so a grant from an old socket cannot start a second process.
+const (
+	TypeExecOpen              = "exec.open"
+	TypeExecReady             = "exec.ready"
+	TypeExecInput             = "exec.input"
+	TypeExecOutput            = "exec.output"
+	TypeExecResize            = "exec.resize"
+	TypeExecCancel            = "exec.cancel"
+	TypeExecClose             = "exec.close"
+	MaxExecStreamsPerEndpoint = 4
+	ExecGrantLifetime         = time.Minute
+	MaxExecFrameBytes         = 64 << 10
+)
+
+type ExecOpen struct {
+	Stream     string       `json:"stream"`
+	Endpoint   string       `json:"endpoint"`
+	Actor      string       `json:"actor"`
+	Connection []byte       `json:"connection"`
+	Expires    time.Time    `json:"expires"`
+	Spec       ExecSpec     `json:"spec"`
+	Size       TerminalSize `json:"size"`
+}
+
+var execStreamID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+
+func (r ExecOpen) Validate(now time.Time) error {
+	if !execStreamID.MatchString(r.Stream) || !execStreamID.MatchString(r.Actor) || !execStreamID.MatchString(r.Endpoint) || len(r.Connection) != 32 {
+		return errors.New("invalid exec scope")
+	}
+	if !r.Expires.After(now) || r.Expires.After(now.Add(ExecGrantLifetime)) {
+		return errors.New("invalid exec grant expiry")
+	}
+	if err := r.Spec.Validate(); err != nil {
+		return err
+	}
+	return r.Size.Validate()
+}
+
+// Data uses JSON base64 encoding to preserve arbitrary PTY bytes, including UTF-8
+// split across reads. The decoded chunk limit applies in both directions.
+type ExecData struct {
+	Stream string `json:"stream"`
+	Data   []byte `json:"data"`
+}
+
+type ExecResize struct {
+	Stream string       `json:"stream"`
+	Size   TerminalSize `json:"size"`
+}
+
+type ExecStream struct {
+	Stream string `json:"stream"`
+}
+
+type ExecClose struct {
+	Stream   string `json:"stream"`
+	Reason   string `json:"reason"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+}
