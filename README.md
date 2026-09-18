@@ -99,9 +99,18 @@ KY_APP_URL=https://yard.example.com
 KY_TRUSTED_PROXIES=172.18.0.2/32
 ```
 
-Replace the example with your proxy's address. A host proxy may arrive through Docker's
-bridge gateway; a proxy container needs connectivity to KyYard's Docker network. Keep the
-published port on loopback. Only listed peers may supply `X-Forwarded-For`; forwarded
+Replace the example with your proxy's address. A host proxy — one running as a service on
+this machine — arrives on loopback or through Docker's bridge gateway, and the published port
+stays where it is.
+
+**A proxy that is itself a container cannot use the published port at all.** Inside it,
+`127.0.0.1` is that container, not the host, so the request fails and the proxy answers 502.
+Append `:docker-compose.proxy-network.yml` after the proxy overlay and set
+`KY_PROXY_NETWORK` to the network the proxy container is already on (`docker network ls`
+names it, usually `<project>_default`). KyYard joins that network, the host publish goes away
+entirely, and the proxy forwards to `http://kyyard:9273` — with websocket support enabled,
+which the agent connection needs. `KY_TRUSTED_PROXIES` is then the proxy's address on that
+network; re-check it if you recreate the proxy container. Only listed peers may supply `X-Forwarded-For`; forwarded
 scheme headers never change cookie security. HTTPS startup requires this explicit proxy
 allowlist. Recreate with `docker compose up -d`, then sign in at the HTTPS URL.
 Agent enrollment is planned; secret-bearing remote enrollment will require HTTPS.
@@ -114,6 +123,9 @@ bind and DNS overlays already in use:
   `KY_POSTGRES_PASSWORD` and a URL-encoded `KY_DB_DSN` such as
   `postgres://kyyard:<encoded-password>@postgres:5432/kyyard?sslmode=disable` in private `.env`.
   This uses the private Compose network; capsule backups support SQLite only.
+- `docker-compose.proxy-network.yml`: for a reverse proxy running in a container on this
+  host. Joins `KY_PROXY_NETWORK` and stops publishing a host port, so the proxy is the only
+  thing that can reach the server. Use it after `docker-compose.proxy.yml`.
 - SSO/SCIM: explicitly set `KY_SSO_ENABLED=true` / `KY_SCIM_ENABLED=true` in an environment
   overlay after configuring the provider or stable `KY_SCIM_TOKEN`.
 

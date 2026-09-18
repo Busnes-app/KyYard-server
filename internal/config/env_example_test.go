@@ -91,3 +91,23 @@ func TestThePackagedPortMatchesTheDefault(t *testing.T) {
 		}
 	}
 }
+
+// The overlay for a containerised reverse proxy exists to remove the host publish; an edit
+// that leaves a published port behind would put plain HTTP back on the host while looking
+// like it had not.
+func TestTheContainerProxyOverlayPublishesNothing(t *testing.T) {
+	overlay := read(t, filepath.Join("..", "..", "docker-compose.proxy-network.yml"))
+	if !strings.Contains(overlay, "ports: !reset []") {
+		t.Error("the overlay does not clear the base file's published port")
+	}
+	if !strings.Contains(overlay, "external: true") || !strings.Contains(overlay, "KY_PROXY_NETWORK") {
+		t.Error("the overlay does not join the proxy's existing network")
+	}
+	// A publish reintroduced by hand, in any form.
+	for _, line := range strings.Split(overlay, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") && strings.Contains(trimmed, ":9273") && !strings.HasPrefix(trimmed, "#") {
+			t.Errorf("the overlay publishes a port again: %q", trimmed)
+		}
+	}
+}
