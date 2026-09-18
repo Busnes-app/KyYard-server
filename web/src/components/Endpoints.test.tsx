@@ -61,7 +61,7 @@ it('strips control characters from a hostile name before the approval prompt', a
   expect(displayName('a\u2028b\u2029c\u0085d\x7fe')).toBe('abcde');
 });
 
-it('shows the bare token with the note when no agent image is configured', async () => {
+it('retains the token fallback for older servers', async () => {
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST'
     ? json({ id: 't1', runtime: 'docker', expires_at: '2026-09-16T00:15:00Z', token: 'raw-token', note: 'Set KY_AGENT_IMAGE', disclosure: 'root-equivalent access' }, 201)
     : json([])));
@@ -93,4 +93,13 @@ it('acknowledges a rotated key with both fingerprints shown and clears a duplica
   await waitFor(() => expect(calls.length).toBe(2));
   expect(calls).toEqual(['/api/organizations/a/endpoints/ep_1/keys/' + 'cd'.repeat(32) + '/acknowledge', '/api/organizations/a/endpoints/ep_1/events/8/acknowledge']);
   expect(screen.getByRole('alert').textContent).toContain('duplicate_connection');
+});
+
+it('refreshes hosts after the operator starts the agent', async () => {
+  let reads = 0;
+  vi.stubGlobal('fetch', vi.fn(async () => json(++reads === 1 ? [] : [pending])));
+  render(<Endpoints org="a" env="env-a" />);
+  await screen.findByText(/No endpoints yet/);
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh hosts' }));
+  expect(await screen.findByRole('button', { name: 'Approve' })).toBeTruthy();
 });

@@ -1,10 +1,10 @@
 **Repo:** Busnes-app/KyYard-server
-**PR:** #34 — https://github.com/Busnes-app/KyYard-server/pull/34
-**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/image-controls (branch feat/image-controls)
+**PR:** #35 — https://github.com/Busnes-app/KyYard-server/pull/35
+**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/agent-install (branch fix/agent-install)
 
 # KyYard implementation plan
 
-Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #33 is merged at `7d14097`. PR #34 (`feat/image-controls`) exposes existing image operations; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #34 is merged at `3e300d5`. PR #35 (`fix/agent-install`) completes fresh-install agent packaging and enrollment; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
@@ -197,9 +197,13 @@ Record success/failure, confusing steps and recovery outcomes. Any required docu
 
 ## 8. Current implementation and next delivery
 
-M0–M4 infrastructure, M5 container/image commands and bounded logs, plus the product corrections and browser logs are merged through master `7d14097` (PR #33). The 24-hour capacity soak remains an unproven M4 gate.
+M0–M4 infrastructure, M5 container/image commands and bounded logs, plus the product corrections and browser logs are merged through master `3e300d5` (PR #34). The 24-hour capacity soak remains an unproven M4 gate.
 
-PR #34 (`feat/image-controls`) adds explicit-tag/digest pulls and full-ID image removal with a fresh server-inventory preview, dependency checks, confirmation and visible command outcomes. It reuses the existing server/agent authorization and commands without adding routes. Browser tests against a local agent proved image pull/removal; frontend tests cover stale/incomplete/dependent previews, cancellation, uncertain submissions and polling. Generated bundle diffs no longer consume review input; CI still verifies exact source/build correspondence.
+Merged PR #34 (`feat/image-controls`) adds explicit-tag/digest pulls and full-ID image removal with a fresh server-inventory preview, dependency checks, confirmation and visible command outcomes. It reuses the existing server/agent authorization and commands without adding routes. Browser tests against a local agent proved image pull/removal; frontend tests cover stale/incomplete/dependent previews, cancellation, uncertain submissions and polling. Generated bundle diffs no longer consume review input; CI still verifies exact source/build correspondence.
+
+Current slice: package `/app/kyyard-agent` in the existing published image, generate same-host enrollment from the exact installed image ID, use attached `--enroll-only` before detached startup, print the approval fingerprint, and expose a host refresh action. The same-host agent shares the server network namespace on the existing default bridge; after server replacement recreate the agent with its retained identity volume. Remote HTTPS enrollment uses the same image pinned by digest. CI now builds both binaries for smoke coverage and executes the generated command against real Docker, proving approval, inventory, restart and server replacement.
+
+The exec runtime foundation is preserved uncommitted in `.worktrees/exec-runtime` (`feat/exec-runtime`); it is not part of this delivery and no browser exec is enabled.
 
 Next engineering slices: browser exec with the protocol's authorization, timeouts and revocation guarantees; M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

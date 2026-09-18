@@ -178,7 +178,7 @@ jobs:
           cache: true
 
       - run: shellcheck scripts/*.sh
-      - run: go build -o kyyard-server ./cmd/server
+      - run: make build
       - run: scripts/smoke-test.sh
 
   docker:
@@ -213,6 +213,9 @@ jobs:
           curl -sf -X POST -H 'Content-Type: application/json' \
             -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \
             http://127.0.0.1:18080/api/auth/login | grep -q '"authenticated":true'
+
+      - name: Packaged agent enrolls and discovers containers
+        run: python3 scripts/agent-install-test.py kyyard:ci
 
       # Render legacy overlay chains too: they must use Docker's existing bridge.
       - name: Compose uses the existing bridge without dedicated networks

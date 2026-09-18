@@ -30,8 +30,8 @@ type ServerConfig struct {
 	Port    int    `json:"port"`
 	AppURL  string `json:"app_url"`
 	AppName string `json:"app_name"`
-	// AgentImage is the digest-pinned agent image the enrollment command names; empty means
-	// the control plane hands out a token but no command.
+	// AgentImage selects a digest-pinned image for remote HTTPS enrollment. Empty
+	// uses the installed server image for same-host Docker enrollment.
 	AgentImage   string        `json:"agent_image"`
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`

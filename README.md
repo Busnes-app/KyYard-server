@@ -4,7 +4,7 @@ The simple control plane for your container fleet.
 
 This first slice establishes the KyYard scaffold: Go backend, embedded React PWA,
 SQLite/PostgreSQL, local authentication, MFA, configurable OAuth 2/OIDC (including KyIdentity) and KyRecovery.
-Container management and agent enrollment are planned in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
+Container inventory, lifecycle controls, image operations and logs are available after [enrolling a Docker host](#show-containers-after-installation). Remaining milestones are tracked in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
 SAML metadata is inherited; SAML login is not yet implemented.
 
 Fresh installations only: KyYard uses its own recovery service identity and token-sealing
@@ -186,10 +186,68 @@ roles; it never reveals anyone else's. Membership writes take `{"role":"operator
 removing the last one returns `409` with code `last_administrator`, even for that administrator.
 
 Create/rename takes `{"name":"Production"}`. An enrollment token lives 15 minutes, is single use,
-and is shown once; when `KY_AGENT_IMAGE` names a digest-pinned agent image the response also
-carries a `docker run` command that pipes the token on stdin; the same response states that
-mounting the Docker socket gives the agent root-equivalent access to that host. A host enrolls as
-`pending` until an administrator approves the exact key fingerprint it presented.
+and is shown once alongside a Docker command and the host-access disclosure. A host enrolls as
+`pending` until an administrator approves its exact key fingerprint.
+
+### Show containers after installation
+
+The server does not automatically inspect the host running it. Enroll an agent on each Docker
+host, including the server's own host:
+
+1. On **Containers**, choose **Manage environments & enroll a host**.
+2. Create an environment (for example, Production), open it, then choose **Enroll a host**.
+3. Run the displayed command on the Docker host running KyYard, using an account allowed to
+   run Docker. It first enrolls through an attached, short-lived process, then starts the
+   persistent agent with its saved identity. The published image includes `/app/kyyard-agent`; no Go installation or separate
+   agent image is needed. For a renamed server container, change `server=kyyard` in the command.
+4. Run `docker logs kyyard-agent`. In the site, choose **Refresh hosts**, compare the full
+   **agent key fingerprint** with the pending host, then choose **Approve**.
+5. Open the host or return to **Containers**. The first inventory arrives after approval;
+   refresh the page if necessary. Subsequent reports arrive every minute.
+
+The default command uses the installed server's immutable local image ID (`--pull never`). It
+mounts the Docker socket only into the agent, giving it root-equivalent host access, and keeps
+its identity in the named `kyyard-agent-identity` volume. It shares the server container's
+existing network namespace so HTTP remains on loopback; the server stays on the default Docker
+bridge and no dedicated network is created. Do not use this command on a different host.
+
+**Server replacement or upgrade:** the same-host agent shares the old server container's network
+namespace. Stop/remove the agent with `docker rm -fv kyyard-agent`, replace the server, then run
+this command on that host to reconnect the existing identity using the new installed image:
+
+```sh
+server=kyyard
+server_id=$(docker inspect --type container --format '{{.Id}}' "$server") &&
+image=$(docker inspect --type container --format '{{.Image}}' "$server_id") &&
+docker run -d --name kyyard-agent --restart unless-stopped --pull never --no-healthcheck \
+  --network "container:$server_id" --entrypoint /app/kyyard-agent \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v kyyard-agent-identity:/var/lib/kyyard-agent "$image"
+```
+
+A fresh enrollment command refuses an existing identity and names its endpoint/server; use the
+restart command above to reconnect it. To enroll into another environment, revoke the old
+endpoint and explicitly choose a new identity volume for the new enrollment.
+
+Keep the named identity volume; `docker rm -fv` removes anonymous volumes, not named ones.
+No new token or approval is needed for that existing identity. A revoked endpoint cannot be
+revived this way. Never share an identity volume between hosts or control planes. Use distinct
+agent container/volume names if running more than one installation on a host.
+
+**Another Docker host:** configure KyYard's advertised `KY_APP_URL` as reachable HTTPS and
+set `KY_AGENT_IMAGE` to the published **KyYard** image pinned by digest, for example
+`ghcr.io/busnes-app/kyyard@sha256:<verified-digest>`. Follow the image-verification instructions
+in [RESTORE.md](docs/RESTORE.md); this is the same image and attestation as the server. Add
+`KY_AGENT_IMAGE` to the Compose service's environment (putting it in `.env` alone does not pass
+it into the container). The next enrollment command uses that image's `/app/kyyard-agent`
+entrypoint on Docker's default bridge and connects over HTTPS. Tags are refused. With a
+loopback HTTP advertised URL the command remains same-host, even if an image is configured.
+
+**Source installation:** `make build` produces `./kyyard-agent`. Expand **Source installation
+or another Docker host** in the enrollment panel to obtain the one-time token, and pipe it to
+`./kyyard-agent --server <server-origin> --identity-dir <private-directory>` on the Docker host.
+The process needs access to `/var/run/docker.sock`; keep it running with your service manager.
+HTTP is accepted only for a host binary connecting to loopback; remote connections require HTTPS.
 
 ### Agent
 

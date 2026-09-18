@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -47,16 +48,31 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		"id": tok.ID, "environment_id": tok.EnvironmentID, "runtime": tok.Runtime, "expires_at": tok.ExpiresAt,
 		"token": secret, "disclosure": socketDisclosure,
 	}
-	// No configured image, no command: the control plane never points operators at an image it
-	// has not been told to trust by digest.
-	if image != "" {
+	// Reuse the exact installed image on the same Docker host. Sharing the server's
+	// network namespace keeps HTTP on loopback and creates no Docker network.
+	setup := `server=kyyard
+server_id=$(docker inspect --type container --format '{{.Id}}' "$server") &&
+image=$(docker inspect --type container --format '{{.Image}}' "$server_id") &&
+`
+	options := `--pull never --network "container:$server_id"`
+	imageArg := `"$image"`
+	origin := fmt.Sprintf("http://127.0.0.1:%d", s.config.Server.Port)
+	out["note"] = "Run on the Docker host running KyYard. If you renamed the server container, change server=kyyard. Compare the printed agent key fingerprint before approving below. After replacing the server container, recreate the agent with the same identity volume (see README)."
+	if image != "" && strings.HasPrefix(s.config.Server.AppURL, "https://") {
 		out["image"] = image
-		out["command"] = fmt.Sprintf("printf '%%s\\n' '%s' | docker run -d -i --name kyyard-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent %s --server %s", secret, image, s.config.Server.AppURL)
-	} else {
-		out["note"] = "Set KY_AGENT_IMAGE to a digest-pinned agent image to receive a ready-to-run command."
+		setup, options, imageArg, origin = "", "--network bridge", shellQuote(image), s.config.Server.AppURL
+		out["note"] = "Run on the Docker host to manage. Compare the printed agent key fingerprint before approving below."
 	}
+	// Detached docker run does not forward piped stdin. Enroll in an attached,
+	// short-lived process, then start the persistent agent with its saved identity.
+	common := options + " --no-healthcheck --entrypoint /app/kyyard-agent -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent " + imageArg
+	out["command"] = setup + fmt.Sprintf("printf '%%s\\n' '%s' | docker run --rm -i --name kyyard-agent-enroll %s --server %s --name \"$(hostname)\" --enroll-only &&\n"+
+		"docker run -d --name kyyard-agent --restart unless-stopped %s", secret, common, shellQuote(origin), common)
+
 	s.writeJSON(w, http.StatusCreated, out)
 }
+
+func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 
 // handleAgentEnroll is the only agent-facing route in this slice. It has no session: the
 // token selects the tenant, the proof binds the key, and every refusal is the same 401.
