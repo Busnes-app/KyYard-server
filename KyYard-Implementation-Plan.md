@@ -227,8 +227,10 @@ Implemented M6 service mapping: explicit service-to-adopted-ID assignments, vers
 
 Implemented M6 deployment preflight: read-only local image identity resolution and mapping/published-port findings, gated on fresh complete container observations. Always non-executable; no secrets, persisted image pins or runtime commands.
 
-Current M6 runtime inspection foundation: bounded redacted Docker container/image reads, immutable identity checks, selected-fact recheck and real Docker secret/tmpfs coverage. Runtime-only, with no inspection transport/API/UI or deployment authority.
+Implemented M6 runtime inspection foundation: bounded redacted Docker container/image reads, immutable identity checks, selected-fact recheck and real Docker secret/tmpfs coverage. The transport below exposes its bounded redacted observation without deployment authority.
 
-Next M6 slice: authorized agent inspection transport and executable preview/reconcile (planned PR 15), including broader validated Compose support and validated storage/network/configuration handling before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
+Current M6 inspection transport: nonce-bound agent requests, bounded cross-reconnect admission, a scoped read-only inspection API, strict result validation and live authority/target checks. Both local and remote adapters are wired; the real Docker regression exercises HTTP through agent to runtime. No UI or executable preflight uses this yet.
+
+Next M6 slice: use live inspection in application preview and implement executable preview/reconcile (planned PR 15), including broader validated Compose support and validated storage/network/configuration handling before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
 The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.

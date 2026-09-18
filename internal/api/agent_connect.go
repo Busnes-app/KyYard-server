@@ -227,6 +227,7 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 admitted:
 	defer s.agents.remove(c)
 	defer s.execs.closeAgent(c)
+	defer s.inspections.closeAgent(c)
 	if s.stopping.Load() {
 		conn.Close(websocket.StatusGoingAway, protocol.CloseShutdown)
 		return
@@ -399,6 +400,12 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		c.conn.Close(websocket.StatusPolicyViolation, agentStoreCloseReason(err))
 		return true
 	}
+	if f.Type == protocol.TypeInspectionResult && len(f.Payload) > protocol.MaxInspectionFrameBytes {
+		s.inspections.closeAgent(c)
+		c.close(protocol.CloseProtocol)
+		_ = c.conn.CloseNow()
+		return true
+	}
 	if f.Type == protocol.TypeMetrics && len(f.Payload) > protocol.MaxMetricsBytes {
 		if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]any{"code": "metrics_too_large", "limit_bytes": protocol.MaxMetricsBytes})); err != nil {
 			return true
@@ -475,6 +482,15 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			}
 			log.Printf("agent %s: settling command %s: %v", c.endpointID, id, err)
 		}
+	case protocol.TypeInspectionResult:
+		var result protocol.InspectionResult
+		if pending || len(f.Payload) > protocol.MaxInspectionFrameBytes || execJSON(f.Payload, &result) != nil || result.Request == "" {
+			s.inspections.closeAgent(c)
+			c.close(protocol.CloseProtocol)
+			_ = c.conn.CloseNow()
+			return true
+		}
+		s.inspections.deliver(c, result)
 	case protocol.TypeExecReady, protocol.TypeExecOutput, protocol.TypeExecClose:
 		if !pending {
 			s.handleExecFrame(c, f)

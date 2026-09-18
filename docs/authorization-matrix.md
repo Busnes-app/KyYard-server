@@ -123,3 +123,7 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Per-environment grants | not in 0.1 | proposed |
 
 Application persistence implements `application.read`, `application.import`, `application.edit` and draft-only `application.destroy` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. Destroy explicitly discards an undeployed draft/history at the expected head and releases quota. HTTP import/list/read/discard routes are implemented; explicit adoption/release are implemented; public editing and runtime deployment remain absent. Internal `secret.reveal` permits organization administrators only, commits audit before returning values and has no HTTP endpoint. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.
+
+### Live redacted container inspection
+
+The inspection GET uses implemented endpoint.read for every active membership role. It exposes bounded operational facts/counts, not environment values, labels, argv, mount paths or network names. Session and tenant access are rechecked while pending and at publication; runtime identity comes from fresh scoped inventory. No successful-read audit or deployment/secret authority is granted. Bounds and wire lifecycle are in agent-protocol.md, Container inspection.

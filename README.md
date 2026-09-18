@@ -520,3 +520,10 @@ overlaps. Missing images/references require pulling or correcting the definition
 then refreshing inventory. This is a read-only diagnostic: runtime configuration,
 host processes and unreported port bindings remain unverified. Reported image IDs
 are not saved deployment pins. **Deployment is not enabled yet.**
+
+The authenticated container inspection API is
+`GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/inspection`.
+Use the full reported container ID. It returns redacted live runtime facts when
+the agent supports `container.inspect`; older agents return an upgrade response.
+The request requires fresh inventory and ends on access loss or disconnect.
+This API does not expose secrets or enable application deployment.

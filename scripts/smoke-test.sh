@@ -223,7 +223,7 @@ if [ -x "$AGENT" ]; then
   contains "agent prints the enrolled key fingerprint" "$(cat "$WORK/agent.log")" "agent key fingerprint: $EP_FP"
   check "identity file is owner-only" "$(stat -c '%a' "$WORK/agent/identity.json")" "600"
   check "identity file never holds the token" \
-    "$(if grep -q "$TOKEN" "$WORK/agent/identity.json"; then echo leaked; else echo clean; fi)" "clean"
+    "$(if grep -Fq -- "$TOKEN" "$WORK/agent/identity.json"; then echo leaked; else echo clean; fi)" "clean"
   SECOND_TOKEN_JSON="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"runtime":"docker"}' "$BASE/api/organizations/org_initial/environments/$ENV_ID/enrollment-tokens")"
   SECOND_TOKEN="$(printf '%s' "$SECOND_TOKEN_JSON" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
   REENROLL_EXIT=0
