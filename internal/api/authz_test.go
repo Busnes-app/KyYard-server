@@ -113,8 +113,8 @@ func TestSettingsExposureByRole(t *testing.T) {
 
 	admin := decode(do(t, srv, "GET", "/api/settings", loginAs(t, srv, st, "alice", "admin")))
 	extra, ok := admin["extra_settings"].(map[string]any)
-	if !ok || extra["scim_token"] != "super-secret-bearer" {
-		t.Errorf("admin should still see extra_settings, got %v", admin)
+	if !ok || extra["scim_token"] != nil {
+		t.Errorf("admin must see extra_settings without retired SCIM secrets, got %v", admin)
 	}
 	if _, found := extra["kyrecovery_token_enc"]; found {
 		t.Errorf("admin settings leaked the sealed KyRecovery token: %v", admin)

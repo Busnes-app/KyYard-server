@@ -29,6 +29,7 @@ services:
     pull_policy: missing
     container_name: kyyard
     restart: unless-stopped
+    network_mode: bridge
     # Covers cmd/server's shutdownTimeout (5s HTTP drain) plus backupWaitTimeout (17m for a
     # deposit already on the wire), so SIGKILL cannot land on a capsule mid-upload.
     stop_grace_period: 20m
@@ -37,7 +38,8 @@ services:
     environment:
       - KY_PORT=9273
       - KY_HOST=0.0.0.0
-      # A container-wide bind is safe here because the host publish above is loopback-only.
+      # Bridge peers can reach this plaintext bind. This deployment trusts the host and
+      # co-resident containers; the loopback host publish is not bridge isolation.
       - KY_ALLOW_PLAINTEXT_BIND=true
       - KY_APP_NAME=KyYard
       - KY_APP_URL=http://localhost:9273

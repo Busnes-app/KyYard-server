@@ -16,6 +16,7 @@ checks (`drill.go`) and serialized drill entry point (`run_drill.go`). It holds 
 live in `recoveryclient` and in the settings rows it reads and writes through the adapter.
 
 ## Local Contracts
+- UI-configured SSO providers are sealed in the `sso_providers_enc` settings row. The SQLite snapshot and carried encryption key restore their credentials; `TestProviderConfigurationSecretsAndPermissions` in `internal/api` verifies decryption from the collected backup files.
 - `Settings` maps `store.ErrNotFound` to `recoveryclient.ErrNotFound`; every other error passes
   through unchanged.
 - `NewSealer` seals the KyRecovery token under the deployment key with label

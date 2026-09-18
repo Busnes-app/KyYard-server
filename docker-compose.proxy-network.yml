@@ -1,40 +1,6 @@
-# The reverse proxy is a container on this host (Nginx Proxy Manager, Caddy, Traefik).
-#
-# Add this to COMPOSE_FILE after docker-compose.proxy.yml and set KY_PROXY_NETWORK to the
-# network the proxy container is on. The proxy then reaches KyYard by its container name, and
-# the host port goes away.
-#
-# The base file publishes 127.0.0.1:9273, which a proxy in a container cannot reach: inside it,
-# 127.0.0.1 is the proxy's own container, so the request fails and the proxy answers 502. The
-# answer is not to publish the port more widely -- that would put plain HTTP where anything on
-# the network could reach it -- but to stop publishing it and let the two containers talk.
-#
-# What this changes, exactly: the server is no longer reachable from the host, and is reachable
-# from every container on KY_PROXY_NETWORK. Containers on a user-defined network can all talk
-# to each other and resolve each other by name, so that network is the security boundary now.
-# Prefer a dedicated one holding only the proxy and KyYard:
-#
-#   docker network create kyyard-proxy
-#   docker network connect kyyard-proxy <your-proxy-container>
-#   KY_PROXY_NETWORK=kyyard-proxy
-#
-# The proxy's existing <project>_default network works and is one step shorter, but on a real
-# host it usually carries unrelated applications, and the proxy-to-KyYard hop is plain HTTP
-# carrying session cookies. The plaintext bind the base file acknowledges was justified by the
-# publish being loopback-only; with this overlay that acknowledgement covers a socket the rest
-# of that network can reach.
-#
-# Point the proxy at http://kyyard:9273 and enable its websocket support: the agent connection
-# and, later, the browser terminal are both websockets.
+# Compatibility overlay for existing COMPOSE_FILE chains. KyYard now uses Docker's
+# built-in bridge in the base file; there is no dedicated network or KY_PROXY_NETWORK.
+# Use a host-service or host-network proxy through 127.0.0.1:9273; see README.
 services:
   kyyard:
-    # The base file's host publish, removed rather than widened.
-    ports: !reset []
-    networks:
-      - default
-      - proxy
-
-networks:
-  proxy:
-    name: ${KY_PROXY_NETWORK:?Set the network your reverse proxy container is on (docker network ls)}
-    external: true
+    network_mode: bridge

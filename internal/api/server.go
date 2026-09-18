@@ -14,9 +14,7 @@ import (
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/config"
-	"github.com/Busnes-app/kyyard-server/internal/devices"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
-	"github.com/Busnes-app/kyyard-server/internal/scim"
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busnes-app/kyyard-server/web"
@@ -30,18 +28,18 @@ type recoveryClient interface {
 }
 
 type Server struct {
-	config     *config.Config
-	store      store.Store
-	sessions   *auth.SessionManager
-	pairing    *devices.PairingService
-	kysignon   *sso.KySignOnClient
-	oidc       *sso.GenericOIDCClient
-	saml       *sso.SAMLServiceProvider
-	scim       *scim.Server
-	recovery   recoveryClient
-	mux        *http.ServeMux
-	attemptsMu sync.Mutex
-	attempts   map[string]attemptWindow
+	providersMu sync.Mutex
+	loginMu     sync.Mutex
+	logins      map[string]loginAttempt
+	config      *config.Config
+	store       store.Store
+	sessions    *auth.SessionManager
+	kysignon    *sso.KySignOnClient
+	saml        *sso.SAMLServiceProvider
+	recovery    recoveryClient
+	mux         *http.ServeMux
+	attemptsMu  sync.Mutex
+	attempts    map[string]attemptWindow
 	// detached counts the requests running on a context deliberately separated from their
 	// connection. http.Server.Shutdown does not know about them, so runServer waits on this
 	// before the store closes.
@@ -136,22 +134,16 @@ const attemptsCap = 10000
 
 func NewServer(cfg *config.Config, st store.Store) *Server {
 	sessions := auth.NewSessionManager(st, cfg.Security)
-	pairing := devices.NewPairingService(st, cfg.Server.AppName, cfg.Server.AppURL)
 	kysignon := sso.NewKySignOnClient(cfg.SSO, st)
-	oidc := sso.NewGenericOIDCClient(cfg.SSO, st)
 	saml := sso.NewSAMLServiceProvider(cfg.SSO.SAMLEntityID, cfg.Server.AppURL+"/saml/acs")
-	scimSrv := scim.NewServer(st, cfg.SCIM, cfg.Server.AppURL)
 	recovery := recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery})
 
 	s := &Server{
 		config:   cfg,
 		store:    st,
 		sessions: sessions,
-		pairing:  pairing,
 		kysignon: kysignon,
-		oidc:     oidc,
 		saml:     saml,
-		scim:     scimSrv,
 		recovery: recovery,
 		mux:      http.NewServeMux(),
 		logs:     newLogRegistry(),
@@ -263,15 +255,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/change-password", s.handleChangePassword)
 
 	// SSO
-	s.mux.HandleFunc("/api/sso/kysignon/login", s.handleKySignOnLogin)
-	s.mux.HandleFunc("/api/sso/kysignon/callback", s.handleKySignOnCallback)
+	s.mux.HandleFunc("GET /api/sso/{provider}/login", s.handleProviderLogin)
+	s.mux.HandleFunc("GET /api/sso/{provider}/callback", s.handleProviderCallback)
 	s.mux.HandleFunc("/api/sso/kysignon/sync", s.handleKySignOnSyncWebhook)
 	s.mux.HandleFunc("/saml/metadata", s.handleSAMLMetadata)
 
-	// Devices & Ephemeral QR Pairing
-	s.mux.HandleFunc("/api/devices/pair/init", s.requireAuthenticated(s.handlePairInit))
-	s.mux.HandleFunc("/api/devices/pair/verify", s.handlePairVerify)
-	s.mux.HandleFunc("/api/devices/pair/poll", s.handlePairPoll)
+	// Retired mobile pairing namespace.
+	s.mux.HandleFunc("/api/devices/", func(w http.ResponseWriter, r *http.Request) {
+		s.writeError(w, http.StatusNotFound, "Mobile pairing is not available in KyYard")
+	})
 
 	// Feature 0 KyBackup & Restore Drills. Capsules carry site data and keys: admins only.
 	// Method patterns: only the declared method reaches a handler. Export is a POST so the
@@ -285,12 +277,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/backup/schedule", s.requireAdmin(s.handleSetSchedule))
 	s.mux.HandleFunc("GET /api/backup/status", s.requireAdmin(s.handleBackupStatus))
 
+	s.mux.HandleFunc("GET /api/settings/sso", s.requireAdmin(s.handleProviders))
+	s.mux.HandleFunc("POST /api/settings/sso", s.requireAdmin(s.handleSaveProvider))
+	s.mux.HandleFunc("PUT /api/settings/sso/{provider}", s.requireAdmin(s.handleUpdateProvider))
+	s.mux.HandleFunc("DELETE /api/settings/sso/{provider}", s.requireAdmin(s.handleDeleteProvider))
 	// Settings & Theme. The read endpoint tiers its own payload by role.
 	s.mux.HandleFunc("/api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("/api/settings/theme", s.requireAdmin(s.handleSetTheme))
-
-	// SCIM 2.0 routes
-	s.scim.RegisterRoutes(s.mux)
 
 	// Embedded React PWA Frontend
 	s.mux.Handle("/", web.Handler())
@@ -369,14 +362,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	}
 
-	if !s.config.SSO.Enabled && (strings.HasPrefix(r.URL.Path, "/api/sso/") || strings.HasPrefix(r.URL.Path, "/saml/")) {
+	if !s.config.SSO.Enabled && (r.URL.Path == "/api/sso/kysignon/sync" || strings.HasPrefix(r.URL.Path, "/saml/")) {
 		s.writeError(w, http.StatusNotFound, "SSO is disabled")
 		return
 	}
 
-	// SCIM middleware
+	// Retired SCIM namespace.
 	if strings.HasPrefix(r.URL.Path, "/scim/v2") {
-		s.scim.AuthMiddleware(s.mux).ServeHTTP(w, r)
+		s.writeError(w, http.StatusNotFound, "SCIM is not available in KyYard")
 		return
 	}
 

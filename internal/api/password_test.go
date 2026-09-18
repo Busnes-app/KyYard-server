@@ -45,7 +45,7 @@ func TestForcedPasswordReplacement(t *testing.T) {
 		return w
 	}
 	for _, cookies := range []bool{false, true} {
-		for _, route := range []struct{ method, path string }{{"GET", "/api/backup/status"}, {"POST", "/api/devices/pair/init"}, {"POST", "/api/settings/theme"}, {"POST", "/api/backup/export-capsule"}} {
+		for _, route := range []struct{ method, path string }{{"GET", "/api/backup/status"}, {"POST", "/api/settings/theme"}, {"POST", "/api/backup/export-capsule"}} {
 			w := call(route.method, route.path, `{"theme":"oled"}`, cookies, true)
 			if w.Code != 403 || !strings.Contains(w.Body.String(), "password_change_required") {
 				t.Fatalf("restricted %s: %d %s", route.path, w.Code, w.Body)

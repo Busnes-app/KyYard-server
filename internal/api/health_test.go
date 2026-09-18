@@ -80,9 +80,6 @@ func TestOptionalIdentityServicesDisabledByDefault(t *testing.T) {
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		want := 404
-		if strings.HasPrefix(path, "/scim/") {
-			want = 403
-		}
 		if w.Code != want {
 			t.Errorf("%s: expected disabled %d, got %d", path, want, w.Code)
 		}

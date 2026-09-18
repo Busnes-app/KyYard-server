@@ -76,6 +76,10 @@ Default section order:
 6. Report any docs intentionally left unchanged and why
 
 ## User Preferences
+- Containers and endpoints are the primary navigation and home-page content; administration stays in Settings.
+- Use the KyPost/KyDNS fifteen-palette swatch picker and browser-local theme preferences.
+- Support configurable OAuth 2 / OIDC providers including KyIdentity; preserve local sign-in. SCIM and phone pairing are retired from the product.
+- Use Docker's existing default `bridge` network; create no dedicated KyYard network.
 - Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically revoke sessions, MFA challenges and device pairings. Untouched existing accounts are not retroactively flagged.
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
@@ -90,7 +94,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - The root owns these planning documents. Proposed domains in the plan become child DOX boundaries when their implementation lands.
 - The M3 design package lives in `docs/`: `agent-protocol.md`, `threat-model.md`, `authorization-matrix.md`, `application-schema.md`, `retention-policy.md`. Each records its review status and a decisions table; values marked *proposed* are planning defaults, not settled product decisions, and every numeric retention or capacity value must survive the SQLite soak before it is frozen. Agent, endpoint, application and retention code must cite the document section it implements and update the document when the implementation diverges.
 
-- Default Compose is one container, SQLite, a named `/data` volume and loopback-only HTTP. It explicitly acknowledges its container-wide plaintext bind alongside the loopback host publish; the bare image fails closed without that acknowledgement or HTTPS configuration. Existing bind installs must enable `docker-compose.bind.yml`; proxy and PostgreSQL options have separate overlays. README owns setup and transport instructions; `docs/RESTORE.md` restores via the bind overlay while preserving the original named volume. The binary healthcheck probes readiness without loading config or creating keys.
+- Default Compose is one container, SQLite, a named `/data` volume and a loopback-only host HTTP publish (bridge peers can reach the container bind). It explicitly acknowledges its container-wide plaintext bind alongside the loopback host publish; the bare image fails closed without that acknowledgement or HTTPS configuration. Existing bind installs must enable `docker-compose.bind.yml`; proxy and PostgreSQL options have separate overlays. README owns setup and transport instructions; `docs/RESTORE.md` restores via the bind overlay while preserving the original named volume. The binary healthcheck probes readiness without loading config or creating keys.
 - `cmd/soak` drives the storage path at the capacity targets and fails on any bound the retention policy promises but does not hold (docs/soak.md). Its short run is part of `make ci`, so the harness cannot rot; the 24-hour run is the M4 gate and is started by hand.
 - `cmd/server` calls `Tenancy.Initialize` after account bootstrap and before serving HTTP. Store owns the one-time initial-organization migration and its marker. Tenant HTTP routes use named permissions and store-owned transactional authorization/audit; platform administration never implies tenant access.
 - First boot persists encryption, session and instance keys; config owns key lifecycle and backup owns restore identity/session semantics. Bootstrap credentials print only after the generated account is saved.
@@ -117,9 +121,9 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 - [internal/crypto/AGENTS.md](internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
 - [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, MFA (TOTP), recovery codes, sessions, and CAPTCHA.
 - [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
-- [internal/scim/AGENTS.md](internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
+- [internal/scim/AGENTS.md](internal/scim/AGENTS.md): Retained legacy SCIM library tests; no product HTTP routes.
 - [internal/backup/AGENTS.md](internal/backup/AGENTS.md): Product-side adapters over `ky-primitives/recoveryclient`: payload collection, drill checks, settings and sealer glue.
-- [internal/devices/AGENTS.md](internal/devices/AGENTS.md): 90-second ephemeral QR device pairing and push registration.
+- [internal/devices/AGENTS.md](internal/devices/AGENTS.md): Retained legacy pairing library/storage compatibility; no product HTTP routes.
 - [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
 - [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
 - [web/AGENTS.md](web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.

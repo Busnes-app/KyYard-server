@@ -43,7 +43,9 @@ export function useTenantResource<T>(url: string, refreshKey = ''): { state: Loa
     fetch(url).then(async (resp) => {
       if (!live) return;
       if (!resp.ok) { setState(stateFor(resp.status)); return; }
-      setData((await resp.json()) as T);
+      const payload = await resp.json() as T;
+      if (!live) return;
+      setData(payload);
       setState('ready');
     }).catch(() => { if (live) setState('offline'); });
     return () => { live = false; };

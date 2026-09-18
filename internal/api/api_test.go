@@ -141,8 +141,8 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 	pairReq.Header.Set(auth.HeaderCSRF, csrfCookie.Value)
 	w = httptest.NewRecorder()
 	srv.ServeHTTP(w, pairReq)
-	if w.Code != http.StatusOK {
-		t.Fatalf("pair init expected 200 OK, got %d", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("retired pairing expected 404, got %d", w.Code)
 	}
 
 	// 5. /api/backup/drill
@@ -494,53 +494,19 @@ func TestMFALimiterKeyIsBounded(t *testing.T) {
 	}
 }
 
-// The poll route is unauthenticated: anyone holding a secret must not learn the code, the
-// user behind it, or the device's push token.
-func TestPairPollProjectsTheRecord(t *testing.T) {
-	srv, st, _ := setupTestServer(t)
-
-	pairing := &store.DevicePairing{
-		Code:       "424242",
-		Secret:     "s3cr3t-pairing-secret",
-		UserID:     "usr_alice",
-		DeviceName: "Alice Phone",
-		Platform:   "android",
-		PushToken:  "push-token-value",
-		Status:     "pending",
-		CreatedAt:  time.Now().UTC(),
-		ExpiresAt:  time.Now().UTC().Add(90 * time.Second),
-	}
-	if err := st.Devices().CreatePairing(context.Background(), pairing); err != nil {
-		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest("GET", "/api/devices/pair/poll?secret="+pairing.Secret, nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("poll expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	body := w.Body.String()
-	for _, leak := range []string{"secret", "push_token", "code", "user_id", pairing.Secret, pairing.Code, pairing.PushToken, pairing.UserID} {
-		if strings.Contains(body, leak) {
-			t.Errorf("poll response leaks %q: %s", leak, body)
+func TestRetiredIdentityRoutes(t *testing.T) {
+	srv, _, _ := setupTestServerWith(t, func(c *config.Config) { c.SCIM.Enabled = true; c.SCIM.BearerToken = "legacy-token" })
+	for _, path := range []string{"/api/devices/pair/poll?secret=old-secret", "/api/devices/pair/verify", "/scim/v2/Users", "/scim/v2/Groups"} {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Header.Set("Authorization", "Bearer legacy-token")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != 404 {
+			t.Fatalf("%s: %d", path, w.Code)
 		}
-	}
-	var got map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got["status"] != "pending" || got["device_name"] != "Alice Phone" {
-		t.Errorf("poll response lost the fields the client needs: %v", got)
-	}
-	if _, ok := got["expires_at"]; !ok {
-		t.Errorf("poll response has no expires_at: %v", got)
 	}
 }
 
-// Eviction must not favour long windows. Login windows are a minute and MFA windows a minute,
-// but any caller that can mint keys at all would starve whichever window is shortest.
 func TestFullLimiterStillThrottlesLogin(t *testing.T) {
 	srv, _, _ := setupTestServer(t)
 

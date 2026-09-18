@@ -1,97 +1,56 @@
-import React from 'react';
-import { Key, Archive, Database, Users, CheckCircle2, ArrowRight } from 'lucide-react';
+import { useState } from 'react';
+import { Link } from '../components/Link';
+import { EmptyNotice, StateNotice } from '../components/StateNotice';
+import { endpointPath, orgPath } from '../router';
+import { useTenantResource, type MemberOrganization, type Endpoint, type Inventory } from '../tenant';
 
-interface DashboardProps {
-  settings: any;
-  user: any;
-  onNavigate: (path: string) => void;
+export function Dashboard({ mode = 'containers' }: { mode?: 'containers' | 'endpoints' }) {
+  const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  const [selected, setSelected] = useState('');
+  const orgs = organizations.data ?? [];
+  const org = orgs.find((o) => o.id === selected) ?? orgs[0];
+  return <div className="ky-page">
+    <h1>{mode === 'containers' ? 'Containers' : 'Endpoints'}</h1>
+    <p>{mode === 'containers' ? 'Find containers across your Docker hosts. Open a host to inspect resources, read logs, or run an action.' : 'Connect Docker hosts, review enrollment, and inspect their resources.'}</p>
+    <StateNotice state={organizations.state} onRetry={organizations.reload} />
+    {organizations.state === 'ready' && !org && <EmptyNotice>No organization access yet. Ask an organization administrator to add your account.</EmptyNotice>}
+    {org && <>
+      <div className="ky-toolbar"><label htmlFor="fleet-org">Organization</label><select id="fleet-org" value={org.id} onChange={(e) => setSelected(e.target.value)} style={{ width: 'auto' }}>{orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select><Link to={orgPath(org.id)}>Manage environments & enroll a host</Link></div>
+      <Fleet key={`${org.id}-${mode}`} org={org.id} mode={mode} />
+    </>}
+  </div>;
 }
-
-export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate }) => {
-  const cards = [
-    {
-      title: 'Feature 0: KyBackup & Recovery',
-      desc: 'Encrypted capsule container generation and automated sandboxed restore drills.',
-      status: 'Verified Ready',
-      statusType: 'success',
-      icon: Archive,
-      action: () => onNavigate('/backup'),
-      actionLabel: 'Run Restore Drill',
-    },
-    {
-      title: 'SCIM 2.0 Inbound Provisioning',
-      desc: 'RFC 7643/7644 automatic user and group provisioning from enterprise IdPs.',
-      status: settings?.scim_enabled ? 'Active' : 'Disabled',
-      statusType: settings?.scim_enabled ? 'success' : 'neutral',
-      icon: Users,
-      action: () => onNavigate('/scim'),
-      actionLabel: 'Manage Directory',
-    },
-    {
-      title: 'Single Sign-On & Federation',
-      desc: 'KySignOn OIDC + Signed Directory Webhooks, Generic OIDC, and SAML 2.0 SP.',
-      status: settings?.sso_enabled ? 'Enabled' : 'Disabled',
-      statusType: settings?.sso_enabled ? 'success' : 'neutral',
-      icon: Key,
-      action: () => onNavigate('/settings'),
-      actionLabel: 'SSO Settings',
-    },
-    {
-      title: 'Pluggable Database Engine',
-      desc: `Current storage backend: ${settings?.db_driver?.toUpperCase() || 'SQLITE'} (zero-CGO with WAL mode & foreign keys).`,
-      status: `${settings?.db_driver || 'sqlite'} (active)`,
-      statusType: 'accent',
-      icon: Database,
-      action: () => onNavigate('/settings'),
-      actionLabel: 'Database Config',
-    },
-  ];
-
-  return (
-    <div style={{ maxWidth: '1080px', margin: '0 auto', padding: '32px 20px' }}>
-      <div style={{ marginBottom: '32px' }}>
-        <h1 style={{ fontSize: '26px', fontWeight: 'bold', marginBottom: '6px' }}>
-          Welcome, {user?.display_name || user?.username}!
-        </h1>
-        <p style={{ color: 'var(--ink)', fontSize: '15px' }}>
-          {settings?.app_name || 'KyYard'} is ready. Manage sign-in, settings, and recovery below.
-        </p>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
-        {cards.map((c, i) => {
-          const Icon = c.icon;
-          return (
-            <div key={i} className="panel" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                  <div style={{ padding: '8px', background: 'var(--accent-soft)', borderRadius: '6px', color: 'var(--accent)' }}>
-                    <Icon size={20} />
-                  </div>
-                  <span className={`badge badge-${c.statusType === 'success' ? 'success' : c.statusType === 'accent' ? 'accent' : 'secondary'}`}>
-                    {c.statusType === 'success' && <CheckCircle2 size={12} />}
-                    {c.status}
-                  </span>
-                </div>
-                <h3 style={{ fontSize: '16px', marginBottom: '6px' }}>{c.title}</h3>
-                <p style={{ color: 'var(--ink)', fontSize: '13px', lineHeight: 1.5 }}>{c.desc}</p>
-              </div>
-
-              <div style={{ marginTop: '20px', borderTop: '1px solid var(--line)', paddingTop: '12px' }}>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  style={{ width: '100%', justifyContent: 'space-between', fontSize: '13px' }}
-                  onClick={c.action}
-                >
-                  <span>{c.actionLabel}</span>
-                  <ArrowRight size={14} />
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+function Fleet({ org, mode }: { org: string; mode: 'containers' | 'endpoints' }) {
+  const [offset, setOffset] = useState(0);
+  const [search, setSearch] = useState('');
+  const endpoints = useTenantResource<Endpoint[]>(`/api/organizations/${encodeURIComponent(org)}/endpoints?offset=${offset}&limit=20`);
+  return <>
+    <div className="ky-toolbar">
+      {mode === 'containers' && <input aria-label="Find containers on this page" type="search" placeholder="Find by container name or image…" value={search} onChange={(e) => setSearch(e.target.value)} />}
+      <button className="btn-secondary" onClick={endpoints.reload}>Refresh hosts</button>
+      <button className="btn-secondary" disabled={!offset} onClick={() => setOffset(offset - 20)}>Previous hosts</button>
+      <span>{endpoints.data?.length ? `Hosts ${offset + 1}–${offset + endpoints.data.length}` : "No hosts on this page"}</span>
+      <button className="btn-secondary" disabled={endpoints.state !== 'ready' || (endpoints.data?.length ?? 0) < 20} onClick={() => setOffset(offset + 20)}>Next hosts</button>
     </div>
-  );
-};
+    <StateNotice state={endpoints.state} onRetry={endpoints.reload} />
+    {endpoints.state === 'ready' && endpoints.data?.length === 0 && <EmptyNotice>No endpoints here yet. <Link to={orgPath(org)}>Create an environment or open an existing one to enroll your first Docker host.</Link></EmptyNotice>}
+    {endpoints.state === 'ready' && endpoints.data?.map((e) => <section className="panel" key={e.id}>
+      <div className="panel-header"><h2><Link to={endpointPath(org, e.id)}>{e.name}</Link></h2><span className={`badge ${e.state === 'active' ? 'badge-success' : 'badge-secondary'}`}>{e.state}</span></div>
+      <p>{e.facts.hostname || e.runtime} · <Link to={endpointPath(org, e.id)}>Open containers & resources</Link></p>
+      {mode === 'containers' && <HostContainers org={org} endpoint={e.id} search={search} />}
+    </section>)}
+  </>;
+}
+function HostContainers({ org, endpoint, search }: { org: string; endpoint: string; search: string }) {
+  const inventory = useTenantResource<Inventory>(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}/inventory`);
+  if (inventory.state === 'notfound') return <EmptyNotice>Waiting for the agent's first inventory report.</EmptyNotice>;
+  const inv = inventory.data;
+  const rows = inv?.snapshot.containers.filter((c) => `${c.name} ${c.image}`.toLowerCase().includes(search.toLowerCase())) ?? [];
+  return <>
+    <StateNotice state={inventory.state} onRetry={inventory.reload} />
+    {inventory.state === 'ready' && inv && <>
+      <p style={{ margin: '12px 0', fontSize: 12 }}>Observed {new Date(inv.received_at).toLocaleString()}{Date.now() - Date.parse(inv.received_at) > 180000 ? ' · stale inventory' : ''}{inv.snapshot.truncated?.includes('containers') ? ' · container list truncated' : ''} <button className="btn-secondary" onClick={inventory.reload}>Refresh</button></p>
+      {rows.length ? <div style={{ overflowX: 'auto' }}><table className="ky-table"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Ports</th></tr></thead><tbody>{rows.map((c) => <tr key={c.id}><td><Link to={endpointPath(org, endpoint)}>{c.name}</Link></td><td>{c.image}</td><td><span className={`badge ${c.state === 'running' ? 'badge-success' : 'badge-secondary'}`}>{c.state}</span></td><td>{c.ports.map((p) => `${p.host ? `${p.host} → ` : ''}${p.container}/${p.protocol}`).join(', ') || '—'}</td></tr>)}</tbody></table></div> : <EmptyNotice>{search ? 'No matching containers on this host.' : 'No containers on this host.'}</EmptyNotice>}
+    </>}
+  </>;
+}

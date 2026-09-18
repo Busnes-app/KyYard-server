@@ -1,15 +1,18 @@
-**Repo:** Busnes-app/kyyard-server
-**Worktree:** /home/yoshi/busness.app/kyyard-tenant-authorization (branch feat/tenant-authorization)
+**Repo:** Busnes-app/KyYard-server
+**PR:** #33 — https://github.com/Busnes-app/KyYard-server/pull/33
+**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/product-ui (branch fix/product-ui)
 
 # KyYard implementation plan
 
-Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). M0 and M1 are merged through PR #5, including both onboarding security corrections. M2 schema/bootstrap merged in PR #6. Named permissions, transactional authorization/audit and organization/environment APIs are implemented on `feat/tenant-authorization`; local SQLite/PostgreSQL checks pass and PR review follows. Routed administration and typed tenant settings are next.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). Master `0e01e4e` includes tenancy, enrollment, inventory/statistics, lifecycle/image commands and bounded log transport. PR #33 adds the product corrections and browser logs described in section 8. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
+User corrections: containers/endpoints first, administration under Settings; KyPost/KyDNS theme swatches; configurable OAuth 2/OIDC including KyIdentity; no SCIM or phone pairing; use Docker's existing default bridge. These supersede inherited scaffold feature exposure.
+
 **Agent decision:** build the narrow KyYard agent with runtime adapters described in the engineering handoff. Portainer integration and its reuse evaluation are out of scope by user decision.
 
-Deliver KyYard as one Go control-plane container with an embedded React UI and one persistent `/data` volume. Docker and Kubernetes remain permanent peers; deliver Docker first. Reuse inherited authentication, MFA, SSO/SCIM, storage, recovery, UI themes, and CI. Tenancy and authorization precede workload APIs; reviewed protocol and security designs precede agent implementation.
+Deliver KyYard as one Go control-plane container with an embedded React UI and one persistent `/data` volume. Docker and Kubernetes remain permanent peers; deliver Docker first. Reuse inherited authentication, MFA, SSO, storage, recovery, UI themes, and CI. Tenancy and authorization precede workload APIs; reviewed protocol and security designs precede agent implementation.
 
 **0.1 includes:** generated persistent secrets; organizations and environments; approved Docker enrollment; multiple endpoints; inventory and health; container lifecycle; image pull/removal; network/volume inspection; searchable, downloadable streaming logs; audited browser exec; bounded resource statistics; desired-state Compose discovery/import/deploy/update/removal; manual image update detection/recreate; scoped audit; control-plane backup and restore drill; accessible onboarding and operations.
 
@@ -21,7 +24,7 @@ Resolve the handoff's milestone-7 scope tension by splitting it: M7a delivers ma
 
 - Fresh product history is intentional. The imported baseline derives from `ky_server_base` revision `2a31d5c`; the handoff reviewed `f4ca19a`. Product identity and `/data` packaging landed in PR #1, and forced password replacement plus its security corrections landed in PR #3.
 - Preserve untracked recovery notes and local tool state in the original checkout. Implement slices in isolated worktrees from current product master; never push product changes to the base remote or run `ky-init.sh` over a nonempty checkout.
-- Durable session/encryption/instance keys landed in PR #4. The onboarding slice uses loopback-only HTTP by default, scheme-derived cookies and an exact advertised browser origin. Remote access requires an HTTPS reverse proxy with explicit peer trust. Agent enrollment remains absent until M3.
+- Durable session/encryption/instance keys landed in PR #4. The onboarding slice uses loopback-only HTTP by default, scheme-derived cookies and an exact advertised browser origin. Remote access requires an HTTPS reverse proxy with explicit peer trust. Agent enrollment is implemented under the M3 protocol.
 - Preserve the existing 20-minute Compose shutdown grace period and detached backup drain.
 - `internal/backup` snapshots SQLite only and rejects PostgreSQL snapshots. PostgreSQL recovery needs a separate tested implementation before advertising equivalent coverage.
 - `make ci` omits some workflow gates, including frontend build/dist comparison, vulnerability scanning and container/publishing checks. Use the full verification matrix below.
@@ -192,12 +195,10 @@ Use a clean installation, two disposable Docker hosts, a sample Compose applicat
 
 Record success/failure, confusing steps and recovery outcomes. Any required documentation lookup, cross-tenant exposure, unexplained unknown action, lost secret, or unusable recovery is a release defect. Fix and repeat affected paths before calling 0.1 ready for internal use.
 
-## 8. Handoff and immediate next action
+## 8. Current implementation and next delivery
 
-**Done:** M0 and M1 merged through PR #5, plus the password-replacement backport to the base. M2 schema/bootstrap merged in PR #6, permission enforcement and transactional audit in PR #7, membership management APIs in PR #8. The routed shell merged in PR #9. The federation/tenancy review is on `feat/federation-tenancy`.
+M0–M4 infrastructure and M5 container/image commands plus bounded log transport are merged through master `0e01e4e`. The 24-hour capacity soak remains an unproven M4 gate. The product correction slice on `fix/product-ui` exposes fleet inventory and container actions, adds browser logs, configurable provider sign-in and shared themes, retires SCIM/phone pairing, and switches Compose to the existing Docker bridge.
 
-**Next:** land the federation review, then the M3 design package (section 5) as reviewed proposals before any agent code. Keep new credential/workload capabilities behind explicit named actions as their APIs land. Instance identity exists; agent protocol and rotation remain M3.
+Next engineering slices after these corrections: browser exec with the protocol's authorization, timeouts and revocation guarantees; image-operation UI; M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
-**Easy to get wrong:** pushing to the base remote; overwriting this nonempty checkout with ky-init; assuming HTTP port 9443 supplies TLS; breaking Secure cookies during onboarding; issuing identity before approval; retrying an unknown destructive operation; leaking Compose environment secrets; claiming rollback reverses volume writes; claiming PostgreSQL backup coverage that does not exist; closing the store while backup/agent work is still active.
-
-The complete file is mirrored to myslop under `kyyard-engineering-plan`. The board expires seven days after its last post; this repository file is the durable copy. M2 federation review is the active slice; M3 design package follows.
+The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.

@@ -3,6 +3,7 @@ package sso
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -31,6 +32,23 @@ func (f *oauthFlow) getProvider(ctx context.Context) (*oidc.Provider, error) {
 	provider, err := oidc.NewProvider(ctx, f.issuer)
 	if err != nil {
 		return nil, err
+	}
+	// A trusted HTTPS discovery document must not downgrade credential exchange or
+	// signing-key retrieval to cleartext. HTTP issuers remain limited to explicit legacy
+	// configuration and local protocol fixtures; UI-created providers require HTTPS.
+	if strings.HasPrefix(f.issuer, "https://") {
+		var metadata struct {
+			JWKS string `json:"jwks_uri"`
+		}
+		if err := provider.Claims(&metadata); err != nil {
+			return nil, err
+		}
+		for _, endpoint := range []string{provider.Endpoint().AuthURL, provider.Endpoint().TokenURL, metadata.JWKS} {
+			u, err := url.Parse(endpoint)
+			if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+				return nil, errors.New("OIDC discovery requires HTTPS authorization, token and signing-key endpoints")
+			}
+		}
 	}
 	f.provider = provider
 	return provider, nil

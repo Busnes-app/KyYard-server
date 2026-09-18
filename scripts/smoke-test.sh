@@ -98,7 +98,7 @@ check "malformed login body rejected" \
 check "login rejects GET" "$(status "$BASE/api/auth/login")" "405"
 check "pow challenge issued" "$(status "$BASE/api/auth/pow-challenge")" "200"
 contains "unauthenticated /me reports not authenticated" "$(curl -s "$BASE/api/auth/me")" '"authenticated":false' 
-check "scim rejects missing bearer" "$(status "$BASE/scim/v2/Users")" "401"
+check "SCIM is retired" "$(status "$BASE/scim/v2/Users")" "404"
 check "anonymous cannot export the capsule" "$(status -X POST "$BASE/api/backup/export-capsule")" "401"
 check "anonymous cannot run backup drill" "$(status -X POST "$BASE/api/backup/drill")" "401"
 check "anonymous cannot pair remote recovery" "$(status -X POST "$BASE/api/backup/pair-remote")" "401"
@@ -107,7 +107,7 @@ check "anonymous cannot pin a key" "$(status -X POST "$BASE/api/backup/pin-key")
 check "anonymous cannot set the schedule" "$(status -X PUT "$BASE/api/backup/schedule")" "401"
 check "anonymous cannot unpair" "$(status -X DELETE "$BASE/api/backup/pairing")" "401"
 check "anonymous cannot set site theme" "$(status -X POST -H 'Content-Type: application/json' -d '{"theme":"oled"}' "$BASE/api/settings/theme")" "401"
-check "scim rejects wrong bearer" "$(status -H 'Authorization: Bearer wrong' "$BASE/scim/v2/Users")" "401"
+check "SCIM stays retired with a bearer" "$(status -H 'Authorization: Bearer wrong' "$BASE/scim/v2/Users")" "404"
 stop_server
 
 echo "==> HTTP auth flow (captcha disabled)"
@@ -189,19 +189,8 @@ contains "status reads the schedule back" "$(curl -s -b "$WORK/cookies" "$BASE/a
 check "run refuses without a key" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/backup/deposit")" "412"
 check "unpair refuses while unpaired" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X DELETE "$BASE/api/backup/pairing")" "412"
 check "cookie write rejects missing CSRF" "$(status -b "$WORK/cookies" -X POST "$BASE/api/devices/pair/init")" "403"
-check "device pairing init" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/devices/pair/init")" "200"
-# pair/poll is unauthenticated: holding the secret must not hand over the code, the user or
-# the push token. Poll with a real secret and assert the projection.
-PAIR_INIT="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/devices/pair/init")"
-PAIR_SECRET="$(printf '%s' "$PAIR_INIT" | sed -n 's/.*"secret":"\([^"]*\)".*/\1/p')"
-PAIR_POLL="$(curl -s "$BASE/api/devices/pair/poll?secret=$PAIR_SECRET")"
-contains "pairing poll reports status" "$PAIR_POLL" '"status"'
-check "pairing poll hides the secret" \
-  "$(if printf '%s' "$PAIR_POLL" | grep -q '"secret"'; then echo leaked; else echo hidden; fi)" "hidden"
-check "pairing poll hides the code" \
-  "$(if printf '%s' "$PAIR_POLL" | grep -q '"code"'; then echo leaked; else echo hidden; fi)" "hidden"
-check "pairing poll hides the push token" \
-  "$(if printf '%s' "$PAIR_POLL" | grep -q '"push_token"'; then echo leaked; else echo hidden; fi)" "hidden"
+check "phone pairing is retired" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/devices/pair/init")" "404"
+check "phone pairing poll is retired" "$(status "$BASE/api/devices/pair/poll?secret=legacy")" "404"
 stop_server
 start_server none
 contains "session survives an ordinary restart" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":true'
