@@ -1,0 +1,30 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { ApplicationComparison } from './ApplicationComparison';
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+it('loads comparison on demand, pages observations and hides results when inventory is incomplete', async () => {
+  let availability = 'available';
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ instance_id: 'i', endpoint_name: 'Docker', project: 'shop', revision: 2, adopted_revision: 1, availability, received_at: new Date().toISOString(), services: [{ name: 'web', image: 'nginx:1', observed: 0 }], containers: Array.from({ length: 30 }, (_, i) => ({ id: `id-${i}`, name: `container-${i}`, ownership: 'unowned', image_comparison: 'unknown', state: 'running', service: 'web', image: 'nginx:1' })) })));
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationComparison base="/applications/a" instanceID="i" />);
+  expect(fetcher).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Compare with host' }));
+  await screen.findByText('container-0');
+  expect(screen.queryByText('container-25')).toBeNull();
+  expect(screen.getAllByText('Not adopted')).toHaveLength(25);
+  expect(screen.getByText(/Matching image references do not verify/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+  expect(screen.getByText('container-25')).toBeTruthy();
+  availability = 'incomplete';
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh comparison' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('Missing containers cannot be determined');
+  expect(screen.queryByRole('table')).toBeNull();
+  expect(fetcher.mock.calls.length).toBe(2);
+});
+it('does not display a comparison for a replacement adoption', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ instance_id: 'replacement', services: [], containers: [] }))));
+  render(<ApplicationComparison base="/applications/a" instanceID="old" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Compare with host' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('Adoption changed');
+  expect(screen.queryByRole('table')).toBeNull();
+});

@@ -71,12 +71,22 @@ func TestApplicationImportRoutes(t *testing.T) {
 	request(nil, "POST", adoption, string(adoptionBody), 401)
 	var instance store.ApplicationInstance
 	must(json.Unmarshal([]byte(request(admin, "POST", adoption, string(adoptionBody), 201)), &instance))
+	comparison := base + "/" + app.ID + "/comparison"
+	request(nil, "GET", comparison, "", 401)
+	request(admin, "GET", comparison, "", 200)
+	for _, role := range []store.TenantRole{store.RoleReadOnly, store.RoleDeveloper, store.RoleOperator} {
+		must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_importer", Role: role, Status: "active"}))
+		request(admin, "GET", comparison, "", 200)
+	}
+	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_importer", Role: store.RoleOrganizationAdmin, Status: "active"}))
+	request(admin, "GET", "/api/organizations/b/environments/env-b/applications/"+app.ID+"/comparison", "", 403)
 	request(admin, "GET", base+"/instances", "", 200)
 	request(admin, "GET", "/api/organizations/a/endpoints/"+ep.ID+"/applications", "", 200)
 	request(admin, "DELETE", base+"/"+app.ID, `{"expected_revision":1}`, 409)
 	releaseBody, _ := json.Marshal(map[string]string{"instance_id": instance.ID, "confirm": "shop"})
 	request(admin, "DELETE", adoption, string(releaseBody), 204)
 	request(admin, "DELETE", adoption, string(releaseBody), 409)
+	request(admin, "GET", comparison, "", 404)
 	request(admin, "GET", base, "", 200)
 	request(admin, "GET", base+"/"+app.ID+"/revisions/1", "", 200)
 	request(admin, "POST", base, string(body), 409)

@@ -494,3 +494,10 @@ matches the host or start a deployment. The host must be active with recent,
 complete inventory. Networks and volumes remain unowned. **Release adoption**
 removes that association without stopping containers; release it before discarding
 the draft. Replacement containers are not automatically adopted.
+
+Use **Compare with host** in an adopted application's configuration to inspect
+missing/replaced identities, unowned project containers and observed service/image
+reference differences. The view is read-only and paginated. Stale or partial
+inventory produces an unknown result. Service labels and matching image tags do
+not prove configuration parity; environment values and other runtime settings
+are not compared. This does not deploy or authorize changes.
