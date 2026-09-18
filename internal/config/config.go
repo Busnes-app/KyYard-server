@@ -274,10 +274,7 @@ func LoadFromEnv() (*Config, error) {
 			SAMLMetadataURL:     getEnv("KY_SAML_METADATA_URL", ""),
 			AutoProvision:       getEnvBool("KY_SSO_AUTO_PROVISION", true),
 		},
-		SCIM: SCIMConfig{
-			Enabled:     getEnvBool("KY_SCIM_ENABLED", false),
-			BearerToken: getEnv("KY_SCIM_TOKEN", generateRandomHex(24)),
-		},
+		SCIM: SCIMConfig{}, // Retained type for legacy adapters; no runtime SCIM service.
 		Backup: BackupConfig{
 			Dir:                  getEnv("KY_BACKUP_DIR", ""),
 			Keep:                 backupKeep,

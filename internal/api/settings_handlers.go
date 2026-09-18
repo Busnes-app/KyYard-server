@@ -22,8 +22,22 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"app_url":          s.config.Server.AppURL,
 		"theme":            theme,
 		"captcha_provider": s.config.Captcha.Provider,
-		"sso_enabled":      s.config.SSO.Enabled,
+		"sso_enabled":      false,
 	}
+
+	providers, err := s.providers(r.Context())
+	if err != nil {
+		s.writeError(w, 500, "Could not load sign-in providers")
+		return
+	}
+	publicProviders := []map[string]string{}
+	for _, p := range providers {
+		if p.Enabled {
+			publicProviders = append(publicProviders, map[string]string{"id": p.ID, "name": p.Name, "login_url": "/api/sso/" + p.ID + "/login"})
+		}
+	}
+	out["sso_providers"] = publicProviders
+	out["sso_enabled"] = len(publicProviders) > 0
 
 	user, _, err := s.sessions.AuthenticateRequest(r)
 	if err != nil {
@@ -31,7 +45,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out["scim_enabled"] = s.config.SCIM.Enabled
+	out["scim_enabled"] = false
 	out["db_driver"] = s.config.Database.Driver
 
 	// extra_settings holds secrets such as the SCIM bearer token. The KyRecovery pairing
@@ -46,7 +60,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		// By prefix, not by literal: the lib owns the token's key name, and a future
 		// spelling must not leak by default.
 		for k := range settings {
-			if strings.HasPrefix(k, "kyrecovery_token") {
+			if strings.HasPrefix(k, "kyrecovery_token") || strings.HasPrefix(k, "sso_") || strings.HasPrefix(k, "scim_") {
 				delete(settings, k)
 			}
 		}
