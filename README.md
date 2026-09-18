@@ -495,6 +495,12 @@ complete inventory. Networks and volumes remain unowned. **Release adoption**
 removes that association without stopping containers; release it before discarding
 the draft. Replacement containers are not automatically adopted.
 
+Use **Saved revision** to inspect earlier definitions. **Save new revision** accepts
+a complete replacement Compose definition, including all environment values.
+Omitted services/values are not copied forward. Saving preserves previous revisions
+and changes no containers. A conflicting or uncertain save requires refreshing
+Applications before trying again. History is limited to 100 revisions per application.
+
 Use **Compare with host** in an adopted application's configuration to inspect
 missing/replaced identities, unowned project containers and observed service/image
 reference differences. The view is read-only and paginated. Stale or partial

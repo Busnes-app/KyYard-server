@@ -1,3 +1,4 @@
+import { ApplicationRevisionEditor } from './ApplicationRevisionEditor';
 import { ApplicationComparison } from './ApplicationComparison';
 import { ApplicationAdoption, type ApplicationInstance } from './ApplicationAdoption';
 import { useState } from 'react';
@@ -10,11 +11,13 @@ type Draft = { id: string; name: string; latest_revision: number };
 type Revision = { digest: string; spec: { services: { name: string; image: string; restart?: string; ports?: { target: number; published: number; host_ip?: string; protocol: string }[]; environment?: Record<string, { secret_ref: string }> }[] } };
 
 function RevisionView({ base, draft }: { base: string; draft: Draft }) {
-  const revision = useTenantResource<Revision>(`${base}/${encodeURIComponent(draft.id)}/revisions/${draft.latest_revision}`);
+  const [number, setNumber] = useState(draft.latest_revision);
+  const revision = useTenantResource<Revision>(`${base}/${encodeURIComponent(draft.id)}/revisions/${number}`);
   return <div>
+    <label>Saved revision<select value={number} onChange={(e) => setNumber(Number(e.target.value))}>{Array.from({ length: draft.latest_revision }, (_, i) => draft.latest_revision - i).map((n) => <option key={n} value={n}>Revision {n}{n === draft.latest_revision ? ' · latest' : ''}</option>)}</select></label>
     <StateNotice state={revision.state} onRetry={revision.reload} />
     {revision.state === 'ready' && revision.data && <>
-      <p style={{ overflowWrap: 'anywhere' }}>Revision {draft.latest_revision} · {revision.data.digest}</p>
+      <p style={{ overflowWrap: 'anywhere' }}>Revision {number} · {revision.data.digest}</p>
       <ul>{revision.data.spec.services.map((service) => <li key={service.name}>
         <strong>{service.name}</strong> · {service.image} · restart: {service.restart || 'no'}
         {service.ports?.map((port, i) => <div key={i}>Port {port.host_ip || 'all interfaces'}:{port.published} → {port.target}/{port.protocol}</div>)}
@@ -75,7 +78,7 @@ export function Applications({ org, env }: { org: string; env: string }) {
             if (window.confirm(`Discard draft "${draft.name}" and all its saved revisions? Running containers are unchanged.`)) void write('DELETE', `${base}/${encodeURIComponent(draft.id)}`, { expected_revision: draft.latest_revision });
           }}>Discard {draft.name}</button>
         </div>
-        {selected === draft.id && <><RevisionView base={base} draft={draft} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={refresh} />}{instances.state === 'ready' && instances.data?.filter((i) => i.application_id === draft.id).map((i) => <ApplicationComparison key={i.id} base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} />)}</>}
+        {selected === draft.id && <><RevisionView key={`${draft.id}/${draft.latest_revision}`} base={base} draft={draft} /><ApplicationRevisionEditor key={`edit/${draft.id}/${draft.latest_revision}`} base={`${base}/${encodeURIComponent(draft.id)}`} name={draft.name} expected={draft.latest_revision} onSaved={() => { refresh(); setMessage('New revision saved. Running containers were not changed.'); }} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={refresh} />}{instances.state === 'ready' && instances.data?.filter((i) => i.application_id === draft.id).map((i) => <ApplicationComparison key={i.id} base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} />)}</>}
       </li>)}
     </ul>}
     <details><summary>Import Compose draft</summary>

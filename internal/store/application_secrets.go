@@ -52,7 +52,7 @@ func applicationValuesKey(key []byte, a TenantAccess, id string, number int, dig
 	scope, _ := json.Marshal([]any{"kyyard/application-values/v1", a.OrganizationID, a.EnvironmentID, id, number, digest})
 	return crypto.DeriveKey(key, string(scope))
 }
-func (t *tenancyStore) sealApplicationValues(ctx context.Context, tx *sql.Tx, a TenantAccess, id string, spec ApplicationSpec, digest string, values map[string]string, key []byte) error {
+func (t *tenancyStore) sealApplicationValues(ctx context.Context, tx *sql.Tx, a TenantAccess, id string, number int, spec ApplicationSpec, digest string, values map[string]string, key []byte) error {
 	if len(key) != 32 {
 		return ErrInvalid
 	}
@@ -63,11 +63,11 @@ func (t *tenancyStore) sealApplicationValues(ctx context.Context, tx *sql.Tx, a 
 	if err != nil || len(raw) > MaxApplicationValuesBytes {
 		return ErrInvalid
 	}
-	encrypted, err := crypto.EncryptAESGCM(raw, applicationValuesKey(key, a, id, 1, digest))
+	encrypted, err := crypto.EncryptAESGCM(raw, applicationValuesKey(key, a, id, number, digest))
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE application_revisions SET secrets_enc=? WHERE organization_id=? AND environment_id=? AND application_id=? AND number=1`), encrypted, a.OrganizationID, a.EnvironmentID, id)
+	_, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE application_revisions SET secrets_enc=? WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), encrypted, a.OrganizationID, a.EnvironmentID, id, number)
 	return err
 }
 
@@ -114,4 +114,13 @@ func (t *tenancyStore) ResolveApplicationSecrets(ctx context.Context, a TenantAc
 		return nil, err
 	}
 	return values, nil
+}
+
+// ReplaceApplicationRevision saves a full replacement definition and value bundle.
+// Nothing is copied from older secrets or inferred from runtime observations.
+func (t *tenancyStore) ReplaceApplicationRevision(ctx context.Context, a TenantAccess, id string, expected int, spec ApplicationSpec, values map[string]string, key []byte) (int, error) {
+	if values == nil {
+		values = map[string]string{}
+	}
+	return t.appendApplicationRevision(ctx, a, id, expected, spec, values, key)
 }

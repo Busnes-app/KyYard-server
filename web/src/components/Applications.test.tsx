@@ -42,3 +42,17 @@ it('does not echo diagnostics and blocks retries for an unknown write result', a
   await screen.findByText(/outcome is unknown/);
   expect(screen.getByRole('button', { name: 'Import draft' }).hasAttribute('disabled')).toBe(true);
 });
+it('reads historical definitions without changing the head used for a new save', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/revisions/')) return json({ digest: 'digest', spec: { services: [{ name: 'web', image: url.endsWith('/1') ? 'nginx:1' : 'nginx:2' }] } });
+    if (url.includes('/instances') || url.includes('/endpoints')) return json([]);
+    return json([{ id: 'app', name: 'shop', latest_revision: 2 }]);
+  }));
+  render(<Applications org="a" env="env" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'View configuration for shop' }));
+  await screen.findByText(/nginx:2/);
+  fireEvent.change(screen.getByLabelText('Saved revision'), { target: { value: '1' } });
+  await screen.findByText(/nginx:1/);
+  fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+  expect(screen.getByRole('button', { name: 'Save revision 3' })).toBeTruthy();
+});

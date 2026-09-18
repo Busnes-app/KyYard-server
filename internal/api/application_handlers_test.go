@@ -113,3 +113,55 @@ func TestApplicationImportRoutes(t *testing.T) {
 		t.Fatal("audit leaked source")
 	}
 }
+
+func TestApplicationRevisionReplacementRoutes(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(ts.CreateOrganization(ctx, &store.Organization{ID: "edit", Name: "edit"}))
+	must(ts.CreateEnvironment(ctx, &store.Environment{ID: "env-edit", OrganizationID: "edit", Name: "prod"}))
+	cookie := loginAs(t, s, st, "editor", "user")
+	setRole := func(role store.TenantRole) {
+		must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "edit", UserID: "usr_editor", Role: role, Status: "active"}))
+	}
+	setRole(store.RoleOrganizationAdmin)
+	a := store.TenantAccess{ActorID: "usr_editor", OrganizationID: "edit", EnvironmentID: "env-edit"}
+	app, err := ts.CreateApplication(ctx, a, "shop", store.ApplicationSpec{Kind: "compose.v1", Services: []store.ApplicationService{{Name: "web", Image: "nginx:1"}}})
+	must(err)
+	base := "/api/organizations/edit/environments/env-edit/applications/" + app.ID
+	body := `{"expected_revision":1,"compose":"services: {web: {image: nginx:2, environment: {TOKEN: revision-secret-canary}}}"}`
+	request := func(c *http.Cookie, method, path, body string, csrf bool, status int) string {
+		t.Helper()
+		w := tenantRequest(s, c, method, path, body, csrf)
+		if w.Code != status {
+			t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "revision-secret-canary") {
+			t.Fatal("secret response")
+		}
+		return w.Body.String()
+	}
+	request(nil, "POST", base+"/revisions", body, true, 401)
+	request(cookie, "POST", base+"/revisions", body, false, 403)
+	for _, role := range []store.TenantRole{store.RoleReadOnly, store.RoleOperator} {
+		setRole(role)
+		request(cookie, "POST", base+"/revisions", body, true, 403)
+	}
+	setRole(store.RoleDeveloper)
+	request(cookie, "POST", strings.Replace(base, "env-edit", "foreign", 1)+"/revisions", body, true, 404)
+	request(cookie, "POST", base+"/revisions", `{"expected_revision":1,"compose":"services: {web: {build: revision-secret-canary}}"}`, true, 400)
+	if got := request(cookie, "POST", base+"/revisions", body, true, 201); !strings.Contains(got, `"revision":2`) {
+		t.Fatal(got)
+	}
+	request(cookie, "POST", base+"/revisions", body, true, 409)
+	for _, number := range []string{"1", "2"} {
+		request(cookie, "GET", base+"/revisions/"+number, "", false, 200)
+	}
+	request(cookie, "POST", base+"/revisions", `{"expected_revision":2,"compose":"services: {web: {image: nginx:3}}","secret_ref":"forged"}`, true, 400)
+}

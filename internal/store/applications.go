@@ -70,7 +70,7 @@ func (t *tenancyStore) createApplication(ctx context.Context, a TenantAccess, na
 			return err
 		}
 		if values != nil {
-			return t.sealApplicationValues(ctx, tx, a, app.ID, spec, digest, values, key)
+			return t.sealApplicationValues(ctx, tx, a, app.ID, 1, spec, digest, values, key)
 		}
 		return nil
 	})
@@ -87,6 +87,10 @@ func (t *tenancyStore) insertApplicationRevision(ctx context.Context, tx *sql.Tx
 // AppendApplicationRevision rejects edits based on an old head. The conditional
 // update serializes writers even when their membership locks are different rows.
 func (t *tenancyStore) AppendApplicationRevision(ctx context.Context, a TenantAccess, id string, expected int, spec ApplicationSpec) (int, error) {
+	return t.appendApplicationRevision(ctx, a, id, expected, spec, nil, nil)
+}
+
+func (t *tenancyStore) appendApplicationRevision(ctx context.Context, a TenantAccess, id string, expected int, spec ApplicationSpec, values map[string]string, key []byte) (int, error) {
 	parsed, err := uuid.Parse(id)
 	if err != nil {
 		return 0, ErrInvalid
@@ -123,7 +127,13 @@ func (t *tenancyStore) AppendApplicationRevision(ctx context.Context, a TenantAc
 			}
 			return ErrRevisionConflict
 		}
-		return t.insertApplicationRevision(ctx, tx, a, id, next, raw, digest, time.Now().UTC())
+		if err := t.insertApplicationRevision(ctx, tx, a, id, next, raw, digest, time.Now().UTC()); err != nil {
+			return err
+		}
+		if values != nil {
+			return t.sealApplicationValues(ctx, tx, a, id, next, spec, digest, values, key)
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, err

@@ -45,6 +45,8 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, err)
 	secretApp, err := ts.ImportApplication(ctx, a, "secret-shop", desired("nginx:1"), map[string]string{"database-password": "backup-secret-canary"}, cfg.Security.EncryptionKey)
 	mustTenant(t, err)
+	_, err = ts.ReplaceApplicationRevision(ctx, a, secretApp.ID, 1, desired("nginx:2"), map[string]string{"database-password": "second-backup-canary"}, cfg.Security.EncryptionKey)
+	mustTenant(t, err)
 	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
 	mustTenant(t, err)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -99,9 +101,11 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	if len(instances) != 1 || instances[0].ID != instance.ID || len(instances[0].Containers) != 1 || instances[0].Containers[0].ID != strings.Repeat("a", 64) {
 		t.Fatal("backup lost adoption ownership")
 	}
-	values, err := restored.Tenancy().ResolveApplicationSecrets(ctx, a, secretApp.ID, 1, restoredKey)
-	mustTenant(t, err)
-	if values["database-password"] != "backup-secret-canary" {
-		t.Fatal("backup lost encrypted values")
+	for number, want := range map[int]string{1: "backup-secret-canary", 2: "second-backup-canary"} {
+		values, err := restored.Tenancy().ResolveApplicationSecrets(ctx, a, secretApp.ID, number, restoredKey)
+		mustTenant(t, err)
+		if values["database-password"] != want {
+			t.Fatal("backup lost encrypted values")
+		}
 	}
 }
