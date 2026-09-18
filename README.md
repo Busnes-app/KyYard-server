@@ -99,9 +99,31 @@ KY_APP_URL=https://yard.example.com
 KY_TRUSTED_PROXIES=172.18.0.2/32
 ```
 
-Replace the example with your proxy's address. A host proxy may arrive through Docker's
-bridge gateway; a proxy container needs connectivity to KyYard's Docker network. Keep the
-published port on loopback. Only listed peers may supply `X-Forwarded-For`; forwarded
+Replace the example with your proxy's address. A host proxy — one running as a service on
+this machine — arrives on loopback or through Docker's bridge gateway, and the published port
+stays where it is.
+
+**A proxy that is itself a container cannot use the published port at all.** Inside it,
+`127.0.0.1` is that container, not the host, so the request fails and the proxy answers 502.
+Append `:docker-compose.proxy-network.yml` after the proxy overlay and set
+`KY_PROXY_NETWORK`. KyYard joins that network, the host publish goes away, and the proxy
+forwards to `http://kyyard:9273` — with websocket support enabled, which the agent connection
+needs.
+
+This trades one reachable set for another: not the host, and every container on that network,
+which can all resolve and reach each other. Prefer a network holding just the two:
+`docker network create kyyard-proxy`, `docker network connect kyyard-proxy <proxy>`, then
+`KY_PROXY_NETWORK=kyyard-proxy`. The proxy's existing `<project>_default` is one step shorter
+but usually carries unrelated applications, and this hop is plain HTTP carrying session
+cookies — the plaintext bind the base file acknowledges was justified by a loopback-only
+publish, and no longer is.
+
+`KY_TRUSTED_PROXIES` is then the proxy's address on that network. Trust follows the address,
+not the container: recreate the proxy and a stale entry either stops honouring forwarded
+addresses — collapsing every client into one rate-limit bucket — or hands that trust to
+whatever Docker gives the address to next. Give the proxy a fixed `ipv4_address` on that
+network, or keep the network to those two containers, and check after any recreate:
+`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' <proxy>`. Only listed peers may supply `X-Forwarded-For`; forwarded
 scheme headers never change cookie security. HTTPS startup requires this explicit proxy
 allowlist. Recreate with `docker compose up -d`, then sign in at the HTTPS URL.
 Agent enrollment is planned; secret-bearing remote enrollment will require HTTPS.
@@ -114,6 +136,10 @@ bind and DNS overlays already in use:
   `KY_POSTGRES_PASSWORD` and a URL-encoded `KY_DB_DSN` such as
   `postgres://kyyard:<encoded-password>@postgres:5432/kyyard?sslmode=disable` in private `.env`.
   This uses the private Compose network; capsule backups support SQLite only.
+- `docker-compose.proxy-network.yml`: for a reverse proxy running in a container on this
+  host. Joins `KY_PROXY_NETWORK` and stops publishing a host port: nothing on the host can
+  reach the server, every container on that network can, so use one holding only the proxy
+  and KyYard. Use it after `docker-compose.proxy.yml`.
 - SSO/SCIM: explicitly set `KY_SSO_ENABLED=true` / `KY_SCIM_ENABLED=true` in an environment
   overlay after configuring the provider or stable `KY_SCIM_TOKEN`.
 
