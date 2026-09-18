@@ -223,8 +223,10 @@ Implemented M6 comparison: read-only comparison of the latest definition with ad
 
 Implemented M6 revision editing: full-definition Compose replacements, revision-bound encrypted bundles, expected-head concurrency and immutable historical inspection. Saves never deploy; prior encrypted revisions survive recovery.
 
-Current M6 service mapping: explicit service-to-adopted-ID assignments, version/revision/inventory preconditions, audit and restore coverage. No runtime mutations; labels remain advisory.
+Implemented M6 service mapping: explicit service-to-adopted-ID assignments, version/revision/inventory preconditions, audit and restore coverage. No runtime mutations; labels remain advisory.
 
-Next M6 slice: executable preview/reconcile (planned PR 15), including broader validated Compose support and explicit service/resource mapping before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
+Current M6 deployment preflight: read-only local image identity resolution and mapping/published-port findings, gated on fresh complete container observations. Always non-executable; no secrets, persisted image pins or runtime commands.
+
+Next M6 slice: agent runtime inspection and executable preview/reconcile (planned PR 15), including broader validated Compose support and validated storage/network/configuration handling before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
 The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.

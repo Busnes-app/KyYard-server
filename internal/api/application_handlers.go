@@ -192,3 +192,12 @@ func (s *Server) handleSetApplicationMapping(w http.ResponseWriter, r *http.Requ
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (s *Server) handleApplicationPreflight(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	result, err := s.store.Tenancy().PreflightApplication(r.Context(), a, r.PathValue("application"))
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
