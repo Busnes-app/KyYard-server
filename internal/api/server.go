@@ -205,6 +205,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}", s.tenantRoute(s.handleTenantOrganization))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/instances", s.tenantRoute(s.handleApplicationInstances))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/applications", s.tenantRoute(s.handleApplicationInstances))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/preflight", s.tenantRoute(s.handleApplicationPreflight))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/mapping", s.tenantRoute(s.handleApplicationMapping))
 	s.mux.HandleFunc("PUT /api/organizations/{organization}/environments/{environment}/applications/{application}/mapping", s.tenantRoute(s.handleSetApplicationMapping))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/revisions", s.tenantRoute(s.handleReplaceApplicationRevision))

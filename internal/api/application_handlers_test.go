@@ -81,6 +81,10 @@ func TestApplicationImportRoutes(t *testing.T) {
 	}
 	request(admin, "PUT", mapping, string(mappingBody), 204)
 	request(admin, "PUT", mapping, string(mappingBody), 409)
+	preflight := base + "/" + app.ID + "/preflight"
+	request(nil, "GET", preflight, "", 401)
+	request(admin, "GET", preflight, "", 200)
+	request(admin, "GET", "/api/organizations/b/environments/env-b/applications/"+app.ID+"/preflight", "", 403)
 	comparison := base + "/" + app.ID + "/comparison"
 	request(nil, "GET", comparison, "", 401)
 	request(admin, "GET", comparison, "", 200)
@@ -88,6 +92,7 @@ func TestApplicationImportRoutes(t *testing.T) {
 		must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_importer", Role: role, Status: "active"}))
 		request(admin, "GET", comparison, "", 200)
 		request(admin, "GET", mapping, "", 200)
+		request(admin, "GET", preflight, "", 200)
 		request(admin, "PUT", mapping, string(mappingBody), 403)
 	}
 	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_importer", Role: store.RoleOrganizationAdmin, Status: "active"}))
@@ -99,6 +104,7 @@ func TestApplicationImportRoutes(t *testing.T) {
 	request(admin, "DELETE", adoption, string(releaseBody), 204)
 	request(admin, "DELETE", adoption, string(releaseBody), 409)
 	request(admin, "GET", comparison, "", 404)
+	request(admin, "GET", preflight, "", 404)
 	request(admin, "GET", base, "", 200)
 	request(admin, "GET", base+"/"+app.ID+"/revisions/1", "", 200)
 	request(admin, "POST", base, string(body), 409)

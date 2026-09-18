@@ -1,0 +1,35 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { ApplicationPreflight } from './ApplicationPreflight';
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+const data = { instance_id: 'i', endpoint_name: 'Docker', revision: 2, mapping_version: 1, received_at: '2026-09-18T12:00:00Z', executable: false, blockers: ['runtime_verification_required', 'mapping_requires_review'], services: Array.from({ length: 26 }, (_, i) => ({ name: `service-${i}`, reference: 'nginx:1', image_id: '', container_id: 'a'.repeat(64), blockers: ['image_not_reported'] })) };
+it('loads on demand, pages results and never offers execution', async () => {
+  const fetcher = vi.fn(async () => new Response(JSON.stringify(data)));
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationPreflight base="/app" instanceID="i" />);
+  expect(fetcher).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  await screen.findByText('Deployment is not enabled');
+  expect(screen.getByText('Review and save service mapping for the latest definition.')).toBeTruthy();
+  expect(screen.getAllByRole('row')).toHaveLength(26);
+  expect(screen.queryByText('service-25')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+  expect(screen.getByText('service-25')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /apply|execute|deploy$/i })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh preflight' }));
+  expect(fetcher).toHaveBeenCalledWith('/app/preflight');
+});
+it('hides observations after adoption replacement and redacts error bodies', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...data, instance_id: 'replacement' }))));
+  render(<ApplicationPreflight base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('Adoption changed');
+  expect(screen.queryByRole('table')).toBeNull();
+  cleanup();
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('secret-canary', { status: 409 })));
+  render(<ApplicationPreflight base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  await screen.findByRole('alert');
+  expect(document.body.textContent).not.toContain('secret-canary');
+  expect(screen.queryByRole('table')).toBeNull();
+});

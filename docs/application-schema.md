@@ -136,3 +136,13 @@ The common model maps to Deployments/StatefulSets, Services, ConfigMaps, Secrets
 | Unconfigured registry | refuse by default; anonymous pull is an audited per-organization opt-in gated by `registry.manage` (see `authorization-matrix.md`) | proposed |
 | Application removal | keeps volumes and images | required by plan |
 | Revision retention after removal | 90 days | proposed, see retention-policy.md |
+
+## Deployment preflight
+
+GET preflight under application.read is a diagnostic, never a deployment approval. It requires an adopted instance, current digest-verified definition, fresh complete container inventory and unchanged owned identities. Reads recheck instance ID, mapping version, latest revision and inventory identity so mixed observations fail closed. Missing adoption is 404; changed/stale/partial observations are 409. A definition changed since mapping review, unassigned adopted IDs or unmapped services appear as blockers.
+
+Exact reported image tags, repository digests and full image IDs resolve only when the image list is complete and the reference has one full lowercase sha256 image ID. Implicit tags, missing exact references, ambiguous references and malformed identities are findings. IDs are returned observations, not persisted pins; no registry lookup, pull or alias expansion occurs. Inventory bounds can omit tags/digests, so “not reported” does not prove absence.
+
+Published-port checks index host port/protocol and normalized addresses. They exclude confirmed mapped IDs that a future replacement would stop; other reported bindings (including stopped containers) are conservatively considered. Empty, invalid and unspecified observed addresses overlap every address; IPv6 wildcard overlaps IPv4 conservatively. Desired bindings are also checked against earlier desired bindings. Different protocols or distinct specific addresses do not overlap. Container port lists are bounded and host processes are not reported, so no overlaps found never proves availability.
+
+Every response has executable=false and runtime_verification_required. Mounts, networking, platform, restart policy, environment values/secrets, unreported bindings and other runtime configuration remain unverified. No secrets are read, deployment rows/pins are written, commands dispatched or approvals minted. Future executable plans must inspect the runtime, bind exact revision/mapping/instance/image identities, reject unsupported configuration and enforce fresh preconditions agent-side; this response cannot substitute for that contract.

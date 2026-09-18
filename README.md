@@ -513,3 +513,10 @@ reference differences. The view is read-only and paginated. Stale or partial
 inventory produces an unknown result. Service labels and matching image tags do
 not prove configuration parity; environment values and other runtime settings
 are not compared. This does not deploy or authorize changes.
+
+Use **Deployment preflight** to check the saved mapping, resolve exact image
+references from the host's image inventory and find reported published-port
+overlaps. Missing images/references require pulling or correcting the definition,
+then refreshing inventory. This is a read-only diagnostic: runtime configuration,
+host processes and unreported port bindings remain unverified. Reported image IDs
+are not saved deployment pins. **Deployment is not enabled yet.**
