@@ -447,6 +447,10 @@ result in service, and what to distrust afterwards. Drill it once a quarter with
 
 The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr.io/busnes-app/kyyard`. The project no longer controls `ghcr.io/busness-app`; GHCR does not redirect it, and anything served under that name must be treated as untrusted. If `KY_IMAGE` in `.env` still names the old namespace, re-pinning is required, not optional: inspect `git remote -v` before any `git pull`, `make ci`, or `docker compose` command, and replace a retired-owner remote with `https://github.com/Busnes-app/KyYard-server.git` (prefer a fresh clone plus a known commit). Then remove `KY_IMAGE` to follow the compose default or verify and pin a digest using `docs/RESTORE.md` before pulling.
 
+### Compose projects
+
+Open a host from **Containers** or **Endpoints**, then expand a project under **Compose projects** to inspect its reported containers and running count. **Show containers** filters the existing controls; **Show all containers** clears the filter. Projects are currently unmanaged: discovery does not import configuration, take ownership, or deploy anything. Counts reflect the displayed inventory age and may be incomplete when the container list is truncated.
+
 ### Container terminals
 
 Open an endpoint, choose **Terminal** on a running container, enter the container user

@@ -210,8 +210,10 @@ Merged PR #38 (`fix/local-docker`): automatic in-process local Docker connection
 
 Current slice (`fix/remote-link`): single-container remote enrollment via HTTPS link, installed-image digest discovery by default, explicit digest-pinned override when discovery is unavailable, persistent identity and explicit approval; no same-host inspection or two-container setup chain.
 
-Current slice (`feat/browser-exec`): browser terminal and server authorization, inventory confirmation, nonce-bound grants, scoped metadata audit, bounded queues, independent revocation checks, resize and inspected exit status. Both Docker agent adapters enable exec. Real Docker regression covers the entire browser-protocol/server/agent/PTY path, including first connection after approval.
+Merged PR #40 (`feat/browser-exec`): browser terminal and server authorization, inventory confirmation, nonce-bound grants, scoped metadata audit, bounded queues, independent revocation checks, resize and inspected exit status. Both Docker agent adapters enable exec. Real Docker regression covers the entire browser-protocol/server/agent/PTY path, including first connection after approval.
 
-Next engineering slice after this PR clears CI/security review and is merged: M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
+Current M6 slice (`feat/applications`): read-only Compose project discovery on the endpoint screen, grouped reported containers, explicit unmanaged state and navigation into existing container controls. Reuses authorized inventory without a new API, ownership record or runtime mutation.
+
+Next M6 slice: application revisions/instances and explicit import/adoption (the remainder of planned PR 14), followed by preview/reconcile (planned PR 15). The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
 The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.

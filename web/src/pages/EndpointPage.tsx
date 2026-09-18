@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { ComposeProjects } from '../components/ComposeProjects';
 import { ImageControls } from '../components/ImageControls';
 import { ContainerControls } from '../components/ContainerControls';
 import { Server } from 'lucide-react';
@@ -15,6 +16,7 @@ const ago = (iso: string) => { const s = Math.max(0, Math.round((Date.now() - ne
 // flagged when it disagrees by more than five minutes.
 export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org, endpoint }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
+  const [projectFilter, setProjectFilter] = useState<{ base: string; name: string } | null>(null);
   const details = useTenantResource<Endpoint>(base);
   const inventory = useTenantResource<Inventory>(`${base}/inventory`);
   const commands = useTenantResource<{ id: string; action: string; outcome: string; detail?: string; container_id?: string; reference?: string }[]>(`${base}/commands?limit=20`);
@@ -32,6 +34,9 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   };
   const e = details.data;
   const inv = inventory.data;
+  // A filter belongs to one endpoint and must not hide a refreshed or different host.
+  const selectedProject = projectFilter?.base === base && inv?.snapshot.containers.some((c) => c.compose_project === projectFilter.name) ? projectFilter.name : null;
+  const visibleContainers = inv?.snapshot.containers.filter((c) => selectedProject === null || c.compose_project === selectedProject) ?? [];
   const skew = inv ? Math.abs(new Date(inv.received_at).getTime() - new Date(inv.observed_at).getTime()) > 5 * 60 * 1000 : false;
   const stale = inv ? Date.now() - new Date(inv.received_at).getTime() > 3 * 60 * 1000 : false;
 
@@ -68,7 +73,14 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
-          <Table title="Containers" rows={inv.snapshot.containers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Usage', 'Ports', 'Project', 'Actions']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, usage(c), c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—', <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onRefresh={commands.reload} />]} />
+          <ComposeProjects containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
+            setProjectFilter({ base, name });
+            document.getElementById('endpoint-containers')?.focus();
+          }} />
+          <div id="endpoint-containers" tabIndex={-1}>
+          {selectedProject !== null && <p>Showing containers for <strong style={{ overflowWrap: 'anywhere' }}><bdi>{selectedProject}</bdi></strong>. <button className="btn-secondary" onClick={() => setProjectFilter(null)}>Show all containers</button></p>}
+          <Table title="Containers" rows={visibleContainers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Usage', 'Ports', 'Project', 'Actions']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, usage(c), c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—', <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onRefresh={commands.reload} />]} />
+          </div>
           <section className="panel"><h2>Pull an image</h2><ImageControls key={base} kind="pull" base={base} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onActivity={commands.reload} /><p>Use an explicit tag or digest. A pull downloads an image; it does not update running containers.</p></section>
           <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID', 'Actions']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), <span title={i.id}>{i.id.slice(0, 19)}</span>, <ImageControls key={`${base}/${i.id}`} kind="remove" imageID={i.id} base={base} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onActivity={commands.reload} />]} />
           <Table title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />

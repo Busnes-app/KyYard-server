@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { EndpointPage } from './EndpointPage';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -45,4 +45,35 @@ it('says nothing about restarts when the runtime would not say', async () => {
   render(<EndpointPage org="a" endpoint="ep_1" />);
   // A count of zero would be a claim; -1 is the runtime declining to answer.
   expect(await screen.findByText('cpu 5.0% · mem 1 MiB')).toBeTruthy();
+});
+
+it('discovers unmanaged projects, filters existing controls, and resets scope on navigation', async () => {
+  const now = new Date().toISOString();
+  const container = (id: string, name: string, project: string, state = 'running') => ({ id, name, image: 'alpine:3', image_id: 'i', state, status: state, created_at: now, ports: [], labels: {}, networks: [], compose_project: project });
+  const containers = [container('c1', 'shop-web', 'shop'), container('c2', 'shop-db', 'shop', 'exited'), container('c3', 'mail-web', 'mail'), container('c4', 'standalone', '')];
+  const snapshot = { generation: 1, observed_at: now, engine: { runtime: 'docker', version: '1', api_version: '1', os: 'linux', arch: 'x', kernel: 'k', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers, images: [], networks: [], volumes: [], truncated: ['containers'] };
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', generation: 1, observed_at: now, received_at: now, snapshot }) : String(input).endsWith('/samples') || String(input).includes('/commands') ? json([]) : json(endpoint));
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(<EndpointPage org="a" endpoint="ep_1" />);
+  const projects = await screen.findByRole('region', { name: 'Compose projects' });
+  expect(projects.textContent).toContain('Compose projects (2)');
+  expect(projects.textContent).toContain('1/2 containers running');
+  expect(projects.textContent).toContain('Unmanaged');
+  expect(projects.textContent).toContain('counts may be incomplete');
+  fireEvent.click(within(projects).getByTitle('shop'));
+  fireEvent.click(within(projects).getByRole('button', { name: 'Show containers for shop' }));
+  const table = document.getElementById('endpoint-containers');
+  if (!table) throw new Error('missing container region');
+  expect(table.textContent).toContain('shop-web');
+  expect(table.textContent).not.toContain('mail-web');
+  expect(table.textContent).not.toContain('standalone');
+  expect(document.activeElement).toBe(table);
+  fireEvent.click(screen.getByRole('button', { name: 'Show all containers' }));
+  expect(table.textContent).toContain('standalone');
+  fireEvent.click(within(projects).getByRole('button', { name: 'Show containers for shop' }));
+  view.rerender(<EndpointPage org="a" endpoint="ep_2" />);
+  await screen.findByRole('region', { name: 'Compose projects' });
+  expect(screen.queryByRole('button', { name: 'Show all containers' })).toBeNull();
+  expect(document.getElementById('endpoint-containers')?.textContent).toContain('mail-web');
+  expect(fetcher.mock.calls.every((call) => call.length === 1)).toBe(true); // discovery only reads inventory
 });
