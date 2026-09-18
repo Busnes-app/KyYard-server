@@ -1,10 +1,9 @@
 **Repo:** Busnes-app/KyYard-server
-**PR:** #36 — https://github.com/Busnes-app/KyYard-server/pull/36
-**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/exec-runtime (branch feat/exec-runtime)
+**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/exec-streams (branch feat/exec-streams)
 
 # KyYard implementation plan
 
-Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #35 is merged at `7a20787`. PR #36 (`feat/exec-runtime`) adds the bounded Docker PTY foundation; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #36 is merged at `673195f`. The current `feat/exec-streams` slice adds bounded agent terminal transport over that Docker PTY foundation; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
@@ -197,14 +196,16 @@ Record success/failure, confusing steps and recovery outcomes. Any required docu
 
 ## 8. Current implementation and next delivery
 
-M0–M4 infrastructure, M5 container/image commands and bounded logs, plus the product corrections and browser logs are merged through master `7a20787` (PR #35). The 24-hour capacity soak remains an unproven M4 gate.
+M0–M4 infrastructure, M5 container/image commands and bounded logs, plus the product corrections and browser logs are merged through master `673195f` (PR #36). The 24-hour capacity soak remains an unproven M4 gate.
 
 Merged PR #34 (`feat/image-controls`) adds explicit-tag/digest pulls and full-ID image removal with a fresh server-inventory preview, dependency checks, confirmation and visible command outcomes. It reuses the existing server/agent authorization and commands without adding routes. Browser tests against a local agent proved image pull/removal; frontend tests cover stale/incomplete/dependent previews, cancellation, uncertain submissions and polling. Generated bundle diffs no longer consume review input; CI still verifies exact source/build correspondence.
 
 Merged PR #35: package `/app/kyyard-agent` in the existing published image, generate same-host enrollment from the exact installed image ID, use attached `--enroll-only` before detached startup, print the approval fingerprint, and expose a host refresh action. The same-host agent shares the server network namespace on the existing default bridge; after server replacement recreate the agent with its retained identity volume. Remote HTTPS enrollment uses the same image pinned by digest. CI now builds both binaries for smoke coverage and executes the generated command against real Docker, proving approval, inventory, restart and server replacement.
 
-Current slice (`feat/exec-runtime`): Docker exec PTY with immutable target checks, explicit user, bounded argv and I/O, resize, cancellation, input-idle/absolute timeouts and independent exit inspection. Fake Engine tests cover refusal, uncertainty and blocked I/O; the real Docker regression proves non-root input/resize and exit code 7 in an isolated fixture, and runs in CI. Closing the attachment does not promise process termination. No browser/API/agent exec entrypoint is enabled yet.
+Merged PR #36 (`feat/exec-runtime`): Docker exec PTY with immutable target checks, explicit user, bounded argv and I/O, resize, cancellation, input-idle/absolute timeouts and independent exit inspection. Fake Engine tests cover refusal, uncertainty and blocked I/O; the real Docker regression proves non-root input/resize and exit code 7 in an isolated fixture, and runs in CI. Closing the attachment does not promise process termination. No browser/API exec entrypoint is enabled yet.
 
-Next engineering slices: browser exec with the protocol's authorization, timeouts and revocation guarantees; M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
+Current slice (`feat/exec-streams`): binary-safe agent exec frames, nonce-bound 60-second grants, replay refusal, four endpoint / one actor admission across reconnects, bounded input/output queues, cancellation and inspected exit reporting. Runtime work stays off the heartbeat loop. Race tests cover grant validation, binary I/O, queue pressure, cancellation, reconnect admission and live WebSocket responsiveness. The production runtime hook remains nil and no exec capability is advertised until the server authorization/revocation path lands.
+
+Next engineering slices: server and browser exec with the protocol's authorization, timeouts and revocation guarantees; M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
 The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.
