@@ -1,9 +1,10 @@
 **Repo:** Busnes-app/KyYard-server
+**PR:** #35 — https://github.com/Busnes-app/KyYard-server/pull/35
 **Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/agent-install (branch fix/agent-install)
 
 # KyYard implementation plan
 
-Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #34 is merged at `3e300d5`. The current `fix/agent-install` slice completes fresh-install agent packaging and enrollment; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #34 is merged at `3e300d5`. PR #35 (`fix/agent-install`) completes fresh-install agent packaging and enrollment; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
