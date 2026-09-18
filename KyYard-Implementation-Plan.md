@@ -1,9 +1,10 @@
-**Repo:** Busnes-app/kyyard-server
-**Worktree:** /home/yoshi/busness.app/kyyard-tenant-authorization (branch feat/tenant-authorization)
+**Repo:** Busnes-app/KyYard-server
+**PR:** #33 — https://github.com/Busnes-app/KyYard-server/pull/33
+**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/product-ui (branch fix/product-ui)
 
 # KyYard implementation plan
 
-Prepared 2026-09-15 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). M0 and M1 are merged through PR #5, including both onboarding security corrections. M2 schema/bootstrap merged in PR #6. Named permissions, transactional authorization/audit and organization/environment APIs are implemented on `feat/tenant-authorization`; local SQLite/PostgreSQL checks pass and PR review follows. Routed administration and typed tenant settings are next.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). Master `0e01e4e` includes tenancy, enrollment, inventory/statistics, lifecycle/image commands and bounded log transport. PR #33 adds the product corrections and browser logs described in section 8. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
@@ -23,7 +24,7 @@ Resolve the handoff's milestone-7 scope tension by splitting it: M7a delivers ma
 
 - Fresh product history is intentional. The imported baseline derives from `ky_server_base` revision `2a31d5c`; the handoff reviewed `f4ca19a`. Product identity and `/data` packaging landed in PR #1, and forced password replacement plus its security corrections landed in PR #3.
 - Preserve untracked recovery notes and local tool state in the original checkout. Implement slices in isolated worktrees from current product master; never push product changes to the base remote or run `ky-init.sh` over a nonempty checkout.
-- Durable session/encryption/instance keys landed in PR #4. The onboarding slice uses loopback-only HTTP by default, scheme-derived cookies and an exact advertised browser origin. Remote access requires an HTTPS reverse proxy with explicit peer trust. Agent enrollment remains absent until M3.
+- Durable session/encryption/instance keys landed in PR #4. The onboarding slice uses loopback-only HTTP by default, scheme-derived cookies and an exact advertised browser origin. Remote access requires an HTTPS reverse proxy with explicit peer trust. Agent enrollment is implemented under the M3 protocol.
 - Preserve the existing 20-minute Compose shutdown grace period and detached backup drain.
 - `internal/backup` snapshots SQLite only and rejects PostgreSQL snapshots. PostgreSQL recovery needs a separate tested implementation before advertising equivalent coverage.
 - `make ci` omits some workflow gates, including frontend build/dist comparison, vulnerability scanning and container/publishing checks. Use the full verification matrix below.
