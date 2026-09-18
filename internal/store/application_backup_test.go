@@ -61,6 +61,9 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, err)
 	instance, err := ts.AdoptApplication(ctx, a, app.ID, store.AdoptionRequest{EndpointID: endpoint.ID, Project: "shop", Digest: preview.Digest, Confirm: "shop"})
 	mustTenant(t, err)
+	mapping, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+	mustTenant(t, err)
+	mustTenant(t, ts.SetApplicationMapping(ctx, a, app.ID, store.MappingRequest{InstanceID: instance.ID, Version: mapping.Version, Digest: mapping.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": strings.Repeat("a", 64)}}))
 	payload, err := backup.Collect(ctx, cfg, "test")
 	mustTenant(t, err)
 	path := filepath.Join(t.TempDir(), "restored.db")
@@ -100,6 +103,11 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, err)
 	if len(instances) != 1 || instances[0].ID != instance.ID || len(instances[0].Containers) != 1 || instances[0].Containers[0].ID != strings.Repeat("a", 64) {
 		t.Fatal("backup lost adoption ownership")
+	}
+	restoredMapping, err := restored.Tenancy().ReadApplicationMapping(ctx, a, app.ID)
+	mustTenant(t, err)
+	if restoredMapping.Version != 1 || restoredMapping.MappedRevision != 2 || restoredMapping.Bindings["web"] != strings.Repeat("a", 64) {
+		t.Fatal("backup lost service mapping")
 	}
 	for number, want := range map[int]string{1: "backup-secret-canary", 2: "second-backup-canary"} {
 		values, err := restored.Tenancy().ResolveApplicationSecrets(ctx, a, secretApp.ID, number, restoredKey)

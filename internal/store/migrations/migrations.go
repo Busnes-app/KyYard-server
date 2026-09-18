@@ -664,6 +664,15 @@ CREATE TABLE application_resources (
 );
 CREATE INDEX idx_application_resources_instance ON application_resources(instance_id);
 `},
+	{Version: 22, Name: "application_service_mapping", SQLite: `ALTER TABLE application_instances ADD COLUMN mapping_version INTEGER NOT NULL DEFAULT 0 CHECK(mapping_version BETWEEN 0 AND 1000000000);
+ALTER TABLE application_instances ADD COLUMN mapped_revision INTEGER NOT NULL DEFAULT 0 CHECK(mapped_revision BETWEEN 0 AND 100);
+ALTER TABLE application_resources ADD COLUMN service_name TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_application_service ON application_resources(instance_id,service_name) WHERE service_name<>'';
+`, Postgres: `ALTER TABLE application_instances ADD COLUMN mapping_version INTEGER NOT NULL DEFAULT 0 CHECK(mapping_version BETWEEN 0 AND 1000000000);
+ALTER TABLE application_instances ADD COLUMN mapped_revision INTEGER NOT NULL DEFAULT 0 CHECK(mapped_revision BETWEEN 0 AND 100);
+ALTER TABLE application_resources ADD COLUMN service_name TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_application_service ON application_resources(instance_id,service_name) WHERE service_name<>'';
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

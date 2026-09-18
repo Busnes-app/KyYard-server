@@ -501,6 +501,12 @@ Omitted services/values are not copied forward. Saving preserves previous revisi
 and changes no containers. A conflicting or uncertain save requires refreshing
 Applications before trying again. History is limited to 100 revisions per application.
 
+Use **Map services to containers** to explicitly associate saved service names
+with already-adopted container IDs. Leave unused entries unmapped. Review the
+host, project and full IDs, then type the project name to save. This changes no
+containers. If the definition changes, review and save the mapping again; missing
+or replaced adopted containers require resolving adoption first.
+
 Use **Compare with host** in an adopted application's configuration to inspect
 missing/replaced identities, unowned project containers and observed service/image
 reference differences. The view is read-only and paginated. Stale or partial
