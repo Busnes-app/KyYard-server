@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -46,11 +45,6 @@ type Command struct {
 
 // InFlight reports whether the command is still waiting for an answer.
 func (c *Command) InFlight() bool { return c.Outcome == "" }
-
-// containerName is Docker's grammar for a container name or ID, anchored and length-bounded.
-// Anything outside it cannot name a container, and several things outside it can name a
-// different Engine API route.
-var containerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 
 // commandActions maps each action to the permission it needs. Removing a container is not a
 // stronger form of stopping one: it is a different thing to be allowed to do.
@@ -103,7 +97,7 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 			// ignoring it would read as a check that happened.
 			return nil, fmt.Errorf("%w: an image command carries no expectation", ErrInvalid)
 		}
-	} else if !containerName.MatchString(containerID) {
+	} else if !protocol.ValidContainerID(containerID) {
 		// Docker's own grammar for a name or ID. displaySafe is not enough for a value that
 		// becomes part of a URL: it permits a slash, a query and a fragment.
 		return nil, fmt.Errorf("%w: container", ErrInvalid)
@@ -333,7 +327,7 @@ func (t *tenancyStore) confirmable(ctx context.Context, tx *sql.Tx, endpointID, 
 	}
 	for _, c := range snap.Containers {
 		if c.ID == identifier || c.Name == identifier {
-			if !containerName.MatchString(c.ID) {
+			if !protocol.ValidContainerID(c.ID) {
 				return "", "", fmt.Errorf("%w: the recorded container ID is not usable", ErrInvalid)
 			}
 			return c.Name, c.ID, nil

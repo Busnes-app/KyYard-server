@@ -231,6 +231,10 @@ func (s *Server) handlePutMembership(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
+	// A role narrowed or a membership suspended takes effect on what is already running, in
+	// this request rather than whenever a stream happens to end. The stream re-checks its own
+	// authorization as well; this is what makes the change immediate.
+	s.logs.closeActorStreams(userID, "your access to this log was withdrawn")
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) handleRemoveMembership(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
@@ -243,5 +247,6 @@ func (s *Server) handleRemoveMembership(w http.ResponseWriter, r *http.Request, 
 		s.tenantError(w, err)
 		return
 	}
+	s.logs.closeActorStreams(userID, "your access to this log was withdrawn")
 	w.WriteHeader(http.StatusNoContent)
 }

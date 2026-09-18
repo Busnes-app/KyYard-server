@@ -41,6 +41,7 @@ func main() {
 	var snapshot func(context.Context) (*protocol.Snapshot, error)
 	var metrics func(context.Context, []string) protocol.Metrics
 	var operate func(context.Context, protocol.Command) (string, string)
+	var logs func(context.Context, protocol.LogRequest, func([]byte) error) error
 	runtimeVersion := ""
 	if *socket != "" {
 		engine := docker.New(*socket)
@@ -52,6 +53,7 @@ func main() {
 		snapshot = engine.Snapshot
 		metrics = engine.Stats
 		operate = func(cctx context.Context, cmd protocol.Command) (string, string) { return engine.Operate(cctx, cmd) }
+		logs = engine.Logs
 	}
 
 	id, err := client.LoadIdentity(*dir)
@@ -77,7 +79,7 @@ func main() {
 	} else if *server != "" && *server != id.Server {
 		log.Fatalf("identity is enrolled with %s, not %s; remove %s to re-enroll", id.Server, *server, *dir)
 	}
-	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, InventoryEvery: *inventoryEvery}); err != nil {
+	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, InventoryEvery: *inventoryEvery}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

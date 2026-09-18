@@ -29,6 +29,11 @@ const (
 	ImagePull Action = "image.pull"
 	// ImageDestroy removes an image from an endpoint.
 	ImageDestroy Action = "image.destroy"
+	// ContainerLogs reads what a container has written. It is separate from reading a
+	// container because a log is the application's own output: it carries whatever the
+	// workload prints, which is where credentials and customer data turn up, so the matrix
+	// stops it at the developer and audits every session.
+	ContainerLogs Action = "container.logs"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -39,22 +44,29 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy:
+		case OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "environment_admin":
 		switch action {
-		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy:
+		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "operator":
 		// Day-to-day operations, per docs/authorization-matrix.md: an operator restarts a
 		// container but does not destroy one.
 		switch action {
-		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate, ImagePull:
+		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate, ImagePull, ContainerLogs:
 			return true
 		}
-	case "developer", "read_only":
+	case "developer":
+		// A developer reads their application's output, which is what logs are, but operates
+		// nothing and executes nothing.
+		switch action {
+		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs:
+			return true
+		}
+	case "read_only":
 		return action == OrganizationRead || action == EnvironmentRead || action == EndpointRead
 	}
 	return false

@@ -35,6 +35,12 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	// slash or a query would otherwise choose which Engine API route the agent calls rather
 	// than which container it acts on. The server constrains the grammar as well; neither
 	// check is allowed to be the only one.
+	if !protocol.ValidContainerID(cmd.Container) {
+		// Checked here as well as at the control plane, for the same reason the image
+		// reference is: escaping must not be the only thing between a request body and a URL
+		// on a root-equivalent socket.
+		return protocol.OutcomeDenied, "that is not a container identifier"
+	}
 	container := url.PathEscape(cmd.Container)
 	var inspected struct {
 		Image string `json:"Image"`
@@ -146,8 +152,8 @@ func (c *Client) del(ctx context.Context, path string) (int, error) {
 // stream sends an action request and hands back the live body. A pull reports late failures
 // inside a 200, so the caller reads the stream to its end; buffering a slice of it would hide
 // the line that says the pull failed.
-func (c *Client) stream(ctx context.Context, path string) (int, io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
+func (c *Client) stream(ctx context.Context, method, path string) (int, io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
 	if err != nil {
 		return 0, nil, err
 	}

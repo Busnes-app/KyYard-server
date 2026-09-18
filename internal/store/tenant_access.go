@@ -29,7 +29,13 @@ func (t *tenancyStore) withTenantTarget(ctx context.Context, a TenantAccess, act
 // auditedReads are the low-volume, sensitive reads that keep a success row: who looked at the
 // audit trail, and who enumerated the organization's members. Every other successful read
 // writes nothing (docs/authorization-matrix.md, "Read audit"); denials are always recorded.
-var auditedReads = map[permissions.Action]bool{permissions.AuditRead: true, permissions.MembersManage: true}
+var auditedReads = map[permissions.Action]bool{
+	permissions.AuditRead:     true,
+	permissions.MembersManage: true,
+	// A log carries whatever the application printed, so who read one is worth a row even
+	// though the bodies themselves are never stored (docs/authorization-matrix.md).
+	permissions.ContainerLogs: true,
+}
 
 // readTenant checks the same live authorization without locks; reads use a snapshot. A
 // successful read writes no audit row unless its action is in auditedReads: inventory and

@@ -26,3 +26,5 @@ Owns the Engine API client (`docker.New` over the Unix socket, `docker.NewHTTP` 
 
 ## Child DOX Index
 None.
+
+- `Logs` streams one container's log. A container without a TTY has its output multiplexed by the daemon with an 8-byte header per frame, which is framing rather than log text and never reaches an operator; stdout and stderr are interleaved because they are one log to the person reading it. The reader's `sink` decides when enough is enough, so the line and byte bounds live with whoever is counting them rather than here. A log that ends is success, not failure: a stopped container's log ends immediately, and calling that an error would make every finished container look broken.

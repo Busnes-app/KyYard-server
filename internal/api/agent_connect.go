@@ -337,6 +337,9 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 // detached context is bounded.
 func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 	s.agents.remove(c)
+	// A reader waiting on this endpoint is waiting on a socket that has gone. Telling it so
+	// is the honest answer; leaving the request open until its own timeout is not.
+	s.logs.closeEndpointStreams(c.endpointID, "the endpoint disconnected")
 	if s.Connected(c.endpointID) {
 		return
 	}
@@ -378,7 +381,11 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		}
 		return false
 	}
-	if f.Type != protocol.TypeInventory && len(f.Payload) > maxControlPayload {
+	if f.Type == protocol.TypeLogChunk && len(f.Payload) > protocol.MaxLogFrameBytes {
+		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+		return true
+	}
+	if f.Type != protocol.TypeInventory && f.Type != protocol.TypeLogChunk && len(f.Payload) > maxControlPayload {
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 		return true
 	}
@@ -443,6 +450,37 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 				id = res.ID
 			}
 			log.Printf("agent %s: settling command %s: %v", c.endpointID, id, err)
+		}
+	case protocol.TypeLogChunk:
+		if pending {
+			return false
+		}
+		var chunk protocol.LogChunk
+		if json.Unmarshal(f.Payload, &chunk) != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		if len(chunk.Data) > protocol.MaxLogChunkBytes {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		// A stream this endpoint was never given addresses nothing: the lookup is scoped to
+		// the endpoint, so an agent cannot write into another endpoint's reader.
+		if stream := s.logs.find(c.endpointID, chunk.Stream); stream != nil {
+			stream.deliver(chunk)
+		}
+	case protocol.TypeLogClose:
+		if pending {
+			return false
+		}
+		var end protocol.LogClose
+		if json.Unmarshal(f.Payload, &end) != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		if stream := s.logs.find(c.endpointID, end.Stream); stream != nil {
+			end.Reason = protocol.CleanText(end.Reason, protocol.MaxResultDetailBytes)
+			stream.finish(&end)
 		}
 	case protocol.TypeMetrics:
 		if pending {

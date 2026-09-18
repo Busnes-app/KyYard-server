@@ -31,3 +31,25 @@ func TestFixedRoleMatrix(t *testing.T) {
 		}
 	}
 }
+
+// Reading a container's log is not reading a container: a log carries whatever the workload
+// printed, which is where credentials and customer data turn up. The matrix (row
+// `container.logs` in docs/authorization-matrix.md) stops it at the developer.
+func TestLogsAreReadableByEveryoneButTheReadOnlyMember(t *testing.T) {
+	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer"} {
+		if !Allows(role, ContainerLogs) {
+			t.Errorf("%s cannot read logs", role)
+		}
+	}
+	for _, role := range []string{"read_only", "admin", "unknown", ""} {
+		if Allows(role, ContainerLogs) {
+			t.Errorf("%s can read logs", role)
+		}
+	}
+	// A developer still operates nothing.
+	for _, a := range []Action{ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy} {
+		if Allows("developer", a) {
+			t.Errorf("a developer was granted %s", a)
+		}
+	}
+}

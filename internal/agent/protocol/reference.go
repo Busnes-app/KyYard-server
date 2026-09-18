@@ -23,6 +23,14 @@ var (
 	imageID = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
+// containerID is Docker's grammar for a container name or ID, anchored and length-bounded.
+// Several things outside it can name a different Engine API route rather than a different
+// container, which is why both sides check it.
+var containerID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+// ValidContainerID reports whether s can name a container.
+func ValidContainerID(s string) bool { return containerID.MatchString(s) }
+
 // IsImageAction reports whether an action names an image rather than a container.
 func IsImageAction(action string) bool {
 	return action == ActionImagePull || action == ActionImageRemove
