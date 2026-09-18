@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/coder/websocket"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -21,6 +22,7 @@ type browserExec struct {
 	agent                   *agentConn
 	frames                  chan protocol.Envelope
 	cancel                  context.CancelFunc
+	revoked                 atomic.Bool
 }
 type execRegistry struct {
 	mu      sync.Mutex
@@ -36,8 +38,11 @@ func (r *execRegistry) open(c *agentConn, actor, organization string, cancel con
 	if len(r.streams) >= 128 {
 		return nil
 	}
-	count := 0
+	count, organizationCount := 0, 0
 	for _, s := range r.streams {
+		if s.organization == organization {
+			organizationCount++
+		}
 		if s.agent.endpointID == c.endpointID {
 			count++
 			if s.actor == actor {
@@ -45,7 +50,7 @@ func (r *execRegistry) open(c *agentConn, actor, organization string, cancel con
 			}
 		}
 	}
-	if count >= protocol.MaxExecStreamsPerEndpoint {
+	if count >= protocol.MaxExecStreamsPerEndpoint || organizationCount >= 32 {
 		return nil
 	}
 	s := &browserExec{id: uuid.NewString(), actor: actor, organization: organization, agent: c, frames: make(chan protocol.Envelope, 8), cancel: cancel}
@@ -63,7 +68,7 @@ func (r *execRegistry) closeActor(actor string) {
 	defer r.mu.Unlock()
 	for _, s := range r.streams {
 		if s.actor == actor {
-			s.cancel()
+			s.revoke()
 		}
 	}
 }
@@ -97,8 +102,7 @@ func (r *execRegistry) deliver(c *agentConn, id string, f protocol.Envelope) {
 	}
 }
 
-// Never redirect an old stream onto a newly authenticated socket. If cancellation
-// cannot be queued, close that exact connection so its runtime attachments end.
+// Never redirect an old stream onto a newly authenticated socket.
 func (s *browserExec) send(f protocol.Envelope) bool {
 	select {
 	case <-s.agent.closed:
@@ -119,8 +123,24 @@ func (s *browserExec) send(f protocol.Envelope) bool {
 	}
 	return s.agent.conn.Write(ctx, websocket.MessageText, raw) == nil
 }
+func (s *browserExec) revoke() {
+	s.revoked.Store(true)
+	s.cancel()
+}
 func (s *browserExec) stopAgent() {
-	if !s.send(envelope(protocol.TypeExecCancel, protocol.ExecStream{Stream: s.id})) {
+	frame := envelope(protocol.TypeExecCancel, protocol.ExecStream{Stream: s.id})
+	if !s.revoked.Load() {
+		// Ordinary cleanup shares the control queue and its normal write budget.
+		// A timed-out WebSocket write itself kills the socket, even without CloseNow.
+		// If the queue is full, the agent's idle/absolute limits bound the attachment.
+		select {
+		case s.agent.send <- frame:
+		default:
+		}
+		return
+	}
+	// Authority loss must bypass a busy control queue and fail closed.
+	if !s.send(frame) {
 		s.agent.close(protocol.CloseProtocol)
 		if s.agent.conn != nil {
 			_ = s.agent.conn.CloseNow()

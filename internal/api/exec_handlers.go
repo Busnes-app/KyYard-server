@@ -58,12 +58,12 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	if err := s.store.Tenancy().CheckExecAccess(r.Context(), a, endpoint); err != nil {
-		s.tenantError(w, err)
-		return
-	}
 	if !s.allowAttempt("exec:"+a.ActorID, 10, time.Minute) {
 		s.writeError(w, 429, "Too many terminal attempts")
+		return
+	}
+	if err := s.store.Tenancy().CheckExecAccess(r.Context(), a, endpoint); err != nil {
+		s.tenantError(w, err)
 		return
 	}
 	s.agents.mu.Lock()
@@ -134,7 +134,12 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 	if !stream.send(envelope(protocol.TypeExecOpen, grant)) {
 		return
 	}
-	defer stream.stopAgent()
+	agentEnded := false
+	defer func() {
+		if !agentEnded {
+			stream.stopAgent()
+		}
+	}()
 	// Revocation checks run independently of a slow browser writer. Store failures
 	// fail closed within the same bounded check, including external account changes.
 	go func() {
@@ -149,7 +154,11 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 				return
 			case <-ticker.C:
 				if !s.execAllowed(r, a, endpoint) {
-					cancel()
+					// A browser disconnect also cancels an in-flight store read.
+					// Only a live check's refusal is an authority revocation.
+					if ctx.Err() == nil {
+						stream.revoke()
+					}
 					return
 				}
 			}
@@ -196,7 +205,7 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 		case <-idle.C:
 			return
 		case f := <-incoming:
-			if !s.execAllowed(r, a, endpoint) {
+			if ctx.Err() != nil {
 				return
 			}
 			switch f.Type {
@@ -230,6 +239,7 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 				return
 			}
 		case f := <-stream.frames:
+			agentEnded = f.Type == protocol.TypeExecClose
 			if f.Type == protocol.TypeExecReady {
 				ready.Stop()
 			}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/coder/websocket"
 )
@@ -33,7 +35,15 @@ type terminalFixture struct {
 
 func newTerminalFixture(t *testing.T) terminalFixture {
 	t.Helper()
-	s, st, _ := setupTestServerWith(t, func(cfg *config.Config) { cfg.Server.AppURL = terminalOrigin })
+	return newTerminalFixtureWithStore(t, nil)
+}
+func newTerminalFixtureWithStore(t *testing.T, wrap func(store.Store) store.Store) terminalFixture {
+	t.Helper()
+	s, st, cfg := setupTestServerWith(t, func(cfg *config.Config) { cfg.Server.AppURL = terminalOrigin })
+	if wrap != nil {
+		st = wrap(st)
+		s = api.NewServer(cfg, st)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 	ts := st.Tenancy()
@@ -261,5 +271,71 @@ func TestBrowserExecRevocationAndDisconnect(t *testing.T) {
 				t.Fatal("revocation exceeded one second")
 			}
 		})
+	}
+}
+
+type countingExecStore struct {
+	store.Store
+	tenancy *countingExecTenancy
+}
+
+func (s countingExecStore) Tenancy() store.TenancyStore { return s.tenancy }
+
+type countingExecTenancy struct {
+	store.TenancyStore
+	checks atomic.Int64
+}
+
+func (s *countingExecTenancy) StillAllowed(ctx context.Context, a store.TenantAccess, action permissions.Action, endpoint string) error {
+	if action == permissions.ContainerExec {
+		s.checks.Add(1)
+	}
+	return s.TenancyStore.StillAllowed(ctx, a, action, endpoint)
+}
+func TestBrowserExecAuthorizationCostBound(t *testing.T) {
+	var counter *countingExecTenancy
+	f := newTerminalFixtureWithStore(t, func(st store.Store) store.Store {
+		counter = &countingExecTenancy{TenancyStore: st.Tenancy()}
+		return countingExecStore{Store: st, tenancy: counter}
+	})
+	c, g := f.open(t)
+	before, began := counter.checks.Load(), time.Now()
+	for i := 0; i < 1000; i++ {
+		writeEnvelope(t, f.ctx, c, protocol.TypeExecInput, protocol.ExecData{Stream: g.Stream, Data: []byte("x")})
+		if got := readEnvelope(t, f.ctx, f.ag.conn); got.Type != protocol.TypeExecInput {
+			t.Fatalf("input: %s", got.Type)
+		}
+	}
+	if got, bound := counter.checks.Load()-before, int64(time.Since(began)/(250*time.Millisecond))+2; got > bound {
+		t.Fatalf("1000 inputs caused %d authorization checks; time-based bound %d", got, bound)
+	}
+}
+func TestBrowserExecRefusesOriginAndRolesDenialBudget(t *testing.T) {
+	f := newTerminalFixture(t)
+	user := loginAs(t, f.s, f.st, "limited", "user")
+	if err := f.st.Tenancy().SetMembership(f.ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_limited", Role: store.RoleReadOnly, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		c, res, err := f.dial(user, terminalOrigin)
+		if c != nil {
+			c.CloseNow()
+		}
+		if err == nil || res == nil || (res.StatusCode != 403 && res.StatusCode != 429) {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	rows, _, err := f.st.Audit().ListAuditRecords(f.ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, row := range rows {
+		if row.UserID == "usr_limited" && row.Action == "container.exec" && row.Result == "denied" {
+			count++
+		}
+	}
+	if count == 0 || count > 10 {
+		t.Fatalf("denial writes: %d, want 1..10", count)
 	}
 }

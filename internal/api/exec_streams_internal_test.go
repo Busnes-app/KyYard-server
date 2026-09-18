@@ -3,9 +3,14 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/coder/websocket"
 )
 
 func TestExecAdmissionIsolationAndOverflow(t *testing.T) {
@@ -59,11 +64,73 @@ func TestExecAdmissionIsolationAndOverflow(t *testing.T) {
 func TestExecGlobalAdmissionBound(t *testing.T) {
 	var registry execRegistry
 	for i := 0; i < 128; i++ {
-		if registry.open(&agentConn{endpointID: fmt.Sprint(i)}, "actor", "org", func() {}) == nil {
+		if registry.open(&agentConn{endpointID: fmt.Sprint(i)}, "actor", fmt.Sprint(i/32), func() {}) == nil {
 			t.Fatal("early refusal")
 		}
 	}
 	if registry.open(&agentConn{endpointID: "extra"}, "actor", "org", func() {}) != nil {
 		t.Fatal("unbounded connections")
+	}
+}
+
+func TestExecGlobalAdmissionBoundOrganizationShare(t *testing.T) {
+	var registry execRegistry
+	for i := 0; i < 32; i++ {
+		if registry.open(&agentConn{endpointID: fmt.Sprint(i)}, "actor", "a", func() {}) == nil {
+			t.Fatal("early refusal")
+		}
+	}
+	if registry.open(&agentConn{endpointID: "extra-a"}, "actor", "a", func() {}) != nil {
+		t.Fatal("organization exhausted other tenants' capacity")
+	}
+	if registry.open(&agentConn{endpointID: "b"}, "actor", "b", func() {}) == nil {
+		t.Fatal("other organization denied")
+	}
+}
+func TestExecNormalClosePreservesBusyControlSocket(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	accepted := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		accepted <- c
+	}))
+	defer server.Close()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	conn := <-accepted
+	defer conn.CloseNow()
+	// Holding the writer models another control-plane write occupying the socket.
+	writer, err := conn.Writer(ctx, websocket.MessageText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &agentConn{conn: conn, closed: make(chan struct{}), send: make(chan protocol.Envelope, 1)}
+	stream := &browserExec{id: "terminal", agent: agent}
+	stream.stopAgent()
+	time.Sleep(600 * time.Millisecond)
+	select {
+	case <-agent.closed:
+		t.Fatal("normal terminal close killed management connection")
+	default:
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A heartbeat still crosses the same socket after congestion clears.
+	if err := conn.Write(ctx, websocket.MessageText, []byte("heartbeat")); err != nil {
+		t.Fatal(err)
+	}
+	if _, raw, err := client.Read(ctx); err != nil || string(raw) != "heartbeat" {
+		t.Fatalf("heartbeat: %s %v", raw, err)
 	}
 }
