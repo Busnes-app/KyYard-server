@@ -17,3 +17,10 @@ it('does not invent an empty fleet when organization access is denied', async ()
   expect(await screen.findByRole('alert')).toBeTruthy();
   expect(screen.queryByText(/No endpoints here/)).toBeNull();
 });
+
+it('reports unavailable Docker instead of an empty host', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role: 'operator' }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { engine: { version: '' }, containers: [] } }) : json([{ id: 'e', name: 'Local Docker', state: 'active', runtime: 'docker', facts: {} }])));
+  render(<Dashboard />);
+  expect(await screen.findByText(/Docker is unavailable/)).toBeTruthy();
+  expect(screen.queryByText('No containers on this host.')).toBeNull();
+});

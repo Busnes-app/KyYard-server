@@ -45,6 +45,7 @@ services:
       - KY_APP_URL=http://localhost:9273
       - KY_DB_DRIVER=sqlite
       - KY_DATA_DIR=/data
+      - KY_DOCKER_SOCKET=${KY_DOCKER_SOCKET-/var/run/docker.sock}
       # Disaster recovery. Sealed capsules land in KY_BACKUP_DIR (empty = no local copies);
       # the schedule below is only the default the admin screen overrides. KY_DNS lives in
       # docker-compose.lan-dns.yml, never here.
@@ -54,6 +55,12 @@ services:
       - KY_BACKUP_ALLOW_PRIVATE_RECOVERY=${KY_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
     volumes:
       - kyyard-data:/data
+      # Built-in local connection: Docker socket access grants host-level authority.
+      - type: bind
+        source: ${KY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
 
 volumes:
   kyyard-data:

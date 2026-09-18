@@ -32,6 +32,7 @@ type ServerConfig struct {
 	AppName string `json:"app_name"`
 	// AgentImage selects a digest-pinned image for remote HTTPS enrollment. Empty
 	// uses the installed server image for same-host Docker enrollment.
+	DockerSocket string        `json:"docker_socket"`
 	AgentImage   string        `json:"agent_image"`
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`
@@ -235,6 +236,7 @@ func LoadFromEnv() (*Config, error) {
 
 	cfg := &Config{
 		Server: ServerConfig{
+			DockerSocket: localDockerSocket(),
 			Host:         host,
 			Port:         port,
 			AppURL:       strings.TrimRight(appURL, "/"),
@@ -381,4 +383,12 @@ func unmapPrefix(p netip.Prefix) netip.Prefix {
 		return p
 	}
 	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+}
+
+// An explicitly empty value selects a control-plane-only installation.
+func localDockerSocket() string {
+	if path, ok := os.LookupEnv("KY_DOCKER_SOCKET"); ok {
+		return path
+	}
+	return "/var/run/docker.sock"
 }

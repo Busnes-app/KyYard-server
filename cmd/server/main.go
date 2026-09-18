@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -125,6 +126,8 @@ func runServer() {
 	}
 
 	srv := api.NewServer(cfg, st)
+	localDone := make(chan struct{})
+	go localDockerLoop(ctx, srv.RunLocalDocker, localDone)
 	backupDone := make(chan struct{})
 	go backupLoop(ctx, cfg, st, backupDone)
 	go pruneLoop(ctx, st)
@@ -161,8 +164,39 @@ func runServer() {
 	cancel()
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), backupWaitTimeout)
 	defer waitCancel()
-	waitForBackupWork(waitCtx, backupDone, srv.WaitDetached)
+	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; srv.WaitDetached() })
 	log.Println("[KYYARD] Server stopped")
+}
+
+// localDockerLoop retries startup and connection failures, rechecking the persisted
+// authority on every attempt. A revoked/deleted endpoint is never recreated.
+func localDockerLoop(ctx context.Context, run func(context.Context) error, done chan<- struct{}) {
+	defer close(done)
+	delay := time.Second
+	for ctx.Err() == nil {
+		started := time.Now()
+		err := run(ctx)
+		if err == nil || ctx.Err() != nil { // disabled or clean shutdown
+			return
+		}
+		if errors.Is(err, store.ErrForbidden) {
+			log.Printf("[DOCKER] %v; local connection stopped", err)
+			return
+		}
+		if time.Since(started) >= time.Minute {
+			delay = time.Second
+		}
+		pause := time.Duration(float64(delay) * (0.8 + rand.Float64()*0.4))
+		log.Printf("[DOCKER] %v; retrying in %s", err, pause.Round(time.Millisecond))
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		delay = min(2*delay, time.Minute)
+	}
 }
 
 // waitForBackupWork blocks until the scheduler loop and every detached handler have finished,

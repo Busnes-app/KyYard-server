@@ -76,8 +76,9 @@ Default section order:
 6. Report any docs intentionally left unchanged and why
 
 ## User Preferences
+- The local Docker host connects automatically in the standard installation, without an enrollment command, separate agent container or fingerprint approval. Additional hosts retain explicit enrollment.
 - Containers and endpoints are the primary navigation and home-page content; administration stays in Settings.
-- Use the KyPost/KyDNS fifteen-palette swatch picker and browser-local theme preferences.
+- Use the KyPost/KyDNS fifteen-palette swatch picker in Settings and browser-local theme preferences. Remove upper-right theme dropdowns from the header and login.
 - Support configurable OAuth 2 / OIDC providers including KyIdentity; preserve local sign-in. SCIM and phone pairing are retired from the product.
 - Use Docker's existing default `bridge` network; create no dedicated KyYard network.
 - Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically revoke sessions, MFA challenges and device pairings. Untouched existing accounts are not retroactively flagged.
@@ -94,7 +95,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - The root owns these planning documents. Proposed domains in the plan become child DOX boundaries when their implementation lands.
 - The M3 design package lives in `docs/`: `agent-protocol.md`, `threat-model.md`, `authorization-matrix.md`, `application-schema.md`, `retention-policy.md`. Each records its review status and a decisions table; values marked *proposed* are planning defaults, not settled product decisions, and every numeric retention or capacity value must survive the SQLite soak before it is frozen. Agent, endpoint, application and retention code must cite the document section it implements and update the document when the implementation diverges.
 
-- The published image includes `/app/kyyard-agent`. Default enrollment reuses the installed server image ID and network namespace; the server stays on Docker default bridge. Replacing the server requires recreating the same-host agent while retaining its named identity volume; README owns the runbook. Remote HTTPS enrollment uses `KY_AGENT_IMAGE` pinned by digest and the same packaged agent entrypoint.
+- Standard Compose mounts the local Docker socket and runs the built-in local agent inside the server process, retaining default bridge networking and one container. Local startup creates an approved endpoint in the initial organization once; existing tenant permissions gate actions, and revocation survives restart/deletion. The published `/app/kyyard-agent` remains for additional hosts. Manual/legacy same-host agents still need recreation after server replacement; README owns that runbook. Remote HTTPS enrollment uses `KY_AGENT_IMAGE` pinned by digest.
 - Default Compose is one container, SQLite, a named `/data` volume and a loopback-only host HTTP publish (bridge peers can reach the container bind). It explicitly acknowledges its container-wide plaintext bind alongside the loopback host publish; the bare image fails closed without that acknowledgement or HTTPS configuration. Existing bind installs must enable `docker-compose.bind.yml`; proxy and PostgreSQL options have separate overlays. README owns setup and transport instructions; `docs/RESTORE.md` restores via the bind overlay while preserving the original named volume. The binary healthcheck probes readiness without loading config or creating keys.
 - `cmd/soak` drives the storage path at the capacity targets and fails on any bound the retention policy promises but does not hold (docs/soak.md). Its short run is part of `make ci`, so the harness cannot rot; the 24-hour run is the M4 gate and is started by hand.
 - `cmd/server` calls `Tenancy.Initialize` after account bootstrap and before serving HTTP. Store owns the one-time initial-organization migration and its marker. Tenant HTTP routes use named permissions and store-owned transactional authorization/audit; platform administration never implies tenant access.
@@ -110,7 +111,7 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `scripts/smoke-test.sh`: runs the built binaries and asserts CLI, auth, session, SPA behavior and the agent enroll/approve/connect/revoke path
 - `scripts/spikes/websocket-proxy/run.sh`: developer-run, not part of CI. The compatibility spike behind `docs/agent-protocol.md` section 2 (own Go module, needs Docker, binds loopback only); prints `RESULT <proxy> PASS` for Caddy and nginx. Re-run it when the transport decision or proxy guidance changes.
 - Real Docker exec PTY regression in the Go job (isolated fixture, explicit user, resize and exit status).
-- Docker image build and container HTTP check; `scripts/agent-install-test.py` executes the generated same-host command, checks printed fingerprint approval, real container inventory and identity-preserving agent restart.
+- Docker image build and container HTTP check; `scripts/agent-install-test.py` proves automatic local inventory, restart/replacement and durable revocation, then executes the generated additional-agent command with fingerprint approval and identity-preserving reconnect.
 - On a push to `master` that passes every job, `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busnes-app/kyyard:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kyyard:local`) so every compose command, recovery docs included, uses the local build.
 
 Run the same checks locally with `make ci` (`tidy-check lint test-race test-web smoke`); add `make test-postgres` when a Postgres instance is available.
@@ -131,6 +132,8 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 - [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
 - [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
 - [web/AGENTS.md](web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
+
+`cmd/server` supervises the built-in local agent with jittered exponential retry (1s to 60s base delay); disabled configuration and persisted authority refusal stop the loop. Transient socket/store failures retry. Shutdown cancels and waits for this loop before the detached-handler wait and store close. Its private authenticated WebSocket handler joins the existing detached counter.
 
 `cmd/server` owns the scheduler: `backupLoop` builds the `RunConfig` and client once and
 returns with `scheduler disabled: ...` if that fails, because a run that never stamps its

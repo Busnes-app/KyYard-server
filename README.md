@@ -4,7 +4,7 @@ The simple control plane for your container fleet.
 
 This first slice establishes the KyYard scaffold: Go backend, embedded React PWA,
 SQLite/PostgreSQL, local authentication, MFA, configurable OAuth 2/OIDC (including KyIdentity) and KyRecovery.
-Container inventory, lifecycle controls, image operations and logs are available after [enrolling a Docker host](#show-containers-after-installation). Remaining milestones are tracked in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
+The standard installation automatically shows the local Docker host, with container inventory, lifecycle controls, image operations and logs. [Connect additional hosts](#show-containers-after-installation) when needed. Remaining milestones are tracked in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
 SAML metadata is inherited; SAML login is not yet implemented.
 
 Fresh installations only: KyYard uses its own recovery service identity and token-sealing
@@ -24,7 +24,7 @@ docker compose logs kyyard
 ```
 
 Open **http://localhost:9273** on the Docker host. Sign in as `admin` with the temporary
-password printed in the logs and replace it. The HTTP port is published on loopback only.
+password printed in the logs and replace it. **Containers** shows **Local Docker** automatically; no enrollment command or fingerprint approval is needed for this host. The HTTP port is published on loopback only.
 `docker compose ps` reports health; `docker compose exec kyyard /app/kyyard-server healthcheck`
 checks readiness. Restarting preserves accounts, sessions and keys. Do not use `down -v`
 unless you intend to delete the data volume.
@@ -191,27 +191,51 @@ and is shown once alongside a Docker command and the host-access disclosure. A h
 
 ### Show containers after installation
 
-The server does not automatically inspect the host running it. Enroll an agent on each Docker
-host, including the server's own host:
+The standard Compose installation mounts the host Docker socket and runs the local connection
+inside KyYard. After signing in and replacing the initial password, open **Containers**:
+**Local Docker** appears in the initial organization's **Local** environment automatically.
+No separate agent container, enrollment token, shell command or fingerprint approval is needed.
+Container actions retain the same organization permissions and audit trail as remote hosts.
+The socket grants host-level Docker authority to KyYard.
 
-1. On **Containers**, choose **Manage environments & enroll a host**.
-2. Create an environment (for example, Production), open it, then choose **Enroll a host**.
-3. Run the displayed command on the Docker host running KyYard, using an account allowed to
-   run Docker. It first enrolls through an attached, short-lived process, then starts the
-   persistent agent with its saved identity. The published image includes `/app/kyyard-agent`; no Go installation or separate
-   agent image is needed. For a renamed server container, change `server=kyyard` in the command.
-4. Run `docker logs kyyard-agent`. In the site, choose **Refresh hosts**, compare the full
-   **agent key fingerprint** with the pending host, then choose **Approve**.
-5. Open the host or return to **Containers**. The first inventory arrives after approval;
-   refresh the page if necessary. Subsequent reports arrive every minute.
+**Existing installations:** update both the image and Compose file, then recreate KyYard using
+your existing Compose overlays and data volume. Merely restarting an older container does not
+add the socket mount. A `docker run` installation needs `-v /var/run/docker.sock:/var/run/docker.sock`.
+The built-in connection resumes after server replacement automatically. An older standalone
+same-host agent is no longer needed; stop it if you want to avoid listing that host twice.
+
+If your shell reports permission denied for `/var/run/docker.sock`, use `sudo docker compose`
+for installation/update commands. Do not make the socket world-writable. Additional-host
+installation commands now check Docker access first and use sudo for the whole chain when
+required, including `docker inspect`, before passing the enrollment token to the agent.
+
+For rootless or nonstandard Docker, set `KY_DOCKER_SOCKET_PATH` to the host socket path for
+Compose's bind mount. Inside KyYard, `KY_DOCKER_SOCKET` defaults to `/var/run/docker.sock`;
+set it explicitly empty for a control-plane-only process. Remove the socket mount as well
+if the deployment must have no host Docker authority. Without a readable socket, check the
+server's `[DOCKER]` / runtime messages; KyYard's other functions remain available.
+
+The local endpoint is initialized once. Revocation remains effective across restarts and
+environment deletion; startup never restores revoked authority. Its identity derives from
+the backed-up instance key, and its inventory generation resumes from the database.
+
+**Additional hosts / manual agent installations:**
+
+1. Open **Containers → Manage environments & add another host**.
+2. Create or open an environment, then choose **Enroll a host**.
+3. Run the displayed command on the indicated host. It checks Docker privileges and uses
+   sudo if needed, then enrolls and starts the persistent agent.
+4. Run `docker logs kyyard-agent` (with sudo if required), click **Refresh hosts**, compare
+   the full **agent key fingerprint**, then **Approve**.
+5. Return to **Containers**. Inventory arrives after approval and updates every minute.
 
 The default command uses the installed server's immutable local image ID (`--pull never`). It
-mounts the Docker socket only into the agent, giving it root-equivalent host access, and keeps
+mounts the Docker socket into that agent, giving it root-equivalent host access, and keeps
 its identity in the named `kyyard-agent-identity` volume. It shares the server container's
 existing network namespace so HTTP remains on loopback; the server stays on the default Docker
 bridge and no dedicated network is created. Do not use this command on a different host.
 
-**Server replacement or upgrade:** the same-host agent shares the old server container's network
+**Legacy/manual same-host agent replacement:** the standalone same-host agent shares the old server container's network
 namespace. Stop/remove the agent with `docker rm -fv kyyard-agent`, replace the server, then run
 this command on that host to reconnect the existing identity using the new installed image:
 

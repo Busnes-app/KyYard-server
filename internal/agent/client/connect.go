@@ -33,6 +33,9 @@ type Options struct {
 	Log        *log.Logger
 	// IdentityDir is where the rising inventory generation and rotation state are written back.
 	IdentityDir string
+	// CommandDir overrides the durable command ledger directory for embedded agents
+	// whose identity and inventory generation are maintained by their control plane.
+	CommandDir string
 	// RotateEvery is how often the agent offers a new key; zero disables rotation.
 	RotateEvery time.Duration
 	// Snapshot reads the runtime; nil reports facts only (no runtime reachable).
@@ -110,7 +113,11 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	// started before a drop is still running after the redial, so a per-session limit would
 	// grant four more with every reconnect, and a per-session ledger would serialise its stale
 	// view over the file and erase what the new session recorded.
-	commands := openLedger(opts.IdentityDir)
+	commandDir := opts.CommandDir
+	if commandDir == "" {
+		commandDir = opts.IdentityDir
+	}
+	commands := openLedger(commandDir)
 	running := newBudget()
 	execRunning := &execBudget{}
 	delay := time.Second

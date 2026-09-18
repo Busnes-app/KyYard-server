@@ -201,6 +201,7 @@ type TenancyStore interface {
 	EndpointState(ctx context.Context, endpointID string) (string, error)
 
 	Initialize(ctx context.Context) error
+	InitializeLocalDocker(ctx context.Context, publicKey []byte) (uint64, error)
 	CreateOrganization(ctx context.Context, organization *Organization) error
 	GetOrganization(ctx context.Context, organizationID string) (*Organization, error)
 	SetMembership(ctx context.Context, membership *OrganizationMembership) error
