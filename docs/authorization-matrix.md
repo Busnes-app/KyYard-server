@@ -119,3 +119,5 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Developer scope | deploy plus logs, no exec, no destructive | proposed |
 | Exec | organization administrators only in 0.1 | proposed |
 | Per-environment grants | not in 0.1 | proposed |
+
+Application persistence implements `application.read`, `application.import` and `application.edit` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. This slice exposes no HTTP import/edit routes or runtime adoption/deployment authority. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.

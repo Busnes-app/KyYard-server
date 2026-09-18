@@ -551,6 +551,59 @@ CREATE INDEX idx_endpoint_commands_endpoint ON endpoint_commands(endpoint_id, cr
 CREATE INDEX idx_endpoint_commands_endpoint ON endpoint_commands(endpoint_id, created_at);
 `},
 	{Version: 17, Name: "endpoint_command_reference", SQLite: `ALTER TABLE endpoint_commands ADD COLUMN reference TEXT NOT NULL DEFAULT '';`, Postgres: `ALTER TABLE endpoint_commands ADD COLUMN reference TEXT NOT NULL DEFAULT '';`},
+	{Version: 18, Name: "application_revisions", SQLite: `CREATE TABLE applications (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ name TEXT NOT NULL,
+ latest_revision INTEGER NOT NULL CHECK(latest_revision BETWEEN 1 AND 100),
+ created_by TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ UNIQUE(organization_id, environment_id, name),
+ UNIQUE(organization_id, environment_id, id),
+ FOREIGN KEY(organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE RESTRICT
+);
+CREATE TABLE application_revisions (
+ id TEXT PRIMARY KEY,
+ application_id TEXT NOT NULL,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ number INTEGER NOT NULL CHECK(number BETWEEN 1 AND 100),
+ spec TEXT NOT NULL,
+ digest TEXT NOT NULL,
+ created_by TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ UNIQUE(application_id, number),
+ FOREIGN KEY(organization_id, environment_id, application_id) REFERENCES applications(organization_id, environment_id, id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_applications_org ON applications(organization_id);
+`, Postgres: `CREATE TABLE applications (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ name TEXT NOT NULL,
+ latest_revision INTEGER NOT NULL CHECK(latest_revision BETWEEN 1 AND 100),
+ created_by TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL,
+ UNIQUE(organization_id, environment_id, name),
+ UNIQUE(organization_id, environment_id, id),
+ FOREIGN KEY(organization_id, environment_id) REFERENCES environments(organization_id, id) ON DELETE RESTRICT
+);
+CREATE TABLE application_revisions (
+ id TEXT PRIMARY KEY,
+ application_id TEXT NOT NULL,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ number INTEGER NOT NULL CHECK(number BETWEEN 1 AND 100),
+ spec TEXT NOT NULL,
+ digest TEXT NOT NULL,
+ created_by TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL,
+ UNIQUE(application_id, number),
+ FOREIGN KEY(organization_id, environment_id, application_id) REFERENCES applications(organization_id, environment_id, id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_applications_org ON applications(organization_id);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

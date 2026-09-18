@@ -1,6 +1,6 @@
 # KyYard application schema
 
-**Status:** M6 Compose discovery is implemented; revision persistence, import/adoption and deployment remain proposals for the following M6–M7 slices. Compose secret resolution is settled in M6 with a spike; everything here about secrets is the contract that spike must meet.
+**Status:** M6 Compose discovery and internal application/revision persistence are implemented. Public import/adoption, instances and deployment remain for following M6–M7 slices. Compose secret resolution is settled in M6 with a spike; everything here about secrets is the contract that spike must meet.
 
 ## Vocabulary
 
@@ -18,7 +18,15 @@ Desired configuration, observed runtime, drift and last deployment are stored an
 
 `applications`, `application_revisions`, `application_instances`, `deployments`, `deployment_events`, `registries`, `registry_credentials`, `update_policies`, `maintenance_windows`. Every row carries `organization_id`; rows that belong to an environment carry `environment_id`; composite foreign keys keep every reference inside one organization. Every table joins backup coverage in the slice that creates it.
 
-## Common revision model
+## Implemented persistence foundation
+
+Migration 18 stores applications and immutable revision history. Application names are unique inside their environment; composite foreign keys keep revisions in the same organization and environment as their application. All store operations require explicit environment scope and live named permissions. Create commits revision 1 with the application and audit; edit appends using an expected head number, rejecting a stale concurrent edit. No method updates or deletes an existing revision. Audit contains scope, actor, application/revision target and outcome, never configuration. The SHA-256 digest covers the exact deterministic JSON encoding stored for that revision; it is not a semantic equivalence check.
+
+The initial typed `ApplicationSpec` is deliberately limited to `kind: compose.v1` and 1–100 uniquely named services, each with an image reference and optional environment entries of `{secret_ref: name}`. It has no raw YAML, arbitrary extensions or literal environment-value field. This is an internal storage contract, not a supported Compose importer: future import code must validate unsupported source fields before conversion rather than silently dropping them. Secret-reference existence, image digest resolution, broader Compose fields and deployment validation remain prerequisites for public import/deployment. No application persistence HTTP route is exposed yet.
+
+Admission limits are 100 applications per organization, 100 revisions per application and 64 KiB per encoded revision; an organization-row lock protects creation capacity across administrators. An environment containing an application cannot be removed. History is retained rather than automatically pruned. Both tables travel in the SQLite snapshot, verified by `TestApplicationRevisionsSurviveBackup`; PostgreSQL capsule limitations are unchanged.
+
+## Target common revision model
 
 ```
 revision {
@@ -63,7 +71,7 @@ The exact Compose implementation and version range are recorded when M6 lands.
 
 - Removing an application stops and removes its containers and networks, keeps named volumes and images, and marks the application `removed` with its revisions retained for *proposed* 90 days.
 - Volume deletion is a separate action (`volume.destroy`) with its own confirmation naming the data.
-- Deleting an environment will require (*planned*, M3) that it holds no applications and no unrevoked endpoints; today the delete is unconditional.
+- Deleting an environment requires that it holds no applications and no unrevoked endpoints; the store enforces both conditions.
 
 ## Rollback honesty
 

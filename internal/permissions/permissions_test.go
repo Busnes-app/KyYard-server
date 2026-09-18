@@ -61,3 +61,15 @@ func TestExecIsOrganizationAdminOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestApplicationRoleMatrix(t *testing.T) {
+	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer", "read_only", "admin", "unknown", ""} {
+		member := role == "organization_admin" || role == "environment_admin" || role == "operator" || role == "developer" || role == "read_only"
+		admin := role == "organization_admin" || role == "environment_admin"
+		for action, want := range map[Action]bool{ApplicationRead: member, ApplicationImport: admin, ApplicationEdit: admin || role == "developer"} {
+			if Allows(role, action) != want || PlatformAllows(role, action) {
+				t.Errorf("%s %s", role, action)
+			}
+		}
+	}
+}

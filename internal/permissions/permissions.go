@@ -4,6 +4,9 @@ package permissions
 type Action string
 
 const (
+	ApplicationRead   Action = "application.read"
+	ApplicationImport Action = "application.import"
+	ApplicationEdit   Action = "application.edit"
 	PlatformAdmin     Action = "platform.admin"
 	OrganizationRead  Action = "organization.read"
 	MembersManage     Action = "organization.members.manage"
@@ -45,30 +48,30 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ApplicationRead, ApplicationImport, ApplicationEdit, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "environment_admin":
 		switch action {
-		case OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ApplicationRead, ApplicationImport, ApplicationEdit, OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "operator":
 		// Day-to-day operations, per docs/authorization-matrix.md: an operator restarts a
 		// container but does not destroy one.
 		switch action {
-		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate, ImagePull, ContainerLogs:
+		case ApplicationRead, OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate, ImagePull, ContainerLogs:
 			return true
 		}
 	case "developer":
-		// A developer reads their application's output, which is what logs are, but operates
-		// nothing and executes nothing.
+		// A developer reads logs and edits saved desired state, but has no runtime
+		// operation, destruction or exec authority.
 		switch action {
-		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs:
+		case ApplicationRead, ApplicationEdit, OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs:
 			return true
 		}
 	case "read_only":
-		return action == OrganizationRead || action == EnvironmentRead || action == EndpointRead
+		return action == ApplicationRead || action == OrganizationRead || action == EnvironmentRead || action == EndpointRead
 	}
 	return false
 }
