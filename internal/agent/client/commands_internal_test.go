@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,18 +18,18 @@ func TestALedgerSurvivesRestartAndAnswersOnce(t *testing.T) {
 	dir := t.TempDir()
 	id := &Identity{EndpointID: "ep_1"}
 	runs := 0
-	opts := &Options{Operate: func(cmd protocol.Command) (string, string) {
+	opts := &Options{Operate: func(_ context.Context, cmd protocol.Command) (string, string) {
 		runs++
 		return protocol.OutcomeSucceeded, "stopped"
 	}}
 	cmd := protocol.Command{ID: "cmd_1", Endpoint: "ep_1", Action: protocol.ActionStop, Container: "c1", Deadline: time.Now().UTC().Add(time.Minute)}
 
-	first := handleCommand(cmd, id, openLedger(dir), opts)
+	first := handleCommand(context.Background(), cmd, id, openLedger(dir), opts)
 	if first.Outcome != protocol.OutcomeSucceeded || runs != 1 {
 		t.Fatalf("first run: %+v after %d executions", first, runs)
 	}
 	// A fresh ledger, as a restarted agent would open.
-	again := handleCommand(cmd, id, openLedger(dir), opts)
+	again := handleCommand(context.Background(), cmd, id, openLedger(dir), opts)
 	if again.Outcome != protocol.OutcomeSucceeded || again.Detail != "stopped" {
 		t.Fatalf("the stored answer was not returned: %+v", again)
 	}
@@ -42,8 +43,11 @@ func TestALedgerSurvivesRestartAndAnswersOnce(t *testing.T) {
 func TestACommandForAnotherEndpointIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	ran := false
-	opts := &Options{Operate: func(protocol.Command) (string, string) { ran = true; return protocol.OutcomeSucceeded, "" }}
-	res := handleCommand(protocol.Command{ID: "cmd_2", Endpoint: "ep_other", Action: protocol.ActionStop}, &Identity{EndpointID: "ep_1"}, openLedger(dir), opts)
+	opts := &Options{Operate: func(context.Context, protocol.Command) (string, string) {
+		ran = true
+		return protocol.OutcomeSucceeded, ""
+	}}
+	res := handleCommand(context.Background(), protocol.Command{ID: "cmd_2", Endpoint: "ep_other", Action: protocol.ActionStop}, &Identity{EndpointID: "ep_1"}, openLedger(dir), opts)
 	if res.Outcome != protocol.OutcomeDenied || ran {
 		t.Fatalf("a command for another endpoint was run: %+v", res)
 	}
@@ -56,8 +60,11 @@ func TestACommandForAnotherEndpointIsRefused(t *testing.T) {
 // aged out, and acting on it late is worse than not acting.
 func TestAnExpiredCommandIsNotRun(t *testing.T) {
 	ran := false
-	opts := &Options{Operate: func(protocol.Command) (string, string) { ran = true; return protocol.OutcomeSucceeded, "" }}
-	res := handleCommand(protocol.Command{ID: "cmd_3", Endpoint: "ep_1", Deadline: time.Now().UTC().Add(-time.Minute)}, &Identity{EndpointID: "ep_1"}, openLedger(t.TempDir()), opts)
+	opts := &Options{Operate: func(context.Context, protocol.Command) (string, string) {
+		ran = true
+		return protocol.OutcomeSucceeded, ""
+	}}
+	res := handleCommand(context.Background(), protocol.Command{ID: "cmd_3", Endpoint: "ep_1", Deadline: time.Now().UTC().Add(-time.Minute)}, &Identity{EndpointID: "ep_1"}, openLedger(t.TempDir()), opts)
 	if res.Outcome != protocol.OutcomeTimedOut || ran {
 		t.Fatalf("an expired command was run: %+v", res)
 	}
@@ -91,5 +98,60 @@ func TestTheLedgerIsBounded(t *testing.T) {
 	l.prune()
 	if _, ok := l.done["stale"]; ok {
 		t.Fatal("an entry past its life was kept")
+	}
+}
+
+// A slot is agent-wide and lives for the process, so a worker that cannot hand its result over
+// must still give the slot back. A session ends for ordinary reasons -- a dropped socket, a
+// shutdown -- and a worker blocked forever on a loop that has gone would take a quarter of the
+// agent's capacity with it each time, until every command is refused.
+func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
+	running := newBudget()
+	results := make(chan protocol.Result, maxInFlightCommands)
+	for i := 0; i < maxInFlightCommands; i++ {
+		results <- protocol.Result{ID: fmt.Sprintf("earlier_%d", i)}
+	}
+	ctx, endSession := context.WithCancel(context.Background())
+	release, ok := running.take(protocol.ActionImagePull)
+	if !ok {
+		t.Fatal("a fresh budget had no room")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer release()
+		deliver(ctx, results, protocol.Result{ID: "cmd_late", Outcome: protocol.OutcomeSucceeded})
+	}()
+	endSession()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the worker is still waiting to deliver a result nobody is reading")
+	}
+	if len(running.all) != 0 || len(running.images) != 0 {
+		t.Fatalf("%d general and %d image slots were never returned", len(running.all), len(running.images))
+	}
+}
+
+// Image actions draw from a reserve of their own as well as a general slot, so a pull -- which
+// waits on a remote registry -- can never occupy the whole set and leave an operator unable to
+// stop a container during an incident.
+func TestImageActionsCannotTakeEveryCommandSlot(t *testing.T) {
+	running := newBudget()
+	for i := 0; i < maxInFlightImageCommands; i++ {
+		if _, ok := running.take(protocol.ActionImagePull); !ok {
+			t.Fatalf("pull %d was refused inside the image reserve", i)
+		}
+	}
+	if _, ok := running.take(protocol.ActionImageRemove); ok {
+		t.Fatal("an image action was admitted past the image reserve")
+	}
+	for i := 0; i < maxInFlightCommands-maxInFlightImageCommands; i++ {
+		if _, ok := running.take(protocol.ActionStop); !ok {
+			t.Fatalf("container action %d was refused while the general budget had room", i)
+		}
+	}
+	if _, ok := running.take(protocol.ActionStop); ok {
+		t.Fatal("a container action was admitted past the general limit")
 	}
 }

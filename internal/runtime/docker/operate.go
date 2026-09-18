@@ -3,9 +3,9 @@ package docker
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -21,6 +21,13 @@ const operationBudget = 30 * time.Second
 // digest, the same state. A precondition that no longer holds is a refusal, not a failure,
 // because nothing was attempted.
 func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, detail string) {
+	// Image actions name a reference, not a container, and have their own budgets.
+	switch cmd.Action {
+	case protocol.ActionImagePull:
+		return c.pullImage(ctx, cmd.Reference)
+	case protocol.ActionImageRemove:
+		return c.removeImage(ctx, cmd.Reference, cmd.Expects.ImageDigest)
+	}
 	ctx, cancel := context.WithTimeout(ctx, operationBudget)
 	defer cancel()
 
@@ -36,7 +43,7 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 		} `json:"State"`
 	}
 	if err := c.get(ctx, "/containers/"+container+"/json", &inspected); err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if statusOf(err) == http.StatusNotFound {
 			return protocol.OutcomeDenied, "the container no longer exists"
 		}
 		return protocol.OutcomeFailed, bound("inspecting the container: "+err.Error(), protocol.MaxResultDetailBytes)
@@ -80,6 +87,8 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 // post sends an action request and returns the status, which carries meaning of its own: 304
 // means the container was already where the caller wanted it.
 func (c *Client) post(ctx context.Context, path string) (int, error) {
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
 	if err != nil {
 		return 0, err
@@ -120,6 +129,8 @@ func (c *Client) remove(ctx context.Context, container, state string) (outcome, 
 }
 
 func (c *Client) del(ctx context.Context, path string) (int, error) {
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+path, nil)
 	if err != nil {
 		return 0, err
@@ -130,4 +141,19 @@ func (c *Client) del(ctx context.Context, path string) (int, error) {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode, nil
+}
+
+// stream sends an action request and hands back the live body. A pull reports late failures
+// inside a 200, so the caller reads the stream to its end; buffering a slice of it would hide
+// the line that says the pull failed.
+func (c *Client) stream(ctx context.Context, path string) (int, io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, resp.Body, nil
 }

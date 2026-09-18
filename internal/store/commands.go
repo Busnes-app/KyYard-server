@@ -33,7 +33,8 @@ type Command struct {
 	ActorID        string               `json:"actor_id"`
 	RequestID      string               `json:"request_id"`
 	Action         string               `json:"action"`
-	ContainerID    string               `json:"container_id"`
+	ContainerID    string               `json:"container_id,omitempty"`
+	Reference      string               `json:"reference,omitempty"`
 	Expects        protocol.Expectation `json:"expects"`
 	Deadline       time.Time            `json:"deadline"`
 	Outcome        string               `json:"outcome"`
@@ -54,11 +55,24 @@ var containerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 // commandActions maps each action to the permission it needs. Removing a container is not a
 // stronger form of stopping one: it is a different thing to be allowed to do.
 var commandActions = map[string]permissions.Action{
-	protocol.ActionStart:   permissions.ContainerOperate,
-	protocol.ActionStop:    permissions.ContainerOperate,
-	protocol.ActionRestart: permissions.ContainerOperate,
-	protocol.ActionRemove:  permissions.ContainerDestroy,
+	protocol.ActionStart:       permissions.ContainerOperate,
+	protocol.ActionStop:        permissions.ContainerOperate,
+	protocol.ActionRestart:     permissions.ContainerOperate,
+	protocol.ActionRemove:      permissions.ContainerDestroy,
+	protocol.ActionImagePull:   permissions.ImagePull,
+	protocol.ActionImageRemove: permissions.ImageDestroy,
 }
+
+// destructivePermissions are the permissions whose actions cannot be undone. Destructiveness
+// is a property of what an action is allowed to do rather than a list beside the actions, so a
+// new action granted one of these inherits the confirmation ceremony rather than missing it.
+var destructivePermissions = map[permissions.Action]bool{
+	permissions.ContainerDestroy: true,
+	permissions.ImageDestroy:     true,
+}
+
+// imageActions name a reference rather than a container.
+var imageActions = map[string]bool{protocol.ActionImagePull: true, protocol.ActionImageRemove: true}
 
 // CreateCommand records the intent before anything is sent. The row exists first so that a
 // command which is dispatched and then lost still has somewhere to be marked unknown: an
@@ -68,15 +82,28 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 	if !ok {
 		return nil, fmt.Errorf("%w: unsupported action %q", ErrInvalid, action)
 	}
-	// Destructive is a property of the permission, not a second list to keep in step with it:
-	// a future action given ContainerDestroy inherits these requirements automatically.
-	destructive := needs == permissions.ContainerDestroy
-	if destructive && expects.State == "" {
+	destructive := destructivePermissions[needs]
+	if needs == permissions.ContainerDestroy && expects.State == "" {
 		// Without this the actor is asking to destroy whatever is there now, not the thing
 		// they looked at.
 		return nil, fmt.Errorf("%w: a destructive command must say what state it expects", ErrInvalid)
 	}
-	if !containerName.MatchString(containerID) {
+	if imageActions[action] {
+		if !protocol.ValidImageReference(containerID) {
+			return nil, fmt.Errorf("%w: image reference", ErrInvalid)
+		}
+		if _, tag := protocol.SplitImageReference(containerID); tag == "" && action == protocol.ActionImagePull {
+			// Recorded as what was actually asked for. A bare name means every tag in the
+			// repository to a runtime, so the record would say less than the command did.
+			return nil, fmt.Errorf("%w: a pull must name a tag or a digest", ErrInvalid)
+		}
+		if expects.ImageDigest != "" || expects.State != "" {
+			// An image has no state, and its digest is not the caller's to assert: a removal
+			// pins identity from the inventory below. Accepting an expectation here and
+			// ignoring it would read as a check that happened.
+			return nil, fmt.Errorf("%w: an image command carries no expectation", ErrInvalid)
+		}
+	} else if !containerName.MatchString(containerID) {
 		// Docker's own grammar for a name or ID. displaySafe is not enough for a value that
 		// becomes part of a URL: it permits a slash, a query and a fragment.
 		return nil, fmt.Errorf("%w: container", ErrInvalid)
@@ -84,22 +111,24 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 	if !displaySafe(expects.ImageDigest) || !displaySafe(expects.State) {
 		return nil, fmt.Errorf("%w: expectation", ErrInvalid)
 	}
-	raw, err := json.Marshal(expects)
-	if err != nil {
-		return nil, err
-	}
 	now := time.Now().UTC()
 	cmd := &Command{
-		ID:          uuid.NewString(),
-		EndpointID:  endpointID,
-		ActorID:     a.ActorID,
-		Action:      action,
-		ContainerID: containerID,
-		Expects:     expects,
-		Deadline:    now.Add(CommandDeadline),
-		CreatedAt:   now,
+		ID:         uuid.NewString(),
+		EndpointID: endpointID,
+		ActorID:    a.ActorID,
+		Action:     action,
+		Expects:    expects,
+		Deadline:   now.Add(CommandDeadline),
+		CreatedAt:  now,
 	}
-	err = t.withTenantTarget(ctx, a, needs, endpointID, func(tx *sql.Tx) error {
+	// One target, named for what it is. An image reference is not a container ID, and a row
+	// that stores it in the container column would read as one to everything downstream.
+	if imageActions[action] {
+		cmd.Reference = containerID
+	} else {
+		cmd.ContainerID = containerID
+	}
+	err := t.withTenantTarget(ctx, a, needs, endpointID, func(tx *sql.Tx) error {
 		var state string
 		row := tx.QueryRowContext(ctx, t.store.rebind(`SELECT organization_id,environment_id,state FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
 			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID)
@@ -109,7 +138,20 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 			}
 			return err
 		}
-		if destructive {
+		if destructive && imageActions[action] {
+			// The same ceremony as a container destruction, against what the host last
+			// reported: confirm the reference as observed, and pin the image it resolved to
+			// so the agent refuses if the tag has since moved to a different image.
+			observed, imageID, err := t.confirmableImage(ctx, tx, endpointID, containerID)
+			if err != nil {
+				return err
+			}
+			if confirm != observed {
+				return fmt.Errorf("%w: confirm must be %q", ErrInvalid, observed)
+			}
+			cmd.Reference = observed
+			cmd.Expects.ImageDigest = imageID
+		} else if destructive {
 			// The confirmation is checked against what the server knows the container is
 			// called, not against the request repeating itself, which would attest to
 			// nothing. The identifier may be a name or an ID; both resolve here.
@@ -134,8 +176,13 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 			return fmt.Errorf("%w: it is %s", ErrEndpointOffline, state)
 		}
 		cmd.RequestID = a.CorrelationID
-		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_commands (id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,expects,deadline,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`),
-			cmd.ID, cmd.EndpointID, cmd.OrganizationID, cmd.EnvironmentID, cmd.ActorID, cmd.RequestID, cmd.Action, cmd.ContainerID, string(raw), cmd.Deadline, cmd.CreatedAt)
+		// Marshalled here because a destructive image command pins its expectation above.
+		raw, err := json.Marshal(cmd.Expects)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_commands (id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
+			cmd.ID, cmd.EndpointID, cmd.OrganizationID, cmd.EnvironmentID, cmd.ActorID, cmd.RequestID, cmd.Action, cmd.ContainerID, cmd.Reference, string(raw), cmd.Deadline, cmd.CreatedAt)
 		return err
 	})
 	if err != nil {
@@ -231,7 +278,7 @@ func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpoin
 	return out, nil
 }
 
-const commandColumns = `SELECT id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,expects,deadline,outcome,detail,created_at,dispatched_at,settled_at FROM endpoint_commands`
+const commandColumns = `SELECT id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,outcome,detail,created_at,dispatched_at,settled_at FROM endpoint_commands`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -240,7 +287,7 @@ func scanCommand(row scanner) (*Command, error) {
 	var expects string
 	var deadline, created any
 	var dispatched, settled sql.NullTime
-	if err := row.Scan(&c.ID, &c.EndpointID, &c.OrganizationID, &c.EnvironmentID, &c.ActorID, &c.RequestID, &c.Action, &c.ContainerID, &expects, &deadline, &c.Outcome, &c.Detail, &created, &dispatched, &settled); err != nil {
+	if err := row.Scan(&c.ID, &c.EndpointID, &c.OrganizationID, &c.EnvironmentID, &c.ActorID, &c.RequestID, &c.Action, &c.ContainerID, &c.Reference, &expects, &deadline, &c.Outcome, &c.Detail, &created, &dispatched, &settled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -293,4 +340,39 @@ func (t *tenancyStore) confirmable(ctx context.Context, tx *sql.Tx, endpointID, 
 		}
 	}
 	return "", "", fmt.Errorf("%w: no container %q in the last inventory", ErrNotFound, identifier)
+}
+
+// confirmableImage resolves an image reference against the last inventory the same way
+// confirmable resolves a container: it answers with the reference as the host reported it,
+// which is what the operator must type back, and the image ID that reference stands for.
+//
+// The reference rather than the ID is what gets dispatched. Docker treats the two differently
+// -- deleting a tag untags, deleting an ID deletes the image under every tag it has -- so
+// substituting the ID would quietly widen what the operator confirmed. The ID travels as the
+// expectation instead, and the agent refuses if the tag has moved.
+func (t *tenancyStore) confirmableImage(ctx context.Context, tx *sql.Tx, endpointID, identifier string) (observed, id string, err error) {
+	var raw string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", fmt.Errorf("%w: this endpoint has reported no inventory to confirm against", ErrInvalid)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	var snap protocol.Snapshot
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
+		return "", "", err
+	}
+	for _, im := range snap.Images {
+		for _, candidate := range append(append([]string{im.ID}, im.Tags...), im.Digests...) {
+			if candidate != identifier {
+				continue
+			}
+			if !protocol.ValidImageReference(im.ID) || !protocol.ValidImageReference(candidate) {
+				return "", "", fmt.Errorf("%w: the recorded image is not usable", ErrInvalid)
+			}
+			return candidate, im.ID, nil
+		}
+	}
+	return "", "", fmt.Errorf("%w: no image %q in the last inventory", ErrNotFound, identifier)
 }

@@ -550,6 +550,7 @@ CREATE INDEX idx_endpoint_commands_endpoint ON endpoint_commands(endpoint_id, cr
 );
 CREATE INDEX idx_endpoint_commands_endpoint ON endpoint_commands(endpoint_id, created_at);
 `},
+	{Version: 17, Name: "endpoint_command_reference", SQLite: `ALTER TABLE endpoint_commands ADD COLUMN reference TEXT NOT NULL DEFAULT '';`, Postgres: `ALTER TABLE endpoint_commands ADD COLUMN reference TEXT NOT NULL DEFAULT '';`},
 }
 
 // Run executes all pending migrations for the specified database driver.

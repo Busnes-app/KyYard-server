@@ -5,6 +5,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -29,12 +30,34 @@ type Client struct {
 	cpuPrev map[string]cpuPoint
 }
 
+// callBudget bounds a call whose caller set no deadline of its own.
+//
+// It is a context deadline rather than an http.Client.Timeout because that timeout also covers
+// reading the body: it would cut a pull's progress stream at twenty seconds however generous
+// pullBudget was, and every pull of a real image would settle as unknown. Keeping every bound
+// in a context means the stated budget and the enforced budget cannot drift apart.
+const callBudget = 20 * time.Second
+
 // New returns an adapter for the Engine at socketPath (a Unix socket) or a TCP host.
 func New(socketPath string) *Client {
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	}}
-	return &Client{http: &http.Client{Transport: transport, Timeout: 20 * time.Second}, base: "http://docker/" + apiVersion}
+	return newClient(transport, "http://docker/"+apiVersion)
+}
+
+// newClient is what both New and the tests build, so a test exercises the settings production
+// runs with rather than settings a test invented.
+func newClient(transport http.RoundTripper, base string) *Client {
+	return &Client{http: &http.Client{Transport: transport}, base: base}
+}
+
+// bounded gives a call the default budget when its caller named none.
+func (c *Client) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, callBudget)
 }
 
 // NewHTTP is for tests and TCP daemons: base is the daemon origin.
@@ -43,6 +66,8 @@ func NewHTTP(c *http.Client, base string) *Client {
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
+	ctx, cancel := c.bounded(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
 		return err
@@ -57,9 +82,30 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("docker %s: HTTP %d", path, resp.StatusCode)
+		return &statusError{path: path, status: resp.StatusCode}
 	}
 	return json.Unmarshal(body, out)
+}
+
+// statusError carries the daemon's status so callers branch on the code rather than on a
+// substring of the message. The path in that message holds a caller-supplied identifier -- a
+// repository ending in -404 is a legal reference -- so matching "404" in it reads the name as
+// readily as the status, and answers "this host does not have that image" about a host that
+// was never asked.
+type statusError struct {
+	path   string
+	status int
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("docker %s: HTTP %d", e.path, e.status) }
+
+// statusOf reports the daemon status an error carries, or zero if it carries none.
+func statusOf(err error) int {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.status
+	}
+	return 0
 }
 
 // Engine facts; used at enrollment for runtime_version too.

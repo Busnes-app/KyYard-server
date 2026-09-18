@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/coder/websocket"
 	"net/http"
@@ -1164,4 +1165,296 @@ func TestAnExhaustedWalkReturnsToTheIdentityKey(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// A command can take minutes -- a pull is bounded by the network, not by the daemon -- so it
+// runs off the session loop. If it did not, any principal allowed to pull could make an
+// endpoint miss its heartbeats, go offline, and stay unmanageable for as long as the pull ran.
+func TestCommandsDoNotStallTheSession(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	beats := make(chan struct{}, 64)
+	results := make(chan protocol.Result, 16)
+	release := make(chan struct{})
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		frame := func(typ string, payload any) []byte {
+			raw, _ := json.Marshal(payload)
+			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
+			return b
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
+		_, _, _ = c.Read(ctx)
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
+		// More pulls than the image reserve holds, so the surplus must be refused rather than
+		// queued behind the others -- and then a container action, which must still get
+		// through: an operator's emergency stop cannot wait on a registry.
+		for i := 0; i < 4; i++ {
+			_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeCommand, protocol.Command{
+				ID: fmt.Sprintf("pull_%d", i), Endpoint: "ep_busy", Action: protocol.ActionImagePull,
+				Reference: "ghcr.io/busnes-app/kyyard:1.2.3", Deadline: time.Now().UTC().Add(time.Minute),
+			}))
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeCommand, protocol.Command{
+			ID: "stop_0", Endpoint: "ep_busy", Action: protocol.ActionStop,
+			Container: "c1", Deadline: time.Now().UTC().Add(time.Minute),
+		}))
+		for {
+			_, raw, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var e protocol.Envelope
+			_ = json.Unmarshal(raw, &e)
+			switch e.Type {
+			case protocol.TypeHeartbeat:
+				beats <- struct{}{}
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHeartbeat, nil))
+			case protocol.TypeResult:
+				var res protocol.Result
+				_ = json.Unmarshal(e.Payload, &res)
+				results <- res
+			}
+		}
+	}))
+	defer stub.Close()
+	id := &client.Identity{EndpointID: "ep_busy", PrivateKey: priv, InstanceFingerprint: strings.Repeat("a", 64), Server: stub.URL, RotatedAt: time.Now()}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	snapshot := func(context.Context) (*protocol.Snapshot, error) {
+		return &protocol.Snapshot{Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+	}
+	started := make(chan string, 8)
+	operate := func(_ context.Context, cmd protocol.Command) (string, string) {
+		started <- cmd.ID
+		<-release
+		return protocol.OutcomeSucceeded, "done"
+	}
+	go func() {
+		_ = client.Run(ctx, id, client.Options{
+			HTTPClient: stub.Client(), Snapshot: snapshot, InventoryEvery: time.Hour,
+			IdentityDir: t.TempDir(), Operate: operate,
+		})
+	}()
+
+	// maxInFlightImageCommands, which this package cannot see from outside.
+	const imageReserve = 2
+
+	// While the blocked commands sit in Operate, the loop still answers the heartbeat, refuses
+	// the pulls past the image reserve immediately, and never refuses the container action.
+	denied := 0
+	seen := 0
+	deadline := time.After(15 * time.Second)
+	for denied < 4-imageReserve || seen < 3 {
+		select {
+		case <-beats:
+			seen++
+		case res := <-results:
+			if res.Outcome != protocol.OutcomeDenied {
+				t.Fatalf("a blocked command answered early: %+v", res)
+			}
+			if res.ID == "stop_0" {
+				t.Fatal("pulls waiting on a registry refused an operator's stop")
+			}
+			denied++
+		case <-deadline:
+			t.Fatalf("%d heartbeats and %d refusals while commands blocked; the loop is starved", seen, denied)
+		}
+	}
+	// The stop is running rather than refused, so it is one of the commands still blocked.
+	running := map[string]bool{}
+	for len(running) < imageReserve+1 {
+		select {
+		case id := <-started:
+			running[id] = true
+		case <-time.After(15 * time.Second):
+			t.Fatalf("only %v started", running)
+		}
+	}
+	if !running["stop_0"] {
+		t.Fatalf("the container action never ran: %v", running)
+	}
+
+	close(release)
+	settled := 0
+	done := time.After(15 * time.Second)
+	for settled < imageReserve+1 {
+		select {
+		case res := <-results:
+			if res.Outcome != protocol.OutcomeSucceeded {
+				t.Fatalf("a released command: %+v", res)
+			}
+			settled++
+		case <-beats:
+		case <-done:
+			t.Fatalf("only %d of %d commands reported after they finished", settled, imageReserve+1)
+		}
+	}
+}
+
+// The in-flight limit and the dedupe ledger belong to the agent, not to one connection. A
+// command outlives the socket it arrived on, so a per-session limit would grant four more with
+// every reconnect -- and sessions end routinely, at the server's choosing -- while a
+// per-session ledger would serialise its stale view over the file and erase what the new
+// session recorded, making the agent forget commands it really ran.
+func TestTheInFlightLimitAndLedgerSurviveAReconnect(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	started := make(chan string, 8)
+	release := make(chan struct{})
+	results := make(chan protocol.Result, 16)
+	dropFirst := make(chan struct{})
+	sendMore := make(chan string, 4)
+	var sessions atomic.Int32
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		frame := func(typ string, payload any) []byte {
+			raw, _ := json.Marshal(payload)
+			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
+			return b
+		}
+		command := func(id string) []byte {
+			return frame(protocol.TypeCommand, protocol.Command{
+				ID: id, Endpoint: "ep_limit", Action: protocol.ActionStop, Container: "c1",
+				Deadline: time.Now().UTC().Add(5 * time.Minute),
+			})
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
+		_, _, _ = c.Read(ctx)
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
+		if sessions.Add(1) == 1 {
+			for i := 0; i < 4; i++ {
+				_ = c.Write(ctx, websocket.MessageText, command(fmt.Sprintf("cmd_a%d", i)))
+			}
+			<-dropFirst
+			c.CloseNow()
+			return
+		}
+		go func() {
+			for id := range sendMore {
+				if c.Write(ctx, websocket.MessageText, command(id)) != nil {
+					return
+				}
+			}
+		}()
+		for {
+			_, raw, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var e protocol.Envelope
+			_ = json.Unmarshal(raw, &e)
+			switch e.Type {
+			case protocol.TypeHeartbeat:
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHeartbeat, nil))
+			case protocol.TypeResult:
+				var res protocol.Result
+				_ = json.Unmarshal(e.Payload, &res)
+				results <- res
+			}
+		}
+	}))
+	defer stub.Close()
+	dir := t.TempDir()
+	id := &client.Identity{EndpointID: "ep_limit", PrivateKey: priv, InstanceFingerprint: strings.Repeat("a", 64), Server: stub.URL, RotatedAt: time.Now()}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	snapshot := func(context.Context) (*protocol.Snapshot, error) {
+		return &protocol.Snapshot{Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+	}
+	// This runtime call ignores cancellation, as a runtime call that has already reached the
+	// daemon would: the slot stays held until the work really ends.
+	operate := func(_ context.Context, cmd protocol.Command) (string, string) {
+		started <- cmd.ID
+		<-release
+		return protocol.OutcomeSucceeded, "stopped " + cmd.ID
+	}
+	go func() {
+		_ = client.Run(ctx, id, client.Options{
+			HTTPClient: stub.Client(), Snapshot: snapshot, InventoryEvery: time.Hour,
+			IdentityDir: dir, Operate: operate,
+		})
+	}()
+
+	for i := 0; i < 4; i++ {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of 4 commands started", i)
+		}
+	}
+	close(dropFirst)
+
+	// The redialled session inherits the limit: the four commands from the session that just
+	// ended are still running, so it has none of its own to give.
+	sendMore <- "cmd_b0"
+	select {
+	case res := <-results:
+		if res.ID != "cmd_b0" || res.Outcome != protocol.OutcomeDenied {
+			t.Fatalf("a reconnect granted more in-flight commands: %+v", res)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the new session never answered")
+	}
+
+	// Once they finish, the ledger that recorded them is the one the new session reads and
+	// writes, so nothing it recorded is lost and a re-dispatch replays rather than re-runs.
+	close(release)
+	for done := false; !done; {
+		sendMore <- "cmd_b1"
+		select {
+		case res := <-results:
+			switch {
+			case res.ID != "cmd_b1":
+				t.Fatalf("unexpected result: %+v", res)
+			case res.Outcome == protocol.OutcomeSucceeded:
+				done = true
+			case res.Outcome != protocol.OutcomeDenied:
+				t.Fatalf("cmd_b1: %+v", res)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("cmd_b1 never answered")
+		}
+	}
+	// Polled rather than read once: the released commands record as they finish, and only one
+	// of them had to finish for cmd_b1 to get its slot. What is being asserted is that the
+	// ledger never loses an entry, not how soon each arrives.
+	var recorded map[string]struct {
+		Outcome string `json:"outcome"`
+	}
+	want := []string{"cmd_a0", "cmd_a1", "cmd_a2", "cmd_a3", "cmd_b1"}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		raw, err := os.ReadFile(filepath.Join(dir, "commands.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &recorded); err != nil {
+			t.Fatal(err)
+		}
+		missing := ""
+		for _, id := range want {
+			if recorded[id].Outcome == "" {
+				missing = id
+			}
+		}
+		if missing == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the ledger forgot %s after a reconnect: %v", missing, recorded)
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	close(sendMore)
 }

@@ -43,7 +43,9 @@ type Options struct {
 	InventoryEvery time.Duration
 	// Operate runs one container action and reports the outcome and a short reason. Nil means
 	// this agent has no runtime to operate, and every command is refused rather than dropped.
-	Operate func(cmd protocol.Command) (outcome, detail string)
+	// The context ends when the session that carried the command does, so a dropped socket
+	// stops work nobody is waiting for rather than leaving it running blind against the host.
+	Operate func(ctx context.Context, cmd protocol.Command) (outcome, detail string)
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -97,9 +99,15 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	if err != nil {
 		return err
 	}
+	// The ledger and the in-flight limit belong to the agent, not to one connection. A command
+	// started before a drop is still running after the redial, so a per-session limit would
+	// grant four more with every reconnect, and a per-session ledger would serialise its stale
+	// view over the file and erase what the new session recorded.
+	commands := openLedger(opts.IdentityDir)
+	running := newBudget()
 	delay := time.Second
 	for {
-		err := session(ctx, id, target, &opts)
+		err := session(ctx, id, target, &opts, commands, running)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -133,7 +141,11 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	}
 }
 
-func session(ctx context.Context, id *Identity, target string, opts *Options) error {
+func session(ctx context.Context, id *Identity, target string, opts *Options, commands *ledger, running *budget) error {
+	// Commands run under the session's own context, so when this returns the work it started
+	// is cancelled rather than left to finish against a host nobody is watching.
+	ctx, endSession := context.WithCancel(ctx)
+	defer endSession()
 	u, _ := url.Parse(target)
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	conn, _, err := websocket.Dial(dctx, target, &websocket.DialOptions{HTTPClient: opts.HTTPClient})
@@ -196,7 +208,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 		id.commitCandidate()
 		_ = opts.save(id)
 	}
-	commands := openLedger(opts.IdentityDir)
+	// Buffered, but what keeps a worker from waiting forever is the session context rather
+	// than the buffer: results already sitting here are not counted against a slot, so more
+	// senders than the buffer holds is an ordinary state.
+	results := make(chan protocol.Result, maxInFlightCommands)
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
 		return errors.New("bad hello")
@@ -281,6 +296,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 					return err
 				}
 			}
+		case res := <-results:
+			if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
+				return err
+			}
 		case m := <-metricsOut:
 			if err := write(ctx, conn, protocol.TypeMetrics, m); err != nil {
 				return err
@@ -338,13 +357,35 @@ func session(ctx context.Context, id *Identity, target string, opts *Options) er
 					opts.Log.Printf("unreadable command frame")
 					break
 				}
-				// Answered on the session loop: a command is one bounded runtime call, and
-				// the ledger keeps a repeat from running twice rather than a queue keeping
-				// order. Streams, which are not bounded, arrive in M5's second half.
-				res := handleCommand(cmd, id, commands, opts)
-				if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
-					return err
+				// A command already answered is answered again with the same answer, before
+				// anything else is considered: the server re-dispatches precisely when it
+				// never heard the first result, and refusing it for being busy would report
+				// work that did happen as work that did not.
+				if prior, ok := commands.lookup(cmd.ID); ok {
+					res := protocol.Result{ID: cmd.ID, Outcome: prior.Outcome, Detail: prior.Detail}
+					if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
+						return err
+					}
+					break
 				}
+				// Run off the loop. A pull takes as long as the network does, and a session
+				// waiting for one sends no heartbeats, so the endpoint is marked offline and
+				// stops accepting the commands an operator needs during an incident. The
+				// agent's liveness must not depend on how long a runtime call takes.
+				release, taken := running.take(cmd.Action)
+				if !taken {
+					// Refused rather than queued: an answer now beats an answer later, and a
+					// queue lets one caller spend the agent's memory.
+					res := protocol.Result{ID: cmd.ID, Outcome: protocol.OutcomeDenied, Detail: "this agent is already running as many commands as it will"}
+					if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
+						return err
+					}
+					break
+				}
+				go func(cmd protocol.Command) {
+					defer release()
+					deliver(ctx, results, handleCommand(ctx, cmd, id, commands, opts))
+				}(cmd)
 			case protocol.TypeHeartbeat:
 			case protocol.TypeError:
 				opts.Log.Printf("server error frame: %s", string(f.Payload))
