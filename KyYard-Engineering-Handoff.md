@@ -24,7 +24,7 @@ KyYard is not intended to reproduce every Portainer feature. The product should 
 1. Start the KyYard container.
 2. Read a one-time administrator credential from its logs.
 3. Sign in and change the password.
-4. Enroll a Docker host or Kubernetes cluster with one generated command.
+4. See local Docker automatically; add another Docker host with one generated image-pulling command and enrollment link. Kubernetes enrollment follows its milestone.
 5. Operate containers without first configuring a database, cache, reverse proxy, identity provider, or large environment file.
 
 Environment variables remain available for unattended and advanced deployments, but they are overrides—not the primary configuration interface.

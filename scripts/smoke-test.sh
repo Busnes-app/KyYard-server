@@ -210,7 +210,7 @@ if [ -x "$AGENT" ]; then
   TOKEN_JSON="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"runtime":"docker"}' "$BASE/api/organizations/org_initial/environments/$ENV_ID/enrollment-tokens")"
   TOKEN="$(printf '%s' "$TOKEN_JSON" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
   contains "token response carries the socket disclosure" "$TOKEN_JSON" "root-equivalent"
-  contains "default enrollment command reuses the installed image" "$TOKEN_JSON" "--pull never"
+  contains "HTTP-only installation explains remote setup" "$TOKEN_JSON" "Remote setup needs a reachable HTTPS address"
   printf '%s\n' "$TOKEN" | "$AGENT" --server "$BASE" --identity-dir "$WORK/agent" --name smoke-host >"$WORK/agent.log" 2>&1 &
   AGENT_PID=$!
   endpoint_state() { curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p'; }

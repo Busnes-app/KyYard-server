@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -72,14 +74,14 @@ func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tok
 	if reply.Fingerprint != protocol.Fingerprint(pub) {
 		return nil, errors.New("server echoed a fingerprint that is not ours")
 	}
-	id := &Identity{EndpointID: reply.EndpointID, PrivateKey: priv, InstanceFingerprint: reply.InstanceFingerprint, Server: strings.TrimRight(server, "/"), RotatedAt: time.Now().UTC()}
+	id := &Identity{EndpointID: reply.EndpointID, PrivateKey: priv, InstanceFingerprint: reply.InstanceFingerprint, Server: strings.TrimRight(server, "/"), EnrollmentHash: enrollmentHash(tokenB64), RotatedAt: time.Now().UTC()}
 	if err := SaveIdentity(dir, id); err != nil {
 		return nil, err
 	}
 	return id, nil
 }
 
-// ReadToken takes the token from stdin, the only place the enrollment command puts it.
+// ReadToken supports stdin enrollment for native clients and older installations.
 func ReadToken(r io.Reader) (string, error) {
 	raw, err := io.ReadAll(io.LimitReader(r, 256))
 	if err != nil {
@@ -90,4 +92,37 @@ func ReadToken(r io.Reader) (string, error) {
 		return "", errors.New("no enrollment token on stdin and no identity on disk")
 	}
 	return tok, nil
+}
+
+// ParseLink accepts only the generated HTTPS enrollment link. The token fragment
+// is extracted locally and never sent as part of an HTTP URL or error message.
+func ParseLink(link string) (server, token string, err error) {
+	invalid := errors.New("invalid enrollment link; copy a fresh link from KyYard")
+	if len(link) > 4096 {
+		return "", "", invalid
+	}
+	u, e := url.Parse(link)
+	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || (u.Path != "" && u.Path != "/") || !strings.HasPrefix(u.Fragment, "kyyard=") {
+		return "", "", invalid
+	}
+	token = strings.TrimPrefix(u.Fragment, "kyyard=")
+	raw, e := base64.RawURLEncoding.DecodeString(token)
+	if e != nil || len(raw) != protocol.TokenSize || base64.RawURLEncoding.EncodeToString(raw) != token {
+		return "", "", invalid
+	}
+	server = "https://" + u.Host
+	if _, e := checkServerOrigin(server); e != nil {
+		return "", "", invalid
+	}
+	return server, token, nil
+}
+
+func enrollmentHash(token string) string {
+	hash := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return base64.RawURLEncoding.EncodeToString(hash[:])
+}
+
+// MatchesEnrollment prevents a new link from silently reusing another enrollment.
+func (id *Identity) MatchesEnrollment(server, token string) bool {
+	return id.Server == server && id.EnrollmentHash != "" && id.EnrollmentHash == enrollmentHash(token)
 }

@@ -205,9 +205,7 @@ The built-in connection resumes after server replacement automatically. An older
 same-host agent is no longer needed; stop it if you want to avoid listing that host twice.
 
 If your shell reports permission denied for `/var/run/docker.sock`, use `sudo docker compose`
-for installation/update commands. Do not make the socket world-writable. Additional-host
-installation commands now check Docker access first and use sudo for the whole chain when
-required, including `docker inspect`, before passing the enrollment token to the agent.
+for installation/update commands. Do not make the socket world-writable. The generated remote-host command uses `sudo docker run`; omit `sudo` if your account already has Docker access.
 
 For rootless or nonstandard Docker, set `KY_DOCKER_SOCKET_PATH` to the host socket path for
 Compose's bind mount. Inside KyYard, `KY_DOCKER_SOCKET` defaults to `/var/run/docker.sock`;
@@ -223,17 +221,32 @@ the backed-up instance key, and its inventory generation resumes from the databa
 
 1. Open **Containers → Manage environments & add another host**.
 2. Create or open an environment, then choose **Enroll a host**.
-3. Run the displayed command on the indicated host. It checks Docker privileges and uses
-   sudo if needed, then enrolls and starts the persistent agent.
-4. Run `docker logs kyyard-agent` (with sudo if required), click **Refresh hosts**, compare
+3. Run the displayed command on the remote host. It pulls the image and starts one persistent
+   agent container with an enrollment link. No server container is required on that host.
+4. Run `sudo docker logs kyyard-agent`, click **Refresh hosts**, compare
    the full **agent key fingerprint**, then **Approve**.
 5. Return to **Containers**. Inventory arrives after approval and updates every minute.
 
-The default command uses the installed server's immutable local image ID (`--pull never`). It
-mounts the Docker socket into that agent, giving it root-equivalent host access, and keeps
-its identity in the named `kyyard-agent-identity` volume. It shares the server container's
-existing network namespace so HTTP remains on loopback; the server stays on the default Docker
-bridge and no dedicated network is created. Do not use this command on a different host.
+The command has this shape (copy the real link from KyYard):
+
+```sh
+sudo docker run -d --name kyyard-agent --restart unless-stopped --pull always \
+  --no-healthcheck --entrypoint /app/kyyard-agent \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v kyyard-agent-identity:/var/lib/kyyard-agent \
+  ghcr.io/busnes-app/kyyard:latest --link '<enrollment-link>' --name "$(hostname)"
+```
+
+The agent enrolls on first start, then reuses its saved identity on restart, even after
+that one-use link expires. A different link refuses an existing identity volume. Keep
+`kyyard-agent-identity`; to enroll into another environment, revoke the old endpoint and
+choose a new volume. The link is a short-lived secret visible in shell history and Docker
+container arguments; it is never logged by the agent or saved in its identity file (only
+its hash is retained to recognize the original link on restart).
+
+The agent uses Docker's default bridge and connects outbound to the server's HTTPS address;
+no ports or dedicated network are needed. Mounting the Docker socket gives it root-equivalent
+host access. Replacing the server does not require recreating remote agent containers.
 
 **Legacy/manual same-host agent replacement:** the standalone same-host agent shares the old server container's network
 namespace. Stop/remove the agent with `docker rm -fv kyyard-agent`, replace the server, then run
@@ -249,8 +262,8 @@ docker run -d --name kyyard-agent --restart unless-stopped --pull never --no-hea
   -v kyyard-agent-identity:/var/lib/kyyard-agent "$image"
 ```
 
-A fresh enrollment command refuses an existing identity and names its endpoint/server; use the
-restart command above to reconnect it. To enroll into another environment, revoke the old
+A link for another enrollment refuses an existing identity; use the
+restart command above to reconnect legacy agents. To enroll into another environment, revoke the old
 endpoint and explicitly choose a new identity volume for the new enrollment.
 
 Keep the named identity volume; `docker rm -fv` removes anonymous volumes, not named ones.
@@ -258,20 +271,19 @@ No new token or approval is needed for that existing identity. A revoked endpoin
 revived this way. Never share an identity volume between hosts or control planes. Use distinct
 agent container/volume names if running more than one installation on a host.
 
-**Another Docker host:** configure KyYard's advertised `KY_APP_URL` as reachable HTTPS and
-set `KY_AGENT_IMAGE` to the published **KyYard** image pinned by digest, for example
-`ghcr.io/busnes-app/kyyard@sha256:<verified-digest>`. Follow the image-verification instructions
-in [RESTORE.md](docs/RESTORE.md); this is the same image and attestation as the server. Add
-`KY_AGENT_IMAGE` to the Compose service's environment (putting it in `.env` alone does not pass
-it into the container). The next enrollment command uses that image's `/app/kyyard-agent`
-entrypoint on Docker's default bridge and connects over HTTPS. Tags are refused. With a
-loopback HTTP advertised URL the command remains same-host, even if an image is configured.
+**Remote server address:** configure `KY_APP_URL` as reachable HTTPS with a trusted reverse
+proxy before generating the command. An HTTP-only installation shows setup guidance rather
+than a misleading same-host command. The default image is the published
+`ghcr.io/busnes-app/kyyard:latest`, pulled on creation; restarting an existing container does
+not upgrade it. Optionally set `KY_AGENT_IMAGE` to a verified digest-pinned KyYard image
+(`ghcr.io/busnes-app/kyyard@sha256:<digest>`) and pass it through the Compose service environment.
+Custom image overrides still require a digest; see [RESTORE.md](docs/RESTORE.md) for verification.
 
-**Source installation:** `make build` produces `./kyyard-agent`. Expand **Source installation
-or another Docker host** in the enrollment panel to obtain the one-time token, and pipe it to
-`./kyyard-agent --server <server-origin> --identity-dir <private-directory>` on the Docker host.
-The process needs access to `/var/run/docker.sock`; keep it running with your service manager.
-HTTP is accepted only for a host binary connecting to loopback; remote connections require HTTPS.
+**Source installation:** `make build` produces `./kyyard-agent`. Use `--link '<enrollment-link>'`
+or expand **Source installation** for the token and pipe it to
+`./kyyard-agent --server <server-origin> --identity-dir <private-directory>`.
+The process needs Docker socket access and a service manager. The legacy stdin path accepts
+HTTP only on loopback; enrollment links and remote connections require HTTPS.
 
 ### Agent
 

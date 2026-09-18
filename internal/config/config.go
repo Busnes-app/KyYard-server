@@ -30,8 +30,7 @@ type ServerConfig struct {
 	Port    int    `json:"port"`
 	AppURL  string `json:"app_url"`
 	AppName string `json:"app_name"`
-	// AgentImage selects a digest-pinned image for remote HTTPS enrollment. Empty
-	// uses the installed server image for same-host Docker enrollment.
+	// AgentImage overrides the published default with a digest-pinned remote image.
 	DockerSocket string        `json:"docker_socket"`
 	AgentImage   string        `json:"agent_image"`
 	ReadTimeout  time.Duration `json:"read_timeout"`

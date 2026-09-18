@@ -77,12 +77,12 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
       </div>
       {token && (
         <div className="dr-alert dr-alert-warn" role="region" aria-label="Enrollment command">
-          <p><strong>Shown once.</strong> {token.command ? 'Run this on the host before' : 'Give this token to the agent before'} {new Date(token.expires_at).toLocaleTimeString()}:</p>
+          <p><strong>Shown once.</strong> {token.command ? 'Run this on the remote host before' : 'Source enrollment token expires at'} {new Date(token.expires_at).toLocaleTimeString()}:</p>
           <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{token.command ?? token.token}</pre>
           {token.note && <p>{token.note}</p>}
           <p>After starting the agent, refresh hosts below and approve the matching fingerprint. Then open the host to see its containers.</p>
-          <details><summary>Source installation or another Docker host</summary>
-            <p>Source builds can pass this token to kyyard-agent on stdin. For a remote Docker host, configure a reachable HTTPS server URL and KY_AGENT_IMAGE with the published KyYard image pinned by digest, then enroll again.</p>
+          <details><summary>Source installation</summary>
+            <p>Source builds can pass this token to kyyard-agent on stdin with --server set to the server address. Remote hosts require HTTPS.</p>
             <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{token.token}</pre>
           </details>
           <p>{token.disclosure}</p>

@@ -152,8 +152,8 @@ func TestEnrollmentRoutes(t *testing.T) {
 	check(admin, "GET", "/api/agent/v1/anything", "", 404)
 }
 
-// Fresh installs reuse the locally installed image without a registry lookup.
-func TestEnrollmentTokenWithoutImageUsesInstalledImage(t *testing.T) {
+// HTTP-only installs explain remote setup instead of producing a same-host command.
+func TestEnrollmentTokenWithoutHTTPSExplainsRemoteSetup(t *testing.T) {
 	s, st, _ := setupTestServer(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
@@ -176,13 +176,14 @@ func TestEnrollmentTokenWithoutImageUsesInstalledImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	command, _ := out["command"].(string)
-	if !strings.Contains(command, "{{.Image}}") || !strings.Contains(command, "--pull never") || !strings.Contains(command, `--network "container:$server_id"`) || !strings.Contains(command, "/app/kyyard-agent") || out["token"] == "" || out["note"] == nil || out["disclosure"] == nil {
-		t.Fatalf("token without image: %v", out)
+	if command != "" || !strings.Contains(out["note"].(string), "HTTPS") || out["image"] != "ghcr.io/busnes-app/kyyard:latest" {
+		t.Fatal("missing remote setup guidance")
 	}
 }
 
-func TestEnrollmentCommandUsesSudoForWholeChain(t *testing.T) {
-	s, st, _ := setupTestServer(t)
+func TestEnrollmentCommandRunsOneRemoteContainer(t *testing.T) {
+	s, st, cfg := setupTestServer(t)
+	cfg.Server.AppURL = "https://yard.example"
 	ctx := context.Background()
 	if err := st.Tenancy().CreateEnvironment(ctx, &store.Environment{ID: "env-sudo", OrganizationID: store.InitialOrganizationID, Name: "Extra host"}); err != nil {
 		t.Fatal(err)
@@ -231,7 +232,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(raw), "inspect ") != 2 || strings.Count(string(raw), "run ") != 2 {
+	if strings.Count(string(raw), "inspect ") != 0 || strings.Count(string(raw), "run ") != 1 || !strings.Contains(string(raw), "--pull always") || !strings.Contains(string(raw), "--link https://yard.example/#kyyard=") || strings.Contains(string(raw), "--network container:") {
 		t.Fatalf("missing privileged calls: %s", raw)
 	}
 }
