@@ -3,7 +3,7 @@
 The simple control plane for your container fleet.
 
 This first slice establishes the KyYard scaffold: Go backend, embedded React PWA,
-SQLite/PostgreSQL, local authentication, MFA, KySignOn/OIDC, SCIM and KyRecovery.
+SQLite/PostgreSQL, local authentication, MFA, configurable OAuth 2/OIDC (including KyIdentity) and KyRecovery.
 Container management and agent enrollment are planned in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
 SAML metadata is inherited; SAML login is not yet implemented.
 
@@ -12,7 +12,7 @@ label. Existing base-project databases, pairing tokens and capsules are not a su
 in-place migration. The SQLite filename `ky_server.db` remains the inherited storage format.
 Container data lives under `/data`, including local capsules under `/data/backups` in Compose.
 KyYard generates persistent secrets without manual configuration. Compose runs one
-container with SQLite and a named `kyyard-data` volume; SSO and SCIM are off by default.
+container with SQLite and a named `kyyard-data` volume; SSO is optional and configured in Settings.
 
 ## Start KyYard
 
@@ -103,45 +103,28 @@ Replace the example with your proxy's address. A host proxy — one running as a
 this machine — arrives on loopback or through Docker's bridge gateway, and the published port
 stays where it is.
 
-**A proxy that is itself a container cannot use the published port at all.** Inside it,
-`127.0.0.1` is that container, not the host, so the request fails and the proxy answers 502.
-Append `:docker-compose.proxy-network.yml` after the proxy overlay and set
-`KY_PROXY_NETWORK`. KyYard joins that network, the host publish goes away, and the proxy
-forwards to `http://kyyard:9273` — with websocket support enabled, which the agent connection
-needs.
-
-This trades one reachable set for another: not the host, and every container on that network,
-which can all resolve and reach each other. Prefer a network holding just the two:
-`docker network create kyyard-proxy`, `docker network connect kyyard-proxy <proxy>`, then
-`KY_PROXY_NETWORK=kyyard-proxy`. The proxy's existing `<project>_default` is one step shorter
-but usually carries unrelated applications, and this hop is plain HTTP carrying session
-cookies — the plaintext bind the base file acknowledges was justified by a loopback-only
-publish, and no longer is.
-
-`KY_TRUSTED_PROXIES` is then the proxy's address on that network. Trust follows the address,
-not the container: recreate the proxy and a stale entry either stops honouring forwarded
-addresses — collapsing every client into one rate-limit bucket — or hands that trust to
-whatever Docker gives the address to next. Give the proxy a fixed `ipv4_address` on that
-network, or keep the network to those two containers, and check after any recreate:
-`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' <proxy>`. Only listed peers may supply `X-Forwarded-For`; forwarded
-scheme headers never change cookie security. HTTPS startup requires this explicit proxy
-allowlist. Recreate with `docker compose up -d`, then sign in at the HTTPS URL.
-Agent enrollment is planned; secret-bearing remote enrollment will require HTTPS.
+KyYard uses Docker's existing default `bridge` network. Compose creates no KyYard network.
+For a containerized reverse proxy, point the upstream at KyYard's bridge IP and port 9273,
+with WebSocket support enabled. Obtain that IP with
+`docker inspect -f '{{.NetworkSettings.IPAddress}}' kyyard`.
+The built-in bridge does not resolve container names. Check the upstream IP after recreating
+KyYard, and set `KY_TRUSTED_PROXIES` to the proxy's actual peer IP. The backend is reachable
+by other containers on that bridge; the host publish stays loopback-only.
+`docker-compose.proxy-network.yml` remains a no-op compatibility overlay for existing
+`COMPOSE_FILE` chains; `KY_PROXY_NETWORK` is no longer used.
 
 Optional overlays are appended to the existing `COMPOSE_FILE` chain, preserving the build,
 bind and DNS overlays already in use:
 
 - `docker-compose.bind.yml`: existing host directory at `./data` instead of the named volume.
-- `docker-compose.postgres.yml`: PostgreSQL 17, without a published database port. Set
-  `KY_POSTGRES_PASSWORD` and a URL-encoded `KY_DB_DSN` such as
-  `postgres://kyyard:<encoded-password>@postgres:5432/kyyard?sslmode=disable` in private `.env`.
-  This uses the private Compose network; capsule backups support SQLite only.
-- `docker-compose.proxy-network.yml`: for a reverse proxy running in a container on this
-  host. Joins `KY_PROXY_NETWORK` and stops publishing a host port: nothing on the host can
-  reach the server, every container on that network can, so use one holding only the proxy
-  and KyYard. Use it after `docker-compose.proxy.yml`.
-- SSO/SCIM: explicitly set `KY_SSO_ENABLED=true` / `KY_SCIM_ENABLED=true` in an environment
-  overlay after configuring the provider or stable `KY_SCIM_TOKEN`.
+- `docker-compose.postgres.yml`: PostgreSQL 17 on the existing Docker bridge, without a
+  published database port. Set `KY_POSTGRES_PASSWORD` and `KY_DB_DSN` using the database's
+  reachable IP (not the `postgres` service name); re-check it after recreation. Capsule backups
+  support SQLite only. A separately managed PostgreSQL server with a stable address is also supported.
+- SSO: configure providers in **Settings → Single sign-on**. OIDC discovery supports KyIdentity;
+  OAuth 2 providers can supply explicit endpoints and JSON profile field mappings. Register the
+  displayed callback URL with the provider. New identities require an organization membership
+  grant. SCIM and phone pairing are not part of KyYard. Local login remains available.
 
 `GET`/`HEAD /health/live` reports process availability; `/health/ready` additionally probes
 the database with a two-second deadline and returns 503 during shutdown or database failure.
@@ -156,15 +139,13 @@ federated accounts are not automatically enrolled. If no eligible local admin ex
 migration completes without assigning a member; adding a local admin later does not silently
 claim it. Platform administration remains separate from organization membership.
 
-Membership removal or disabling survives restart and administrator password resets. SSO,
-SCIM and directory sync provision accounts only: no external role, group or attribute grants
+Membership removal or disabling survives restart and administrator password resets. SSO and directory sync provision accounts only: no external role, group or attribute grants
 organization access, an IdP deactivation denies access live and leaves the grant in place for
 reactivation, and a deleted account's grants are gone for good. Legacy SCIM groups do not
 grant organization access. Tenant APIs enforce live membership on every
 operation; platform administrators need explicit membership too. Membership administration is available through the tenant API and the web UI: pick an
 organization in the header, then manage environments, members and audit history under
-`/organizations/{organization}`. Links are deep-linkable and survive sign-in. Typed settings
-follow when the first optional product setting exists.
+`/organizations/{organization}`. Links are deep-linkable and survive sign-in. Provider settings are available under Settings → Single sign-on.
 
 ### Tenant API
 

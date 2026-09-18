@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 // Routes are plain paths so deep links, reloads and browser history work without state.
 export type Route =
-  | { name: 'dashboard' | 'scim' | 'backup' | 'settings' | 'notfound' }
+  | { name: 'dashboard' | 'endpoints' | 'backup' | 'settings' | 'notfound' }
   | { name: 'organization' | 'members' | 'audit'; org: string }
   | { name: 'environment'; org: string; env: string }
   | { name: 'endpoint'; org: string; endpoint: string };
@@ -24,7 +24,7 @@ export function matchRoute(pathname: string): Route {
   const parts = decodeSegments(pathname);
   if (parts === null) return { name: 'notfound' };
   if (parts.length === 0) return { name: 'dashboard' };
-  if (parts.length === 1 && (parts[0] === 'scim' || parts[0] === 'backup' || parts[0] === 'settings')) return { name: parts[0] };
+  if (parts.length === 1 && (parts[0] === 'endpoints' || parts[0] === 'backup' || parts[0] === 'settings')) return { name: parts[0] };
   if (parts[0] === 'organizations' && parts.length >= 2 && segment.test(parts[1])) {
     const org = parts[1];
     if (parts.length === 2) return { name: 'organization', org };

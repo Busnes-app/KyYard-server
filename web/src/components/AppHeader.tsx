@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
-import { Smartphone, LogOut, Shield, Users, Settings as SettingsIcon, LayoutDashboard, Archive } from 'lucide-react';
+import React from 'react';
+import { LogOut, Shield, Settings as SettingsIcon, LayoutDashboard } from 'lucide-react';
 import { ThemeSwitcher } from './ThemeSwitcher';
-import { QRPairingModal } from './QRPairingModal';
 import { OrganizationSelect } from './OrganizationSelect';
 import { Link } from './Link';
 import type { Route } from '../router';
@@ -14,14 +13,12 @@ interface AppHeaderProps {
 }
 
 const navItems = [
-  { name: 'dashboard', to: '/', label: 'Overview', icon: LayoutDashboard },
-  { name: 'scim', to: '/scim', label: 'Directory & SCIM', icon: Users },
-  { name: 'backup', to: '/backup', label: 'KyBackup (Feature 0)', icon: Archive },
-  { name: 'settings', to: '/settings', label: 'Settings & DB', icon: SettingsIcon },
+  { name: 'dashboard', to: '/', label: 'Containers', icon: LayoutDashboard },
+  { name: 'endpoints', to: '/endpoints', label: 'Endpoints', icon: Shield },
+  { name: 'settings', to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];
 
 export const AppHeader: React.FC<AppHeaderProps> = ({ appName, route, user, onLogout }) => {
-  const [showPairing, setShowPairing] = useState<boolean>(false);
   const org = 'org' in route ? route.org : undefined;
 
   return (
@@ -47,11 +44,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ appName, route, user, onLo
         </div>
 
         <div className="ky-header-row">
-          <OrganizationSelect current={org} />
-          <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '13px' }} onClick={() => setShowPairing(true)}>
-            <Smartphone size={16} style={{ color: 'var(--accent)' }} />
-            <span>Pair Device</span>
-          </button>
+          {org && <OrganizationSelect current={org} />}
           <ThemeSwitcher />
           {user && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--line)', paddingLeft: '12px' }}>
@@ -67,7 +60,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ appName, route, user, onLo
         </div>
       </header>
 
-      {showPairing && <QRPairingModal onClose={() => setShowPairing(false)} />}
+
     </>
   );
 };

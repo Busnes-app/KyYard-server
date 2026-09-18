@@ -4,7 +4,6 @@ import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
 import { Backup } from './pages/Backup';
-import { SCIMAdmin } from './pages/SCIMAdmin';
 import { Settings } from './pages/Settings';
 import { Organization } from './pages/Organization';
 import { Members } from './pages/Members';
@@ -14,7 +13,7 @@ import { AuditList } from './components/AuditList';
 import { Link } from './components/Link';
 import './styles/theme.css';
 import { secureFetch } from './api';
-import { navigate, useRoute, type Route } from './router';
+import { useRoute, type Route } from './router';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
@@ -31,7 +30,6 @@ export const App: React.FC = () => {
         if (setResp.ok) {
           const s = await setResp.json();
           setSettings(s);
-          if (s.theme) document.documentElement.setAttribute('data-theme', s.theme);
         }
         if (authResp.ok) {
           const a = await authResp.json();
@@ -52,7 +50,6 @@ export const App: React.FC = () => {
     if (resp.ok) {
       const s = await resp.json();
       setSettings(s);
-      if (s.theme) document.documentElement.setAttribute('data-theme', s.theme);
     }
   };
 
@@ -76,7 +73,7 @@ export const App: React.FC = () => {
       {notice && <p role="status" style={{ padding: 16 }}>{notice}</p>}
       <Login
         appName={settings?.app_name || 'KyYard'}
-        ssoEnabled={settings?.sso_enabled === true}
+        providers={settings?.sso_providers ?? []}
         appURL={typeof settings?.app_url === 'string' ? settings.app_url : ''}
         onSuccess={(u) => {
           setNotice('');
@@ -107,10 +104,10 @@ export const App: React.FC = () => {
   );
 };
 
-const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, settings, user }) => {
+const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, settings }) => {
   switch (route.name) {
-    case 'dashboard': return <Dashboard settings={settings} user={user} onNavigate={navigate} />;
-    case 'scim': return <SCIMAdmin />;
+    case 'dashboard': return <Dashboard />;
+    case 'endpoints': return <Dashboard mode="endpoints" />;
     case 'backup': return <Backup />;
     case 'settings': return <Settings settings={settings} />;
     case 'organization': return <Organization org={route.org} />;

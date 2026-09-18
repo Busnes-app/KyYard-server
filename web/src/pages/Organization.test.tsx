@@ -83,5 +83,5 @@ it('opens a deep link after sign-in and navigates with history', async () => {
   window.history.back();
   window.dispatchEvent(new PopStateEvent('popstate'));
   await waitFor(() => expect(screen.getByRole('heading', { name: 'Members' })).toBeTruthy());
-  expect(screen.getByRole('link', { name: 'Overview' }).getAttribute('aria-current')).toBeNull();
+  expect(screen.getByRole('link', { name: 'Containers' }).getAttribute('aria-current')).toBeNull();
 });

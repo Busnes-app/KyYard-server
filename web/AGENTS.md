@@ -1,19 +1,23 @@
 # Web
 
 ## Purpose
-React 19 + TypeScript + Vite PWA frontend embedding KySecurity color tokens (`Patina Ky`, `Cyber`, `Nord`, `Paper`, `OLED`), 90-second ephemeral QR device pairing modals, client-side WebCrypto PoW CAPTCHA, and administrative management panels.
+React 19 + TypeScript + Vite PWA for fleet operations, provider sign-in, recovery and administration.
 
 ## Ownership
 Owns user interface components, service worker caching, PWA installation manifests, and frontend theme switching.
 
 ## Local Contracts
+- Home lists container inventory for the selected membership, with host pagination (20/page), per-host error/freshness states, filtering and direct endpoint links. `/endpoints` lists hosts; environment enrollment appears before environment settings. No SCIM or mobile-pairing UI remains.
+- Settings offers provider configuration through admin-only `/api/settings/sso`, callback URLs from the server's advertised origin, and the shared theme swatches. Login renders only the public provider list.
+- Endpoint container controls use immutable IDs and observed image/state preconditions. Removal first fetches the server preview and requires the full observed name. Commands are never retried automatically; recent activity remains accessible for unknown outcomes.
+- Container logs support bounded reads, search, timestamps, download and SSE follow. Browser display retains 256 KiB; follow closes on error without automatic reconnection, and unmount/filter changes cancel the reader. Server notices are separate from container output during follow.
 - A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion.
 - Login shows local setup/SSH/TLS guidance for HTTP installations and offers SSO only when enabled.
 - Product title, PWA name, and pre-settings fallback name are `KyYard`.
 - Strict TypeScript type safety without unused imports.
-- Dynamic theme selection applies `data-theme` attribute to the root HTML document and persists to `localStorage`.
+- `theme.ts` carries the fifteen KyPost/KyDNS palettes. Settings shows visual swatches; header/login offer a compact selector. Apply before React renders, persist under `kyyard-theme`, synchronize selectors and tabs, and never write a personal theme to instance settings.
 - Authenticated state-changing requests use `secureFetch` so the `ky_csrf` cookie is mirrored into `X-CSRF-Token`.
-- Navigation is path-based (`src/router.ts`, no router dependency): `/`, `/scim`, `/backup`, `/settings`, `/organizations/{org}`, `/organizations/{org}/members`, `/organizations/{org}/audit`, `/organizations/{org}/environments/{env}`. Segments are limited to 64 safe characters; anything else is the not-found screen. `Link` renders real anchors with `aria-current` and leaves modified clicks to the browser. Deep links survive sign-in because the path is untouched while `Login` is shown, and the service worker serves the app shell for offline navigations.
+- Navigation is path-based (`src/router.ts`, no router dependency): `/`, `/endpoints`, `/backup`, `/settings`, `/organizations/{org}`, `/organizations/{org}/members`, `/organizations/{org}/audit`, `/organizations/{org}/environments/{env}`. Segments are limited to 64 safe characters; anything else is the not-found screen. `Link` renders real anchors with `aria-current` and leaves modified clicks to the browser. Deep links survive sign-in because the path is untouched while `Login` is shown, and the service worker serves the app shell for offline navigations.
 - The organization selector lists only the caller's own memberships from `GET /api/organizations` and re-reads when the current organization changes. `<main>` is keyed on the organization ID, so every tenant screen's state is discarded on context change; there is no client-side tenant cache.
 - Tenant screens read through `useTenantResource` and show exactly one of loading / denied (401, 403) / not found (404) / offline (network failure) / error, with a retry where retrying can help. Writes go through `tenantWrite` on `secureFetch`; `409 last_administrator`, 403, 404, 409 and network failure map to fixed user-facing messages; any other failure shows only the status code, never server text. Malformed percent-escapes and dot segments in the path land on the not-found screen.
 - `/organizations/{org}/endpoints/{endpoint}` (`pages/EndpointPage.tsx`) shows the endpoint's facts, key, capabilities and the stored inventory (containers, images, networks, volumes) with counts; "no inventory yet" (404) is distinct from an empty host; the status line names the generation, how long ago the server received it, flags staleness past three minutes, clock skew past five minutes, and any truncated lists. The containers table carries a Usage column from the latest sample per container: a running container with no sample reads "no data", a first sample with no CPU interval reads "cpu —", and a stopped container a dash; zero is shown only when it was measured. Endpoint names in the environment list link to it.

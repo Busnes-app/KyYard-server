@@ -1,4 +1,5 @@
 import React from 'react';
+import { ContainerControls } from '../components/ContainerControls';
 import { Server } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
@@ -15,6 +16,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
   const details = useTenantResource<Endpoint>(base);
   const inventory = useTenantResource<Inventory>(`${base}/inventory`);
+  const commands = useTenantResource<{ id: string; action: string; outcome: string; detail?: string; container_id?: string; reference?: string }[]>(`${base}/commands?limit=20`);
   const samples = useTenantResource<Sample[]>(`${base}/samples`);
   const latest = new Map((Array.isArray(samples.data) ? samples.data : []).map((s) => [s.container_id, s]));
   // -1 is "no interval yet" and a missing row is "no data"; neither is zero usage.
@@ -38,13 +40,14 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
         <Server size={24} style={{ color: 'var(--accent)' }} /><span>{e?.name ?? endpoint}</span>
         {e && <span className={`badge ${e.state === 'active' ? 'badge-success' : e.state === 'pending' ? 'badge-accent' : 'badge-danger'}`}>{e.state}</span>}
       </h1>
+      <button className="btn-secondary" onClick={() => { details.reload(); inventory.reload(); samples.reload(); commands.reload(); }}>Refresh inventory</button>
       <nav aria-label="Organization sections" className="ky-subnav">
         <Link to={orgPath(org)}>Back to organization</Link>
         {e && <Link to={envPath(org, e.environment_id)}>Environment</Link>}
       </nav>
       <StateNotice state={details.state} onRetry={() => { details.reload(); inventory.reload(); }} />
       {details.state === 'ready' && e && (
-        <section className="panel">
+        <details className="panel"><summary>Host details & identity</summary>
           <div className="panel-header"><h2 style={{ fontSize: 16 }}>Endpoint</h2></div>
           <dl className="ky-facts">
             <dt>Runtime</dt><dd>{e.runtime} {inv?.snapshot.engine.version ?? e.facts.runtime_version ?? ''}</dd>
@@ -53,8 +56,9 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             <dt>Key</dt><dd className="font-mono" style={{ fontSize: 11 }}>{e.fingerprint || '—'}</dd>
             <dt>Capabilities</dt><dd>{e.capabilities.length ? e.capabilities.join(', ') : 'none reported'}</dd>
           </dl>
-        </section>
+        </details>
       )}
+      <details className="panel"><summary>Recent activity</summary><button className="btn-secondary" onClick={commands.reload}>Refresh activity</button><StateNotice state={commands.state} onRetry={commands.reload} />{Array.isArray(commands.data) && <ul className="ky-list">{commands.data.map((c) => <li key={c.id}>{c.action} · {c.container_id || c.reference} · {c.outcome || 'pending'}{c.detail ? ` — ${c.detail}` : ''}</li>)}</ul>}</details>
       {inventory.state === 'notfound' && details.state === 'ready' && <EmptyNotice>No inventory yet. It arrives with the agent's first report after approval.</EmptyNotice>}
       {inventory.state !== 'notfound' && <StateNotice state={inventory.state} onRetry={inventory.reload} />}
       {inventory.state === 'ready' && inv && (
@@ -63,7 +67,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
-          <Table title="Containers" rows={inv.snapshot.containers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Usage', 'Ports', 'Project']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, usage(c), c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—']} />
+          <Table title="Containers" rows={inv.snapshot.containers} empty="No containers on this host." head={['Name', 'Image', 'State', 'Usage', 'Ports', 'Project', 'Actions']} render={(c) => [displayName(c.name), displayName(c.image), `${displayName(c.state)} · ${displayName(c.status)}`, usage(c), c.ports.map((p) => `${p.host ? p.host + '→' : ''}${p.container}/${p.protocol}`).join(', ') || '—', c.compose_project ? displayName(c.compose_project) : '—', <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Organization ${org} · Environment ${e?.environment_id} · Endpoint ${e?.name}`} onRefresh={commands.reload} />]} />
           <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), displayName(i.id).slice(0, 19)]} />
           <Table title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />
           <Table title="Volumes" rows={inv.snapshot.volumes} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [displayName(v.name), displayName(v.driver), displayName(v.mountpoint)]} />
@@ -73,7 +77,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   );
 };
 
-function Table<T>({ title, rows, empty, head, render }: { title: string; rows: T[]; empty: string; head: string[]; render: (r: T) => string[] }) {
+function Table<T>({ title, rows, empty, head, render }: { title: string; rows: T[]; empty: string; head: string[]; render: (r: T) => React.ReactNode[] }) {
   return (
     <section className="panel">
       <div className="panel-header"><h2 style={{ fontSize: 16 }}>{title} <span style={{ color: 'var(--ink)', fontWeight: 400 }}>({rows.length})</span></h2></div>

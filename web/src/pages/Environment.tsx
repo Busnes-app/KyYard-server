@@ -40,7 +40,8 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
       <StateNotice state={details.state} onRetry={details.reload} />
       {details.state === 'ready' && (
         <>
-          <section className="panel">
+          <Endpoints org={org} env={env} />
+          <details className="panel"><summary>Environment settings</summary>
             <form onSubmit={rename} className="ky-inline-form">
               <label htmlFor="env-rename">Rename</label>
               <input id="env-rename" value={name} onChange={(e) => setName(e.target.value)} required maxLength={255} placeholder={details.data?.name} />
@@ -48,8 +49,7 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
               <button type="button" className="btn-danger" disabled={busy} onClick={() => void remove()}>Delete environment</button>
             </form>
             {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
-          </section>
-          <Endpoints org={org} env={env} />
+          </details>
           <AuditList url={`${base}/audit`} />
         </>
       )}
