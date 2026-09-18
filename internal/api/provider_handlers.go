@@ -200,9 +200,16 @@ func (s *Server) handleProviderLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(s.logins) >= 256 {
-		s.loginMu.Unlock()
-		s.writeError(w, 503, "Sign-in busy; try again shortly")
-		return
+		// Keep memory bounded without letting abandoned attempts deny every newcomer.
+		// All attempts have the same lifetime, so the earliest expiry is the oldest.
+		oldest := ""
+		var expiry time.Time
+		for key, attempt := range s.logins {
+			if oldest == "" || attempt.Expires.Before(expiry) {
+				oldest, expiry = key, attempt.Expires
+			}
+		}
+		delete(s.logins, oldest)
 	}
 	s.logins[state] = loginAttempt{p, verifier, nonce, crypto.SHA256Hex([]byte(browser)), time.Now().Add(5 * time.Minute)}
 	s.loginMu.Unlock()

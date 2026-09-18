@@ -8,8 +8,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -222,5 +224,29 @@ func TestOAuthProviderLoginBindsBrowserProviderAndConsumesState(t *testing.T) {
 	}
 	if bytes.Contains(w.Body.Bytes(), []byte("secret")) {
 		t.Fatal("callback leaked credential")
+	}
+}
+
+func TestSSOAdmissionRemainsAvailableWhenAttemptMapIsFull(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	cfg.Security.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}
+	p := sso.Provider{ID: "idp_capacity", Kind: "oauth2", Enabled: true, ClientID: "yard", AuthorizationURL: "https://identity.example.test/authorize"}
+	plain, _ := json.Marshal([]sso.Provider{p})
+	sealed, err := crypto.EncryptAESGCM(plain, crypto.DeriveKey(cfg.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Settings().SetSetting(context.Background(), "sso_providers_enc", sealed); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 300; i++ {
+		r := httptest.NewRequest("GET", "/api/sso/idp_capacity/login", nil)
+		r.RemoteAddr = "192.0.2.1:12345"
+		r.Header.Set("X-Forwarded-For", fmt.Sprintf("2001:db8::%x", i+1))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != http.StatusFound {
+			t.Fatalf("fresh client %d: got %d, want redirect: %s", i, w.Code, w.Body)
+		}
 	}
 }
