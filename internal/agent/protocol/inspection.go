@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"errors"
+	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -54,4 +56,96 @@ type MountCounts struct {
 	Tmpfs    int `json:"tmpfs"`
 	Other    int `json:"other"`
 	ReadOnly int `json:"read_only"`
+}
+
+const (
+	TypeInspectionOpen        = "inspection.open"
+	TypeInspectionResult      = "inspection.result"
+	TypeInspectionCancel      = "inspection.cancel"
+	InspectionLifetime        = 25 * time.Second
+	MaxInspectionFrameBytes   = 32 << 10
+	MaxInspectionsPerEndpoint = 2
+)
+
+type InspectionOpen struct {
+	Request    string           `json:"request"`
+	Endpoint   string           `json:"endpoint"`
+	Actor      string           `json:"actor"`
+	Connection []byte           `json:"connection"`
+	Expires    time.Time        `json:"expires"`
+	Target     InspectionTarget `json:"target"`
+}
+
+func (r InspectionOpen) Validate(now time.Time) error {
+	if !execStreamID.MatchString(r.Request) || !execStreamID.MatchString(r.Actor) || !execStreamID.MatchString(r.Endpoint) || len(r.Connection) != 32 || !r.Expires.After(now) || r.Expires.After(now.Add(InspectionLifetime)) {
+		return errors.New("invalid inspection grant")
+	}
+	return r.Target.Validate()
+}
+
+type InspectionCancel struct {
+	Request string `json:"request"`
+}
+type InspectionResult struct {
+	Request string               `json:"request"`
+	Status  string               `json:"status"` // ok, unavailable or busy; never runtime error text.
+	Result  *ContainerInspection `json:"result,omitempty"`
+}
+
+var inspectionPlatform = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+
+// Validate bounds an untrusted agent result before it reaches an HTTP response.
+func (r ContainerInspection) Validate(target InspectionTarget, now time.Time) error {
+	invalid := errors.New("invalid inspection result")
+	if r.Target != target || target.Validate() != nil || r.ConfigurationVerified || r.ObservedAt.Before(now.Add(-InspectionLifetime)) || r.ObservedAt.After(now.Add(5*time.Second)) {
+		return invalid
+	}
+	switch r.State {
+	case "created", "running", "paused", "restarting", "removing", "exited", "dead":
+	default:
+		return invalid
+	}
+	switch r.RestartPolicy {
+	case "no", "always", "unless-stopped", "on-failure":
+	default:
+		return invalid
+	}
+	switch r.NetworkMode {
+	case "default", "bridge", "host", "none", "container", "custom":
+	default:
+		return invalid
+	}
+	if r.RestartRetries < 0 || r.RestartRetries > 2147483647 || r.NetworkCount < 0 || r.NetworkCount > MaxInspectionEntries || len(r.Ports) > MaxInspectionEntries {
+		return invalid
+	}
+	total := 0
+	for _, n := range []int{r.Mounts.Bind, r.Mounts.Volume, r.Mounts.Tmpfs, r.Mounts.Other} {
+		if n < 0 || n > MaxInspectionEntries {
+			return invalid
+		}
+		total += n
+	}
+	if total > MaxInspectionEntries || r.Mounts.ReadOnly < 0 || r.Mounts.ReadOnly > total {
+		return invalid
+	}
+	p := r.ImagePlatform
+	if !inspectionPlatform.MatchString(p.OS) || !inspectionPlatform.MatchString(p.Architecture) || (p.Variant != "" && !inspectionPlatform.MatchString(p.Variant)) {
+		return invalid
+	}
+	for _, p := range r.Ports {
+		if p.Container < 1 || p.Container > 65535 || p.Host < 0 || p.Host > 65535 || (p.Protocol != "tcp" && p.Protocol != "udp" && p.Protocol != "sctp") {
+			return invalid
+		}
+		if p.Host == 0 {
+			if p.HostIP != "" {
+				return invalid
+			}
+		} else {
+			a, err := netip.ParseAddr(p.HostIP)
+			if err != nil || a.Zone() != "" {
+				return invalid
+			}
+		}
+	}
+	return nil
 }

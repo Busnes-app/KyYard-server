@@ -56,6 +56,7 @@ func main() {
 	var metrics func(context.Context, []string) protocol.Metrics
 	var operate func(context.Context, protocol.Command) (string, string)
 	var logs func(context.Context, protocol.LogRequest, func([]byte) error) error
+	var inspect func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error)
 	var exec func(context.Context, protocol.ExecSpec) (client.ExecSession, error)
 	runtimeVersion := ""
 	if *socket != "" {
@@ -69,6 +70,7 @@ func main() {
 		metrics = engine.Stats
 		operate = func(cctx context.Context, cmd protocol.Command) (string, string) { return engine.Operate(cctx, cmd) }
 		logs = engine.Logs
+		inspect = engine.InspectContainer
 		exec = func(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
 			return engine.OpenExec(ctx, spec)
 		}
@@ -109,7 +111,7 @@ func main() {
 	if *enrollOnly {
 		return
 	}
-	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, InventoryEvery: *inventoryEvery}); err != nil {
+	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, InventoryEvery: *inventoryEvery}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

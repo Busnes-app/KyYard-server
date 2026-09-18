@@ -147,6 +147,7 @@ type SettingsStore interface {
 // TenancyStore provides authorized operations through TenantAccess. The raw methods
 // below Initialize are trusted persistence helpers for bootstrap and management.
 type TenancyStore interface {
+	ReadInspectionTarget(context.Context, TenantAccess, string, string) (protocol.InspectionTarget, error)
 	PreviewApplicationAdoption(context.Context, TenantAccess, string, string, string) (*AdoptionPreview, error)
 	AdoptApplication(context.Context, TenantAccess, string, AdoptionRequest) (*ApplicationInstance, error)
 	ReleaseApplication(context.Context, TenantAccess, string, string, string) error

@@ -56,7 +56,7 @@ type inspectedContainer struct {
 // InspectContainer reads a bounded, redacted observation through Engine v1.41.
 // It performs GETs only, follows the pinned image ID rather than a tag, and
 // rechecks selected container fields after the image read. Callers own scope,
-// authorization/admission; no production route/frame enables this yet.
+// authorization/admission through the agent inspection transport.
 func (c *Client) InspectContainer(parent context.Context, target protocol.InspectionTarget) (*protocol.ContainerInspection, error) {
 	if err := target.Validate(); err != nil {
 		return nil, err

@@ -28,9 +28,11 @@ var (
 )
 
 type Options struct {
-	HTTPClient *http.Client
-	Version    string
-	Log        *log.Logger
+	inspectionSlots chan struct{}
+	Inspect         func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error)
+	HTTPClient      *http.Client
+	Version         string
+	Log             *log.Logger
 	// IdentityDir is where the rising inventory generation and rotation state are written back.
 	IdentityDir string
 	// CommandDir overrides the durable command ledger directory for embedded agents
@@ -120,6 +122,7 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	commands := openLedger(commandDir)
 	running := newBudget()
 	execRunning := &execBudget{}
+	opts.inspectionSlots = make(chan struct{}, protocol.MaxInspectionsPerEndpoint)
 	delay := time.Second
 	for {
 		err := session(ctx, id, target, &opts, commands, running, execRunning)
@@ -233,6 +236,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	outbound := make(chan outFrame, logQueueDepth)
 	live := newStreams()
 	terminals := newExecStreams(ctx, id.EndpointID, ch.Nonce, execRunning, opts, outbound)
+	inspections := newInspections(ctx, id.EndpointID, ch.Nonce, opts, outbound)
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
 		return errors.New("bad hello")
@@ -245,6 +249,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 		heartbeat = 30 * time.Second
 	}
 	capabilities := []string{}
+	if opts.Inspect != nil {
+		capabilities = append(capabilities, "container.inspect")
+	}
 	if opts.Exec != nil {
 		capabilities = append(capabilities, "container.exec")
 	}
@@ -415,6 +422,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 					defer release()
 					deliver(ctx, results, handleCommand(ctx, cmd, id, commands, opts))
 				}(cmd)
+			case protocol.TypeInspectionOpen, protocol.TypeInspectionCancel:
+				if err := inspections.handle(f, hello.State == "active" || hello.State == "approved" || hello.State == "offline"); err != nil {
+					return err
+				}
 			case protocol.TypeExecOpen, protocol.TypeExecInput, protocol.TypeExecResize, protocol.TypeExecCancel:
 				if err := terminals.handle(f, hello.State == "active" || hello.State == "approved" || hello.State == "offline"); err != nil {
 					reason := "exec stream limit reached; not started"

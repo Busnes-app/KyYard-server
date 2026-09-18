@@ -27,7 +27,7 @@ func TestBrowserExecRealDocker(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	raw, err := exec.CommandContext(ctx, "docker", "run", "-d", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pull", "never", image, "sh", "-c", "sleep 120").CombinedOutput()
+	raw, err := exec.CommandContext(ctx, "docker", "run", "-d", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pull", "never", "--env", "INSPECT_TOKEN=inspection-secret-canary", image, "sh", "-c", "sleep 120").CombinedOutput()
 	if err != nil {
 		t.Fatalf("fixture: %v %s", err, raw)
 	}
@@ -39,16 +39,20 @@ func TestBrowserExecRealDocker(t *testing.T) {
 			t.Errorf("cleanup: %v %s", err, raw)
 		}
 	})
-	raw, err = exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.Image}} {{.Name}}", id).Output()
+	raw, err = exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.Image}} {{.Name}} {{.Created}}", id).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
 	fields := strings.Fields(string(raw))
-	if len(fields) != 2 {
+	if len(fields) != 3 {
 		t.Fatal("inspect format")
 	}
 	spec := protocol.ExecSpec{Container: id, ImageID: fields[0], User: "65534:65534", Argv: []string{"/bin/sh"}}
 	name := strings.TrimPrefix(fields[1], "/")
+	created, err := time.Parse(time.RFC3339Nano, fields[2])
+	if err != nil {
+		t.Fatal(err)
+	}
 	s, st, _ := setupTestServerWith(t, func(cfg *config.Config) { cfg.Server.AppURL = terminalOrigin })
 	ts := st.Tenancy()
 	if err := ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"}); err != nil {
@@ -72,14 +76,24 @@ func TestBrowserExecRealDocker(t *testing.T) {
 	agentCtx, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
-		done <- client.Run(agentCtx, &client.Identity{EndpointID: ag.id, PrivateKey: ag.priv, InstanceFingerprint: ag.inst, Server: httpSrv.URL}, client.Options{IdentityDir: t.TempDir(), Snapshot: func(context.Context) (*protocol.Snapshot, error) {
-			return &protocol.Snapshot{Containers: []protocol.Container{{ID: id, ImageID: spec.ImageID, Name: name, State: "running"}}}, nil
+		done <- client.Run(agentCtx, &client.Identity{EndpointID: ag.id, PrivateKey: ag.priv, InstanceFingerprint: ag.inst, Server: httpSrv.URL}, client.Options{Inspect: engine.InspectContainer, IdentityDir: t.TempDir(), Snapshot: func(context.Context) (*protocol.Snapshot, error) {
+			return &protocol.Snapshot{ObservedAt: time.Now(), Engine: protocol.Engine{Version: "fixture"}, Containers: []protocol.Container{{ID: id, ImageID: spec.ImageID, Name: name, State: "running", CreatedAt: created}}}, nil
 		}, Exec: func(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
 			return engine.OpenExec(ctx, spec)
 		}})
 	}()
 	defer func() { stop(); <-done; s.WaitDetached() }()
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+	// Prove the scoped HTTP → agent → Docker inspection round trip on the first
+	// approved connection, before starting a browser terminal.
+	inspected := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/containers/"+id+"/inspection", "", true)
+	if inspected.Code != 200 {
+		t.Fatalf("inspection: %d %s", inspected.Code, inspected.Body.String())
+	}
+	var facts protocol.ContainerInspection
+	if json.Unmarshal(inspected.Body.Bytes(), &facts) != nil || facts.Target.ContainerID != id || !facts.ReadOnlyRootFS || facts.NetworkMode != "none" || facts.ConfigurationVerified || strings.Contains(inspected.Body.String(), "inspection-secret-canary") {
+		t.Fatal("inspection projection or redaction failed")
+	}
 	// Use the browser protocol against the real server, agent client and Docker PTY.
 	f := terminalFixture{s: s, st: st, url: httpSrv.URL, admin: admin, ag: logAgent{id: ag.id}, ctx: ctx}
 	// The shared dial helper's URL uses terminalSpec, so dial this actual ID directly.

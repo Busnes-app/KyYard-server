@@ -43,11 +43,12 @@ type Server struct {
 	// detached counts the requests running on a context deliberately separated from their
 	// connection. http.Server.Shutdown does not know about them, so runServer waits on this
 	// before the store closes.
-	detached detachedCounter
-	stopping atomic.Bool
-	agents   agentRegistry
-	logs     *logRegistry
-	execs    execRegistry
+	detached    detachedCounter
+	stopping    atomic.Bool
+	agents      agentRegistry
+	logs        *logRegistry
+	execs       execRegistry
+	inspections inspectionRegistry
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -241,6 +242,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleDispatchCommand))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleListCommands))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands/{command}", s.tenantRoute(s.handleReadCommand))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/inspection", s.tenantRoute(s.handleContainerInspection))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/logs", s.tenantRoute(s.handleContainerLogs))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/exec", s.tracked(s.tenantRoute(s.handleContainerExec)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/approve", s.tenantRoute(s.handleApproveEndpoint))
