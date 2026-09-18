@@ -134,3 +134,12 @@ func (s *Server) handleApplicationInstances(w http.ResponseWriter, r *http.Reque
 	}
 	s.writeJSON(w, http.StatusOK, rows)
 }
+
+func (s *Server) handleApplicationComparison(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	comparison, err := s.store.Tenancy().CompareApplication(r.Context(), a, r.PathValue("application"))
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, comparison)
+}

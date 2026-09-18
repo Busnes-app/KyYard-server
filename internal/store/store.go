@@ -158,6 +158,7 @@ type TenancyStore interface {
 	CreateApplication(ctx context.Context, access TenantAccess, name string, spec ApplicationSpec) (*Application, error)
 	AppendApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int, spec ApplicationSpec) (int, error)
 	ListApplications(ctx context.Context, access TenantAccess, offset, limit int) ([]Application, error)
+	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)
 	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)
 	ReadOrganization(ctx context.Context, access TenantAccess) (*Organization, error)
 	ReadEnvironment(ctx context.Context, access TenantAccess) (*Environment, error)

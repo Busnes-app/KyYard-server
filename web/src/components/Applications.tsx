@@ -1,3 +1,4 @@
+import { ApplicationComparison } from './ApplicationComparison';
 import { ApplicationAdoption, type ApplicationInstance } from './ApplicationAdoption';
 import { useState } from 'react';
 import { usePagination } from './Pagination';
@@ -74,7 +75,7 @@ export function Applications({ org, env }: { org: string; env: string }) {
             if (window.confirm(`Discard draft "${draft.name}" and all its saved revisions? Running containers are unchanged.`)) void write('DELETE', `${base}/${encodeURIComponent(draft.id)}`, { expected_revision: draft.latest_revision });
           }}>Discard {draft.name}</button>
         </div>
-        {selected === draft.id && <><RevisionView base={base} draft={draft} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={refresh} />}</>}
+        {selected === draft.id && <><RevisionView base={base} draft={draft} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={refresh} />}{instances.state === 'ready' && instances.data?.filter((i) => i.application_id === draft.id).map((i) => <ApplicationComparison key={i.id} base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} />)}</>}
       </li>)}
     </ul>}
     <details><summary>Import Compose draft</summary>

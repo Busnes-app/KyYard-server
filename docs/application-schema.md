@@ -74,6 +74,14 @@ An administrator selects a host/project, reviews all immutable container IDs, im
 
 Explicit release removes only the reviewed instance ID and its resource associations. An old release cannot affect a replacement adoption. No runtime commands are sent by adoption or release. Once released, a draft may be discarded. A future deployment slice must prevent releasing in-flight/deployed history and recheck every touched identity; names/project labels are never authority to claim a replacement container. Both new tables are proven in SQLite snapshot recovery. Endpoint discovery labels registered identities as adopted and leaves newly observed IDs unclaimed.
 
+## Observed comparison
+
+The adopted application configuration provides an on-demand read-only comparison against its latest saved revision. It reads the scoped instance, head/digest, endpoint and inventory together, then the immutable resource records. A concurrent release with no remaining resources refuses the result. The returned instance ID lets the UI reject a comparison for a replacement adoption.
+
+Only active Docker with a complete container list received within three minutes and observed within five is compared. Unavailable, stale, malformed, duplicate-ID or truncated reports return an explicit availability state and no container observations. The result is bounded by 1,000 recorded resources plus 1,000 observed containers; UI tables page at 25 rows.
+
+An adopted ID can be present, missing, changed in image/creation identity, or moved to a different reported project. Newly observed project IDs remain unowned. Only unchanged adopted identities with the current `com.docker.compose.service` label contribute to advisory service counts. Labels can be absent or trimmed, so zero never proves that a service is absent. Image comparisons use exact reference strings, not registry resolution or content identity; equal mutable tags are not proof of equal content. Environment values, ports, restart policies, mounts and networks are not compared. No secrets, arbitrary labels, runtime commands, persisted mapping, deployment preview or approval are produced. These observations are a diagnostic prerequisite; executable reconciliation still needs explicit mapping, pinned images and agent-side precondition enforcement.
+
 ## Deploy
 
 1. **Preview** resolves the revision against the endpoint: image digests, secret references (names only), volume and network existence, port conflicts, and unsupported inputs. The preview is valid for *proposed* 10 minutes and records the observed identity (ID, digest, creation time) of every resource it plans to touch; at deploy time the agent re-checks those identities as preconditions, so unrelated changes on the host do not invalidate a preview but a change to a touched resource fails the step with `precondition_failed`.

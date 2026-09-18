@@ -1,9 +1,8 @@
 **Repo:** Busnes-app/KyYard-server
-**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/remote-link (branch fix/remote-link)
 
 # KyYard implementation plan
 
-Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #38 is merged at `b0338f9`. The current `fix/remote-link` slice simplifies remote agent setup to one image-pulling Docker run with an enrollment link; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-18. Compose import and explicit snapshot adoption are implemented; section 8 records the remaining M6 work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
@@ -208,18 +207,20 @@ Merged PR #37 (`feat/exec-streams`): binary-safe agent exec frames, nonce-bound 
 
 Merged PR #38 (`fix/local-docker`): automatic in-process local Docker connection, default Compose socket mounting, trusted one-time endpoint bootstrap, tenant-gated operations, durable revocation, restart/replacement inventory, and sudo-aware manual enrollment for additional hosts. Local connection requires no shell enrollment command or separate agent container, by user decision. Theme palettes remain in Settings; header/login dropdowns are removed.
 
-Current slice (`fix/remote-link`): single-container remote enrollment via HTTPS link, installed-image digest discovery by default, explicit digest-pinned override when discovery is unavailable, persistent identity and explicit approval; no same-host inspection or two-container setup chain.
+Implemented remote enrollment: single-container remote enrollment via HTTPS link, installed-image digest discovery by default, explicit digest-pinned override when discovery is unavailable, persistent identity and explicit approval; no same-host inspection or two-container setup chain.
 
 Merged PR #40 (`feat/browser-exec`): browser terminal and server authorization, inventory confirmation, nonce-bound grants, scoped metadata audit, bounded queues, independent revocation checks, resize and inspected exit status. Both Docker agent adapters enable exec. Real Docker regression covers the entire browser-protocol/server/agent/PTY path, including first connection after approval.
 
 Merged PR #41 (`feat/applications`): read-only Compose project discovery on the endpoint screen, grouped reported containers, explicit unmanaged state and navigation into existing container controls. Reuses authorized inventory without a new API, ownership record or runtime mutation.
 
-Current M6 slice (`feat/application-revisions`): application and immutable revision persistence, tenant/environment constraints, named permissions, expected-head concurrency, digest consistency checks, admission bounds, explicit draft discard and SQLite backup coverage. Initial typed specs hold service image references and environment secret references only; there is no raw Compose importer or public persistence route.
+Implemented M6 revision storage: application and immutable revision persistence, tenant/environment constraints, named permissions, expected-head concurrency, digest consistency checks, admission bounds, explicit draft discard and SQLite backup coverage. Typed specs hold the supported Compose fields and environment secret references; the importer below is the public admission path.
 
-Current M6 slice: bounded Compose draft import with encrypted environment bundles, audited internal resolution, reference-only inspection and explicit discard. No runtime mutations or adoption. PR43 UI pagination/navigation is merged.
+Implemented M6 import: bounded Compose draft import with encrypted environment bundles, audited internal resolution, reference-only inspection and explicit discard. Import itself performs no runtime mutations or adoption.
 
-Current M6 ownership slice: explicit adoption/release of an immutable Compose container snapshot into one application instance, with preview confirmation, scoped constraints, audit and restore coverage. No runtime mutations or inferred configuration parity.
+Implemented M6 ownership: explicit adoption/release of an immutable Compose container snapshot into one application instance, with preview confirmation, scoped constraints, audit and restore coverage. No runtime mutations or inferred configuration parity.
 
-Next M6 slice: preview/reconcile (planned PR 15), including broader validated Compose support and explicit service/resource mapping before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
+Current M6 comparison slice: read-only comparison of the latest definition with adopted identities and current project inventory. Explicitly distinguishes missing, changed and unowned containers; service labels and image-reference comparisons are advisory and configuration parity remains unverified. No deployment or runtime dispatch.
+
+Next M6 slice: executable preview/reconcile (planned PR 15), including broader validated Compose support and explicit service/resource mapping before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
 The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.
