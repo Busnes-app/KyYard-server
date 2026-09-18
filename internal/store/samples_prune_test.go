@@ -127,7 +127,12 @@ func TestSamplesIngestCostIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := enrolled.ID
-	if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c"}}}); err != nil {
+	// One instant for every frame in this test. What is being measured is the cost of a frame
+	// naming a container that already has a fresh row; taking the clock each time makes the
+	// answer depend on how long the run takes, and a slow machine crosses the cadence, turns
+	// a dropped frame into a write, and meets the ceiling this test put there itself.
+	at := time.Now()
+	if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: at, Samples: []protocol.Sample{{ContainerID: "c"}}}); err != nil {
 		t.Fatal(err)
 	}
 	tx, _ := st.db.BeginTx(ctx, nil)
@@ -147,7 +152,7 @@ func TestSamplesIngestCostIsBounded(t *testing.T) {
 	}
 	started := time.Now()
 	for i := 0; i < 1000; i++ {
-		if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "c"}}}); err != nil {
+		if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: at, Samples: []protocol.Sample{{ContainerID: "c"}}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -155,7 +160,7 @@ func TestSamplesIngestCostIsBounded(t *testing.T) {
 		t.Fatalf("1000 cadence-dropped frames at the ceiling took %s", took)
 	}
 	// A frame that must write still meets the ceiling, and is refused without a close.
-	if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: time.Now(), Samples: []protocol.Sample{{ContainerID: "new"}}}); !errors.Is(err, ErrSampleBudget) {
+	if err := ts.RecordSamples(ctx, e, protocol.Metrics{ObservedAt: at, Samples: []protocol.Sample{{ContainerID: "new"}}}); !errors.Is(err, ErrSampleBudget) {
 		t.Fatalf("expected ErrSampleBudget, got %v", err)
 	}
 }
