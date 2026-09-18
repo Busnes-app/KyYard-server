@@ -326,39 +326,62 @@ func TestAClosedReaderCancelsTheStreamOnTheEndpoint(t *testing.T) {
 }
 
 // The limits are two: what one host will serve, and what one person may hold on it. The second
-// is what stops a member holding nothing but container.logs from denying an administrator the
-// logs of a host during an incident.
+// is what stops members holding nothing but container.logs from denying an administrator the
+// logs of a host during an incident -- which only works if the agent's own limit is not lower,
+// so the stub here enforces the same one the agent does.
 func TestStreamLimitsAreHeldPerReaderAndPerEndpoint(t *testing.T) {
 	s, st, httpSrv := logServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	admin := loginAs(t, s, st, "envadmin", "user")
-	dev := loginAs(t, s, st, "dev", "user")
 	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
-	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_dev", Role: "developer", Status: "active"})
+	devs := []*http.Cookie{loginAs(t, s, st, "dev1", "user"), loginAs(t, s, st, "dev2", "user")}
+	for _, name := range []string{"usr_dev1", "usr_dev2"} {
+		_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: name, Role: "developer", Status: "active"})
+	}
 	ag := connectedAgentWithContainer(t, ctx, s, st, admin, httpSrv.URL)
 	path := "/api/organizations/a/endpoints/" + ag.id + "/containers/web/logs?follow=1"
 
+	// The agent serves protocol.MaxLogStreamsPerEndpoint at once and refuses the rest, the
+	// way the real one does.
+	open := 0
+	serve := func(req protocol.LogRequest, data string) {
+		open++
+		if open > protocol.MaxLogStreamsPerEndpoint {
+			writeEnvelope(t, ctx, ag.conn, protocol.TypeLogClose, protocol.LogClose{Stream: req.Stream, Reason: "this agent is already reading as many logs as it will", Failed: true})
+			return
+		}
+		if data != "" {
+			writeEnvelope(t, ctx, ag.conn, protocol.TypeLogChunk, protocol.LogChunk{Stream: req.Stream, Data: data})
+			writeEnvelope(t, ctx, ag.conn, protocol.TypeLogClose, protocol.LogClose{Stream: req.Stream, Reason: "the log ended"})
+		}
+	}
+
 	held, closeHeld := context.WithCancel(ctx)
 	defer closeHeld()
-	_, devDone := logRequest(held, s, dev, path)
-	awaitOpen(t, ctx, ag.conn)
+	var waiting []chan struct{}
+	for _, dev := range devs {
+		_, done := logRequest(held, s, dev, path)
+		waiting = append(waiting, done)
+		serve(awaitOpen(t, ctx, ag.conn), "")
+	}
 
 	// The same reader may not open a second one.
-	w := tenantRequest(s, dev, "GET", path, "", false)
+	w := tenantRequest(s, devs[0], "GET", path, "", false)
 	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "already have") {
 		t.Fatalf("a second stream for the same reader: %d %s", w.Code, w.Body.String())
 	}
-	// Another member is unaffected: one person cannot spend the host's capacity.
-	go func() {
-		req := awaitOpen(t, ctx, ag.conn)
-		writeEnvelope(t, ctx, ag.conn, protocol.TypeLogClose, protocol.LogClose{Stream: req.Stream, Reason: "the log ended"})
-	}()
-	if w := tenantRequest(s, admin, "GET", path, "", false); w.Code != 200 {
-		t.Fatalf("an administrator was denied by another member's stream: %d %s", w.Code, w.Body.String())
+	// An administrator is unaffected by what the developers are holding, and gets a log
+	// rather than a refusal from either side.
+	go func() { serve(awaitOpen(t, ctx, ag.conn), "the administrator's line\n") }()
+	w = tenantRequest(s, admin, "GET", path, "", false)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "the administrator's line") {
+		t.Fatalf("an administrator was denied while developers held streams: %d %q", w.Code, w.Body.String())
 	}
 	closeHeld()
-	<-devDone
+	for _, done := range waiting {
+		<-done
+	}
 }
 
 // Taking a role away ends what it was letting someone see, in the request that takes it rather

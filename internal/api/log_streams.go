@@ -17,8 +17,9 @@ const (
 	// maxStreamsPerEndpoint is what one host will serve at once, and it is deliberately above
 	// maxStreamsPerActor so that one member cannot fill it: a developer holding nothing but
 	// container.logs must not be able to deny an administrator the logs of a host during an
-	// incident. The agent enforces its own, lower limit as well.
-	maxStreamsPerEndpoint = 4
+	// incident. It is the protocol's number, which the agent enforces too, so the two cannot
+	// drift into a lower real ceiling than the one this split assumes.
+	maxStreamsPerEndpoint = protocol.MaxLogStreamsPerEndpoint
 	// maxStreamsPerActor is what one person may hold on one endpoint. One is enough to watch
 	// a container; a second is a tab someone forgot.
 	maxStreamsPerActor = 1

@@ -183,6 +183,7 @@ type logWriter struct {
 	budget   time.Duration
 	deadline time.Time
 	pending  strings.Builder
+	afterCR  bool
 	lines    int
 	bytes    int
 	wroteAny bool
@@ -249,6 +250,15 @@ func (l *logWriter) head(budget time.Duration) {
 // request has spent its budget.
 func (l *logWriter) write(data, search string) (done bool) {
 	for len(data) > 0 {
+		// A chunk can end between the CR and the LF of one break; the pairing has to survive
+		// the boundary or a blank line appears that the container never printed.
+		if l.afterCR {
+			l.afterCR = false
+			if data[0] == '\n' {
+				data = data[1:]
+				continue
+			}
+		}
 		// A bare carriage return ends a line too. The event-stream grammar says so -- a CR
 		// left inside a payload would end the data field and let container output introduce
 		// its own fields, including the one this server reserves for saying something -- and
@@ -264,11 +274,17 @@ func (l *logWriter) write(data, search string) (done bool) {
 			}
 			return false
 		}
-		line := data[:cut]
+		line, ended := data[:cut], data[cut]
 		data = data[cut+1:]
-		// CRLF is one break, not two.
-		if data != "" && data[0] == '\n' && line == strings.TrimSuffix(line, "\n") && cut < len(line)+1 {
-			data = data[1:]
+		// CRLF is one break, not two -- but LF LF is two, and dropping the second would eat
+		// every blank line the container printed, including from a download, which is meant
+		// to be the log as it was written.
+		if ended == '\r' {
+			if len(data) > 0 && data[0] == '\n' {
+				data = data[1:]
+			} else {
+				l.afterCR = true
+			}
 		}
 		if l.pending.Len() > 0 {
 			l.pending.WriteString(line)
@@ -334,7 +350,11 @@ func (l *logWriter) notice(text string) {
 	l.flush()
 }
 
+// keepalive runs on every recheck tick. It refreshes the response deadline whether or not it
+// has anything to send: a request whose endpoint has gone quiet is still a request this server
+// means to answer, and letting the deadline lapse would cut it off before it could say why.
 func (l *logWriter) keepalive() {
+	l.extend()
 	if l.follow {
 		fmt.Fprint(l.w, ": keepalive\n\n")
 		l.flush()

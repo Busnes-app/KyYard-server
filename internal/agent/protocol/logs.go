@@ -28,6 +28,12 @@ const (
 	MaxLogBytes = 4 << 20
 	// MaxLogTail is the most history one request may ask the runtime for.
 	MaxLogTail = MaxLogLines
+	// MaxLogStreamsPerEndpoint is how many log streams one endpoint serves at once. Both
+	// sides read it from here: if the agent's limit were the lower of the two it would be the
+	// real ceiling, and the control plane's per-reader split -- which exists so that members
+	// holding nothing but container.logs cannot deny an administrator the logs of a host --
+	// would hand out places the agent then refuses.
+	MaxLogStreamsPerEndpoint = 4
 	// LogFollowBuffer is what one following stream may hold for a reader that is not keeping
 	// up. Past it, bytes are dropped and the gap is reported: a reader watching a chatty
 	// container must not be able to grow the control plane's memory without limit.

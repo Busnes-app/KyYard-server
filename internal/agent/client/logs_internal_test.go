@@ -133,3 +133,13 @@ func TestOnlySoManyStreamsAreOpenAtOnce(t *testing.T) {
 		t.Fatal("stopping a stream did not cancel its reader")
 	}
 }
+
+// The agent's limit is the protocol's, not a number of this package's own. The control plane
+// hands out places against the same one and splits them per reader so that members holding
+// nothing but container.logs cannot deny an administrator a host's logs; an agent refusing
+// earlier would quietly make that split meaningless.
+func TestTheAgentServesAsManyStreamsAsTheProtocolSays(t *testing.T) {
+	if maxLogStreams != protocol.MaxLogStreamsPerEndpoint {
+		t.Fatalf("the agent serves %d streams while the control plane hands out %d", maxLogStreams, protocol.MaxLogStreamsPerEndpoint)
+	}
+}

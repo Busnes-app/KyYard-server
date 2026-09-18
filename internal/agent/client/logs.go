@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	// maxLogStreams bounds how many logs one agent reads at once. Reading a log is cheap, but
-	// it is a reader per stream on the host and a queue per stream in memory, and an operator
-	// with more than this many open is not watching them.
-	maxLogStreams = 2
+	// maxLogStreams bounds how many logs one agent reads at once. It is the protocol's number
+	// rather than one of this package's own: the control plane hands out places against the
+	// same limit, and an agent that refused earlier would make that split meaningless.
+	maxLogStreams = protocol.MaxLogStreamsPerEndpoint
 	// logQueueDepth is how many chunks wait for the session loop before the agent starts
 	// dropping and reporting the gap. This is the agent's half of the bound: the control
 	// plane has its own, because a slow browser must not become memory on either side.
