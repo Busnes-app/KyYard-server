@@ -508,3 +508,26 @@ func TestAStreamOutlivesTheServersWriteTimeout(t *testing.T) {
 		t.Fatalf("a line written after the server's write timeout never arrived: %q", body)
 	}
 }
+
+// When the last socket goes, the readers waiting on it are told so rather than held open until
+// their own deadline: an endpoint that has gone is an answer.
+func TestADisconnectEndsTheStreamsWaitingOnIt(t *testing.T) {
+	s, st, httpSrv := logServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	ag := connectedAgentWithContainer(t, ctx, s, st, admin, httpSrv.URL)
+
+	w, done := logRequest(ctx, s, admin, "/api/organizations/a/endpoints/"+ag.id+"/containers/web/logs?follow=1")
+	awaitOpen(t, ctx, ag.conn)
+	ag.conn.Close(websocket.StatusNormalClosure, "gone")
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("a reader outlived the endpoint it was waiting on")
+	}
+	if !strings.Contains(w.Body.String(), "disconnected") {
+		t.Fatalf("the reader was not told why: %q", w.Body.String())
+	}
+}

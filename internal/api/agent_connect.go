@@ -337,12 +337,15 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 // detached context is bounded.
 func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 	s.agents.remove(c)
+	if s.Connected(c.endpointID) {
+		// A successor already holds the endpoint -- an evicted socket unwinding, which is an
+		// ordinary flow -- so nothing here has been lost, and the readers attached to the
+		// live session must not be told the endpoint disconnected.
+		return
+	}
 	// A reader waiting on this endpoint is waiting on a socket that has gone. Telling it so
 	// is the honest answer; leaving the request open until its own timeout is not.
 	s.logs.closeEndpointStreams(c.endpointID, "the endpoint disconnected")
-	if s.Connected(c.endpointID) {
-		return
-	}
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), frameBudget)
 	defer cancel()
 	_ = s.store.Tenancy().MarkEndpointOffline(wctx, c.endpointID)
@@ -460,15 +463,20 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
-		if len(chunk.Data) > protocol.MaxLogChunkBytes {
-			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
-			return true
-		}
 		// A stream this endpoint was never given addresses nothing: the lookup is scoped to
 		// the endpoint, so an agent cannot write into another endpoint's reader.
-		if stream := s.logs.find(c.endpointID, chunk.Stream); stream != nil {
-			stream.deliver(chunk)
+		stream := s.logs.find(c.endpointID, chunk.Stream)
+		if stream == nil {
+			return false
 		}
+		if len(chunk.Data) > protocol.MaxLogChunkBytes {
+			// One bad data frame ends one stream. Closing the session instead would turn an
+			// agent-side framing slip into an endpoint nobody can manage: this socket carries
+			// the heartbeats, the inventory and every command as well.
+			stream.finish(&protocol.LogClose{Stream: chunk.Stream, Reason: "the endpoint sent an oversized chunk", Failed: true})
+			return false
+		}
+		stream.deliver(chunk)
 	case protocol.TypeLogClose:
 		if pending {
 			return false
