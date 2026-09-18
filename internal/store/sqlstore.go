@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
@@ -812,6 +813,7 @@ type auditStore struct {
 }
 
 func (a *auditStore) LogAudit(ctx context.Context, r *AuditRecord) error {
+	r.Resource = protocol.CleanText(r.Resource, 255)
 	if r.Scope == "" {
 		r.Scope = "platform"
 	}

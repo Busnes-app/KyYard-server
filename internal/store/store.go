@@ -9,11 +9,14 @@ import (
 )
 
 var (
-	ErrForbidden     = errors.New("tenant access denied")
-	ErrInvalid       = errors.New("invalid tenant input")
-	ErrNotFound      = errors.New("record not found")
-	ErrAlreadyExists = errors.New("record already exists")
-	ErrLastAdmin     = errors.New("organization needs one active administrator")
+	ErrRevisionCorrupt  = errors.New("application revision digest mismatch")
+	ErrRevisionConflict = errors.New("application revision changed")
+	ErrApplicationLimit = errors.New("application storage limit reached")
+	ErrForbidden        = errors.New("tenant access denied")
+	ErrInvalid          = errors.New("invalid tenant input")
+	ErrNotFound         = errors.New("record not found")
+	ErrAlreadyExists    = errors.New("record already exists")
+	ErrLastAdmin        = errors.New("organization needs one active administrator")
 	// ErrEndpointOffline says the endpoint is not connected, so there is nowhere to send a
 	// command. It is distinct from a bad request: the caller asked for something reasonable
 	// that cannot happen right now.
@@ -144,6 +147,11 @@ type SettingsStore interface {
 // TenancyStore provides authorized operations through TenantAccess. The raw methods
 // below Initialize are trusted persistence helpers for bootstrap and management.
 type TenancyStore interface {
+	DiscardApplication(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int) error
+	CreateApplication(ctx context.Context, access TenantAccess, name string, spec ApplicationSpec) (*Application, error)
+	AppendApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int, spec ApplicationSpec) (int, error)
+	ListApplications(ctx context.Context, access TenantAccess, offset, limit int) ([]Application, error)
+	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)
 	ReadOrganization(ctx context.Context, access TenantAccess) (*Organization, error)
 	ReadEnvironment(ctx context.Context, access TenantAccess) (*Environment, error)
 	ListEnvironments(ctx context.Context, access TenantAccess, offset, limit int) ([]Environment, error)
