@@ -7,6 +7,7 @@ React 19 + TypeScript + Vite PWA for fleet operations, provider sign-in, recover
 Owns user interface components, service worker caching, PWA installation manifests, and frontend theme switching.
 
 ## Local Contracts
+- Endpoint image controls pull explicit tags/digests and remove immutable image IDs after a fresh server-inventory preview and full-ID confirmation. Stale/incomplete dependency data or known container dependents block the preview. The agent rechecks before deletion; no force or automatic retries. Unknown submissions/results remain blocked until the operator checks activity and refreshes. The UI does not accept registry credentials.
 - Home lists container inventory for the selected membership, with host pagination (20/page), per-host error/freshness states, filtering and direct endpoint links. `/endpoints` lists hosts; environment enrollment appears before environment settings. No SCIM or mobile-pairing UI remains.
 - Settings offers provider configuration through admin-only `/api/settings/sso`, callback URLs from the server's advertised origin, and the shared theme swatches. Login renders only the public provider list.
 - Endpoint container controls use immutable IDs and observed image/state preconditions. Removal first fetches the server preview and requires the full observed name. Commands are never retried automatically; recent activity remains accessible for unknown outcomes.
