@@ -207,8 +207,8 @@ func TestTenancyUpgradeAndReopen(t *testing.T) {
 	mustTenant(t, err)
 	defer db.Close()
 	// Reconstruct the v4 schema while preserving existing accounts, then exercise real Open.
-	// Migration 7's tables reference environments, so they go first and are replayed too.
-	for _, q := range []string{"DROP TABLE endpoint_commands", "DROP TABLE container_rollups", "DROP TABLE container_samples", "DROP TABLE endpoint_inventory", "DROP TABLE endpoint_events", "DROP TABLE endpoint_capabilities", "DROP TABLE agent_enrollment_tokens", "DROP TABLE endpoint_keys", "DROP TABLE endpoints", "DROP TABLE organization_group_members", "DROP TABLE organization_groups", "DROP TABLE environments", "DROP TABLE organization_memberships", "DROP TABLE tenancy_bootstrap", "DROP TABLE organizations", "DELETE FROM schema_migrations WHERE version IN (5,7,8,9,10,11,12,13,14,15,16,17)"} {
+	// Later tables reference environments, so remove them first and replay their migrations too.
+	for _, q := range []string{"DROP TABLE application_revisions", "DROP TABLE applications", "DROP TABLE endpoint_commands", "DROP TABLE container_rollups", "DROP TABLE container_samples", "DROP TABLE endpoint_inventory", "DROP TABLE endpoint_events", "DROP TABLE endpoint_capabilities", "DROP TABLE agent_enrollment_tokens", "DROP TABLE endpoint_keys", "DROP TABLE endpoints", "DROP TABLE organization_group_members", "DROP TABLE organization_groups", "DROP TABLE environments", "DROP TABLE organization_memberships", "DROP TABLE tenancy_bootstrap", "DROP TABLE organizations", "DELETE FROM schema_migrations WHERE version IN (5,7,8,9,10,11,12,13,14,15,16,17,18)"} {
 		_, err := db.ExecContext(ctx, q)
 		mustTenant(t, err)
 	}
