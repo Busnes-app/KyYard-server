@@ -94,6 +94,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - The root owns these planning documents. Proposed domains in the plan become child DOX boundaries when their implementation lands.
 - The M3 design package lives in `docs/`: `agent-protocol.md`, `threat-model.md`, `authorization-matrix.md`, `application-schema.md`, `retention-policy.md`. Each records its review status and a decisions table; values marked *proposed* are planning defaults, not settled product decisions, and every numeric retention or capacity value must survive the SQLite soak before it is frozen. Agent, endpoint, application and retention code must cite the document section it implements and update the document when the implementation diverges.
 
+- The published image includes `/app/kyyard-agent`. Default enrollment reuses the installed server image ID and network namespace; the server stays on Docker default bridge. Replacing the server requires recreating the same-host agent while retaining its named identity volume; README owns the runbook. Remote HTTPS enrollment uses `KY_AGENT_IMAGE` pinned by digest and the same packaged agent entrypoint.
 - Default Compose is one container, SQLite, a named `/data` volume and a loopback-only host HTTP publish (bridge peers can reach the container bind). It explicitly acknowledges its container-wide plaintext bind alongside the loopback host publish; the bare image fails closed without that acknowledgement or HTTPS configuration. Existing bind installs must enable `docker-compose.bind.yml`; proxy and PostgreSQL options have separate overlays. README owns setup and transport instructions; `docs/RESTORE.md` restores via the bind overlay while preserving the original named volume. The binary healthcheck probes readiness without loading config or creating keys.
 - `cmd/soak` drives the storage path at the capacity targets and fails on any bound the retention policy promises but does not hold (docs/soak.md). Its short run is part of `make ci`, so the harness cannot rot; the 24-hour run is the M4 gate and is started by hand.
 - `cmd/server` calls `Tenancy.Initialize` after account bootstrap and before serving HTTP. Store owns the one-time initial-organization migration and its marker. Tenant HTTP routes use named permissions and store-owned transactional authorization/audit; platform administration never implies tenant access.
@@ -108,13 +109,14 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `govulncheck` and `npm audit --audit-level=high`
 - `scripts/smoke-test.sh`: runs the built binaries and asserts CLI, auth, session, SPA behavior and the agent enroll/approve/connect/revoke path
 - `scripts/spikes/websocket-proxy/run.sh`: developer-run, not part of CI. The compatibility spike behind `docs/agent-protocol.md` section 2 (own Go module, needs Docker, binds loopback only); prints `RESULT <proxy> PASS` for Caddy and nginx. Re-run it when the transport decision or proxy guidance changes.
-- Docker image build and container HTTP check
+- Docker image build and container HTTP check; `scripts/agent-install-test.py` executes the generated same-host command, checks printed fingerprint approval, real container inventory and identity-preserving agent restart.
 - On a push to `master` that passes every job, `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busnes-app/kyyard:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kyyard:local`) so every compose command, recovery docs included, uses the local build.
 
 Run the same checks locally with `make ci` (`tidy-check lint test-race test-web smoke`); add `make test-postgres` when a Postgres instance is available.
 
 ## Child DOX Index
 
+- [internal/agent/AGENTS.md](internal/agent/AGENTS.md): Agent identity, enrollment, connection lifecycle and shared protocol.
 - [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
 - [internal/permissions/AGENTS.md](internal/permissions/AGENTS.md): Named actions and fixed platform/tenant permission mappings.
 - [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).

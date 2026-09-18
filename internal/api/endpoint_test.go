@@ -19,7 +19,8 @@ const agentImage = "ghcr.io/example/kyyard-agent@sha256:0123456789abcdef01234567
 
 func TestEnrollmentRoutes(t *testing.T) {
 	t.Setenv("KY_AGENT_IMAGE", agentImage)
-	s, st, _ := setupTestServer(t)
+	s, st, cfg := setupTestServer(t)
+	cfg.Server.AppURL = "https://yard.example"
 	ctx := context.Background()
 	ts := st.Tenancy()
 	must := func(err error) {
@@ -148,8 +149,8 @@ func TestEnrollmentRoutes(t *testing.T) {
 	check(admin, "GET", "/api/agent/v1/anything", "", 404)
 }
 
-// Without a configured digest-pinned image the token still issues, but no command does.
-func TestEnrollmentTokenWithoutImageHasNoCommand(t *testing.T) {
+// Fresh installs reuse the locally installed image without a registry lookup.
+func TestEnrollmentTokenWithoutImageUsesInstalledImage(t *testing.T) {
 	s, st, _ := setupTestServer(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
@@ -171,7 +172,8 @@ func TestEnrollmentTokenWithoutImageHasNoCommand(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if _, has := out["command"]; has || out["token"] == "" || out["note"] == nil || out["disclosure"] == nil {
+	command, _ := out["command"].(string)
+	if !strings.Contains(command, "{{.Image}}") || !strings.Contains(command, "--pull never") || !strings.Contains(command, `--network "container:$server_id"`) || !strings.Contains(command, "/app/kyyard-agent") || out["token"] == "" || out["note"] == nil || out["disclosure"] == nil {
 		t.Fatalf("token without image: %v", out)
 	}
 }

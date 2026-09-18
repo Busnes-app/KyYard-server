@@ -207,8 +207,7 @@ if [ -x "$AGENT" ]; then
   TOKEN_JSON="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"runtime":"docker"}' "$BASE/api/organizations/org_initial/environments/$ENV_ID/enrollment-tokens")"
   TOKEN="$(printf '%s' "$TOKEN_JSON" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
   contains "token response carries the socket disclosure" "$TOKEN_JSON" "root-equivalent"
-  check "token response has no command without KY_AGENT_IMAGE" \
-    "$(if printf '%s' "$TOKEN_JSON" | grep -q '"command"'; then echo command; else echo none; fi)" "none"
+  contains "default enrollment command reuses the installed image" "$TOKEN_JSON" "--pull never"
   printf '%s\n' "$TOKEN" | "$AGENT" --server "$BASE" --identity-dir "$WORK/agent" --name smoke-host >"$WORK/agent.log" 2>&1 &
   AGENT_PID=$!
   endpoint_state() { curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p'; }
@@ -218,6 +217,7 @@ if [ -x "$AGENT" ]; then
   EP_JSON="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints")"
   EP_ID="$(printf '%s' "$EP_JSON" | sed -n 's/.*"id":"\(ep_[^"]*\)".*/\1/p')"
   EP_FP="$(printf '%s' "$EP_JSON" | sed -n 's/.*"fingerprint":"\([0-9a-f]*\)".*/\1/p')"
+  contains "agent prints the enrolled key fingerprint" "$(cat "$WORK/agent.log")" "agent key fingerprint: $EP_FP"
   check "identity file is owner-only" "$(stat -c '%a' "$WORK/agent/identity.json")" "600"
   check "identity file never holds the token" \
     "$(if grep -q "$TOKEN" "$WORK/agent/identity.json"; then echo leaked; else echo clean; fi)" "clean"

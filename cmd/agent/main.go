@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"flag"
 	"fmt"
 	"log"
@@ -24,6 +25,7 @@ import (
 var version = "dev"
 
 func main() {
+	enrollOnly := flag.Bool("enroll-only", false, "enroll, print the key fingerprint and exit before connecting")
 	server := flag.String("server", "", "control plane origin, e.g. https://kyyard.example")
 	dir := flag.String("identity-dir", "/var/lib/kyyard-agent", "directory holding the agent identity (0700)")
 	name := flag.String("name", "", "endpoint name to propose at enrollment (default: hostname)")
@@ -78,6 +80,10 @@ func main() {
 		log.Printf("enrolled as %s; waiting for approval", id.EndpointID)
 	} else if *server != "" && *server != id.Server {
 		log.Fatalf("identity is enrolled with %s, not %s; remove %s to re-enroll", id.Server, *server, *dir)
+	}
+	log.Printf("agent key fingerprint: %s", protocol.Fingerprint(ed25519.PrivateKey(id.PrivateKey).Public().(ed25519.PublicKey)))
+	if *enrollOnly {
+		return
 	}
 	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, InventoryEvery: *inventoryEvery}); err != nil {
 		fmt.Fprintln(os.Stderr, err)

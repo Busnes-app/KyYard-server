@@ -72,6 +72,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
     <section className="panel" aria-labelledby="endpoints-heading">
       <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <h2 id="endpoints-heading" style={{ fontSize: 16 }}>Endpoints</h2>
+        <button className="btn-secondary" onClick={endpoints.reload}>Refresh hosts</button>
         <button disabled={busy} onClick={() => void mint()}>Enroll a host</button>
       </div>
       {token && (
@@ -79,6 +80,11 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
           <p><strong>Shown once.</strong> {token.command ? 'Run this on the host before' : 'Give this token to the agent before'} {new Date(token.expires_at).toLocaleTimeString()}:</p>
           <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{token.command ?? token.token}</pre>
           {token.note && <p>{token.note}</p>}
+          <p>After starting the agent, refresh hosts below and approve the matching fingerprint. Then open the host to see its containers.</p>
+          <details><summary>Source installation or another Docker host</summary>
+            <p>Source builds can pass this token to kyyard-agent on stdin. For a remote Docker host, configure a reachable HTTPS server URL and KY_AGENT_IMAGE with the published KyYard image pinned by digest, then enroll again.</p>
+            <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{token.token}</pre>
+          </details>
           <p>{token.disclosure}</p>
           <button className="btn-secondary" onClick={() => { void navigator.clipboard?.writeText(token.command ?? token.token); }}>{token.command ? 'Copy command' : 'Copy token'}</button>
           <button className="btn-secondary" onClick={() => setToken(null)}>Dismiss</button>
