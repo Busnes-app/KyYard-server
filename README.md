@@ -137,8 +137,9 @@ bind and DNS overlays already in use:
   `postgres://kyyard:<encoded-password>@postgres:5432/kyyard?sslmode=disable` in private `.env`.
   This uses the private Compose network; capsule backups support SQLite only.
 - `docker-compose.proxy-network.yml`: for a reverse proxy running in a container on this
-  host. Joins `KY_PROXY_NETWORK` and stops publishing a host port, so the proxy is the only
-  thing that can reach the server. Use it after `docker-compose.proxy.yml`.
+  host. Joins `KY_PROXY_NETWORK` and stops publishing a host port: nothing on the host can
+  reach the server, every container on that network can, so use one holding only the proxy
+  and KyYard. Use it after `docker-compose.proxy.yml`.
 - SSO/SCIM: explicitly set `KY_SSO_ENABLED=true` / `KY_SCIM_ENABLED=true` in an environment
   overlay after configuring the provider or stable `KY_SCIM_TOKEN`.
 
