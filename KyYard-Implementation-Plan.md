@@ -1,9 +1,10 @@
 **Repo:** Busnes-app/KyYard-server
+**PR:** #36 — https://github.com/Busnes-app/KyYard-server/pull/36
 **Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/exec-runtime (branch feat/exec-runtime)
 
 # KyYard implementation plan
 
-Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #35 is merged at `7a20787`. The current `feat/exec-runtime` slice adds the bounded Docker PTY foundation; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #35 is merged at `7a20787`. PR #36 (`feat/exec-runtime`) adds the bounded Docker PTY foundation; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
