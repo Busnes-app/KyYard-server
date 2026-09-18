@@ -106,11 +106,24 @@ stays where it is.
 **A proxy that is itself a container cannot use the published port at all.** Inside it,
 `127.0.0.1` is that container, not the host, so the request fails and the proxy answers 502.
 Append `:docker-compose.proxy-network.yml` after the proxy overlay and set
-`KY_PROXY_NETWORK` to the network the proxy container is already on (`docker network ls`
-names it, usually `<project>_default`). KyYard joins that network, the host publish goes away
-entirely, and the proxy forwards to `http://kyyard:9273` — with websocket support enabled,
-which the agent connection needs. `KY_TRUSTED_PROXIES` is then the proxy's address on that
-network; re-check it if you recreate the proxy container. Only listed peers may supply `X-Forwarded-For`; forwarded
+`KY_PROXY_NETWORK`. KyYard joins that network, the host publish goes away, and the proxy
+forwards to `http://kyyard:9273` — with websocket support enabled, which the agent connection
+needs.
+
+This trades one reachable set for another: not the host, and every container on that network,
+which can all resolve and reach each other. Prefer a network holding just the two:
+`docker network create kyyard-proxy`, `docker network connect kyyard-proxy <proxy>`, then
+`KY_PROXY_NETWORK=kyyard-proxy`. The proxy's existing `<project>_default` is one step shorter
+but usually carries unrelated applications, and this hop is plain HTTP carrying session
+cookies — the plaintext bind the base file acknowledges was justified by a loopback-only
+publish, and no longer is.
+
+`KY_TRUSTED_PROXIES` is then the proxy's address on that network. Trust follows the address,
+not the container: recreate the proxy and a stale entry either stops honouring forwarded
+addresses — collapsing every client into one rate-limit bucket — or hands that trust to
+whatever Docker gives the address to next. Give the proxy a fixed `ipv4_address` on that
+network, or keep the network to those two containers, and check after any recreate:
+`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' <proxy>`. Only listed peers may supply `X-Forwarded-For`; forwarded
 scheme headers never change cookie security. HTTPS startup requires this explicit proxy
 allowlist. Recreate with `docker compose up -d`, then sign in at the HTTPS URL.
 Agent enrollment is planned; secret-bearing remote enrollment will require HTTPS.

@@ -94,20 +94,28 @@ func TestThePackagedPortMatchesTheDefault(t *testing.T) {
 
 // The overlay for a containerised reverse proxy exists to remove the host publish; an edit
 // that leaves a published port behind would put plain HTTP back on the host while looking
-// like it had not.
+// like it had not. Compose has three ways to spell a publish and merges some of them by
+// appending, so what is asserted is that the file mentions ports exactly once, to clear them.
 func TestTheContainerProxyOverlayPublishesNothing(t *testing.T) {
 	overlay := read(t, filepath.Join("..", "..", "docker-compose.proxy-network.yml"))
-	if !strings.Contains(overlay, "ports: !reset []") {
-		t.Error("the overlay does not clear the base file's published port")
+	published := 0
+	reset := 0
+	for _, line := range strings.Split(overlay, "\n") {
+		code := strings.TrimSpace(line)
+		if strings.HasPrefix(code, "#") {
+			continue
+		}
+		switch {
+		case code == "ports: !reset []":
+			reset++
+		case strings.Contains(code, "ports"), strings.Contains(code, "published"):
+			published++
+		}
+	}
+	if reset != 1 || published != 0 {
+		t.Errorf("the overlay spells ports %d times besides clearing them (%d clears); a publish may have come back", published, reset)
 	}
 	if !strings.Contains(overlay, "external: true") || !strings.Contains(overlay, "KY_PROXY_NETWORK") {
 		t.Error("the overlay does not join the proxy's existing network")
-	}
-	// A publish reintroduced by hand, in any form.
-	for _, line := range strings.Split(overlay, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "- ") && strings.Contains(trimmed, ":9273") && !strings.HasPrefix(trimmed, "#") {
-			t.Errorf("the overlay publishes a port again: %q", trimmed)
-		}
 	}
 }

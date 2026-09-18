@@ -214,6 +214,23 @@ jobs:
             -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \
             http://127.0.0.1:18080/api/auth/login | grep -q '"authenticated":true'
 
+      # The overlay for a containerised reverse proxy exists to remove the host publish. Only
+      # Compose can say whether it does: !reset is merge behaviour, and the unit test can read
+      # the file but not what three files merge to.
+      - name: The container-proxy overlay leaves no published port
+        run: |
+          set -euo pipefail
+          merged=$(KY_PROXY_NETWORK=ky-ci-proxy \
+            KY_APP_URL=https://ky.example.com \
+            KY_TRUSTED_PROXIES=172.18.0.2/32 \
+            docker compose -f docker-compose.yml -f docker-compose.proxy.yml \
+              -f docker-compose.proxy-network.yml config --format json)
+          echo "$merged" | jq -e '.services.kyyard.ports // [] | length == 0' > /dev/null
+          echo "$merged" | jq -e '.networks.proxy.external == true' > /dev/null
+          # And the base file alone still publishes, on loopback only.
+          docker compose -f docker-compose.yml config --format json \
+            | jq -e '[.services.kyyard.ports[].host_ip] == ["127.0.0.1"]' > /dev/null
+
       # Hand the exact image the checks above ran against to the publish job,
       # so what gets pushed is what was tested, never a second build.
       - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
