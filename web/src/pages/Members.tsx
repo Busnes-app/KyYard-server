@@ -21,7 +21,7 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
     if (!err) { setUserID(''); members.reload(); }
   };
   const remove = async (m: Member) => {
-    if (!window.confirm(`Remove ${m.username} from this organization?`)) return;
+    if (!window.confirm(`Remove ${m.username} and revoke their access?`)) return;
     setBusy(true);
     const err = await tenantWrite(`${base}/${encodeURIComponent(m.user_id)}`, 'DELETE');
     setBusy(false);
@@ -34,7 +34,7 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
       <h1 style={{ fontSize: 24, display: 'flex', alignItems: 'center', gap: 10 }}>
         <Users size={24} style={{ color: 'var(--accent)' }} /><span>Members</span>
       </h1>
-      <nav aria-label="Organization sections" className="ky-subnav"><Link to={orgPath(org)}>Back to organization</Link></nav>
+      <nav aria-label="Administration" className="ky-subnav"><Link to={orgPath(org)}>Environments</Link></nav>
       <section className="panel">
         <StateNotice state={members.state} onRetry={members.reload} />
         {members.state === 'ready' && members.data && (members.data.length === 0 ? <EmptyNotice>No members.</EmptyNotice> : (
@@ -47,7 +47,7 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
                     <td data-label="User">{m.username} <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{m.user_id}</span></td>
                     <td data-label="Role">
                       <select aria-label={`Role for ${m.username}`} value={m.role} disabled={busy} onChange={(e) => void put(m.user_id, e.target.value, m.status)}>
-                        {tenantRoles.map((r) => <option key={r} value={r}>{r.replaceAll('_', ' ')}</option>)}
+                        {tenantRoles.map((r) => <option key={r} value={r}>{r === 'organization_admin' ? 'administrator' : r.replaceAll('_', ' ')}</option>)}
                       </select>
                     </td>
                     <td data-label="Status">
@@ -67,7 +67,7 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
             <label htmlFor="member-id">Add member by user ID</label>
             <input id="member-id" value={userID} onChange={(e) => setUserID(e.target.value)} required maxLength={64} placeholder="usr_…" />
             <select aria-label="Role for new member" value={role} onChange={(e) => setRole(e.target.value)}>
-              {tenantRoles.map((r) => <option key={r} value={r}>{r.replaceAll('_', ' ')}</option>)}
+              {tenantRoles.map((r) => <option key={r} value={r}>{r === 'organization_admin' ? 'administrator' : r.replaceAll('_', ' ')}</option>)}
             </select>
             <button type="submit" disabled={busy || !userID.trim()}>Add</button>
           </form>

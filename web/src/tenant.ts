@@ -59,9 +59,9 @@ export async function tenantWrite(url: string, method: string, body?: unknown): 
     const resp = await secureFetch(url, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     if (resp.ok) return '';
     const payload = await resp.json().catch(() => ({}));
-    if (payload.code === 'last_administrator') return 'The organization needs at least one active administrator.';
-    if (resp.status === 403) return 'You do not have permission to do that in this organization.';
-    if (resp.status === 404) return 'Not found in this organization.';
+    if (payload.code === 'last_administrator') return 'At least one active administrator is required.';
+    if (resp.status === 403) return 'You do not have permission to do that.';
+    if (resp.status === 404) return 'Not found in this access scope.';
     if (payload.code === 'environment_in_use') return 'Revoke every endpoint in this environment before deleting it.';
     if (resp.status === 409) return 'That already exists.';
     return `Request failed (${resp.status}).`;

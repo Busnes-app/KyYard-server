@@ -81,3 +81,19 @@ it('discovers unmanaged projects, filters existing controls, and resets scope on
   expect(document.getElementById('endpoint-containers')?.textContent).toContain('mail-web');
   expect(fetcher.mock.calls.every((call) => call.length === 1)).toBe(true); // discovery only reads inventory
 });
+
+it('pages host containers and resets pagination when searching', async () => {
+  const now = new Date().toISOString();
+  const containers = Array.from({ length: 52 }, (_, i) => ({ id: `c${i}`, name: `container-${i}`, image: 'alpine:3', state: 'running', ports: [] }));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/inventory') ? json({ generation: 1, received_at: now, observed_at: now, snapshot: { containers, engine: {}, images: [], networks: [], volumes: [] } }) : url.endsWith('/samples') || url.includes('/commands') ? json([]) : json(endpoint)));
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  await screen.findByText('container-0');
+  expect(screen.getAllByRole('row')).toHaveLength(26);
+  fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+  expect(screen.getByText('container-25')).toBeTruthy();
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'container-51' } });
+  expect(screen.getByText('container-51')).toBeTruthy();
+  expect(screen.getAllByRole('row')).toHaveLength(2);
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: '' } });
+  expect(screen.getByText('1–25 of 52')).toBeTruthy();
+});

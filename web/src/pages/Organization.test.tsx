@@ -12,7 +12,7 @@ it('shows the denied state without any tenant data', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'Tenant access denied', code: 'tenant_access_denied' }, 403)));
   render(<Organization org="secret" />);
   expect((await screen.findByRole('alert')).textContent).toContain('do not have access');
-  expect(screen.queryByText('Environments')).toBeNull();
+  expect(screen.queryByLabelText('New environment')).toBeNull();
 });
 
 it('shows the offline state with retry, then recovers', async () => {
@@ -26,7 +26,7 @@ it('shows the offline state with retry, then recovers', async () => {
   const alert = await screen.findByRole('alert');
   expect(alert.textContent).toContain('Offline');
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-  expect(await screen.findByRole('heading', { name: 'Org A' })).toBeTruthy();
+  expect(await screen.findByRole('heading', { name: 'Environments', level: 1 })).toBeTruthy();
   expect(await screen.findByText(/No environments yet/)).toBeTruthy();
 });
 
@@ -59,7 +59,7 @@ it('surfaces the last-administrator refusal on the members screen', async () => 
   document.cookie = 'ky_csrf=csrf-test';
   render(<Members org="a" />);
   fireEvent.change(await screen.findByLabelText('Role for admin'), { target: { value: 'read_only' } });
-  expect((await screen.findByRole('alert')).textContent).toContain('at least one active administrator');
+  expect((await screen.findByRole('alert')).textContent).toContain('At least one active administrator');
 });
 
 it('opens a deep link after sign-in and navigates with history', async () => {
@@ -76,10 +76,11 @@ it('opens a deep link after sign-in and navigates with history', async () => {
   }));
   render(<App />);
   expect(await screen.findByRole('heading', { name: 'Members' })).toBeTruthy();
-  expect(await screen.findByRole('link', { name: 'Org A' })).toHaveProperty('pathname', '/organizations/a');
+  expect(screen.queryByRole('link', { name: 'Org A' })).toBeNull();
+  expect(screen.queryByLabelText('Access scope')).toBeNull();
   expect(screen.queryByLabelText('Organization')).toBeNull();
-  fireEvent.click(screen.getByRole('link', { name: 'Back to organization' }));
-  expect(await screen.findByRole('heading', { name: 'Org A' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('link', { name: 'Environments' }));
+  expect(await screen.findByRole('heading', { name: 'Environments', level: 1 })).toBeTruthy();
   expect(window.location.pathname).toBe('/organizations/a');
   window.history.back();
   window.dispatchEvent(new PopStateEvent('popstate'));

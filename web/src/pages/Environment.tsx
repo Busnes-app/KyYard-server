@@ -35,7 +35,7 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
       <h1 style={{ fontSize: 24, display: 'flex', alignItems: 'center', gap: 10 }}>
         <Server size={24} style={{ color: 'var(--accent)' }} /><span>{details.data?.name ?? env}</span>
       </h1>
-      <nav aria-label="Organization sections" className="ky-subnav"><Link to={orgPath(org)}>Back to organization</Link></nav>
+      <nav aria-label="Administration" className="ky-subnav"><Link to={orgPath(org)}>Environments</Link></nav>
       <StateNotice state={details.state} onRetry={details.reload} />
       {details.state === 'ready' && (
         <>

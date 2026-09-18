@@ -117,8 +117,8 @@ const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, s
     case 'endpoint': return <EndpointPage key={`${route.org}/${route.endpoint}`} org={route.org} endpoint={route.endpoint} />;
     case 'audit': return (
       <div className="ky-page">
-        <h1 style={{ fontSize: 24 }}>Organization audit</h1>
-        <nav aria-label="Organization sections" className="ky-subnav"><Link to={`/organizations/${encodeURIComponent(route.org)}`}>Back to organization</Link></nav>
+        <h1 style={{ fontSize: 24 }}>Audit history</h1>
+        <nav aria-label="Administration" className="ky-subnav"><Link to={`/organizations/${encodeURIComponent(route.org)}`}>Environments</Link></nav>
         <AuditList url={`/api/organizations/${encodeURIComponent(route.org)}/audit`} />
       </div>
     );
