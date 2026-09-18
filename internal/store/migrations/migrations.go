@@ -606,6 +606,7 @@ CREATE INDEX idx_applications_org ON applications(organization_id);
 `},
 	{Version: 19, Name: "audit_resource_bound", SQLite: `CREATE TRIGGER audit_resource_bound BEFORE INSERT ON audit_records
  WHEN length(CAST(NEW.resource AS BLOB))>255 BEGIN SELECT RAISE(ABORT,'audit resource exceeds 255 bytes'); END;`, Postgres: `ALTER TABLE audit_records ADD CONSTRAINT audit_resource_bound CHECK(octet_length(resource)<=255) NOT VALID;`},
+	{Version: 20, Name: "application_revision_secrets", SQLite: `ALTER TABLE application_revisions ADD COLUMN secrets_enc TEXT NOT NULL DEFAULT '';`, Postgres: `ALTER TABLE application_revisions ADD COLUMN secrets_enc TEXT NOT NULL DEFAULT '';`},
 }
 
 // Run executes all pending migrations for the specified database driver.

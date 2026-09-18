@@ -4,6 +4,7 @@ package permissions
 type Action string
 
 const (
+	SecretReveal       Action = "secret.reveal"
 	ApplicationRead    Action = "application.read"
 	ApplicationImport  Action = "application.import"
 	ApplicationEdit    Action = "application.edit"
@@ -49,7 +50,7 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "environment_admin":

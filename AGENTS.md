@@ -122,6 +122,8 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 
 ## Child DOX Index
 
+- [internal/applications/AGENTS.md](internal/applications/AGENTS.md): Bounded Compose import and transient secret separation.
+
 - [internal/agent/AGENTS.md](internal/agent/AGENTS.md): Agent identity, enrollment, connection lifecycle and shared protocol.
 - [internal/runtime/AGENTS.md](internal/runtime/AGENTS.md): Docker runtime adapters, bounded streams and exec session primitives.
 - [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.

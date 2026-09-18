@@ -44,8 +44,12 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusNotFound, "Resource not found in this organization")
 	case errors.Is(err, store.ErrAlreadyExists):
 		s.writeError(w, http.StatusConflict, "Resource already exists")
+	case errors.Is(err, store.ErrApplicationLimit):
+		s.writeError(w, http.StatusConflict, "Application storage limit reached")
+	case errors.Is(err, store.ErrRevisionConflict):
+		s.writeError(w, http.StatusConflict, "Application changed; refresh before continuing")
 	case errors.Is(err, store.ErrInUse):
-		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Revoke the environment's endpoints first", "code": "environment_in_use"})
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Discard the environment's draft applications and revoke its endpoints first", "code": "environment_in_use"})
 	case errors.Is(err, store.ErrEndpointOffline):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The endpoint is not connected, so the command was not sent"})
 	case errors.Is(err, store.ErrLastAdmin):

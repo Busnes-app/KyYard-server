@@ -467,3 +467,22 @@ without input or eight hours total. Slow-client buffer limits also disconnect ra
 than silently lose terminal data. Audit records who connected, the target, selected
 user, duration and known exit status, without recording commands or terminal contents.
 An interrupted session without an inspected exit code remains unknown.
+
+## Import a Compose draft
+
+Open **Endpoints → Environments & add host → your environment → Applications**.
+Choose **Import Compose draft**, enter a name and paste YAML. Import creates saved
+configuration only; it does not deploy, adopt or change existing containers.
+
+This initial importer accepts service `image`, explicit string `environment`,
+`restart`, and long-form `ports` (`target`, `published`, optional `host_ip` and
+`protocol`). Quote environment numbers and booleans. Supply resolved values;
+interpolation and file lookups are unsupported, and literal dollars must use `$$`.
+Documents are limited to 64 KiB. Other fields, including volumes, networks, builds,
+commands, anchors and aliases, are rejected rather than silently dropped.
+
+All environment values are encrypted. Saved configuration shows keys and references,
+not values. Administrators can import and discard drafts; discard deletes their
+saved history and changes no running containers. Adoption, editing and deployment
+will follow in later application milestones. See [the application contract](docs/application-schema.md)
+for the implemented limits and the separate target Compose feature set.

@@ -86,6 +86,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `application.deploy` (preview, deploy approved revision) | ✓ | ✓ | – | ✓ | – | no | success/partial/failure/unknown per step |
 | `application.update` (manual image update, 0.1) | ✓ | ✓ | ✓ | – | – | no | success/failure |
 | `application.destroy` (remove application, keep data) | ✓ | ✓ | – | – | – | no | success |
+| `secret.reveal` (internal imported-value resolution) | ✓ | – | – | – | – | plaintext, only after audit commits | success/failure |
 | `secret.manage` (create, rotate, delete secret values) | ✓ | – | – | – | – | write-only; values never returned | success, target = secret name |
 | `secret.use` (deploy with a secret reference) | implied by `application.deploy` | | | | | no | recorded on the deployment |
 | `registry.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no credentials | – |
@@ -120,4 +121,4 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Exec | organization administrators only in 0.1 | proposed |
 | Per-environment grants | not in 0.1 | proposed |
 
-Application persistence implements `application.read`, `application.import`, `application.edit` and draft-only `application.destroy` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. Destroy explicitly discards an undeployed draft/history at the expected head and releases quota. This slice exposes no HTTP import/edit/discard routes or runtime adoption/deployment authority. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.
+Application persistence implements `application.read`, `application.import`, `application.edit` and draft-only `application.destroy` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. Destroy explicitly discards an undeployed draft/history at the expected head and releases quota. HTTP import/list/read/discard routes are implemented; public editing and runtime adoption/deployment remain absent. Internal `secret.reveal` permits organization administrators only, commits audit before returning values and has no HTTP endpoint. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.

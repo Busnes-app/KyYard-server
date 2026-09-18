@@ -1,0 +1,257 @@
+// Package applications validates desired configuration without reading host files,
+// process environment, URLs or runtime inventory (docs/application-schema.md).
+package applications
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"go.yaml.in/yaml/v3"
+)
+
+const MaxComposeBytes = 64 * 1024
+
+// Import contains sensitive transient input. Never serialize or log it.
+type Import struct {
+	Spec   store.ApplicationSpec `json:"-"`
+	Values map[string]string     `json:"-"`
+}
+
+// Diagnostic deliberately contains no source text, parser error, or scalar value.
+type Diagnostic struct {
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+	Reason string `json:"reason"`
+}
+
+func (d *Diagnostic) Error() string {
+	return fmt.Sprintf("Compose line %d, column %d: %s", d.Line, d.Column, d.Reason)
+}
+func refusal(n *yaml.Node, reason string) error { return &Diagnostic{n.Line, n.Column, reason} }
+
+// ParseCompose accepts an explicit initial subset. Unsupported fields are errors,
+// never ignored. Values must be explicit strings; interpolation and implicit host
+// environment lookups are refused. $$ represents a literal dollar as in Compose.
+func ParseCompose(source string) (*Import, error) {
+	if len(source) == 0 || len(source) > MaxComposeBytes {
+		return nil, &Diagnostic{Reason: "Document must be between 1 and 65536 bytes"}
+	}
+	dec := yaml.NewDecoder(strings.NewReader(source))
+	var doc, extra yaml.Node
+	if err := dec.Decode(&doc); err != nil || len(doc.Content) != 1 {
+		return nil, &Diagnostic{Reason: "Invalid YAML document"}
+	}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, &Diagnostic{Reason: "Exactly one YAML document is required"}
+	}
+	count := 0
+	if err := checkTree(&doc, 0, &count); err != nil {
+		return nil, err
+	}
+	root, err := mapping(doc.Content[0])
+	if err != nil {
+		return nil, err
+	}
+	if err = fields(root, "services"); err != nil {
+		return nil, err
+	}
+	servicesNode := root["services"]
+	if servicesNode == nil {
+		return nil, refusal(doc.Content[0], "services is required")
+	}
+	services, err := mapping(servicesNode)
+	if err != nil {
+		return nil, err
+	}
+	if len(services) == 0 || len(services) > 100 {
+		return nil, refusal(servicesNode, "Expected 1–100 services")
+	}
+	out := &Import{Spec: store.ApplicationSpec{Kind: "compose.v1"}, Values: map[string]string{}}
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		node := services[name]
+		config, err := mapping(node)
+		if err != nil {
+			return nil, err
+		}
+		if err = fields(config, "image", "environment", "ports", "restart"); err != nil {
+			return nil, err
+		}
+		image, err := literal(config["image"])
+		if err != nil {
+			return nil, err
+		}
+		service := store.ApplicationService{Name: name, Image: image}
+		if restart := config["restart"]; restart != nil {
+			service.Restart, err = literal(restart)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if ports := config["ports"]; ports != nil {
+			if ports.Kind != yaml.SequenceNode || len(ports.Content) > 64 {
+				return nil, refusal(ports, "ports must be a list of at most 64 long-syntax mappings")
+			}
+			for _, node := range ports.Content {
+				p, err := mapping(node)
+				if err != nil {
+					return nil, err
+				}
+				if err = fields(p, "target", "published", "host_ip", "protocol"); err != nil {
+					return nil, err
+				}
+				// Require long syntax to avoid YAML base-60 and ambiguous short port parsing.
+				var port store.ApplicationPort
+				for field, dest := range map[string]*int{"target": &port.Target, "published": &port.Published} {
+					n := p[field]
+					if n == nil || n.Kind != yaml.ScalarNode || (n.Tag != "!!int" && n.Tag != "!!str") {
+						return nil, refusal(node, "target and published must be decimal ports")
+					}
+					if len(n.Value) == 0 || (len(n.Value) > 1 && n.Value[0] == '0') || strings.Trim(n.Value, "0123456789") != "" {
+						return nil, refusal(n, "Ports must be decimal numbers")
+					}
+					for _, digit := range n.Value {
+						*dest = *dest*10 + int(digit-'0')
+						if *dest > 65535 {
+							return nil, refusal(n, "Port is out of range")
+						}
+					}
+				}
+				port.Protocol = "tcp"
+				if n := p["protocol"]; n != nil {
+					port.Protocol, err = literal(n)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if n := p["host_ip"]; n != nil {
+					port.HostIP, err = literal(n)
+					if err != nil {
+						return nil, err
+					}
+				}
+				service.Ports = append(service.Ports, port)
+			}
+		}
+		if env := config["environment"]; env != nil {
+			values := map[string]string{}
+			switch env.Kind {
+			case yaml.MappingNode:
+				entries, err := mapping(env)
+				if err != nil {
+					return nil, err
+				}
+				for key, n := range entries {
+					value, err := literal(n)
+					if err != nil {
+						return nil, err
+					}
+					values[key] = value
+				}
+			case yaml.SequenceNode:
+				for _, n := range env.Content {
+					entry, err := literal(n)
+					if err != nil {
+						return nil, err
+					}
+					key, value, ok := strings.Cut(entry, "=")
+					if !ok {
+						return nil, refusal(n, "Environment entries require an explicit value")
+					}
+					if _, exists := values[key]; exists {
+						return nil, refusal(n, "Duplicate environment key")
+					}
+					values[key] = value
+				}
+			default:
+				return nil, refusal(env, "environment must be a mapping or list")
+			}
+			service.Environment = map[string]store.ApplicationSecretRef{}
+			for key, value := range values {
+				ref := fmt.Sprintf("env-%x", sha256.Sum256([]byte(name+"\x00"+key)))
+				service.Environment[key] = store.ApplicationSecretRef{SecretRef: ref}
+				out.Values[ref] = value
+			}
+		}
+		out.Spec.Services = append(out.Spec.Services, service)
+	}
+	if err := store.ValidateApplicationSpec(out.Spec); err != nil {
+		return nil, &Diagnostic{Reason: "Invalid service name, image, restart policy, port, environment key, or specification size"}
+	}
+	return out, nil
+}
+
+func literal(n *yaml.Node) (string, error) {
+	if n == nil {
+		return "", &Diagnostic{Reason: "An explicit image is required"}
+	}
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!str" {
+		return "", refusal(n, "An explicit string is required; quote numeric and boolean values")
+	}
+	var b strings.Builder
+	for i := 0; i < len(n.Value); i++ {
+		if n.Value[i] == '$' {
+			if i+1 >= len(n.Value) || n.Value[i+1] != '$' {
+				return "", refusal(n, "Interpolation is unsupported; supply resolved values, escaping literal dollars as $$")
+			}
+			i++
+		}
+		b.WriteByte(n.Value[i])
+	}
+	return b.String(), nil
+}
+func mapping(n *yaml.Node) (map[string]*yaml.Node, error) {
+	if n.Kind != yaml.MappingNode {
+		return nil, refusal(n, "Expected a mapping")
+	}
+	out := map[string]*yaml.Node{}
+	for i := 0; i < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.Kind != yaml.ScalarNode || k.Tag != "!!str" {
+			return nil, refusal(k, "Keys must be strings")
+		}
+		if _, ok := out[k.Value]; ok {
+			return nil, refusal(k, "Duplicate key")
+		}
+		out[k.Value] = v
+	}
+	return out, nil
+}
+func fields(m map[string]*yaml.Node, allowed ...string) error {
+	for key, n := range m {
+		ok := false
+		for _, a := range allowed {
+			if key == a {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return refusal(n, "Unsupported field; see the supported import fields")
+		}
+	}
+	return nil
+}
+func checkTree(n *yaml.Node, depth int, count *int) error {
+	*count++
+	if depth > 16 || *count > 8192 {
+		return refusal(n, "YAML nesting or node limit exceeded")
+	}
+	if n.Kind == yaml.AliasNode || n.Anchor != "" || n.Tag == "!!merge" || (n.Style&yaml.TaggedStyle) != 0 {
+		return refusal(n, "Aliases, anchors, merge keys and explicit tags are unsupported")
+	}
+	for _, c := range n.Content {
+		if err := checkTree(c, depth+1, count); err != nil {
+			return err
+		}
+	}
+	return nil
+}

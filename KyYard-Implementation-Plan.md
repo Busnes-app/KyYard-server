@@ -216,6 +216,8 @@ Merged PR #41 (`feat/applications`): read-only Compose project discovery on the 
 
 Current M6 slice (`feat/application-revisions`): application and immutable revision persistence, tenant/environment constraints, named permissions, expected-head concurrency, digest consistency checks, admission bounds, explicit draft discard and SQLite backup coverage. Initial typed specs hold service image references and environment secret references only; there is no raw Compose importer or public persistence route.
 
-Next M6 slice: validated Compose import and secret resolution, then explicit instance/resource adoption (the remainder of planned PR 14), followed by preview/reconcile (planned PR 15). The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
+Current M6 slice: bounded Compose draft import with encrypted environment bundles, audited internal resolution, reference-only inspection and explicit discard. No runtime mutations or adoption. PR43 UI pagination/navigation is merged.
+
+Next M6 slice: explicit instance/resource adoption (the remainder of planned PR 14), followed by preview/reconcile (planned PR 15). The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
 The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.

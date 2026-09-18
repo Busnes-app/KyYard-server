@@ -7,6 +7,7 @@ Named actions and fixed role mappings for product authorization.
 Owns the permission matrix; store owns live membership checks and transactional enforcement, API owns session authentication and trusted request context.
 
 ## Local Contracts
+- `secret.reveal` permits only organization administrators to use the internal audited application-value resolver. Import authority does not imply reveal authority.
 - Application persistence: every active tenant role holds `application.read`; organization/environment administrators hold `application.import` and `application.destroy` (explicit draft discard); those administrators and developers hold `application.edit`. These permissions save desired state only and imply no adoption, deployment, secret-value read or platform-admin bypass.
 - `container.exec` is organization-administrator-only, separate from lifecycle operations, logs and environment administration. Platform administrators gain no tenant exec authority.
 - Unknown actions/roles deny. Platform `admin` authorizes only platform administration; it never substitutes for organization membership.

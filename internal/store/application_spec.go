@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/netip"
 	"regexp"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -17,10 +18,24 @@ type ApplicationSpec struct {
 	Services []ApplicationService `json:"services"`
 }
 type ApplicationService struct {
+	Ports       []ApplicationPort               `json:"ports,omitempty"`
+	Restart     string                          `json:"restart,omitempty"`
 	Name        string                          `json:"name"`
 	Image       string                          `json:"image"`
 	Environment map[string]ApplicationSecretRef `json:"environment,omitempty"`
 }
+type ApplicationPort struct {
+	Target    int    `json:"target"`
+	Published int    `json:"published"`
+	HostIP    string `json:"host_ip,omitempty"`
+	Protocol  string `json:"protocol"`
+}
+
+func ValidateApplicationSpec(spec ApplicationSpec) error {
+	_, _, err := encodeApplicationSpec(spec)
+	return err
+}
+
 type ApplicationSecretRef struct {
 	SecretRef string `json:"secret_ref"`
 }
@@ -45,6 +60,25 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 			return nil, "", ErrInvalid
 		}
 		names[service.Name] = true
+		switch service.Restart {
+		case "", "no", "always", "unless-stopped", "on-failure":
+		default:
+			return nil, "", ErrInvalid
+		}
+		if len(service.Ports) > 64 {
+			return nil, "", ErrInvalid
+		}
+		for _, port := range service.Ports {
+			if port.Target < 1 || port.Target > 65535 || port.Published < 1 || port.Published > 65535 || (port.Protocol != "tcp" && port.Protocol != "udp") {
+				return nil, "", ErrInvalid
+			}
+			if port.HostIP != "" {
+				addr, err := netip.ParseAddr(port.HostIP)
+				if err != nil || addr.Zone() != "" {
+					return nil, "", ErrInvalid
+				}
+			}
+		}
 		for name, ref := range service.Environment {
 			if !applicationEnvName.MatchString(name) || !applicationSecretName.MatchString(ref.SecretRef) {
 				return nil, "", ErrInvalid
