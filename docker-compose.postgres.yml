@@ -3,12 +3,13 @@ services:
   kyyard:
     environment:
       - KY_DB_DRIVER=postgres
-      - KY_DB_DSN=${KY_DB_DSN:?Set a PostgreSQL DSN using host postgres and your password}
+      - KY_DB_DSN=${KY_DB_DSN:?Set a PostgreSQL DSN using the reachable PostgreSQL bridge IP and your password}
     depends_on:
       postgres:
         condition: service_healthy
   postgres:
     image: postgres:17-alpine
+    network_mode: bridge
     restart: unless-stopped
     environment:
       POSTGRES_USER: kyyard

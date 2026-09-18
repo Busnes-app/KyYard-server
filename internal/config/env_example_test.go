@@ -92,30 +92,21 @@ func TestThePackagedPortMatchesTheDefault(t *testing.T) {
 	}
 }
 
-// The overlay for a containerised reverse proxy exists to remove the host publish; an edit
-// that leaves a published port behind would put plain HTTP back on the host while looking
-// like it had not. Compose has three ways to spell a publish and merges some of them by
-// appending, so what is asserted is that the file mentions ports exactly once, to clear them.
-func TestTheContainerProxyOverlayPublishesNothing(t *testing.T) {
-	overlay := read(t, filepath.Join("..", "..", "docker-compose.proxy-network.yml"))
-	published := 0
-	reset := 0
-	for _, line := range strings.Split(overlay, "\n") {
-		code := strings.TrimSpace(line)
-		if strings.HasPrefix(code, "#") {
-			continue
+// The product uses Docker's pre-existing bridge; no Compose-owned network is needed.
+func TestComposeUsesExistingBridge(t *testing.T) {
+	for _, file := range []string{"docker-compose.yml", "docker-compose.proxy-network.yml"} {
+		content := read(t, filepath.Join("..", "..", file))
+		if !strings.Contains(content, "network_mode: bridge") {
+			t.Errorf("%s does not use the existing bridge", file)
 		}
-		switch {
-		case code == "ports: !reset []":
-			reset++
-		case strings.Contains(code, "ports"), strings.Contains(code, "published"):
-			published++
+		for _, line := range strings.Split(content, "\n") {
+			code := strings.TrimSpace(line)
+			if strings.HasPrefix(code, "#") {
+				continue
+			}
+			if strings.HasPrefix(code, "networks:") || strings.Contains(code, "KY_PROXY_NETWORK") {
+				t.Errorf("%s declares a dedicated network: %s", file, code)
+			}
 		}
-	}
-	if reset != 1 || published != 0 {
-		t.Errorf("the overlay spells ports %d times besides clearing them (%d clears); a publish may have come back", published, reset)
-	}
-	if !strings.Contains(overlay, "external: true") || !strings.Contains(overlay, "KY_PROXY_NETWORK") {
-		t.Error("the overlay does not join the proxy's existing network")
 	}
 }
