@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
@@ -75,15 +76,26 @@ func readLog(ctx context.Context, req protocol.LogRequest, opts *Options, out ch
 		// Coerced to valid UTF-8 and no further: a log is the application's own bytes, and an
 		// agent that reformatted them would be lying about what the container printed. The
 		// control plane treats it as text and never interprets it.
-		chunk := protocol.LogChunk{Stream: req.Stream, Data: strings.ToValidUTF8(string(b), "�"), Dropped: dropped}
-		select {
-		case out <- (outFrame{protocol.TypeLogChunk, chunk}):
-			dropped = 0
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			// The loop is behind. Dropping is the bounded answer; the next chunk says how much.
-			dropped += int64(len(b))
+		//
+		// Coercion grows the text -- every invalid byte becomes a three-byte replacement, and
+		// a multi-byte character straddling a read boundary is enough to produce one -- so the
+		// bound is applied after it, to the value that actually travels. An oversized chunk is
+		// a protocol violation, and reading a container that logs anything but ASCII must not
+		// be able to commit one.
+		text := strings.ToValidUTF8(string(b), "�")
+		for len(text) > 0 {
+			piece := text[:cutAtRune(text, protocol.MaxLogChunkBytes)]
+			text = text[len(piece):]
+			select {
+			case out <- (outFrame{protocol.TypeLogChunk, protocol.LogChunk{Stream: req.Stream, Data: piece, Dropped: dropped}}):
+				dropped = 0
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				// The loop is behind. Dropping is the bounded answer; the next chunk says how
+				// much was lost.
+				dropped += int64(len(piece))
+			}
 		}
 		return nil
 	}
@@ -100,6 +112,24 @@ func readLog(ctx context.Context, req protocol.LogRequest, opts *Options, out ch
 		deliverFrame(ctx, out, outFrame{protocol.TypeLogChunk, protocol.LogChunk{Stream: req.Stream, Dropped: dropped}})
 	}
 	deliverFrame(ctx, out, outFrame{protocol.TypeLogClose, close})
+}
+
+// cutAtRune is the largest cut at or below max that does not split a character in half. A
+// chunk is text by the time it gets here, and half a character is not text.
+func cutAtRune(s string, max int) int {
+	if len(s) <= max {
+		return len(s)
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		// Unreachable for valid UTF-8, where no character is longer than four bytes, but a
+		// cut of zero would spin forever and that is not a risk worth leaving open.
+		return max
+	}
+	return cut
 }
 
 // deliverFrame hands a frame to the session loop, or gives up when the session ends, for the

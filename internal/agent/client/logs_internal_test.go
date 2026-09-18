@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
@@ -141,5 +142,47 @@ func TestOnlySoManyStreamsAreOpenAtOnce(t *testing.T) {
 func TestTheAgentServesAsManyStreamsAsTheProtocolSays(t *testing.T) {
 	if maxLogStreams != protocol.MaxLogStreamsPerEndpoint {
 		t.Fatalf("the agent serves %d streams while the control plane hands out %d", maxLogStreams, protocol.MaxLogStreamsPerEndpoint)
+	}
+}
+
+// A log is bytes, not text: a container writing anything but ASCII produces reads that end
+// mid-character, and coercing those to valid UTF-8 makes the value grow. The bound the agent
+// promises is on what travels, so it has to be applied after the coercion -- an oversized
+// chunk is a protocol violation, and the control plane answers one by ending the stream.
+func TestChunksStayInsideTheBoundAfterCoercion(t *testing.T) {
+	out := make(chan outFrame, 64)
+	// Alternating text and invalid bytes, which is what a read that ends mid-character looks
+	// like: each invalid run becomes a three-byte replacement, so the coerced value is twice
+	// the size of the read.
+	block := make([]byte, protocol.MaxLogChunkBytes)
+	for i := range block {
+		if i%2 == 0 {
+			block[i] = 'a'
+			continue
+		}
+		block[i] = 0xff
+	}
+	opts := &Options{Logs: func(ctx context.Context, req protocol.LogRequest, sink func([]byte) error) error {
+		return sink(block)
+	}}
+	readLog(context.Background(), protocol.LogRequest{Stream: "s1"}, opts, out)
+	close(out)
+
+	total := 0
+	for f := range out {
+		chunk, ok := f.Payload.(protocol.LogChunk)
+		if !ok {
+			continue
+		}
+		if len(chunk.Data) > protocol.MaxLogChunkBytes {
+			t.Fatalf("a %d byte chunk was sent, past the %d the protocol allows", len(chunk.Data), protocol.MaxLogChunkBytes)
+		}
+		if !utf8.ValidString(chunk.Data) {
+			t.Fatalf("a chunk was cut through a character: %q", chunk.Data)
+		}
+		total += len(chunk.Data)
+	}
+	if want := protocol.MaxLogChunkBytes / 2 * 4; total != want {
+		t.Fatalf("%d bytes of coerced text arrived, want %d", total, want)
 	}
 }

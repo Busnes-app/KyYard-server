@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,3 +86,31 @@ func TestTheDeadlineIsRefreshedEvenWithNothingToSend(t *testing.T) {
 }
 
 var _ http.ResponseWriter = (*deadlineWriter)(nil)
+
+// An evicted socket unwinding is an ordinary flow: an agent that was silently dropped redials,
+// the new session takes the endpoint, and the old one finishes its read loop some moments
+// later. The readers attached to the live session must not be told the endpoint disconnected,
+// because it did not.
+func TestAnEvictedSocketLeavesTheSuccessorsReadersAlone(t *testing.T) {
+	s := &Server{logs: newLogRegistry()}
+	successor := &agentConn{endpointID: "ep1"}
+	if incumbent := s.agents.add(successor); incumbent != nil {
+		t.Fatal("the registry was not empty")
+	}
+	stream, refusal := s.logs.open("ep1", "usr_reader")
+	if refusal != "" {
+		t.Fatalf("opening a stream: %s", refusal)
+	}
+	defer s.logs.release(stream)
+
+	// The socket the successor displaced, finishing late.
+	s.markOffline(context.Background(), &agentConn{endpointID: "ep1"})
+	select {
+	case <-stream.done:
+		t.Fatal("a reader on the live session was told the endpoint disconnected")
+	default:
+	}
+	if !s.Connected("ep1") {
+		t.Fatal("the successor was removed by another socket's unwind")
+	}
+}
