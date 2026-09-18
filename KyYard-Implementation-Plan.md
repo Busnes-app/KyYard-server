@@ -1,10 +1,10 @@
 **Repo:** Busnes-app/KyYard-server
-**PR:** #35 — https://github.com/Busnes-app/KyYard-server/pull/35
-**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/agent-install (branch fix/agent-install)
+**PR:** #36 — https://github.com/Busnes-app/KyYard-server/pull/36
+**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/exec-runtime (branch feat/exec-runtime)
 
 # KyYard implementation plan
 
-Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #34 is merged at `3e300d5`. PR #35 (`fix/agent-install`) completes fresh-install agent packaging and enrollment; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-18 from [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md). PR #35 is merged at `7a20787`. PR #36 (`feat/exec-runtime`) adds the bounded Docker PTY foundation; section 8 records the remaining work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
@@ -197,13 +197,13 @@ Record success/failure, confusing steps and recovery outcomes. Any required docu
 
 ## 8. Current implementation and next delivery
 
-M0–M4 infrastructure, M5 container/image commands and bounded logs, plus the product corrections and browser logs are merged through master `3e300d5` (PR #34). The 24-hour capacity soak remains an unproven M4 gate.
+M0–M4 infrastructure, M5 container/image commands and bounded logs, plus the product corrections and browser logs are merged through master `7a20787` (PR #35). The 24-hour capacity soak remains an unproven M4 gate.
 
 Merged PR #34 (`feat/image-controls`) adds explicit-tag/digest pulls and full-ID image removal with a fresh server-inventory preview, dependency checks, confirmation and visible command outcomes. It reuses the existing server/agent authorization and commands without adding routes. Browser tests against a local agent proved image pull/removal; frontend tests cover stale/incomplete/dependent previews, cancellation, uncertain submissions and polling. Generated bundle diffs no longer consume review input; CI still verifies exact source/build correspondence.
 
-Current slice: package `/app/kyyard-agent` in the existing published image, generate same-host enrollment from the exact installed image ID, use attached `--enroll-only` before detached startup, print the approval fingerprint, and expose a host refresh action. The same-host agent shares the server network namespace on the existing default bridge; after server replacement recreate the agent with its retained identity volume. Remote HTTPS enrollment uses the same image pinned by digest. CI now builds both binaries for smoke coverage and executes the generated command against real Docker, proving approval, inventory, restart and server replacement.
+Merged PR #35: package `/app/kyyard-agent` in the existing published image, generate same-host enrollment from the exact installed image ID, use attached `--enroll-only` before detached startup, print the approval fingerprint, and expose a host refresh action. The same-host agent shares the server network namespace on the existing default bridge; after server replacement recreate the agent with its retained identity volume. Remote HTTPS enrollment uses the same image pinned by digest. CI now builds both binaries for smoke coverage and executes the generated command against real Docker, proving approval, inventory, restart and server replacement.
 
-The exec runtime foundation is preserved uncommitted in `.worktrees/exec-runtime` (`feat/exec-runtime`); it is not part of this delivery and no browser exec is enabled.
+Current slice (`feat/exec-runtime`): Docker exec PTY with immutable target checks, explicit user, bounded argv and I/O, resize, cancellation, input-idle/absolute timeouts and independent exit inspection. Fake Engine tests cover refusal, uncertainty and blocked I/O; the real Docker regression proves non-root input/resize and exit code 7 in an isolated fixture, and runs in CI. Closing the attachment does not promise process termination. No browser/API/agent exec entrypoint is enabled yet.
 
 Next engineering slices: browser exec with the protocol's authorization, timeouts and revocation guarantees; M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

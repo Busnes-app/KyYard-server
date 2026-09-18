@@ -109,6 +109,7 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `govulncheck` and `npm audit --audit-level=high`
 - `scripts/smoke-test.sh`: runs the built binaries and asserts CLI, auth, session, SPA behavior and the agent enroll/approve/connect/revoke path
 - `scripts/spikes/websocket-proxy/run.sh`: developer-run, not part of CI. The compatibility spike behind `docs/agent-protocol.md` section 2 (own Go module, needs Docker, binds loopback only); prints `RESULT <proxy> PASS` for Caddy and nginx. Re-run it when the transport decision or proxy guidance changes.
+- Real Docker exec PTY regression in the Go job (isolated fixture, explicit user, resize and exit status).
 - Docker image build and container HTTP check; `scripts/agent-install-test.py` executes the generated same-host command, checks printed fingerprint approval, real container inventory and identity-preserving agent restart.
 - On a push to `master` that passes every job, `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busnes-app/kyyard:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kyyard:local`) so every compose command, recovery docs included, uses the local build.
 
@@ -117,6 +118,7 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 ## Child DOX Index
 
 - [internal/agent/AGENTS.md](internal/agent/AGENTS.md): Agent identity, enrollment, connection lifecycle and shared protocol.
+- [internal/runtime/AGENTS.md](internal/runtime/AGENTS.md): Docker runtime adapters, bounded streams and exec session primitives.
 - [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
 - [internal/permissions/AGENTS.md](internal/permissions/AGENTS.md): Named actions and fixed platform/tenant permission mappings.
 - [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
