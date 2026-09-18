@@ -208,7 +208,7 @@ Merged PR #37 (`feat/exec-streams`): binary-safe agent exec frames, nonce-bound 
 
 Merged PR #38 (`fix/local-docker`): automatic in-process local Docker connection, default Compose socket mounting, trusted one-time endpoint bootstrap, tenant-gated operations, durable revocation, restart/replacement inventory, and sudo-aware manual enrollment for additional hosts. Local connection requires no shell enrollment command or separate agent container, by user decision. Theme palettes remain in Settings; header/login dropdowns are removed.
 
-Current slice (`fix/remote-link`): single-container remote enrollment via HTTPS link, published image by default, optional digest-pinned override, persistent identity and explicit approval; no same-host inspection or two-container setup chain.
+Current slice (`fix/remote-link`): single-container remote enrollment via HTTPS link, installed-image digest discovery by default, explicit digest-pinned override when discovery is unavailable, persistent identity and explicit approval; no same-host inspection or two-container setup chain.
 
 Next engineering slices: server and browser exec with the protocol's authorization, timeouts and revocation guarantees; M6 Compose desired state. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

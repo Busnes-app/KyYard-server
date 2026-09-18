@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -176,13 +178,15 @@ func TestEnrollmentTokenWithoutHTTPSExplainsRemoteSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	command, _ := out["command"].(string)
-	if command != "" || !strings.Contains(out["note"].(string), "HTTPS") || out["image"] != "ghcr.io/busnes-app/kyyard:latest" {
+	if command != "" || !strings.Contains(out["note"].(string), "HTTPS") || out["image"] != "" {
 		t.Fatal("missing remote setup guidance")
 	}
 }
 
 func TestEnrollmentCommandRunsOneRemoteContainer(t *testing.T) {
 	s, st, cfg := setupTestServer(t)
+	cfg.Server.AgentImage = ""
+	cfg.Server.DockerSocket = installedImageSocket(t)
 	cfg.Server.AppURL = "https://yard.example"
 	ctx := context.Background()
 	if err := st.Tenancy().CreateEnvironment(ctx, &store.Environment{ID: "env-sudo", OrganizationID: store.InitialOrganizationID, Name: "Extra host"}); err != nil {
@@ -196,9 +200,12 @@ func TestEnrollmentCommandRunsOneRemoteContainer(t *testing.T) {
 	if w.Code != 201 {
 		t.Fatal(w.Code)
 	}
-	var minted struct{ Command string }
+	var minted struct{ Command, Image string }
 	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil {
 		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^ghcr\.io/busnes-app/kyyard@sha256:[0-9a-f]{64}$`).MatchString(minted.Image) || !strings.Contains(minted.Command, "@sha256:") {
+		t.Fatal("default agent image is not digest pinned")
 	}
 	dir := t.TempDir()
 	trace := filepath.Join(dir, "trace")
@@ -234,5 +241,55 @@ esac
 	}
 	if strings.Count(string(raw), "inspect ") != 0 || strings.Count(string(raw), "run ") != 1 || !strings.Contains(string(raw), "--pull always") || !strings.Contains(string(raw), "--link https://yard.example/#kyyard=") || strings.Contains(string(raw), "--network container:") {
 		t.Fatalf("missing privileged calls: %s", raw)
+	}
+}
+
+func installedImageSocket(t *testing.T) string {
+	t.Helper()
+	socket := filepath.Join(t.TempDir(), "docker.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageID := "sha256:" + strings.Repeat("b", 64)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1.41/containers/" + host + "/json":
+			_ = json.NewEncoder(w).Encode(map[string]string{"Image": imageID})
+		case "/v1.41/images/" + imageID + "/json":
+			_ = json.NewEncoder(w).Encode(map[string]any{"RepoDigests": []string{"ghcr.io/untrusted/kyyard@sha256:" + strings.Repeat("c", 64), "ghcr.io/busnes-app/kyyard:latest", "ghcr.io/busnes-app/kyyard@sha256:" + strings.Repeat("a", 64)}})
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return socket
+}
+
+func TestEnrollmentWithoutPublishedImageRequiresPin(t *testing.T) {
+	s, st, cfg := setupTestServer(t)
+	cfg.Server.AppURL = "https://yard.example"
+	cfg.Server.AgentImage = ""
+	cfg.Server.DockerSocket = ""
+	ctx := context.Background()
+	if err := st.Tenancy().CreateEnvironment(ctx, &store.Environment{ID: "env-pin", OrganizationID: store.InitialOrganizationID, Name: "Needs image"}); err != nil {
+		t.Fatal(err)
+	}
+	admin := loginAs(t, s, st, "pin-admin", "user")
+	if err := st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: store.InitialOrganizationID, UserID: "usr_pin-admin", Role: store.RoleOrganizationAdmin, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w := tenantRequest(s, admin, "POST", "/api/organizations/org_initial/environments/env-pin/enrollment-tokens", `{"runtime":"docker"}`, true)
+	var out struct{ Image, Command, Note string }
+	if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &out) != nil {
+		t.Fatal("mint failed")
+	}
+	if out.Image != "" || out.Command != "" || !strings.Contains(out.Note, "KY_AGENT_IMAGE") {
+		t.Fatal("missing digest did not fail closed")
 	}
 }

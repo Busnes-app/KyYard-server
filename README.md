@@ -234,7 +234,7 @@ sudo docker run -d --name kyyard-agent --restart unless-stopped --pull always \
   --no-healthcheck --entrypoint /app/kyyard-agent \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v kyyard-agent-identity:/var/lib/kyyard-agent \
-  ghcr.io/busnes-app/kyyard:latest --link '<enrollment-link>' --name "$(hostname)"
+  'ghcr.io/busnes-app/kyyard@sha256:<verified-digest>' --link '<enrollment-link>' --name "$(hostname)"
 ```
 
 The agent enrolls on first start, then reuses its saved identity on restart, even after
@@ -273,11 +273,13 @@ agent container/volume names if running more than one installation on a host.
 
 **Remote server address:** configure `KY_APP_URL` as reachable HTTPS with a trusted reverse
 proxy before generating the command. An HTTP-only installation shows setup guidance rather
-than a misleading same-host command. The default image is the published
-`ghcr.io/busnes-app/kyyard:latest`, pulled on creation; restarting an existing container does
-not upgrade it. Optionally set `KY_AGENT_IMAGE` to a verified digest-pinned KyYard image
-(`ghcr.io/busnes-app/kyyard@sha256:<digest>`) and pass it through the Compose service environment.
-Custom image overrides still require a digest; see [RESTORE.md](docs/RESTORE.md) for verification.
+than a misleading same-host command. The command automatically pins the installed server image’s official repository digest,
+read through the local Docker socket using the container hostname and immutable image ID.
+It never resolves `:latest` when the command runs. A source build, unavailable socket,
+custom container hostname or image without an official repository digest requires
+`KY_AGENT_IMAGE=ghcr.io/busnes-app/kyyard@sha256:<verified-digest>` in the Compose service
+environment. Without a pin, the screen shows setup guidance rather than a runnable command.
+Restarting an existing agent does not upgrade its image. Every generated image is digest-pinned; see [RESTORE.md](docs/RESTORE.md) for verification.
 
 **Source installation:** `make build` produces `./kyyard-agent`. Use `--link '<enrollment-link>'`
 or expand **Source installation** for the token and pipe it to

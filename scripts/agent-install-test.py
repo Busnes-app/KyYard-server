@@ -81,7 +81,9 @@ def start_server():
                        "-v", data + ":/data",
                        "-v", "/var/run/docker.sock:/var/run/docker.sock",
                        "-e", "KY_ALLOW_PLAINTEXT_BIND=true", "-e", "KY_CAPTCHA_PROVIDER=none",
-                       "-e", "KY_APP_URL=https://yard.test", "-e", "KY_TRUSTED_PROXIES=" + proxy_ip, image)
+                       "-e", "KY_APP_URL=https://yard.test", "-e", "KY_TRUSTED_PROXIES=" + proxy_ip,
+                       # CI builds are unpublished: supply a fixture pin and substitute the local image below.
+                       "-e", "KY_AGENT_IMAGE=ghcr.io/busnes-app/kyyard@" + docker("image", "inspect", "--format", "{{.Id}}", image), image)
     address = docker("inspect", "--format", '{{(index .NetworkSettings.Networks "bridge").IPAddress}}', server)
     proxy_config(address)
     docker("exec", proxy_name, "nginx", "-s", "reload")

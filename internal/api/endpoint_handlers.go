@@ -10,11 +10,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -38,8 +41,18 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	image := s.config.Server.AgentImage
-	if image == "" {
-		image = "ghcr.io/busnes-app/kyyard:latest"
+	if image == "" && strings.HasPrefix(s.config.Server.AppURL, "https://") && s.config.Server.DockerSocket != "" {
+		// Use bytes already installed by the operator, not a registry tag that can move.
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		host, _ := os.Hostname()
+		digests, _ := docker.New(s.config.Server.DockerSocket).ContainerImageDigests(ctx, host)
+		cancel()
+		for _, digest := range digests {
+			if strings.HasPrefix(digest, "ghcr.io/busnes-app/kyyard@sha256:") && config.IsPinnedAgentImage(digest) {
+				image = digest
+				break
+			}
+		}
 	}
 	tok, err := s.store.Tenancy().CreateEnrollmentToken(r.Context(), a, input.Runtime, image)
 	if err != nil {
@@ -52,10 +65,12 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		"token": secret, "disclosure": socketDisclosure,
 	}
 	out["image"] = image
-	if strings.HasPrefix(s.config.Server.AppURL, "https://") {
+	if image != "" && strings.HasPrefix(s.config.Server.AppURL, "https://") {
 		link := strings.TrimRight(s.config.Server.AppURL, "/") + "/#kyyard=" + secret
 		out["command"] = fmt.Sprintf("sudo docker run -d --name kyyard-agent --restart unless-stopped --pull always --no-healthcheck --entrypoint /app/kyyard-agent -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent %s --link %s --name \"$(hostname)\"", shellQuote(image), shellQuote(link))
 		out["note"] = "Run on the remote Docker host. This pulls the image, enrolls and keeps the agent running. Omit sudo if your account already has Docker access. Run sudo docker logs kyyard-agent and compare the agent key fingerprint before approving. Keep the identity volume for restarts."
+	} else if strings.HasPrefix(s.config.Server.AppURL, "https://") {
+		out["note"] = "Could not identify a published digest for this server image. Set KY_AGENT_IMAGE to a verified ghcr.io/busnes-app/kyyard@sha256:<digest> reference, then generate a new command. Source builds and custom container hostnames need this explicit image setting."
 	} else {
 		out["note"] = "Remote setup needs a reachable HTTPS address. Configure KY_APP_URL and your trusted reverse proxy, then generate a new command. Local Docker connects automatically; no local enrollment command is needed."
 	}
