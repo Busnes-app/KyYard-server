@@ -207,7 +207,7 @@ func TestBrowserExecRefusesCSRFAndChangedTarget(t *testing.T) {
 	}
 }
 func TestBrowserExecRevocationAndDisconnect(t *testing.T) {
-	for _, kind := range []string{"session", "membership", "disable", "disconnect", "shutdown", "endpoint"} {
+	for _, kind := range []string{"session", "membership", "disable", "disconnect", "shutdown", "endpoint", "endpoint-store"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newTerminalFixture(t)
 			c, _ := f.open(t)
@@ -234,6 +234,10 @@ func TestBrowserExecRevocationAndDisconnect(t *testing.T) {
 				c.CloseNow()
 			case "shutdown":
 				f.s.BeginShutdown()
+			case "endpoint-store":
+				if err := f.st.Tenancy().RevokeEndpoint(f.ctx, store.TenantAccess{ActorID: "usr_execadmin", OrganizationID: "a"}, f.ag.id); err != nil {
+					t.Fatal(err)
+				}
 			case "endpoint":
 				w := tenantRequest(f.s, f.admin, "POST", "/api/organizations/a/endpoints/"+f.ag.id+"/revoke", "", true)
 				if w.Code != 204 {

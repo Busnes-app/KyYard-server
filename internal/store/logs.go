@@ -82,14 +82,17 @@ func (t *tenancyStore) StillAllowed(ctx context.Context, a TenantAccess, action 
 		return ErrForbidden
 	}
 	if endpointID != "" {
-		var found int
-		err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
-			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID).Scan(&found)
+		var state string
+		err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT state FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
+			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID).Scan(&state)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
+		}
+		if action == permissions.ContainerExec && state != "active" {
+			return ErrEndpointOffline
 		}
 	}
 	return nil
