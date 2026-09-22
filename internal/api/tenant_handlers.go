@@ -37,6 +37,11 @@ func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.Te
 	}
 }
 func (s *Server) tenantError(w http.ResponseWriter, err error) {
+	var blocked *store.PreflightBlockedError
+	if errors.As(err, &blocked) {
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "Deployment preflight reported blockers", "code": "preflight_blocked", "blockers": blocked.Blockers})
+		return
+	}
 	switch {
 	case errors.Is(err, store.ErrForbidden):
 		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Tenant access denied", "code": "tenant_access_denied"})
@@ -58,6 +63,8 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The endpoint is not connected, so the command was not sent"})
 	case errors.Is(err, store.ErrLastAdmin):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The organization needs at least one active administrator", "code": "last_administrator"})
+	case errors.Is(err, store.ErrDeploymentPlanned):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A live deployment plan exists; let it expire before releasing", "code": "deployment_planned"})
 	case errors.Is(err, store.ErrInvalid):
 		s.writeError(w, http.StatusBadRequest, "Invalid tenant input")
 	default:

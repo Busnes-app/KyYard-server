@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -12,11 +13,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
+// expireDeployments backdates every live deployment plan directly in storage. No production
+// hook exists to expire a plan early; this reaches the DB the same way tenancy_test.go does.
+func expireDeployments(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	driver := "pgx"
+	q := "UPDATE deployments SET expires_at=$1"
+	if cfg.Database.Driver == "sqlite" {
+		driver = "sqlite"
+		q = "UPDATE deployments SET expires_at=?"
+	}
+	db, err := sql.Open(driver, cfg.Database.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(q, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestApplicationImportRoutes(t *testing.T) {
-	s, st, _ := setupTestServer(t)
+	s, st, cfg := setupTestServer(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
 	must := func(err error) {
@@ -58,7 +80,8 @@ func TestApplicationImportRoutes(t *testing.T) {
 	ep, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
 	must(err)
 	must(ts.ApproveEndpoint(ctx, a, ep.ID, ep.Fingerprint))
-	snapshot, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: time.Now().UTC()}}})
+	created := time.Now().UTC()
+	snapshot, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created}}})
 	_, err = ts.AcceptInventory(ctx, ep.ID, uint64(time.Now().Unix()), time.Now(), snapshot)
 	must(err)
 	adoption := base + "/" + app.ID + "/adoption"
@@ -85,6 +108,28 @@ func TestApplicationImportRoutes(t *testing.T) {
 	request(nil, "GET", preflight, "", 401)
 	request(admin, "GET", preflight, "", 200)
 	request(admin, "GET", "/api/organizations/b/environments/env-b/applications/"+app.ID+"/preflight", "", 403)
+	releaseBody, _ := json.Marshal(map[string]string{"instance_id": instance.ID, "confirm": "shop"})
+	deployments := base + "/" + app.ID + "/deployments"
+	planBody, _ := json.Marshal(store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: 1, Confirm: "shop"})
+	request(nil, "POST", deployments, string(planBody), 401)
+	if w := tenantRequest(s, admin, "POST", deployments, string(planBody), false); w.Code != 403 {
+		t.Fatal("plan without CSRF")
+	}
+	// No image in inventory yet: blocked, and the body names the blocker only.
+	blocked := request(admin, "POST", deployments, string(planBody), 409)
+	if !strings.Contains(blocked, `"preflight_blocked"`) || !strings.Contains(blocked, "image_not_reported") {
+		t.Fatalf("blocked body: %s", blocked)
+	}
+	withImage, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:1"}}}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created}}})
+	_, err = ts.AcceptInventory(ctx, ep.ID, uint64(time.Now().Unix())+1, time.Now(), withImage)
+	must(err)
+	var planned store.Deployment
+	must(json.Unmarshal([]byte(request(admin, "POST", deployments, string(planBody), 201)), &planned))
+	request(admin, "GET", deployments, "", 200)
+	request(admin, "GET", deployments+"/"+planned.ID, "", 200)
+	request(admin, "GET", deployments+"/not-a-uuid", "", 404)
+	request(admin, "GET", "/api/organizations/b/environments/env-b/applications/"+app.ID+"/deployments", "", 403)
+	request(admin, "DELETE", adoption, string(releaseBody), 409) // live plan
 	comparison := base + "/" + app.ID + "/comparison"
 	request(nil, "GET", comparison, "", 401)
 	request(admin, "GET", comparison, "", 200)
@@ -93,14 +138,20 @@ func TestApplicationImportRoutes(t *testing.T) {
 		request(admin, "GET", comparison, "", 200)
 		request(admin, "GET", mapping, "", 200)
 		request(admin, "GET", preflight, "", 200)
+		request(admin, "GET", deployments, "", 200)
 		request(admin, "PUT", mapping, string(mappingBody), 403)
+		if role == store.RoleDeveloper {
+			request(admin, "POST", deployments, string(planBody), 201)
+		} else {
+			request(admin, "POST", deployments, string(planBody), 403)
+		}
 	}
 	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_importer", Role: store.RoleOrganizationAdmin, Status: "active"}))
 	request(admin, "GET", "/api/organizations/b/environments/env-b/applications/"+app.ID+"/comparison", "", 403)
 	request(admin, "GET", base+"/instances", "", 200)
 	request(admin, "GET", "/api/organizations/a/endpoints/"+ep.ID+"/applications", "", 200)
 	request(admin, "DELETE", base+"/"+app.ID, `{"expected_revision":1}`, 409)
-	releaseBody, _ := json.Marshal(map[string]string{"instance_id": instance.ID, "confirm": "shop"})
+	expireDeployments(t, cfg)
 	request(admin, "DELETE", adoption, string(releaseBody), 204)
 	request(admin, "DELETE", adoption, string(releaseBody), 409)
 	request(admin, "GET", comparison, "", 404)
