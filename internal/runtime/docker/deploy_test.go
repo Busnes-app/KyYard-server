@@ -117,15 +117,22 @@ func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 		Labels       map[string]string
 		ExposedPorts map[string]struct{}
 		HostConfig   struct {
+			NetworkMode   string
 			PortBindings  map[string][]struct{ HostIp, HostPort string }
 			RestartPolicy struct {
 				Name              string
 				MaximumRetryCount int
 			}
 		}
+		NetworkingConfig *struct {
+			EndpointsConfig map[string]struct{ Aliases []string }
+		}
 	}
 	if err := json.Unmarshal([]byte(f.calls[4].Body), &body); err != nil {
 		t.Fatal(err)
+	}
+	if body.HostConfig.NetworkMode != "" || body.NetworkingConfig != nil {
+		t.Fatalf("networking on default mode: %+v", body)
 	}
 	if body.Image != newImage || strings.Join(body.Env, "|") != "A=1|TOKEN=a=b\ncanary-secret" || body.HostConfig.RestartPolicy.Name != "on-failure" || body.HostConfig.RestartPolicy.MaximumRetryCount != 0 {
 		t.Fatalf("create body: %+v", body)
@@ -162,5 +169,43 @@ func TestDeployRefusesAnInvalidRequestWithoutCalling(t *testing.T) {
 	res := f.client().Deploy(context.Background(), request(s))
 	if res.Outcome != protocol.OutcomeDenied || len(f.calls) != 0 || len(res.Steps) != 0 {
 		t.Fatalf("invalid request: %+v calls=%d", res, len(f.calls))
+	}
+}
+
+func TestDeployKeepsTheProjectNetwork(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.oldContainer["HostConfig"].(map[string]any)["NetworkMode"] = "shop_default"
+	res := f.client().Deploy(context.Background(), request(webService()))
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("outcome: %+v", res)
+	}
+	var body struct {
+		HostConfig struct {
+			NetworkMode string
+		}
+		NetworkingConfig struct {
+			EndpointsConfig map[string]struct{ Aliases []string }
+		}
+	}
+	if err := json.Unmarshal([]byte(f.calls[4].Body), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.HostConfig.NetworkMode != "shop_default" {
+		t.Fatalf("network mode: %+v", body)
+	}
+	if aliases := body.NetworkingConfig.EndpointsConfig["shop_default"].Aliases; len(aliases) != 1 || aliases[0] != "web" {
+		t.Fatalf("aliases: %+v", body)
+	}
+}
+
+func TestDeployPreconditionRefusesHostNetworkMode(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.oldContainer["HostConfig"].(map[string]any)["NetworkMode"] = "host"
+	res := f.client().Deploy(context.Background(), request(webService()))
+	if res.Outcome != protocol.OutcomeDenied {
+		t.Fatalf("outcome: %+v", res)
+	}
+	if len(res.Steps) == 0 || res.Steps[0].Step != protocol.StepPrecondition || res.Steps[0].Outcome != protocol.OutcomeDenied {
+		t.Fatalf("step: %+v", res.Steps)
 	}
 }

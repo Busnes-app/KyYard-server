@@ -97,7 +97,9 @@ type inspectedForDeploy struct {
 
 func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 	old := url.PathEscape(s.Replaces.ContainerID)
+	projectNetwork := r.req.Project + "_default"
 	var before inspectedForDeploy
+	var networkMode string
 	r.step(s.Name, protocol.StepPrecondition, func() (string, string) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
@@ -112,11 +114,12 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 			return protocol.OutcomeDenied, "the container is not the one this plan was decided about"
 		case len(before.Mounts) > 0:
 			return protocol.OutcomeDenied, "the container has mounts the definition does not describe; recreating it would drop them"
-		case before.HostConfig.NetworkMode != "default" && before.HostConfig.NetworkMode != "bridge":
+		case before.HostConfig.NetworkMode != "default" && before.HostConfig.NetworkMode != "bridge" && before.HostConfig.NetworkMode != projectNetwork:
 			return protocol.OutcomeDenied, "the container uses a network mode the definition does not describe"
 		case before.HostConfig.Privileged:
 			return protocol.OutcomeDenied, "the container is privileged; the definition cannot express that"
 		}
+		networkMode = before.HostConfig.NetworkMode
 		return protocol.OutcomeSucceeded, ""
 	})
 	r.step(s.Name, protocol.StepImage, func() (string, string) {
@@ -165,7 +168,7 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		var out struct {
 			ID string `json:"Id"`
 		}
-		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s), &out)
+		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s, networkMode), &out)
 		if err != nil || status != http.StatusCreated {
 			if status == http.StatusConflict {
 				return protocol.OutcomeFailed, "a container with that name already exists"
@@ -181,17 +184,20 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 	r.step(s.Name, protocol.StepStart, func() (string, string) {
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
 		defer cancel()
-		status, err := r.c.post(cctx, "/containers/"+created+"/start")
+		status, err := r.c.post(cctx, "/containers/"+url.PathEscape(created)+"/start")
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
 			return r.outcomeFor(cctx, err, status)
 		}
+		ictx, icancel := context.WithTimeout(ctx, callBudget)
+		defer icancel()
 		var after inspectedForDeploy
-		if err := r.c.get(cctx, "/containers/"+created+"/json", &after); err != nil {
-			return r.outcomeFor(cctx, err, statusOf(err))
+		if err := r.c.get(ictx, "/containers/"+url.PathEscape(created)+"/json", &after); err != nil {
+			outcome, detail := r.outcomeFor(ictx, err, statusOf(err))
+			return outcome, fmt.Sprintf("the container started but its identity could not be read: %s (container %s)", detail, created)
 		}
 		id := protocol.DeploymentIdentity{Service: s.Name, ContainerID: after.ID, ImageID: after.Image, CreatedUnix: after.Created.Unix()}
-		if (protocol.InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil || after.Image != s.ImageID {
-			return protocol.OutcomeFailed, "the new container's identity could not be verified"
+		if after.ID != created || after.Image != s.ImageID || (protocol.InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil {
+			return protocol.OutcomeFailed, fmt.Sprintf("the container started but its identity could not be verified (container %s)", created)
 		}
 		r.res.Services = append(r.res.Services, id)
 		return protocol.OutcomeSucceeded, ""
@@ -211,23 +217,34 @@ type portBinding struct {
 	HostIP   string `json:"HostIp"`
 	HostPort string `json:"HostPort"`
 }
+type endpointSettings struct {
+	Aliases []string `json:"Aliases"`
+}
+type networkingConfig struct {
+	EndpointsConfig map[string]endpointSettings `json:"EndpointsConfig"`
+}
 type containerCreate struct {
 	Image        string              `json:"Image"`
 	Env          []string            `json:"Env"`
 	Labels       map[string]string   `json:"Labels"`
 	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
 	HostConfig   struct {
+		NetworkMode   string                   `json:"NetworkMode,omitempty"`
 		PortBindings  map[string][]portBinding `json:"PortBindings,omitempty"`
 		RestartPolicy struct {
 			Name              string `json:"Name"`
 			MaximumRetryCount int    `json:"MaximumRetryCount"`
 		} `json:"RestartPolicy"`
 	} `json:"HostConfig"`
+	NetworkingConfig *networkingConfig `json:"NetworkingConfig,omitempty"`
 }
 
 // createBody is the whole configuration of the new container: the definition's subset and
-// the Compose labels discovery already groups by. Nothing is copied from the old container.
-func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService) containerCreate {
+// the Compose labels discovery already groups by. Nothing is copied from the old container
+// except the network mode the precondition already accepted: a Compose project's containers
+// run on "<project>_default", and dropping that would strand the new one off the project
+// network and its service-name DNS.
+func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, networkMode string) containerCreate {
 	body := containerCreate{Image: s.ImageID, Env: []string{}, Labels: map[string]string{
 		"com.docker.compose.project": req.Project, "com.docker.compose.service": s.Name, "com.docker.compose.container-number": "1", "com.docker.compose.oneoff": "False",
 		"kyyard.deployment": req.Deployment, "kyyard.revision": strconv.Itoa(req.Revision),
@@ -252,6 +269,10 @@ func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService) co
 	body.HostConfig.RestartPolicy.Name = s.Restart
 	if body.HostConfig.RestartPolicy.Name == "" {
 		body.HostConfig.RestartPolicy.Name = "no"
+	}
+	if projectNetwork := req.Project + "_default"; networkMode == projectNetwork {
+		body.HostConfig.NetworkMode = projectNetwork
+		body.NetworkingConfig = &networkingConfig{EndpointsConfig: map[string]endpointSettings{projectNetwork: {Aliases: []string{s.Name}}}}
 	}
 	return body
 }
