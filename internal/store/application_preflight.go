@@ -45,57 +45,65 @@ func (t *tenancyStore) PreflightApplication(ctx context.Context, a TenantAccess,
 	}
 	var out *DeploymentPreflight
 	err = t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
-		m, err := t.applicationMapping(ctx, tx, a, id.String(), false)
-		if err != nil {
-			return err
-		}
-		var raw, specRaw, digest, instance, state string
-		var version, head int
-		var received, observed time.Time
-		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.id,i.mapping_version,a.latest_revision,r.spec,r.digest,e.state,v.snapshot,v.received_at,v.observed_at FROM applications a JOIN application_instances i ON i.application_id=a.id JOIN application_revisions r ON r.application_id=a.id AND r.number=a.latest_revision JOIN endpoints e ON e.id=i.endpoint_id JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE a.organization_id=? AND a.environment_id=? AND a.id=?`), a.OrganizationID, a.EnvironmentID, id.String()).Scan(&instance, &version, &head, &specRaw, &digest, &state, &raw, &received, &observed)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrAdoptionChanged
-		}
-		if err != nil {
-			return err
-		}
-		if instance != m.InstanceID || version != m.Version || head != m.Preview.Revision || state != "active" || time.Since(received) > 3*time.Minute || time.Until(received) > time.Minute || time.Since(observed) > 5*time.Minute || time.Until(observed) > 5*time.Minute {
-			return ErrAdoptionChanged
-		}
-		var spec ApplicationSpec
-		var snapshot protocol.Snapshot
-		if applicationSpecDigest([]byte(specRaw)) != digest || json.Unmarshal([]byte(specRaw), &spec) != nil || ValidateApplicationSpec(spec) != nil {
-			return ErrRevisionCorrupt
-		}
-		if json.Unmarshal([]byte(raw), &snapshot) != nil || len(snapshot.Containers) > protocol.MaxContainers || snapshot.Engine.Version == "" {
-			return ErrAdoptionChanged
-		}
-		for _, part := range snapshot.Truncated {
-			if part == "containers" {
-				return ErrAdoptionChanged
-			}
-		}
-		current := map[string]protocol.Container{}
-		for _, c := range snapshot.Containers {
-			if _, found := current[c.ID]; found {
-				return ErrAdoptionChanged
-			}
-			current[c.ID] = c
-		}
-		for _, c := range m.Preview.Containers {
-			now, found := current[c.ID]
-			if !found || now.ImageID != c.ImageID || now.CreatedAt.UnixMicro() != c.CreatedAt.UnixMicro() || now.ComposeProject != m.Preview.Project {
-				return ErrAdoptionChanged
-			}
-		}
-		out = buildDeploymentPreflight(m, spec, snapshot)
-		out.ReceivedAt = received
-		return nil
+		out, _, _, _, _, err = t.preflight(ctx, tx, a, id.String(), false)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// preflight is the shared diagnostic. lock=true takes the mapping locks for a writer. It also
+// returns the mapping, the parsed spec, the parsed snapshot and the revision digest so a writer
+// can build a plan from exactly what it checked.
+func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, lock bool) (*DeploymentPreflight, *ApplicationMapping, ApplicationSpec, protocol.Snapshot, string, error) {
+	m, err := t.applicationMapping(ctx, tx, a, app, lock)
+	if err != nil {
+		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
+	}
+	var raw, specRaw, digest, instance, state string
+	var version, head int
+	var received, observed time.Time
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.id,i.mapping_version,a.latest_revision,r.spec,r.digest,e.state,v.snapshot,v.received_at,v.observed_at FROM applications a JOIN application_instances i ON i.application_id=a.id JOIN application_revisions r ON r.application_id=a.id AND r.number=a.latest_revision JOIN endpoints e ON e.id=i.endpoint_id JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE a.organization_id=? AND a.environment_id=? AND a.id=?`), a.OrganizationID, a.EnvironmentID, app).Scan(&instance, &version, &head, &specRaw, &digest, &state, &raw, &received, &observed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
+	}
+	if err != nil {
+		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
+	}
+	if instance != m.InstanceID || version != m.Version || head != m.Preview.Revision || state != "active" || time.Since(received) > 3*time.Minute || time.Until(received) > time.Minute || time.Since(observed) > 5*time.Minute || time.Until(observed) > 5*time.Minute {
+		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
+	}
+	var spec ApplicationSpec
+	var snapshot protocol.Snapshot
+	if applicationSpecDigest([]byte(specRaw)) != digest || json.Unmarshal([]byte(specRaw), &spec) != nil || ValidateApplicationSpec(spec) != nil {
+		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrRevisionCorrupt
+	}
+	if json.Unmarshal([]byte(raw), &snapshot) != nil || len(snapshot.Containers) > protocol.MaxContainers || snapshot.Engine.Version == "" {
+		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
+	}
+	for _, part := range snapshot.Truncated {
+		if part == "containers" {
+			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
+		}
+	}
+	current := map[string]protocol.Container{}
+	for _, c := range snapshot.Containers {
+		if _, found := current[c.ID]; found {
+			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
+		}
+		current[c.ID] = c
+	}
+	for _, c := range m.Preview.Containers {
+		now, found := current[c.ID]
+		if !found || now.ImageID != c.ImageID || now.CreatedAt.UnixMicro() != c.CreatedAt.UnixMicro() || now.ComposeProject != m.Preview.Project {
+			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
+		}
+	}
+	out := buildDeploymentPreflight(m, spec, snapshot)
+	out.ReceivedAt = received
+	return out, m, spec, snapshot, digest, nil
 }
 
 func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snapshot protocol.Snapshot) *DeploymentPreflight {

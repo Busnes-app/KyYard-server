@@ -162,6 +162,9 @@ type TenancyStore interface {
 	AppendApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int, spec ApplicationSpec) (int, error)
 	ListApplications(ctx context.Context, access TenantAccess, offset, limit int) ([]Application, error)
 	PreflightApplication(ctx context.Context, access TenantAccess, applicationID string) (*DeploymentPreflight, error)
+	PlanDeployment(ctx context.Context, access TenantAccess, applicationID string, request PlanRequest) (*Deployment, error)
+	ReadDeployment(ctx context.Context, access TenantAccess, applicationID, id string) (*Deployment, error)
+	ListDeployments(ctx context.Context, access TenantAccess, applicationID string) ([]Deployment, error)
 	ReadApplicationMapping(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMapping, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)

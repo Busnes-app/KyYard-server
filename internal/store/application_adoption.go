@@ -48,6 +48,7 @@ type ApplicationInstance struct {
 	EndpointID     string             `json:"endpoint_id"`
 	Project        string             `json:"project"`
 	Revision       int                `json:"revision"`
+	MappingVersion int                `json:"mapping_version"`
 	CreatedBy      string             `json:"created_by"`
 	CreatedAt      time.Time          `json:"created_at"`
 	Containers     []AdoptedContainer `json:"containers"`
@@ -207,14 +208,14 @@ func (t *tenancyStore) ReleaseApplication(ctx context.Context, a TenantAccess, a
 func (t *tenancyStore) ListApplicationInstances(ctx context.Context, a TenantAccess, endpoint string) ([]ApplicationInstance, error) {
 	out := []ApplicationInstance{}
 	err := t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT i.id,i.application_id,i.endpoint_id,i.project,i.revision,i.created_by,i.created_at,e.name,(SELECT COUNT(*) FROM application_resources r WHERE r.instance_id=i.id) FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND (?='' OR i.environment_id=?) AND (?='' OR i.endpoint_id=?) ORDER BY i.id LIMIT 100`), a.OrganizationID, a.EnvironmentID, a.EnvironmentID, endpoint, endpoint)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT i.id,i.application_id,i.endpoint_id,i.project,i.revision,i.mapping_version,i.created_by,i.created_at,e.name,(SELECT COUNT(*) FROM application_resources r WHERE r.instance_id=i.id) FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND (?='' OR i.environment_id=?) AND (?='' OR i.endpoint_id=?) ORDER BY i.id LIMIT 100`), a.OrganizationID, a.EnvironmentID, a.EnvironmentID, endpoint, endpoint)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var i ApplicationInstance
 			i.Containers = []AdoptedContainer{}
-			if err = rows.Scan(&i.ID, &i.ApplicationID, &i.EndpointID, &i.Project, &i.Revision, &i.CreatedBy, &i.CreatedAt, &i.EndpointName, &i.ContainerCount); err != nil {
+			if err = rows.Scan(&i.ID, &i.ApplicationID, &i.EndpointID, &i.Project, &i.Revision, &i.MappingVersion, &i.CreatedBy, &i.CreatedAt, &i.EndpointName, &i.ContainerCount); err != nil {
 				rows.Close()
 				return err
 			}
