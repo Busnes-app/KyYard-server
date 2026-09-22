@@ -120,7 +120,7 @@ body per call):
 - Image missing: `failed`, no stop.
 - Create 409: `failed`, rename already happened, no start, no remove.
 - Stop exceeding the budget: `timed_out`; parent cancel mid-run: `unknown`; deadline already
-  past: `timed_out` with no call.
+  past: `denied` by `Validate` with no call.
 - Invalid request (duplicate names, bad env name, oversize env): `denied`, no call.
 - Two services where the second fails: first has an identity and all steps succeeded, second
   shows the failing step, overall `failed`.
