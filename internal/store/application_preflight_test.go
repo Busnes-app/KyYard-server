@@ -101,6 +101,11 @@ func TestApplicationPreflightScopeAndFreshness(t *testing.T) {
 	if p.Executable || len(p.Blockers) != 1 || len(p.Services[0].Blockers) != 0 || p.Services[0].ImageID != snapshot.Images[0].ID {
 		t.Fatalf("preflight: %+v", p)
 	}
+	container := snapshot.Containers[0]
+	target := p.Services[0].InspectionTarget
+	if p.EndpointID != endpoint || target == nil || target.ContainerID != container.ID || target.ImageID != container.ImageID || target.CreatedUnix != container.CreatedAt.Unix() {
+		t.Fatalf("inspection must bind the owned identity, not desired image: %+v", p)
+	}
 	foreign := a
 	foreign.EnvironmentID = "foreign"
 	if _, err = ts.PreflightApplication(ctx, foreign, app.ID); err == nil {
