@@ -34,7 +34,7 @@ it('names the application and host when releasing an exact instance', async () =
     return json([]);
   }));
   const changed = vi.fn();
-  render(<ApplicationAdoption base="/applications/app" applicationName="App" org="a" env="env" instance={{ id: 'instance', application_id: 'app', endpoint_id: 'host', endpoint_name: 'Docker host', project: 'shop', revision: 1, container_count: 0, containers: [] }} onChanged={changed} />);
+  render(<ApplicationAdoption base="/applications/app" applicationName="App" org="a" env="env" instance={{ id: 'instance', application_id: 'app', endpoint_id: 'host', endpoint_name: 'Docker host', project: 'shop', revision: 1, mapping_version: 0, container_count: 0, containers: [] }} onChanged={changed} />);
   fireEvent.click(screen.getByRole('button', { name: 'Release adoption' }));
   expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Docker host'));
   expect(confirm).toHaveBeenCalledWith(expect.stringContaining('App'));
