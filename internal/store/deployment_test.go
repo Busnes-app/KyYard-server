@@ -204,3 +204,25 @@ func TestPlanDeploymentRefusesInvalidReplacementIdentity(t *testing.T) {
 		t.Fatalf("invalid replacement identity not reported: %v", err)
 	}
 }
+
+func TestReleaseRefusesLivePlanAndDeletesExpired(t *testing.T) {
+	st, a, app, _, _, m := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.ReleaseApplication(ctx, a, app.ID, m.InstanceID, "shop"); !errors.Is(err, ErrDeploymentPlanned) {
+		t.Fatalf("release with live plan: %v", err)
+	}
+	if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET expires_at=?`), time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.ReleaseApplication(ctx, a, app.ID, m.InstanceID, "shop"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM deployments`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("release kept plan rows")
+	}
+}

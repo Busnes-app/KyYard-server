@@ -189,6 +189,16 @@ func (t *tenancyStore) ReleaseApplication(ctx context.Context, a TenantAccess, a
 		if a.EnvironmentID == "" {
 			return ErrInvalid
 		}
+		var live int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments WHERE instance_id=? AND expires_at>?`), id, time.Now().UTC()).Scan(&live); err != nil {
+			return err
+		}
+		if live > 0 {
+			return ErrDeploymentPlanned
+		}
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE instance_id=?`), id); err != nil {
+			return err
+		}
 		// Conditional deletion pins the exact instance the operator reviewed. A later
 		// re-adoption cannot be released by retrying an old request.
 		res, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM application_instances WHERE organization_id=? AND environment_id=? AND application_id=? AND id=? AND project=?`), a.OrganizationID, a.EnvironmentID, app, id, confirm)

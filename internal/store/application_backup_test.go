@@ -53,7 +53,7 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	endpoint, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "backup-host"})
 	mustTenant(t, err)
 	mustTenant(t, ts.ApproveEndpoint(ctx, a, endpoint.ID, endpoint.Fingerprint))
-	raw, err := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: time.Now().UTC()}}})
+	raw, err := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: time.Now().UTC()}}, Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:2"}}}})
 	mustTenant(t, err)
 	_, err = ts.AcceptInventory(ctx, endpoint.ID, uint64(time.Now().Unix()), time.Now(), raw)
 	mustTenant(t, err)
@@ -64,6 +64,8 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mapping, err := ts.ReadApplicationMapping(ctx, a, app.ID)
 	mustTenant(t, err)
 	mustTenant(t, ts.SetApplicationMapping(ctx, a, app.ID, store.MappingRequest{InstanceID: instance.ID, Version: mapping.Version, Digest: mapping.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": strings.Repeat("a", 64)}}))
+	planned, err := ts.PlanDeployment(ctx, a, app.ID, store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: 2, Confirm: "shop"})
+	mustTenant(t, err)
 	payload, err := backup.Collect(ctx, cfg, "test")
 	mustTenant(t, err)
 	path := filepath.Join(t.TempDir(), "restored.db")
@@ -108,6 +110,11 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, err)
 	if restoredMapping.Version != 1 || restoredMapping.MappedRevision != 2 || restoredMapping.Bindings["web"] != strings.Repeat("a", 64) {
 		t.Fatal("backup lost service mapping")
+	}
+	restoredPlan, err := restored.Tenancy().ReadDeployment(ctx, a, app.ID, planned.ID)
+	mustTenant(t, err)
+	if restoredPlan.Plan.Services[0].ImageID != "sha256:"+strings.Repeat("c", 64) || restoredPlan.MappingVersion != 1 {
+		t.Fatalf("plan did not survive restore: %+v", restoredPlan)
 	}
 	for number, want := range map[int]string{1: "backup-secret-canary", 2: "second-backup-canary"} {
 		values, err := restored.Tenancy().ResolveApplicationSecrets(ctx, a, secretApp.ID, number, restoredKey)
