@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,11 +22,16 @@ import (
 // Docker's own default and Compose's.
 const stopGrace = 10
 
+// replaceBudget is the time one service's mutating steps may need: stop and start at
+// operationBudget, rename, create and the identity read at callBudget.
+const replaceBudget = 2*operationBudget + 3*callBudget
+
 // Deploy replaces each service's mapped container with one created from the pinned image ID,
-// in plan order: precondition, image, stop, rename, create, start, remove. The first step that
-// is not a success ends the run and every later step is recorded as skipped. Nothing is rolled
-// back: a renamed, stopped old container stays where the result says it is. No image is
-// pulled and no volume is touched. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md.
+// in plan order: precondition, image, rename, create, stop, start, remove. Renaming and creating
+// while the old container still runs means a name conflict or a refused create costs no
+// downtime. The first step that is not a success ends the run and every later step is recorded
+// as skipped. Nothing is rolled back: the steps say where the old container was left. No image
+// is pulled and no volume is touched. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
@@ -51,28 +57,28 @@ type deployRun struct {
 	res    protocol.DeploymentResult
 }
 
-func (r *deployRun) stopped() bool { return r.res.Outcome != "" }
-
 // step records one outcome. The first non-success fixes the run's outcome and detail.
-func (r *deployRun) step(service, step string, run func() (string, string)) bool {
-	if r.stopped() {
+func (r *deployRun) step(service, step string, run func() (string, string)) {
+	if r.res.Outcome != "" {
 		r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: service, Step: step, Outcome: protocol.OutcomeSkipped})
-		return false
+		return
 	}
 	outcome, detail := run()
 	r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: service, Step: step, Outcome: outcome, Detail: bound(detail, protocol.MaxDeploymentStepDetailBytes)})
 	if outcome != protocol.OutcomeSucceeded {
 		r.res.Outcome, r.res.Detail = outcome, bound(fmt.Sprintf("service %s, step %s: %s", service, step, detail), protocol.MaxResultDetailBytes)
-		return false
 	}
-	return true
 }
 
-// outcomeFor classifies a call that returned an error. A parent cancelled before its deadline
-// means the session dropped and the Engine may have acted: unknown, never retried by itself.
+// outcomeFor classifies a call that did not succeed. A status is an answer and is failed. With
+// no answer, a cancelled parent means the session dropped and the Engine may have acted:
+// unknown, never retried by itself.
 func (r *deployRun) outcomeFor(ctx context.Context, err error, status int) (string, string) {
+	if statusOf(err) != 0 {
+		err = nil
+	}
 	switch {
-	case r.parent.Err() == context.Canceled:
+	case err != nil && r.parent.Err() == context.Canceled:
 		return protocol.OutcomeUnknown, "the connection ended before the runtime answered"
 	case err != nil && ctx.Err() != nil:
 		return protocol.OutcomeTimedOut, "the runtime did not answer in time"
@@ -82,22 +88,79 @@ func (r *deployRun) outcomeFor(ctx context.Context, err error, status int) (stri
 	return protocol.OutcomeFailed, fmt.Sprintf("the runtime refused with status %d", status)
 }
 
+// inspectedForDeploy is decoded with pointers so a field the Engine did not report is refused
+// rather than read as its zero value.
 type inspectedForDeploy struct {
-	ID         string `json:"Id"`
-	Image      string
-	Name       string
-	Created    time.Time
-	State      struct{ Status string }
-	Mounts     []struct{ Type string }
-	HostConfig struct {
-		NetworkMode string
-		Privileged  bool
+	ID      string `json:"Id"`
+	Image   string
+	Name    string
+	Created time.Time
+	Mounts  *[]json.RawMessage
+	Config  *struct {
+		Cmd, Entrypoint []string
+		User            string
 	}
+	HostConfig *struct {
+		NetworkMode                            string
+		Privileged, AutoRemove, ReadonlyRootfs *bool
+		Tmpfs                                  map[string]string
+		CapAdd, CapDrop, SecurityOpt           []string
+		Devices                                []json.RawMessage
+		PidMode, IpcMode                       string
+	}
+	NetworkSettings *struct {
+		Networks map[string]json.RawMessage
+	}
+}
+
+const cannotExpress = "the container has configuration the definition cannot express: "
+
+// undescribed refuses configuration recreation would drop, returning the denial detail or ""
+// when there is none. The definition expresses image, env, ports, restart and the project
+// network only; the image-default command is checked separately against the old image.
+func undescribed(in inspectedForDeploy, projectNetwork string) string {
+	h, n := in.HostConfig, in.NetworkSettings
+	if h == nil || in.Config == nil || n == nil || in.Mounts == nil || h.Privileged == nil || h.AutoRemove == nil || h.ReadonlyRootfs == nil {
+		return "the runtime did not report the container's full configuration"
+	}
+	network := projectNetwork
+	if h.NetworkMode == "default" || h.NetworkMode == "bridge" {
+		network = "bridge"
+	}
+	_, onNetwork := n.Networks[network]
+	switch {
+	case len(*in.Mounts) > 0:
+		return cannotExpress + "mounts"
+	case len(h.Tmpfs) > 0:
+		return cannotExpress + "tmpfs"
+	case *h.AutoRemove:
+		return cannotExpress + "auto-remove"
+	case *h.ReadonlyRootfs:
+		return cannotExpress + "read-only root filesystem"
+	case *h.Privileged:
+		return cannotExpress + "privileged"
+	case len(h.CapAdd) > 0 || len(h.CapDrop) > 0:
+		return cannotExpress + "capabilities"
+	case len(h.SecurityOpt) > 0:
+		return cannotExpress + "security options"
+	case len(h.Devices) > 0:
+		return cannotExpress + "devices"
+	case h.PidMode != "" && h.PidMode != "private":
+		return cannotExpress + "PID mode"
+	case h.IpcMode != "" && h.IpcMode != "private":
+		return cannotExpress + "IPC mode"
+	case in.Config.User != "":
+		return cannotExpress + "user"
+	case h.NetworkMode != "default" && h.NetworkMode != "bridge" && h.NetworkMode != projectNetwork:
+		return cannotExpress + "network mode"
+	case len(n.Networks) != 1 || !onNetwork:
+		return cannotExpress + "networks"
+	}
+	return ""
 }
 
 func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 	old := url.PathEscape(s.Replaces.ContainerID)
-	projectNetwork := r.req.Project + "_default"
 	var before inspectedForDeploy
 	var networkMode string
 	r.step(s.Name, protocol.StepPrecondition, func() (string, string) {
@@ -109,15 +172,26 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 			}
 			return r.outcomeFor(cctx, err, statusOf(err))
 		}
-		switch {
-		case before.ID != s.Replaces.ContainerID || before.Image != s.Replaces.ImageID || before.Created.Unix() != s.Replaces.CreatedUnix:
+		if before.ID != s.Replaces.ContainerID || before.Image != s.Replaces.ImageID || before.Created.Unix() != s.Replaces.CreatedUnix {
 			return protocol.OutcomeDenied, "the container is not the one this plan was decided about"
-		case len(before.Mounts) > 0:
-			return protocol.OutcomeDenied, "the container has mounts the definition does not describe; recreating it would drop them"
-		case before.HostConfig.NetworkMode != "default" && before.HostConfig.NetworkMode != "bridge" && before.HostConfig.NetworkMode != projectNetwork:
-			return protocol.OutcomeDenied, "the container uses a network mode the definition does not describe"
-		case before.HostConfig.Privileged:
-			return protocol.OutcomeDenied, "the container is privileged; the definition cannot express that"
+		}
+		if detail := undescribed(before, r.req.Project+"_default"); detail != "" {
+			return protocol.OutcomeDenied, detail
+		}
+		// A Cmd or Entrypoint set at run time would be replaced by the image default.
+		ictx, icancel := context.WithTimeout(ctx, callBudget)
+		defer icancel()
+		var im struct {
+			Config struct{ Cmd, Entrypoint []string }
+		}
+		if err := r.c.get(ictx, "/images/"+url.PathEscape(s.Replaces.ImageID)+"/json", &im); err != nil {
+			if statusOf(err) == http.StatusNotFound {
+				return protocol.OutcomeDenied, "the container's image is no longer present"
+			}
+			return r.outcomeFor(ictx, err, statusOf(err))
+		}
+		if !slices.Equal(before.Config.Cmd, im.Config.Cmd) || !slices.Equal(before.Config.Entrypoint, im.Config.Entrypoint) {
+			return protocol.OutcomeDenied, cannotExpress + "command"
 		}
 		networkMode = before.HostConfig.NetworkMode
 		return protocol.OutcomeSucceeded, ""
@@ -139,16 +213,10 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		}
 		return protocol.OutcomeSucceeded, ""
 	})
-	r.step(s.Name, protocol.StepStop, func() (string, string) {
-		cctx, cancel := context.WithTimeout(ctx, operationBudget)
-		defer cancel()
-		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
-		if err != nil || (status >= 400 && status != http.StatusNotModified) {
-			return r.outcomeFor(cctx, err, status)
-		}
-		return protocol.OutcomeSucceeded, ""
-	})
 	r.step(s.Name, protocol.StepRename, func() (string, string) {
+		if time.Until(r.req.Deadline) < replaceBudget {
+			return protocol.OutcomeTimedOut, "not enough time left before the deadline to replace this service safely"
+		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		name := strings.TrimPrefix(before.Name, "/") + ".kyyard-prev-" + r.req.Deployment[:8]
@@ -181,12 +249,22 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		created = out.ID
 		return protocol.OutcomeSucceeded, ""
 	})
+	r.step(s.Name, protocol.StepStop, func() (string, string) {
+		cctx, cancel := context.WithTimeout(ctx, operationBudget)
+		defer cancel()
+		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
+		if err != nil || (status >= 400 && status != http.StatusNotModified) {
+			return r.outcomeFor(cctx, err, status)
+		}
+		return protocol.OutcomeSucceeded, ""
+	})
 	r.step(s.Name, protocol.StepStart, func() (string, string) {
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
 		defer cancel()
 		status, err := r.c.post(cctx, "/containers/"+url.PathEscape(created)+"/start")
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
-			return r.outcomeFor(cctx, err, status)
+			outcome, detail := r.outcomeFor(cctx, err, status)
+			return outcome, fmt.Sprintf("%s (container %s)", detail, created)
 		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
 		defer icancel()
