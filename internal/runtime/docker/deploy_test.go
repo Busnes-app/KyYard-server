@@ -198,14 +198,129 @@ func TestDeployKeepsTheProjectNetwork(t *testing.T) {
 	}
 }
 
-func TestDeployPreconditionRefusesHostNetworkMode(t *testing.T) {
-	f := newFakeDeployEngine(t)
-	f.oldContainer["HostConfig"].(map[string]any)["NetworkMode"] = "host"
-	res := f.client().Deploy(context.Background(), request(webService()))
-	if res.Outcome != protocol.OutcomeDenied {
-		t.Fatalf("outcome: %+v", res)
+func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeDeployEngine){
+		"image":   func(f *fakeDeployEngine) { f.oldContainer["Image"] = newImage },
+		"created": func(f *fakeDeployEngine) { f.oldContainer["Created"] = "2023-11-14T22:13:21Z" },
+		"mounts":  func(f *fakeDeployEngine) { f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume"}} },
+		"network": func(f *fakeDeployEngine) { f.oldContainer["HostConfig"] = map[string]any{"NetworkMode": "host"} },
+		"privileged": func(f *fakeDeployEngine) {
+			f.oldContainer["HostConfig"] = map[string]any{"NetworkMode": "bridge", "Privileged": true}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeDeployEngine(t)
+			mutate(f)
+			db := webService()
+			db.Name, db.ContainerName, db.Replaces.ContainerID = "db", "shop-db-1", strings.Repeat("f", 64)
+			res := f.client().Deploy(context.Background(), request(webService(), db))
+			if res.Outcome != protocol.OutcomeDenied || len(f.calls) != 1 {
+				t.Fatalf("%s: %+v calls=%v", name, res, f.steps())
+			}
+			if res.Steps[0].Outcome != protocol.OutcomeDenied || res.Steps[1].Outcome != protocol.OutcomeSkipped || res.Steps[len(res.Steps)-1].Service != "db" || res.Steps[len(res.Steps)-1].Outcome != protocol.OutcomeSkipped || len(res.Steps) != 14 {
+				t.Fatalf("%s steps: %+v", name, res.Steps)
+			}
+			if !strings.Contains(res.Detail, "service web, step precondition") {
+				t.Fatalf("detail: %q", res.Detail)
+			}
+		})
 	}
-	if len(res.Steps) == 0 || res.Steps[0].Step != protocol.StepPrecondition || res.Steps[0].Outcome != protocol.OutcomeDenied {
-		t.Fatalf("step: %+v", res.Steps)
+	f := newFakeDeployEngine(t)
+	f.oldStatus = 404
+	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "the container no longer exists" || len(f.calls) != 1 {
+		t.Fatalf("missing container: %+v", res)
+	}
+}
+
+func TestDeployStepFailuresStopTheRun(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate  func(*fakeDeployEngine)
+		outcome string
+		step    string
+		calls   int
+	}{
+		"image missing":   {func(f *fakeDeployEngine) { f.imageStatus = 404 }, protocol.OutcomeFailed, protocol.StepImage, 2},
+		"stop refused":    {func(f *fakeDeployEngine) { f.stopStatus = 500 }, protocol.OutcomeFailed, protocol.StepStop, 3},
+		"rename conflict": {func(f *fakeDeployEngine) { f.renameStatus = 409 }, protocol.OutcomeFailed, protocol.StepRename, 4},
+		"create conflict": {func(f *fakeDeployEngine) { f.createStatus = 409 }, protocol.OutcomeFailed, protocol.StepCreate, 5},
+		"start fails":     {func(f *fakeDeployEngine) { f.startStatus = 500 }, protocol.OutcomeFailed, protocol.StepStart, 6},
+		"remove fails":    {func(f *fakeDeployEngine) { f.removeStatus = 409 }, protocol.OutcomeFailed, protocol.StepRemove, 8},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeDeployEngine(t)
+			tc.mutate(f)
+			res := f.client().Deploy(context.Background(), request(webService()))
+			if res.Outcome != tc.outcome || len(f.calls) != tc.calls {
+				t.Fatalf("%s: %+v calls=%v", name, res, f.steps())
+			}
+			var failing protocol.DeploymentStep
+			for _, s := range res.Steps {
+				if s.Outcome != protocol.OutcomeSucceeded && s.Outcome != protocol.OutcomeSkipped {
+					failing = s
+					break
+				}
+			}
+			if failing.Step != tc.step {
+				t.Fatalf("%s failed at %+v", name, failing)
+			}
+			if tc.step == protocol.StepRemove {
+				if len(res.Services) != 1 {
+					t.Fatal("started service must keep its identity when only removal failed")
+				}
+			} else if len(res.Services) != 0 {
+				t.Fatalf("%s recorded an identity it did not start: %+v", name, res.Services)
+			}
+			if strings.Contains(res.Detail, "canary") {
+				t.Fatal("detail leaked")
+			}
+		})
+	}
+	f := newFakeDeployEngine(t)
+	f.stopStatus = 304
+	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("already stopped must count: %+v", res)
+	}
+}
+
+func TestDeployTimeAndCancellation(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	req := request(webService())
+	req.Deadline = time.Now().Add(-time.Second)
+	if res := f.client().Deploy(context.Background(), req); res.Outcome != protocol.OutcomeDenied || len(f.calls) != 0 {
+		t.Fatalf("past deadline: %+v", res)
+	}
+	f = newFakeDeployEngine(t)
+	f.stopDelay = 3 * time.Second
+	req = request(webService())
+	req.Deadline = time.Now().Add(1500 * time.Millisecond)
+	res := f.client().Deploy(context.Background(), req)
+	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[2].Outcome != protocol.OutcomeTimedOut || len(res.Services) != 0 {
+		t.Fatalf("deadline mid-stop: %+v", res)
+	}
+	f = newFakeDeployEngine(t)
+	f.stopDelay = 3 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(500 * time.Millisecond); cancel() }()
+	res = f.client().Deploy(ctx, request(webService()))
+	if res.Outcome != protocol.OutcomeUnknown || res.Steps[2].Outcome != protocol.OutcomeUnknown {
+		t.Fatalf("cancel mid-stop: %+v", res)
+	}
+}
+
+func TestDeployTwoServicesSecondFails(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	db := webService()
+	db.Name, db.ContainerName, db.Replaces.ContainerID = "db", "shop-db-1", strings.Repeat("f", 64)
+	res := f.client().Deploy(context.Background(), request(webService(), db))
+	if res.Outcome != protocol.OutcomeDenied || len(res.Services) != 1 || res.Services[0].Service != "web" {
+		t.Fatalf("partial: %+v", res)
+	}
+	for _, s := range res.Steps[:7] {
+		if s.Outcome != protocol.OutcomeSucceeded {
+			t.Fatalf("web step: %+v", s)
+		}
+	}
+	if res.Steps[7].Service != "db" || res.Steps[7].Outcome != protocol.OutcomeDenied {
+		t.Fatalf("db precondition: %+v", res.Steps[7])
 	}
 }
