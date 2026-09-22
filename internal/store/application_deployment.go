@@ -69,8 +69,9 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	if err != nil || a.EnvironmentID == "" {
 		return nil, ErrInvalid
 	}
+	planID := uuid.NewString()
 	var out *Deployment
-	err = t.withTenantTarget(ctx, a, permissions.ApplicationDeploy, id.String()+"/deployments", func(tx *sql.Tx) error {
+	err = t.withTenantTarget(ctx, a, permissions.ApplicationDeploy, id.String()+"/deployments/"+planID, func(tx *sql.Tx) error {
 		p, m, spec, snapshot, digest, err := t.preflight(ctx, tx, a, id.String(), true)
 		if err != nil {
 			return err
@@ -125,7 +126,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 			return ErrInvalid
 		}
 		now := time.Now().UTC()
-		out = &Deployment{ID: uuid.NewString(), ApplicationID: id.String(), InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
+		out = &Deployment{ID: planID, ApplicationID: id.String(), InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
 		if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=?`), a.OrganizationID, a.EnvironmentID, m.InstanceID); err != nil {
 			return err
 		}
@@ -158,12 +159,13 @@ func (t *tenancyStore) ReadDeployment(ctx context.Context, a TenantAccess, app, 
 	if err != nil || a.EnvironmentID == "" {
 		return nil, ErrInvalid
 	}
-	if _, err = uuid.Parse(id); err != nil {
+	parsedID, err := uuid.Parse(id)
+	if err != nil {
 		return nil, ErrNotFound
 	}
 	var out *Deployment
 	err = t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
-		out, err = scanDeployment(tx.QueryRowContext(ctx, t.store.rebind(`SELECT `+deploymentColumns+` FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, appID.String(), id))
+		out, err = scanDeployment(tx.QueryRowContext(ctx, t.store.rebind(`SELECT `+deploymentColumns+` FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, appID.String(), parsedID.String()))
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}

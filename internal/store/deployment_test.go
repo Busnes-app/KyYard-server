@@ -67,11 +67,11 @@ func TestPlanDeploymentBindsIdentities(t *testing.T) {
 	}
 	foreign := a
 	foreign.EnvironmentID = "foreign"
-	if _, err = ts.ReadDeployment(ctx, foreign, app.ID, d.ID); err == nil {
-		t.Fatal("foreign read")
+	if _, err = ts.ReadDeployment(ctx, foreign, app.ID, d.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign read: %v", err)
 	}
-	if _, err = ts.PlanDeployment(ctx, foreign, app.ID, planRequest(m)); err == nil {
-		t.Fatal("foreign plan")
+	if _, err = ts.PlanDeployment(ctx, foreign, app.ID, planRequest(m)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign plan: %v", err)
 	}
 }
 

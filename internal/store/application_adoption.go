@@ -189,14 +189,28 @@ func (t *tenancyStore) ReleaseApplication(ctx context.Context, a TenantAccess, a
 		if a.EnvironmentID == "" {
 			return ErrInvalid
 		}
+		// Lock the application row in the same order PlanDeployment's preflight does
+		// (membership, then application, then endpoint). Under READ COMMITTED a plan's
+		// uncommitted deployments insert would otherwise be invisible to the count below.
+		lockQuery := `SELECT id FROM applications WHERE organization_id=? AND environment_id=? AND id=?`
+		if t.store.driver == "postgres" {
+			lockQuery += " FOR UPDATE"
+		}
+		var lockedID string
+		if err := tx.QueryRowContext(ctx, t.store.rebind(lockQuery), a.OrganizationID, a.EnvironmentID, app).Scan(&lockedID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
 		var live int
-		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments WHERE instance_id=? AND expires_at>?`), id, time.Now().UTC()).Scan(&live); err != nil {
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND instance_id=? AND expires_at>?`), a.OrganizationID, a.EnvironmentID, app, id, time.Now().UTC()).Scan(&live); err != nil {
 			return err
 		}
 		if live > 0 {
 			return ErrDeploymentPlanned
 		}
-		if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE instance_id=?`), id); err != nil {
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND instance_id=?`), a.OrganizationID, a.EnvironmentID, app, id); err != nil {
 			return err
 		}
 		// Conditional deletion pins the exact instance the operator reviewed. A later
