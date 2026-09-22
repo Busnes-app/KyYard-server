@@ -126,7 +126,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 		}
 		now := time.Now().UTC()
 		out = &Deployment{ID: uuid.NewString(), ApplicationID: id.String(), InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
-		if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE instance_id=?`), m.InstanceID); err != nil {
+		if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=?`), a.OrganizationID, a.EnvironmentID, m.InstanceID); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), out.ID, a.OrganizationID, a.EnvironmentID, out.ApplicationID, out.InstanceID, out.EndpointID, plan.Project, out.State, out.Revision, out.SpecDigest, out.MappingVersion, string(raw), out.CreatedBy, out.CreatedAt, out.ExpiresAt)

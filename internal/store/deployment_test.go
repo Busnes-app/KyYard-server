@@ -164,3 +164,43 @@ func TestPlanDeploymentRoles(t *testing.T) {
 		}
 	}
 }
+
+// An adopted container whose image ID lacks the sha256: prefix passes adoption (which only
+// requires a non-empty image ID) but cannot back a real InspectionTarget. PlanDeployment must
+// refuse it rather than mint a plan naming a container with no identity to recheck at apply.
+func TestPlanDeploymentRefusesInvalidReplacementIdentity(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	app, err := ts.CreateApplication(ctx, a, "shop", ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: strings.Repeat("b", 64), CreatedAt: time.Now().UTC().Add(-time.Hour), ComposeProject: "shop"}}}
+	endpoint := activeEndpointWith(t, ts, a, snapshot.Containers, nil)
+	putAdoptionSnapshot(t, st, endpoint, snapshot)
+	p, err := ts.PreviewApplicationAdoption(ctx, a, app.ID, endpoint, "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ts.AdoptApplication(ctx, a, app.ID, AdoptionRequest{EndpointID: endpoint, Project: "shop", Digest: p.Digest, Confirm: "shop"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); err != nil {
+		t.Fatal(err)
+	}
+	m, err = ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Images = []protocol.Image{{ID: "sha256:" + strings.Repeat("d", 64), Tags: []string{"nginx:1"}}}
+	putAdoptionSnapshot(t, st, endpoint, snapshot)
+	var blocked *PreflightBlockedError
+	if _, err = ts.PlanDeployment(ctx, a, app.ID, planRequest(m)); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "replacement_identity_invalid") {
+		t.Fatalf("invalid replacement identity not reported: %v", err)
+	}
+}

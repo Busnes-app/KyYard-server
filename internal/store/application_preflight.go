@@ -167,6 +167,8 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 		}
 		if row.ContainerID == "" {
 			row.Blockers = append(row.Blockers, "service_unmapped")
+		} else if row.InspectionTarget == nil {
+			row.Blockers = append(row.Blockers, "replacement_identity_invalid")
 		}
 		_, tag := protocol.SplitImageReference(s.Image)
 		switch {
