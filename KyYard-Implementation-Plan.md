@@ -235,7 +235,9 @@ Current M6 live preflight UI: mapped services expose an on-demand, cancellable n
 
 Implemented M6 deployment plans: persisted executable previews minted from a clean preflight under `application.deploy`, binding instance, mapping version, revision, spec digest, pinned image IDs and replaced-container identities, expiring after 10 minutes, one per instance, refusing release while live. No agent command.
 
-Next M6 slice: apply a plan through a new agent command (native Engine API pull by pinned ID, create, start, per-step outcomes, precondition rechecks), then history/reapply/remove.
+Implemented M6 deployment runtime: `deployment.apply`/`deployment.result` wire types with bounds, and `docker.Client.Deploy` replacing mapped containers natively through the Engine API with preconditions, per-step outcomes, no pull, no volume access and no rollback, proven against a fake Engine and real Docker in CI. Not reachable from the server yet.
+
+Next M6 slice: the apply transport (agent frame handling and ledger, capability, migration for deployment states and events, apply route with secret resolution, resource rebinding and `current_revision`, UI apply and status), then history, reapply and remove.
 
 The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
