@@ -210,6 +210,17 @@ func TestDeployKeepsTheProjectNetwork(t *testing.T) {
 	}
 }
 
+// Daemon-default IPC modes are reproduced by recreation on the same daemon.
+func TestDeployAcceptsDaemonDefaultIPCModes(t *testing.T) {
+	for _, mode := range []string{"", "private", "shareable"} {
+		f := newFakeDeployEngine(t)
+		f.oldContainer["HostConfig"].(map[string]any)["IpcMode"] = mode
+		if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+			t.Fatalf("IpcMode %q: %+v", mode, res)
+		}
+	}
+}
+
 func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 	host := func(k string, v any) func(*fakeDeployEngine) {
 		return func(f *fakeDeployEngine) { f.oldContainer["HostConfig"].(map[string]any)[k] = v }
@@ -249,7 +260,8 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 		"security opt":   {host("SecurityOpt", []string{"no-new-privileges"}), 1},
 		"devices":        {host("Devices", []any{map[string]any{"PathOnHost": "/dev/fuse"}}), 1},
 		"pid mode":       {host("PidMode", "host"), 1},
-		"ipc mode":       {host("IpcMode", "host"), 1},
+		"ipc mode host":  {host("IpcMode", "host"), 1},
+		"ipc container":  {host("IpcMode", "container:"+oldID), 1},
 		"user":           {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["User"] = "1000" }, 1},
 		"network mode":   {host("NetworkMode", "host"), 1},
 		"two networks":   {networks("bridge", "shop_default"), 1},

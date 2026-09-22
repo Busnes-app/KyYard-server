@@ -61,6 +61,9 @@ func TestDeploymentRequestValidation(t *testing.T) {
 			p.Container = 81
 			r.Services[0].Ports = append(r.Services[0].Ports, p)
 		},
+		"duplicate wildcard port": func(r *DeploymentRequest) {
+			r.Services[0].Ports = []Port{{Container: 80, Host: 8080, Protocol: "tcp"}, {Container: 81, Host: 8080, Protocol: "tcp", HostIP: "0.0.0.0"}}
+		},
 		"duplicate port across services": func(r *DeploymentRequest) {
 			s := r.Services[0]
 			s.Name, s.ContainerName, s.Replaces.ContainerID = "db", "shop-db-1", strings.Repeat("d", 64)
@@ -93,14 +96,17 @@ func TestDeploymentResultValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*DeploymentResult){
-		"outcome":        func(r *DeploymentResult) { r.Outcome = "done" },
-		"step name":      func(r *DeploymentResult) { r.Steps[0].Step = "pull" },
-		"step outcome":   func(r *DeploymentResult) { r.Steps[0].Outcome = "ok" },
-		"step detail":    func(r *DeploymentResult) { r.Steps[0].Detail = strings.Repeat("d", MaxDeploymentStepDetailBytes+1) },
-		"step service":   func(r *DeploymentResult) { r.Steps[0].Service = "Web" },
-		"identity":       func(r *DeploymentResult) { r.Services[0].ImageID = "latest" },
-		"detail":         func(r *DeploymentResult) { r.Detail = strings.Repeat("d", MaxResultDetailBytes+1) },
-		"too many steps": func(r *DeploymentResult) { r.Steps = make([]DeploymentStep, 8*MaxDeploymentServices+1) },
+		"outcome":      func(r *DeploymentResult) { r.Outcome = "done" },
+		"step name":    func(r *DeploymentResult) { r.Steps[0].Step = "pull" },
+		"step outcome": func(r *DeploymentResult) { r.Steps[0].Outcome = "ok" },
+		"step detail": func(r *DeploymentResult) {
+			r.Steps[0].Outcome, r.Steps[0].Detail = OutcomeFailed, strings.Repeat("d", MaxDeploymentStepDetailBytes+1)
+		},
+		"detail on succeeded step": func(r *DeploymentResult) { r.Steps[0].Detail = "done" },
+		"step service":             func(r *DeploymentResult) { r.Steps[0].Service = "Web" },
+		"identity":                 func(r *DeploymentResult) { r.Services[0].ImageID = "latest" },
+		"detail":                   func(r *DeploymentResult) { r.Detail = strings.Repeat("d", MaxResultDetailBytes+1) },
+		"too many steps":           func(r *DeploymentResult) { r.Steps = make([]DeploymentStep, 8*MaxDeploymentServices+1) },
 	} {
 		r := good
 		r.Steps = append([]DeploymentStep{}, good.Steps...)
@@ -118,8 +124,8 @@ func TestDeploymentResultValidation(t *testing.T) {
 }
 
 // The largest result Deploy can produce must fit the frame, or an honest agent could not report.
-// Deploy writes a detail only on the step that ended the run; succeeded and skipped steps carry
-// none. The run's own detail is at its maximum in both cases.
+// Validate allows a detail only on the step that ended the run; succeeded and skipped steps carry
+// none. The run's own detail is at its maximum in every case.
 func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
 	steps := []string{StepPrecondition, StepImage, StepRename, StepCreate, StepStop, StepStart, StepRemove}
 	detail := strings.Repeat("d", MaxDeploymentStepDetailBytes)

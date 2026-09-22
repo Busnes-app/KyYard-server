@@ -147,7 +147,7 @@ func undescribed(in inspectedForDeploy, projectNetwork string) string {
 		return cannotExpress + "devices"
 	case h.PidMode != "" && h.PidMode != "private":
 		return cannotExpress + "PID mode"
-	case h.IpcMode != "" && h.IpcMode != "private":
+	case h.IpcMode != "" && h.IpcMode != "private" && h.IpcMode != "shareable": // daemon defaults recreation reproduces
 		return cannotExpress + "IPC mode"
 	case in.Config.User != "":
 		return cannotExpress + "user"

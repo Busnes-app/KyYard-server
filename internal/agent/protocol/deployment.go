@@ -103,6 +103,9 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 				}
 			}
 			b := binding{p.HostIP, p.Host, p.Protocol}
+			if b.ip == "0.0.0.0" || b.ip == "::" {
+				b.ip = "" // every wildcard form binds the same host port
+			}
 			if bindings[b] {
 				return errors.New("duplicate port binding")
 			}
@@ -147,7 +150,8 @@ func (r DeploymentResult) Validate() error {
 		return errors.New("invalid deployment result")
 	}
 	for _, s := range r.Steps {
-		if !deploymentService.MatchString(s.Service) || !deploymentSteps[s.Step] || !(resultOutcomes[s.Outcome] || s.Outcome == OutcomeSkipped) || len(s.Detail) > MaxDeploymentStepDetailBytes {
+		quiet := s.Outcome == OutcomeSucceeded || s.Outcome == OutcomeSkipped
+		if !deploymentService.MatchString(s.Service) || !deploymentSteps[s.Step] || !(resultOutcomes[s.Outcome] || s.Outcome == OutcomeSkipped) || len(s.Detail) > MaxDeploymentStepDetailBytes || (quiet && s.Detail != "") {
 			return errors.New("invalid deployment step")
 		}
 	}

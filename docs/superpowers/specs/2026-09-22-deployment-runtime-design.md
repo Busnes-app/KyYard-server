@@ -44,7 +44,8 @@ type DeploymentService struct {
 `(DeploymentRequest) Validate(now time.Time) error` enforces every bound above and refuses a
 deadline in the past or beyond `DeploymentLifetime`. Duplicate service names, duplicate
 container names, duplicate `Replaces.ContainerID` and a `(HostIP, Host, Protocol)` binding
-repeated within or across services are refused.
+repeated within or across services are refused; `""`, `0.0.0.0` and `::` are one wildcard
+host IP for that check.
 
 ```go
 type DeploymentResult struct {
@@ -69,7 +70,8 @@ type DeploymentIdentity struct {
 ```
 
 `(DeploymentResult) Validate() error` bounds steps at 8 × MaxDeploymentServices, identities at
-MaxDeploymentServices, and each identity as an `InspectionTarget`. Environment values never
+MaxDeploymentServices, and each identity as an `InspectionTarget`; a succeeded or skipped step
+must have an empty detail, so the largest valid result fits `MaxDeploymentResultBytes`. Environment values never
 appear in a result; the tests prove it with a canary.
 
 ## Adapter (`internal/runtime/docker/deploy.go`)
@@ -85,7 +87,8 @@ Runs services in order under `ctx` bounded by `req.Deadline`. Every Engine call 
    `NetworkSettings`, `Mounts` or `HostConfig.Privileged`/`AutoRemove`/`ReadonlyRootfs` are
    absent. Refuse "the container has configuration the definition cannot express: <reason>" for
    mounts, `HostConfig.Tmpfs`, auto-remove, read-only root, privileged, `CapAdd`/`CapDrop`,
-   `SecurityOpt`, `Devices`, a `PidMode` or `IpcMode` other than `""`/`private`, `Config.User`,
+   `SecurityOpt`, `Devices`, a `PidMode` other than `""`/`private`, an `IpcMode` other than the
+   daemon defaults `""`/`private`/`shareable`, `Config.User`,
    a `NetworkMode` other than `default`, `bridge` or `<project>_default`, and
    `NetworkSettings.Networks` other than exactly the accepted network (`bridge`, or
    `<project>_default` for the project network mode). Last, `GET /images/{replaces.image_id}/json`
