@@ -71,7 +71,8 @@ func (r *deployRun) step(service, step string, run func() (string, string)) {
 }
 
 // outcomeFor classifies a call that did not succeed. A status is an answer and is failed. With
-// no answer, a cancelled parent means the session dropped and the Engine may have acted:
+// no answer, a cancelled parent means the run was cancelled (agent shutdown under the
+// detached-context contract) before the runtime answered, and the Engine may have acted:
 // unknown, never retried by itself.
 func (r *deployRun) outcomeFor(ctx context.Context, err error, status int) (string, string) {
 	if statusOf(err) != 0 {
@@ -79,7 +80,7 @@ func (r *deployRun) outcomeFor(ctx context.Context, err error, status int) (stri
 	}
 	switch {
 	case err != nil && r.parent.Err() == context.Canceled:
-		return protocol.OutcomeUnknown, "the connection ended before the runtime answered"
+		return protocol.OutcomeUnknown, "the run was cancelled before the runtime answered"
 	case err != nil && ctx.Err() != nil:
 		return protocol.OutcomeTimedOut, "the runtime did not answer in time"
 	case err != nil:
@@ -97,30 +98,65 @@ type inspectedForDeploy struct {
 	Created time.Time
 	Mounts  *[]json.RawMessage
 	Config  *struct {
-		Cmd, Entrypoint []string
-		User            string
+		imageDefaults
+		User string
 	}
 	HostConfig *struct {
-		NetworkMode                            string
-		Privileged, AutoRemove, ReadonlyRootfs *bool
-		Tmpfs                                  map[string]string
-		CapAdd, CapDrop, SecurityOpt           []string
-		Devices                                []json.RawMessage
-		PidMode, IpcMode                       string
+		NetworkMode                                                     string
+		Privileged, AutoRemove, ReadonlyRootfs                          *bool
+		Tmpfs, Sysctls                                                  map[string]string
+		CapAdd, CapDrop, SecurityOpt, GroupAdd, ExtraHosts, Links       []string
+		Dns, DnsOptions, DnsSearch                                      []string
+		Devices, Ulimits, DeviceRequests                                []json.RawMessage
+		PidMode, IpcMode, Runtime, UsernsMode, CgroupParent, CpusetCpus string
+		Memory, MemorySwap, MemoryReservation, NanoCpus                 int64
+		CpuShares, CpuQuota                                             int64
+		PidsLimit                                                       *int64
+		Init                                                            *bool
+		LogConfig                                                       *struct{ Type string }
 	}
 	NetworkSettings *struct {
 		Networks map[string]json.RawMessage
 	}
 }
 
+// imageDefaults are the Config fields a container inherits from its image. A container whose
+// values differ was given them at run time, and recreation from the image would drop them.
+type imageDefaults struct {
+	Cmd, Entrypoint        []string
+	Healthcheck            json.RawMessage
+	WorkingDir, StopSignal string
+}
+
+func (a imageDefaults) differs(b imageDefaults) string {
+	switch {
+	case !slices.Equal(a.Cmd, b.Cmd) || !slices.Equal(a.Entrypoint, b.Entrypoint):
+		return "command"
+	case !bytes.Equal(nullAsEmpty(a.Healthcheck), nullAsEmpty(b.Healthcheck)):
+		return "healthcheck"
+	case a.WorkingDir != b.WorkingDir:
+		return "working directory"
+	case a.StopSignal != b.StopSignal:
+		return "stop signal"
+	}
+	return ""
+}
+
+func nullAsEmpty(raw json.RawMessage) json.RawMessage {
+	if string(raw) == "null" {
+		return nil
+	}
+	return raw
+}
+
 const cannotExpress = "the container has configuration the definition cannot express: "
 
-// undescribed refuses configuration recreation would drop, returning the denial detail or ""
-// when there is none. The definition expresses image, env, ports, restart and the project
-// network only; the image-default command is checked separately against the old image.
+// undescribed refuses the listed configuration recreation would drop, returning the denial
+// detail or "" when there is none. The definition expresses image, env, ports, restart and the
+// project network only; settings outside this list and imageDefaults are not compared.
 func undescribed(in inspectedForDeploy, projectNetwork string) string {
 	h, n := in.HostConfig, in.NetworkSettings
-	if h == nil || in.Config == nil || n == nil || in.Mounts == nil || h.Privileged == nil || h.AutoRemove == nil || h.ReadonlyRootfs == nil {
+	if h == nil || in.Config == nil || n == nil || in.Mounts == nil || h.Privileged == nil || h.AutoRemove == nil || h.ReadonlyRootfs == nil || h.LogConfig == nil {
 		return "the runtime did not report the container's full configuration"
 	}
 	network := projectNetwork
@@ -151,6 +187,36 @@ func undescribed(in inspectedForDeploy, projectNetwork string) string {
 		return cannotExpress + "IPC mode"
 	case in.Config.User != "":
 		return cannotExpress + "user"
+	case h.Runtime != "" && h.Runtime != "runc":
+		return cannotExpress + "runtime"
+	case h.Memory > 0 || h.MemorySwap > 0 || h.MemoryReservation > 0:
+		return cannotExpress + "memory limits"
+	case h.NanoCpus > 0 || h.CpuShares > 0 || h.CpuQuota > 0 || h.CpusetCpus != "":
+		return cannotExpress + "CPU limits"
+	case h.PidsLimit != nil && *h.PidsLimit != 0:
+		return cannotExpress + "PID limit"
+	case len(h.Ulimits) > 0:
+		return cannotExpress + "ulimits"
+	case len(h.Sysctls) > 0:
+		return cannotExpress + "sysctls"
+	case len(h.DeviceRequests) > 0:
+		return cannotExpress + "device requests"
+	case h.Init != nil && *h.Init:
+		return cannotExpress + "init"
+	case h.UsernsMode != "":
+		return cannotExpress + "user namespace"
+	case h.CgroupParent != "":
+		return cannotExpress + "cgroup parent"
+	case len(h.GroupAdd) > 0:
+		return cannotExpress + "supplementary groups"
+	case len(h.ExtraHosts) > 0:
+		return cannotExpress + "extra hosts"
+	case len(h.Dns) > 0 || len(h.DnsOptions) > 0 || len(h.DnsSearch) > 0:
+		return cannotExpress + "DNS"
+	case len(h.Links) > 0:
+		return cannotExpress + "links"
+	case h.LogConfig.Type != "" && h.LogConfig.Type != "json-file":
+		return cannotExpress + "log driver"
 	case h.NetworkMode != "default" && h.NetworkMode != "bridge" && h.NetworkMode != projectNetwork:
 		return cannotExpress + "network mode"
 	case len(n.Networks) != 1 || !onNetwork:
@@ -178,20 +244,17 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		if detail := undescribed(before, r.req.Project+"_default"); detail != "" {
 			return protocol.OutcomeDenied, detail
 		}
-		// A Cmd or Entrypoint set at run time would be replaced by the image default.
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
 		defer icancel()
-		var im struct {
-			Config struct{ Cmd, Entrypoint []string }
-		}
+		var im struct{ Config imageDefaults }
 		if err := r.c.get(ictx, "/images/"+url.PathEscape(s.Replaces.ImageID)+"/json", &im); err != nil {
 			if statusOf(err) == http.StatusNotFound {
 				return protocol.OutcomeDenied, "the container's image is no longer present"
 			}
 			return r.outcomeFor(ictx, err, statusOf(err))
 		}
-		if !slices.Equal(before.Config.Cmd, im.Config.Cmd) || !slices.Equal(before.Config.Entrypoint, im.Config.Entrypoint) {
-			return protocol.OutcomeDenied, cannotExpress + "command"
+		if field := before.Config.differs(im.Config); field != "" {
+			return protocol.OutcomeDenied, cannotExpress + field
 		}
 		networkMode = before.HostConfig.NetworkMode
 		return protocol.OutcomeSucceeded, ""
@@ -254,7 +317,8 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		defer cancel()
 		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
-			return r.outcomeFor(cctx, err, status)
+			outcome, detail := r.outcomeFor(cctx, err, status)
+			return outcome, fmt.Sprintf("%s (container %s)", detail, created)
 		}
 		return protocol.OutcomeSucceeded, ""
 	})

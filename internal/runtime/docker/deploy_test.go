@@ -49,10 +49,12 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
 	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204}
 	f.oldContainer = map[string]any{"Id": oldID, "Image": oldImage, "Name": "/shop-web-1", "Created": "2023-11-14T22:13:20Z", "Mounts": []any{},
-		"Config":          map[string]any{"Cmd": []string{"nginx", "-g", "daemon off;"}, "Entrypoint": nil, "User": ""},
-		"HostConfig":      map[string]any{"NetworkMode": "default", "Privileged": false, "AutoRemove": false, "ReadonlyRootfs": false, "Tmpfs": nil, "CapAdd": nil, "CapDrop": nil, "SecurityOpt": nil, "Devices": []any{}, "PidMode": "", "IpcMode": "private"},
+		"Config": map[string]any{"Cmd": []string{"nginx", "-g", "daemon off;"}, "Entrypoint": nil, "User": "", "Healthcheck": nil, "WorkingDir": "", "StopSignal": ""},
+		"HostConfig": map[string]any{"NetworkMode": "default", "Privileged": false, "AutoRemove": false, "ReadonlyRootfs": false, "Tmpfs": nil, "CapAdd": nil, "CapDrop": nil, "SecurityOpt": nil, "Devices": []any{}, "PidMode": "", "IpcMode": "private",
+			"Runtime": "runc", "Memory": 0, "MemorySwap": 0, "MemoryReservation": 0, "NanoCpus": 0, "CpuShares": 0, "CpuQuota": 0, "CpusetCpus": "", "PidsLimit": nil, "Ulimits": nil, "DeviceRequests": nil,
+			"UsernsMode": "", "CgroupParent": "", "GroupAdd": nil, "ExtraHosts": nil, "Dns": nil, "DnsOptions": []string{}, "DnsSearch": []string{}, "Links": nil, "LogConfig": map[string]any{"Type": "json-file", "Config": map[string]any{}}},
 		"NetworkSettings": map[string]any{"Networks": map[string]any{"bridge": map[string]any{}}}}
-	f.oldImageConfig = map[string]any{"Cmd": []string{"nginx", "-g", "daemon off;"}, "Entrypoint": nil}
+	f.oldImageConfig = map[string]any{"Cmd": []string{"nginx", "-g", "daemon off;"}, "Entrypoint": nil, "Healthcheck": nil, "WorkingDir": "", "StopSignal": ""}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
@@ -210,6 +212,19 @@ func TestDeployKeepsTheProjectNetwork(t *testing.T) {
 	}
 }
 
+// Settings the container inherited from its image are reproduced by recreation from it.
+func TestDeployAcceptsImageInheritedSettings(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	inherited := map[string]any{"Healthcheck": map[string]any{"Test": []string{"CMD", "true"}, "Interval": 30000000000}, "WorkingDir": "/srv", "StopSignal": "SIGQUIT"}
+	for k, v := range inherited {
+		f.oldContainer["Config"].(map[string]any)[k] = v
+		f.oldImageConfig[k] = v
+	}
+	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("inherited settings: %+v", res)
+	}
+}
+
 // Daemon-default IPC modes are reproduced by recreation on the same daemon.
 func TestDeployAcceptsDaemonDefaultIPCModes(t *testing.T) {
 	for _, mode := range []string{"", "private", "shareable"} {
@@ -270,7 +285,35 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 		"entrypoint": {func(f *fakeDeployEngine) {
 			f.oldContainer["Config"].(map[string]any)["Entrypoint"] = []string{"/bin/sh", "-c"}
 		}, 2},
-		"old image gone": {func(f *fakeDeployEngine) { f.oldImageStatus = 404 }, 2},
+		"old image gone":     {func(f *fakeDeployEngine) { f.oldImageStatus = 404 }, 2},
+		"absent LogConfig":   {func(f *fakeDeployEngine) { delete(f.oldContainer["HostConfig"].(map[string]any), "LogConfig") }, 1},
+		"runtime":            {host("Runtime", "runsc"), 1},
+		"memory":             {host("Memory", 1<<30), 1},
+		"memory swap":        {host("MemorySwap", 1<<30), 1},
+		"memory reservation": {host("MemoryReservation", 1<<30), 1},
+		"nano cpus":          {host("NanoCpus", 500000000), 1},
+		"cpu shares":         {host("CpuShares", 512), 1},
+		"cpu quota":          {host("CpuQuota", 50000), 1},
+		"cpuset":             {host("CpusetCpus", "0"), 1},
+		"pids":               {host("PidsLimit", 100), 1},
+		"ulimits":            {host("Ulimits", []any{map[string]any{"Name": "nofile", "Soft": 1024, "Hard": 1024}}), 1},
+		"sysctls":            {host("Sysctls", map[string]string{"net.ipv4.ip_forward": "1"}), 1},
+		"device requests":    {host("DeviceRequests", []any{map[string]any{"Driver": "nvidia", "Count": -1}}), 1},
+		"init":               {host("Init", true), 1},
+		"userns":             {host("UsernsMode", "host"), 1},
+		"cgroup parent":      {host("CgroupParent", "/custom"), 1},
+		"group add":          {host("GroupAdd", []string{"audio"}), 1},
+		"extra hosts":        {host("ExtraHosts", []string{"db:10.0.0.2"}), 1},
+		"dns":                {host("Dns", []string{"1.1.1.1"}), 1},
+		"dns options":        {host("DnsOptions", []string{"ndots:1"}), 1},
+		"dns search":         {host("DnsSearch", []string{"lan"}), 1},
+		"links":              {host("Links", []string{"/shop-db-1:/shop-web-1/db"}), 1},
+		"log driver":         {host("LogConfig", map[string]any{"Type": "syslog"}), 1},
+		"healthcheck differs": {func(f *fakeDeployEngine) {
+			f.oldContainer["Config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}}
+		}, 2},
+		"working dir differs": {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["WorkingDir"] = "/srv" }, 2},
+		"stop signal differs": {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["StopSignal"] = "SIGINT" }, 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -337,8 +380,8 @@ func TestDeployStepFailuresStopTheRun(t *testing.T) {
 			if failing.Step != tc.step {
 				t.Fatalf("%s failed at %+v", name, failing)
 			}
-			if tc.step == protocol.StepStart && !strings.Contains(failing.Detail, "(container "+newID+")") {
-				t.Fatalf("start failure must name the created container: %q", failing.Detail)
+			if (tc.step == protocol.StepStop || tc.step == protocol.StepStart) && !strings.Contains(failing.Detail, "(container "+newID+")") {
+				t.Fatalf("%s failure must name the created container: %q", tc.step, failing.Detail)
 			}
 			if tc.step == protocol.StepRemove {
 				if len(res.Services) != 1 {

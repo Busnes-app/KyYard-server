@@ -64,6 +64,9 @@ func TestDeploymentRequestValidation(t *testing.T) {
 		"duplicate wildcard port": func(r *DeploymentRequest) {
 			r.Services[0].Ports = []Port{{Container: 80, Host: 8080, Protocol: "tcp"}, {Container: 81, Host: 8080, Protocol: "tcp", HostIP: "0.0.0.0"}}
 		},
+		"duplicate v6 wildcard port": func(r *DeploymentRequest) {
+			r.Services[0].Ports = []Port{{Container: 80, Host: 8080, Protocol: "tcp", HostIP: "::"}, {Container: 81, Host: 8080, Protocol: "tcp", HostIP: "::0"}}
+		},
 		"duplicate port across services": func(r *DeploymentRequest) {
 			s := r.Services[0]
 			s.Name, s.ContainerName, s.Replaces.ContainerID = "db", "shop-db-1", strings.Repeat("d", 64)
@@ -84,6 +87,11 @@ func TestDeploymentRequestValidation(t *testing.T) {
 		}
 	}
 	r := goodDeployment(now)
+	r.Services[0].Ports = []Port{{Container: 80, Host: 8080, Protocol: "tcp", HostIP: "0.0.0.0"}, {Container: 80, Host: 8080, Protocol: "tcp", HostIP: "::"}, {Container: 80, Host: 8080, Protocol: "udp"}}
+	if err := r.Validate(now); err != nil {
+		t.Fatalf("IPv4 and IPv6 wildcard on one port refused: %v", err)
+	}
+	r = goodDeployment(now)
 	r.Services[0].Restart, r.Services[0].Ports, r.Services[0].Env = "", nil, nil
 	if err := r.Validate(now); err != nil {
 		t.Fatalf("minimal service refused: %v", err)

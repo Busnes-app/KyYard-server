@@ -97,14 +97,20 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 			if p.Container < 1 || p.Container > 65535 || p.Host < 1 || p.Host > 65535 || (p.Protocol != "tcp" && p.Protocol != "udp") {
 				return errors.New("invalid port")
 			}
+			// "" is Docker's IPv4 wildcard; 0.0.0.0 and :: are separate binds Docker allows together.
+			b := binding{"v4-any", p.Host, p.Protocol}
 			if p.HostIP != "" {
-				if ip, err := netip.ParseAddr(p.HostIP); err != nil || ip.Zone() != "" {
+				ip, err := netip.ParseAddr(p.HostIP)
+				if err != nil || ip.Zone() != "" {
 					return errors.New("invalid host address")
 				}
-			}
-			b := binding{p.HostIP, p.Host, p.Protocol}
-			if b.ip == "0.0.0.0" || b.ip == "::" {
-				b.ip = "" // every wildcard form binds the same host port
+				switch {
+				case ip.IsUnspecified() && ip.Is4():
+				case ip.IsUnspecified():
+					b.ip = "v6-any"
+				default:
+					b.ip = ip.String()
+				}
 			}
 			if bindings[b] {
 				return errors.New("duplicate port binding")

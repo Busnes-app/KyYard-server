@@ -11,8 +11,9 @@ start, remove, with no automatic rollback; secrets travel only inside the apply 
 container environment. Ruling 2026-09-22: Compose project networks (`<project>_default`) are
 accepted and preserved with the service alias; other network modes are refused. Final review
 ruling 2026-09-22: rename and create run before stop so avoidable conflicts happen while the old
-container still runs; the precondition refuses every configuration recreation would drop and
-fails closed on fields the Engine did not report.
+container still runs; the precondition refuses the configuration listed under step 1, which
+recreation would drop, and fails closed on fields the Engine did not report. Settings outside
+that list are not compared.
 
 ## Wire types (`internal/agent/protocol/deployment.go`)
 
@@ -44,8 +45,8 @@ type DeploymentService struct {
 `(DeploymentRequest) Validate(now time.Time) error` enforces every bound above and refuses a
 deadline in the past or beyond `DeploymentLifetime`. Duplicate service names, duplicate
 container names, duplicate `Replaces.ContainerID` and a `(HostIP, Host, Protocol)` binding
-repeated within or across services are refused; `""`, `0.0.0.0` and `::` are one wildcard
-host IP for that check.
+repeated within or across services are refused; the host IP is normalised with `netip` (`""` and
+`0.0.0.0` are one IPv4 wildcard, `::` and `::0` one IPv6 wildcard, kept distinct from IPv4).
 
 ```go
 type DeploymentResult struct {
@@ -84,17 +85,22 @@ Runs services in order under `ctx` bounded by `req.Deadline`. Every Engine call 
 1. **precondition**: `GET /containers/{replaces.id}/json`, decoded with pointers. Refuse
    (`denied`) unless `Id`, `Image` and `Created.Unix()` equal `Replaces`. Refuse "the runtime did
    not report the container's full configuration" when `HostConfig`, `Config`,
-   `NetworkSettings`, `Mounts` or `HostConfig.Privileged`/`AutoRemove`/`ReadonlyRootfs` are
-   absent. Refuse "the container has configuration the definition cannot express: <reason>" for
+   `NetworkSettings`, `Mounts`, `HostConfig.LogConfig` or
+   `HostConfig.Privileged`/`AutoRemove`/`ReadonlyRootfs` are absent. Refuse "the container has configuration the definition cannot express: <reason>" for
    mounts, `HostConfig.Tmpfs`, auto-remove, read-only root, privileged, `CapAdd`/`CapDrop`,
    `SecurityOpt`, `Devices`, a `PidMode` other than `""`/`private`, an `IpcMode` other than the
-   daemon defaults `""`/`private`/`shareable`, `Config.User`,
+   daemon defaults `""`/`private`/`shareable`, `Config.User`, a `Runtime` other than `""`/`runc`,
+   `Memory`/`MemorySwap`/`MemoryReservation`, `NanoCpus`/`CpuShares`/`CpuQuota`/`CpusetCpus`, a
+   non-zero `PidsLimit`, `Ulimits`, `Sysctls`, `DeviceRequests`, `Init` true, `UsernsMode`,
+   `CgroupParent`, `GroupAdd`, `ExtraHosts`, `Dns`/`DnsOptions`/`DnsSearch`, `Links`, a
+   `LogConfig.Type` other than `""`/`json-file`,
    a `NetworkMode` other than `default`, `bridge` or `<project>_default`, and
    `NetworkSettings.Networks` other than exactly the accepted network (`bridge`, or
    `<project>_default` for the project network mode). Last, `GET /images/{replaces.image_id}/json`
-   (404 is `denied` "the container's image is no longer present") and refuse (`command`) when
-   the container's `Cmd` or `Entrypoint` differs from the image's (nil equals empty): a run-time
-   override would be replaced by the image default. A container 404 is `denied` "the container no
+   (404 is `denied` "the container's image is no longer present") and refuse when the
+   container's `Cmd`, `Entrypoint` (nil equals empty), `Healthcheck` (null equals absent),
+   `WorkingDir` or `StopSignal` differs from the image's: a run-time override would be replaced
+   by the image default. Settings outside this list are not compared. A container 404 is `denied` "the container no
    longer exists". Refusing is the safe default and the message names the reason. When
    the old container is on the project network, the new one is created on it
    (`HostConfig.NetworkMode`) with `NetworkingConfig.EndpointsConfig[<project>_default].Aliases =
@@ -112,14 +118,15 @@ Runs services in order under `ctx` bounded by `req.Deadline`. Every Engine call 
    error text is never copied into the result; only the status code is.
 5. **stop**: `POST /containers/{old}/stop?t=10`; 304 counts as succeeded.
 6. **start**: `POST /containers/{new}/start`; then `GET /containers/{new}/json` to record the
-   identity (`Id`, `Image`, `Created`) into `Services`. A failed start or identity read names the
-   created container in the step detail.
+   identity (`Id`, `Image`, `Created`) into `Services`. A failed stop, start or identity read
+   names the created container in the step detail.
 7. **remove**: `DELETE /containers/{old}` without `v=1` (named volumes are never touched).
 
 A step that is `denied`, `failed`, `timed_out` or `unknown` ends the run: remaining steps of
 that service and all later services are recorded as `skipped`. A context error during a call
 with no Engine answer is `timed_out` when the deadline passed and `unknown` when the parent was
-cancelled (the session dropped; the Engine may or may not have acted); a status received after
+cancelled (the run was cancelled, agent shutdown under the detached-context contract, before the
+runtime answered; the Engine may or may not have acted); a status received after
 cancellation is `failed`. Nothing is rolled back: after a failed create the renamed old container
 still runs; after a failed stop or start it stays renamed (running or stopped) beside the created
 container; the result's steps say which. Overall `Outcome` is
