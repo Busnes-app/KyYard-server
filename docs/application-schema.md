@@ -131,7 +131,7 @@ The common model maps to Deployments/StatefulSets, Services, ConfigMaps, Secrets
 | Secret representation | reference-only specs, encrypted per-revision bundles in sealed backups; internal audited resolution | implemented for draft import; deploy resolution pending |
 | Compose subset | list above | proposed |
 | Unmanaged edits | require adoption | proposed (plan default) |
-| Preview validity | 10 minutes, preconditions on touched resources only | proposed |
+| Preview validity | 10 minutes, preconditions on touched resources only | implemented (plans); apply pending |
 | `env_file` values | secret references by default, plain only by explicit choice | proposed |
 | Unconfigured registry | refuse by default; anonymous pull is an audited per-organization opt-in gated by `registry.manage` (see `authorization-matrix.md`) | proposed |
 | Application removal | keeps volumes and images | required by plan |
@@ -139,7 +139,7 @@ The common model maps to Deployments/StatefulSets, Services, ConfigMaps, Secrets
 
 ## Deployment preflight
 
-GET preflight under application.read is a diagnostic, never a deployment approval. It requires an adopted instance, current digest-verified definition, fresh complete container inventory and unchanged owned identities. Reads recheck instance ID, mapping version, latest revision and inventory identity so mixed observations fail closed. Missing adoption is 404; changed/stale/partial observations are 409. A definition changed since mapping review, unassigned adopted IDs or unmapped services appear as blockers.
+GET preflight under application.read is a diagnostic, never a deployment approval. It requires an adopted instance, current digest-verified definition, fresh complete container inventory and unchanged owned identities. Reads recheck instance ID, mapping version, latest revision and inventory identity so mixed observations fail closed. Missing adoption is 404; changed/stale/partial observations are 409. A definition changed since mapping review, unassigned adopted IDs, unmapped services or an owned identity that fails validation (`replacement_identity_invalid`) appear as blockers.
 
 Exact reported image tags, repository digests and full image IDs resolve only when the image list is complete and the reference has one full lowercase sha256 image ID. Implicit tags, missing exact references, ambiguous references and malformed identities are findings. IDs are returned observations, not persisted pins; no registry lookup, pull or alias expansion occurs. Inventory bounds can omit tags/digests, so “not reported” does not prove absence.
 
@@ -148,6 +148,10 @@ Published-port checks index host port/protocol and normalized addresses. They ex
 Preflight includes the endpoint ID and a validated inspection target for each mapped owned identity (full container/image IDs and creation seconds). Missing or invalid owned identities offer no live-inspection action. The UI opens one native modal on explicit request, compares the returned identity to that target and shows only redacted selected facts. Closing or changing scope aborts the request and discards the observation; retries are deliberate. Error bodies are never displayed. Runtime image facts describe the existing container, not the desired image.
 
 Every response has executable=false and runtime_verification_required. Mounts, networking, platform, restart policy, environment values/secrets, unreported bindings and other runtime configuration remain unverified. No secrets are read, deployment rows/pins are written, commands dispatched or approvals minted. Future executable plans must inspect the runtime, bind exact revision/mapping/instance/image identities, reject unsupported configuration and enforce fresh preconditions agent-side; this response cannot substitute for that contract.
+
+## Deployment plans
+
+`POST .../deployments` under `application.deploy` mints a plan from a clean preflight: every blocker other than `runtime_verification_required` refuses with `409 preflight_blocked` naming the blockers. The request binds instance ID, mapping version, revision number and typed project; any mismatch is `409 adoption_changed`. The row records endpoint, project, revision, spec digest, mapping version and a JSON plan: per service the reference, the full image ID the preflight resolved (the pin), the repository digest when inventory reported exactly one, the container it replaces with that container's image ID and creation second, restart, ports and secret reference names. Plans expire after 10 minutes; reads report `expired` and never rewrite state. One plan per instance: planning again replaces the earlier row. Release refuses (`409 deployment_planned`) while an unexpired plan exists and deletes expired ones. No command, pull, secret value or runtime change; apply is the next slice.
 
 ## Runtime inspection foundation
 

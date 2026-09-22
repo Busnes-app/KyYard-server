@@ -233,6 +233,10 @@ Implemented M6 inspection transport: nonce-bound agent requests, bounded cross-r
 
 Current M6 live preflight UI: mapped services expose an on-demand, cancellable native inspection dialog with full identity comparison, redacted facts and explicit non-executable boundaries. Preflight supplies owned inspection targets separately from desired-image resolution. No automatic inspection fanout, retry or deployment.
 
-Next M6 slice: implement executable preview/reconcile (planned PR 15), including broader validated Compose support and validated storage/network/configuration handling before deployment. The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
+Implemented M6 deployment plans: persisted executable previews minted from a clean preflight under `application.deploy`, binding instance, mapping version, revision, spec digest, pinned image IDs and replaced-container identities, expiring after 10 minutes, one per instance, refusing release while live. No agent command.
+
+Next M6 slice: apply a plan through a new agent command (native Engine API pull by pinned ID, create, start, per-step outcomes, precondition rechecks), then history/reapply/remove.
+
+The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
 The repository is the durable record; `kyyard-engineering-plan` on myslop mirrors handoffs and expires seven days after its last post.
