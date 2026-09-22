@@ -17,6 +17,7 @@ import (
 
 type DeploymentPreflight struct {
 	InstanceID     string             `json:"instance_id"`
+	EndpointID     string             `json:"endpoint_id"`
 	EndpointName   string             `json:"endpoint_name"`
 	Revision       int                `json:"revision"`
 	MappingVersion int                `json:"mapping_version"`
@@ -26,11 +27,12 @@ type DeploymentPreflight struct {
 	Services       []PreflightService `json:"services"`
 }
 type PreflightService struct {
-	Name        string   `json:"name"`
-	Reference   string   `json:"reference"`
-	ImageID     string   `json:"image_id"`
-	ContainerID string   `json:"container_id"`
-	Blockers    []string `json:"blockers"`
+	InspectionTarget *protocol.InspectionTarget `json:"inspection_target,omitempty"`
+	Name             string                     `json:"name"`
+	Reference        string                     `json:"reference"`
+	ImageID          string                     `json:"image_id"`
+	ContainerID      string                     `json:"container_id"`
+	Blockers         []string                   `json:"blockers"`
 }
 
 // PreflightApplication is a diagnostic only, never a deploy approval. Inventory
@@ -97,7 +99,7 @@ func (t *tenancyStore) PreflightApplication(ctx context.Context, a TenantAccess,
 }
 
 func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snapshot protocol.Snapshot) *DeploymentPreflight {
-	out := &DeploymentPreflight{InstanceID: m.InstanceID, EndpointName: m.Preview.EndpointName, Revision: m.Preview.Revision, MappingVersion: m.Version, Blockers: []string{"runtime_verification_required"}, Services: []PreflightService{}}
+	out := &DeploymentPreflight{InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Revision: m.Preview.Revision, MappingVersion: m.Version, Blockers: []string{"runtime_verification_required"}, Services: []PreflightService{}}
 	if m.Version == 0 || m.MappedRevision != m.Preview.Revision {
 		out.Blockers = append(out.Blockers, "mapping_requires_review")
 	}
@@ -142,9 +144,19 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 			}
 		}
 	}
+	owned := make(map[string]protocol.InspectionTarget, len(m.Preview.Containers))
+	for _, c := range m.Preview.Containers {
+		target := protocol.InspectionTarget{ContainerID: c.ID, ImageID: c.ImageID, CreatedUnix: c.CreatedAt.Unix()}
+		if target.Validate() == nil {
+			owned[c.ID] = target
+		}
+	}
 	desired := map[portKey]map[string]bool{}
 	for _, s := range spec.Services {
 		row := PreflightService{Name: s.Name, Reference: s.Image, ContainerID: m.Bindings[s.Name], Blockers: []string{}}
+		if target, ok := owned[row.ContainerID]; ok {
+			row.InspectionTarget = &target
+		}
 		if row.ContainerID == "" {
 			row.Blockers = append(row.Blockers, "service_unmapped")
 		}
