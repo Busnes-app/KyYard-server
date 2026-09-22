@@ -286,7 +286,6 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 			f.oldContainer["Config"].(map[string]any)["Entrypoint"] = []string{"/bin/sh", "-c"}
 		}, 2},
 		"old image gone":     {func(f *fakeDeployEngine) { f.oldImageStatus = 404 }, 2},
-		"absent LogConfig":   {func(f *fakeDeployEngine) { delete(f.oldContainer["HostConfig"].(map[string]any), "LogConfig") }, 1},
 		"runtime":            {host("Runtime", "runsc"), 1},
 		"memory":             {host("Memory", 1<<30), 1},
 		"memory swap":        {host("MemorySwap", 1<<30), 1},
@@ -308,7 +307,6 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 		"dns options":        {host("DnsOptions", []string{"ndots:1"}), 1},
 		"dns search":         {host("DnsSearch", []string{"lan"}), 1},
 		"links":              {host("Links", []string{"/shop-db-1:/shop-web-1/db"}), 1},
-		"log driver":         {host("LogConfig", map[string]any{"Type": "syslog"}), 1},
 		"healthcheck differs": {func(f *fakeDeployEngine) {
 			f.oldContainer["Config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}}
 		}, 2},

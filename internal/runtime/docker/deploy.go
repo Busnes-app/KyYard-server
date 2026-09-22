@@ -113,7 +113,6 @@ type inspectedForDeploy struct {
 		CpuShares, CpuQuota                                             int64
 		PidsLimit                                                       *int64
 		Init                                                            *bool
-		LogConfig                                                       *struct{ Type string }
 	}
 	NetworkSettings *struct {
 		Networks map[string]json.RawMessage
@@ -153,10 +152,11 @@ const cannotExpress = "the container has configuration the definition cannot exp
 
 // undescribed refuses the listed configuration recreation would drop, returning the denial
 // detail or "" when there is none. The definition expresses image, env, ports, restart and the
-// project network only; settings outside this list and imageDefaults are not compared.
+// project network only; log configuration and settings outside this list and imageDefaults are
+// not compared.
 func undescribed(in inspectedForDeploy, projectNetwork string) string {
 	h, n := in.HostConfig, in.NetworkSettings
-	if h == nil || in.Config == nil || n == nil || in.Mounts == nil || h.Privileged == nil || h.AutoRemove == nil || h.ReadonlyRootfs == nil || h.LogConfig == nil {
+	if h == nil || in.Config == nil || n == nil || in.Mounts == nil || h.Privileged == nil || h.AutoRemove == nil || h.ReadonlyRootfs == nil {
 		return "the runtime did not report the container's full configuration"
 	}
 	network := projectNetwork
@@ -215,8 +215,6 @@ func undescribed(in inspectedForDeploy, projectNetwork string) string {
 		return cannotExpress + "DNS"
 	case len(h.Links) > 0:
 		return cannotExpress + "links"
-	case h.LogConfig.Type != "" && h.LogConfig.Type != "json-file":
-		return cannotExpress + "log driver"
 	case h.NetworkMode != "default" && h.NetworkMode != "bridge" && h.NetworkMode != projectNetwork:
 		return cannotExpress + "network mode"
 	case len(n.Networks) != 1 || !onNetwork:

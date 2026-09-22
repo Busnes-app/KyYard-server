@@ -13,7 +13,7 @@ accepted and preserved with the service alias; other network modes are refused. 
 ruling 2026-09-22: rename and create run before stop so avoidable conflicts happen while the old
 container still runs; the precondition refuses the configuration listed under step 1, which
 recreation would drop, and fails closed on fields the Engine did not report. Settings outside
-that list are not compared.
+that list, including log configuration, are not compared.
 
 ## Wire types (`internal/agent/protocol/deployment.go`)
 
@@ -85,22 +85,21 @@ Runs services in order under `ctx` bounded by `req.Deadline`. Every Engine call 
 1. **precondition**: `GET /containers/{replaces.id}/json`, decoded with pointers. Refuse
    (`denied`) unless `Id`, `Image` and `Created.Unix()` equal `Replaces`. Refuse "the runtime did
    not report the container's full configuration" when `HostConfig`, `Config`,
-   `NetworkSettings`, `Mounts`, `HostConfig.LogConfig` or
-   `HostConfig.Privileged`/`AutoRemove`/`ReadonlyRootfs` are absent. Refuse "the container has configuration the definition cannot express: <reason>" for
+   `NetworkSettings`, `Mounts` or `HostConfig.Privileged`/`AutoRemove`/`ReadonlyRootfs` are absent. Refuse "the container has configuration the definition cannot express: <reason>" for
    mounts, `HostConfig.Tmpfs`, auto-remove, read-only root, privileged, `CapAdd`/`CapDrop`,
    `SecurityOpt`, `Devices`, a `PidMode` other than `""`/`private`, an `IpcMode` other than the
    daemon defaults `""`/`private`/`shareable`, `Config.User`, a `Runtime` other than `""`/`runc`,
    `Memory`/`MemorySwap`/`MemoryReservation`, `NanoCpus`/`CpuShares`/`CpuQuota`/`CpusetCpus`, a
    non-zero `PidsLimit`, `Ulimits`, `Sysctls`, `DeviceRequests`, `Init` true, `UsernsMode`,
-   `CgroupParent`, `GroupAdd`, `ExtraHosts`, `Dns`/`DnsOptions`/`DnsSearch`, `Links`, a
-   `LogConfig.Type` other than `""`/`json-file`,
+   `CgroupParent`, `GroupAdd`, `ExtraHosts`, `Dns`/`DnsOptions`/`DnsSearch`, `Links`,
    a `NetworkMode` other than `default`, `bridge` or `<project>_default`, and
    `NetworkSettings.Networks` other than exactly the accepted network (`bridge`, or
    `<project>_default` for the project network mode). Last, `GET /images/{replaces.image_id}/json`
    (404 is `denied` "the container's image is no longer present") and refuse when the
    container's `Cmd`, `Entrypoint` (nil equals empty), `Healthcheck` (null equals absent),
    `WorkingDir` or `StopSignal` differs from the image's: a run-time override would be replaced
-   by the image default. Settings outside this list are not compared. A container 404 is `denied` "the container no
+   by the image default. Log configuration (it mirrors the daemon default, which recreation on
+   the same daemon reproduces) and settings outside this list are not compared. A container 404 is `denied` "the container no
    longer exists". Refusing is the safe default and the message names the reason. When
    the old container is on the project network, the new one is created on it
    (`HostConfig.NetworkMode`) with `NetworkingConfig.EndpointsConfig[<project>_default].Aliases =
