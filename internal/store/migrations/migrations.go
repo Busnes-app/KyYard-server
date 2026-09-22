@@ -673,6 +673,45 @@ ALTER TABLE application_instances ADD COLUMN mapped_revision INTEGER NOT NULL DE
 ALTER TABLE application_resources ADD COLUMN service_name TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX idx_application_service ON application_resources(instance_id,service_name) WHERE service_name<>'';
 `},
+	{Version: 23, Name: "deployment_plans", SQLite: `CREATE TABLE deployments (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL,
+ instance_id TEXT NOT NULL UNIQUE,
+ endpoint_id TEXT NOT NULL,
+ project TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('planned')),
+ revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 100),
+ spec_digest TEXT NOT NULL,
+ mapping_version INTEGER NOT NULL CHECK(mapping_version BETWEEN 1 AND 1000000000),
+ plan TEXT NOT NULL CHECK(length(plan)<=65536),
+ created_by TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ expires_at DATETIME NOT NULL,
+ FOREIGN KEY(organization_id,environment_id,application_id) REFERENCES applications(organization_id,environment_id,id) ON DELETE CASCADE
+);
+CREATE INDEX idx_deployments_application ON deployments(application_id,created_at);
+`, Postgres: `CREATE TABLE deployments (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL,
+ instance_id TEXT NOT NULL UNIQUE,
+ endpoint_id TEXT NOT NULL,
+ project TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('planned')),
+ revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 100),
+ spec_digest TEXT NOT NULL,
+ mapping_version INTEGER NOT NULL CHECK(mapping_version BETWEEN 1 AND 1000000000),
+ plan TEXT NOT NULL CHECK(length(plan)<=65536),
+ created_by TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL,
+ expires_at TIMESTAMPTZ NOT NULL,
+ FOREIGN KEY(organization_id,environment_id,application_id) REFERENCES applications(organization_id,environment_id,id) ON DELETE CASCADE
+);
+CREATE INDEX idx_deployments_application ON deployments(application_id,created_at);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.
