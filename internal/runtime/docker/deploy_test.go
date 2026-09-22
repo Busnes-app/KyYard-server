@@ -36,6 +36,7 @@ type fakeDeployEngine struct {
 	oldImageConfig   map[string]any // its Config; Cmd and Entrypoint equal the old container's by default
 	imageStatus      int            // GET /images/{new}/json; 200 default
 	inspectNewStatus int            // GET /containers/{new}/json; 200 default
+	defaultRuntime   string         // GET /info DefaultRuntime; "runc" default
 	stopStatus       int            // 204 default; 304 allowed
 	stopDelay        time.Duration
 	renameStatus     int
@@ -47,7 +48,7 @@ type fakeDeployEngine struct {
 
 func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
-	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204}
+	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204}
 	f.oldContainer = map[string]any{"Id": oldID, "Image": oldImage, "Name": "/shop-web-1", "Created": "2023-11-14T22:13:20Z", "Mounts": []any{},
 		"Config": map[string]any{"Cmd": []string{"nginx", "-g", "daemon off;"}, "Entrypoint": nil, "User": "", "Healthcheck": nil, "WorkingDir": "", "StopSignal": ""},
 		"HostConfig": map[string]any{"NetworkMode": "default", "Privileged": false, "AutoRemove": false, "ReadonlyRootfs": false, "Tmpfs": nil, "CapAdd": nil, "CapDrop": nil, "SecurityOpt": nil, "Devices": []any{}, "PidMode": "", "IpcMode": "private",
@@ -63,6 +64,8 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		w.Header().Set("Content-Type", "application/json")
 		p := r.URL.EscapedPath()
 		switch {
+		case r.Method == "GET" && strings.HasSuffix(p, "/info"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"DefaultRuntime": f.defaultRuntime})
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+oldID+"/json"):
 			w.WriteHeader(f.oldStatus)
 			_ = json.NewEncoder(w).Encode(f.oldContainer)
@@ -117,11 +120,11 @@ func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 	if res.Outcome != protocol.OutcomeSucceeded || res.Deployment != deploymentID {
 		t.Fatalf("outcome: %+v", res)
 	}
-	want := []string{"GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
+	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
 	if got := f.steps(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("call order:\n got %v\nwant %v", got, want)
 	}
-	if f.calls[3].Query != "name=shop-web-1.kyyard-prev-3f2b1c9e" || f.calls[4].Query != "name=shop-web-1" || f.calls[5].Query != "t=10" || f.calls[8].Query != "" {
+	if f.calls[4].Query != "name=shop-web-1.kyyard-prev-3f2b1c9e" || f.calls[5].Query != "name=shop-web-1" || f.calls[6].Query != "t=10" || f.calls[9].Query != "" {
 		t.Fatalf("queries: %+v", f.calls)
 	}
 	var body struct {
@@ -141,7 +144,7 @@ func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 			EndpointsConfig map[string]struct{ Aliases []string }
 		}
 	}
-	if err := json.Unmarshal([]byte(f.calls[4].Body), &body); err != nil {
+	if err := json.Unmarshal([]byte(f.calls[5].Body), &body); err != nil {
 		t.Fatal(err)
 	}
 	if body.HostConfig.NetworkMode != "" || body.NetworkingConfig != nil {
@@ -201,7 +204,7 @@ func TestDeployKeepsTheProjectNetwork(t *testing.T) {
 			EndpointsConfig map[string]struct{ Aliases []string }
 		}
 	}
-	if err := json.Unmarshal([]byte(f.calls[4].Body), &body); err != nil {
+	if err := json.Unmarshal([]byte(f.calls[5].Body), &body); err != nil {
 		t.Fatal(err)
 	}
 	if body.HostConfig.NetworkMode != "shop_default" {
@@ -222,6 +225,33 @@ func TestDeployAcceptsImageInheritedSettings(t *testing.T) {
 	}
 	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("inherited settings: %+v", res)
+	}
+}
+
+// "NONE", no test and no healthcheck all mean the same: none.
+func TestDeployAcceptsDisabledHealthcheckOnImageWithout(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.oldContainer["Config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"NONE"}}
+	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("NONE healthcheck: %+v", res)
+	}
+}
+
+// The runtime is compared with the daemon's default, not a fixed name.
+func TestDeployRuntimeFollowsTheDaemonDefault(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.defaultRuntime = "nvidia"
+	f.oldContainer["HostConfig"].(map[string]any)["Runtime"] = "nvidia"
+	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("daemon-default runtime: %+v", res)
+	}
+	f = newFakeDeployEngine(t)
+	f.defaultRuntime = ""
+	db := webService()
+	db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", strings.Repeat("f", 64), nil
+	res := f.client().Deploy(context.Background(), request(webService(), db))
+	if res.Outcome != protocol.OutcomeFailed || res.Steps[0].Step != protocol.StepPrecondition || res.Steps[0].Detail != "the daemon's default runtime could not be read" || res.Steps[len(res.Steps)-1].Outcome != protocol.OutcomeSkipped || len(f.calls) != 1 {
+		t.Fatalf("unreadable default runtime: %+v calls=%v", res, f.steps())
 	}
 }
 
@@ -254,7 +284,7 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 	}
 	for name, tc := range map[string]struct {
 		mutate func(*fakeDeployEngine)
-		calls  int // 1 when decided from the container alone, 2 when the old image was read
+		calls  int // after GET /info: 1 when decided from the container alone, 2 when the old image was read
 	}{
 		"image":                  {func(f *fakeDeployEngine) { f.oldContainer["Image"] = newImage }, 1},
 		"created":                {func(f *fakeDeployEngine) { f.oldContainer["Created"] = "2023-11-14T22:13:21Z" }, 1},
@@ -311,6 +341,14 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 			f.oldContainer["Config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}}
 		}, 2},
 		"working dir differs": {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["WorkingDir"] = "/srv" }, 2},
+		"healthcheck interval differs": {func(f *fakeDeployEngine) {
+			f.oldImageConfig["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}, "Interval": 30000000000}
+			f.oldContainer["Config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}, "Interval": 5000000000}
+		}, 2},
+		"runtime not the daemon default": {func(f *fakeDeployEngine) {
+			f.defaultRuntime = "nvidia"
+			f.oldContainer["HostConfig"].(map[string]any)["Runtime"] = "runsc"
+		}, 1},
 		"stop signal differs": {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["StopSignal"] = "SIGINT" }, 2},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -319,7 +357,7 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 			db := webService()
 			db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", strings.Repeat("f", 64), nil
 			res := f.client().Deploy(context.Background(), request(webService(), db))
-			if res.Outcome != protocol.OutcomeDenied || len(f.calls) != tc.calls {
+			if res.Outcome != protocol.OutcomeDenied || len(f.calls) != 1+tc.calls {
 				t.Fatalf("%s: %+v calls=%v", name, res, f.steps())
 			}
 			for _, c := range f.calls {
@@ -337,7 +375,7 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 	}
 	f := newFakeDeployEngine(t)
 	f.oldStatus = 404
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "the container no longer exists" || len(f.calls) != 1 {
+	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "the container no longer exists" || len(f.calls) != 2 {
 		t.Fatalf("missing container: %+v", res)
 	}
 	f = newFakeDeployEngine(t)
@@ -354,12 +392,12 @@ func TestDeployStepFailuresStopTheRun(t *testing.T) {
 		step    string
 		calls   int
 	}{
-		"image missing":   {func(f *fakeDeployEngine) { f.imageStatus = 404 }, protocol.OutcomeFailed, protocol.StepImage, 3},
-		"rename conflict": {func(f *fakeDeployEngine) { f.renameStatus = 409 }, protocol.OutcomeFailed, protocol.StepRename, 4},
-		"create conflict": {func(f *fakeDeployEngine) { f.createStatus = 409 }, protocol.OutcomeFailed, protocol.StepCreate, 5},
-		"stop refused":    {func(f *fakeDeployEngine) { f.stopStatus = 500 }, protocol.OutcomeFailed, protocol.StepStop, 6},
-		"start fails":     {func(f *fakeDeployEngine) { f.startStatus = 500 }, protocol.OutcomeFailed, protocol.StepStart, 7},
-		"remove fails":    {func(f *fakeDeployEngine) { f.removeStatus = 409 }, protocol.OutcomeFailed, protocol.StepRemove, 9},
+		"image missing":   {func(f *fakeDeployEngine) { f.imageStatus = 404 }, protocol.OutcomeFailed, protocol.StepImage, 4},
+		"rename conflict": {func(f *fakeDeployEngine) { f.renameStatus = 409 }, protocol.OutcomeFailed, protocol.StepRename, 5},
+		"create conflict": {func(f *fakeDeployEngine) { f.createStatus = 409 }, protocol.OutcomeFailed, protocol.StepCreate, 6},
+		"stop refused":    {func(f *fakeDeployEngine) { f.stopStatus = 500 }, protocol.OutcomeFailed, protocol.StepStop, 7},
+		"start fails":     {func(f *fakeDeployEngine) { f.startStatus = 500 }, protocol.OutcomeFailed, protocol.StepStart, 8},
+		"remove fails":    {func(f *fakeDeployEngine) { f.removeStatus = 409 }, protocol.OutcomeFailed, protocol.StepRemove, 10},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -435,7 +473,7 @@ func TestDeployRefusesToStartWithoutTimeToFinish(t *testing.T) {
 	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[2].Step != protocol.StepRename || res.Steps[2].Outcome != protocol.OutcomeTimedOut || res.Steps[2].Detail != "not enough time left before the deadline to replace this service safely" {
 		t.Fatalf("guard: %+v", res)
 	}
-	want := []string{"GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json"}
+	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json"}
 	if got := f.steps(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("calls: %v", got)
 	}
@@ -475,5 +513,14 @@ func TestDeployTwoServicesSecondFails(t *testing.T) {
 	}
 	if res.Steps[7].Service != "db" || res.Steps[7].Outcome != protocol.OutcomeDenied {
 		t.Fatalf("db precondition: %+v", res.Steps[7])
+	}
+	infos := 0
+	for _, c := range f.steps() {
+		if c == "GET /info" {
+			infos++
+		}
+	}
+	if infos != 1 || f.steps()[0] != "GET /info" {
+		t.Fatalf("the default runtime is read once per run, first: %v", f.steps())
 	}
 }

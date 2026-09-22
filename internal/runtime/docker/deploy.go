@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -41,6 +42,13 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) 
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
 	r := &deployRun{c: c, parent: parent, req: req, res: res}
+	// The daemon default runtime is what a container created without one gets; read once per run.
+	ictx, icancel := context.WithTimeout(ctx, callBudget)
+	var info struct{ DefaultRuntime string }
+	if r.c.get(ictx, "/info", &info) == nil && info.DefaultRuntime != "" {
+		r.defaultRuntime = info.DefaultRuntime
+	}
+	icancel()
 	for _, s := range req.Services {
 		r.service(ctx, s)
 	}
@@ -51,10 +59,11 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) 
 }
 
 type deployRun struct {
-	c      *Client
-	parent context.Context
-	req    protocol.DeploymentRequest
-	res    protocol.DeploymentResult
+	c              *Client
+	parent         context.Context
+	req            protocol.DeploymentRequest
+	res            protocol.DeploymentResult
+	defaultRuntime string // "" when it could not be read; the first precondition then fails
 }
 
 // step records one outcome. The first non-success fixes the run's outcome and detail.
@@ -123,15 +132,26 @@ type inspectedForDeploy struct {
 // values differ was given them at run time, and recreation from the image would drop them.
 type imageDefaults struct {
 	Cmd, Entrypoint        []string
-	Healthcheck            json.RawMessage
+	Healthcheck            *healthcheck
 	WorkingDir, StopSignal string
+}
+
+type healthcheck struct {
+	Test                           []string
+	Interval, Timeout, StartPeriod int64
+	Retries                        int
+}
+
+// none reports no healthcheck: absent, no test, or the image's explicit ["NONE"].
+func (h *healthcheck) none() bool {
+	return h == nil || len(h.Test) == 0 || (len(h.Test) == 1 && h.Test[0] == "NONE")
 }
 
 func (a imageDefaults) differs(b imageDefaults) string {
 	switch {
 	case !slices.Equal(a.Cmd, b.Cmd) || !slices.Equal(a.Entrypoint, b.Entrypoint):
 		return "command"
-	case !bytes.Equal(nullAsEmpty(a.Healthcheck), nullAsEmpty(b.Healthcheck)):
+	case a.Healthcheck.none() != b.Healthcheck.none() || (!a.Healthcheck.none() && !reflect.DeepEqual(a.Healthcheck, b.Healthcheck)):
 		return "healthcheck"
 	case a.WorkingDir != b.WorkingDir:
 		return "working directory"
@@ -141,20 +161,13 @@ func (a imageDefaults) differs(b imageDefaults) string {
 	return ""
 }
 
-func nullAsEmpty(raw json.RawMessage) json.RawMessage {
-	if string(raw) == "null" {
-		return nil
-	}
-	return raw
-}
-
 const cannotExpress = "the container has configuration the definition cannot express: "
 
 // undescribed refuses the listed configuration recreation would drop, returning the denial
 // detail or "" when there is none. The definition expresses image, env, ports, restart and the
 // project network only; log configuration and settings outside this list and imageDefaults are
 // not compared.
-func undescribed(in inspectedForDeploy, projectNetwork string) string {
+func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) string {
 	h, n := in.HostConfig, in.NetworkSettings
 	if h == nil || in.Config == nil || n == nil || in.Mounts == nil || h.Privileged == nil || h.AutoRemove == nil || h.ReadonlyRootfs == nil {
 		return "the runtime did not report the container's full configuration"
@@ -187,7 +200,7 @@ func undescribed(in inspectedForDeploy, projectNetwork string) string {
 		return cannotExpress + "IPC mode"
 	case in.Config.User != "":
 		return cannotExpress + "user"
-	case h.Runtime != "" && h.Runtime != "runc":
+	case h.Runtime != "" && h.Runtime != defaultRuntime:
 		return cannotExpress + "runtime"
 	case h.Memory > 0 || h.MemorySwap > 0 || h.MemoryReservation > 0:
 		return cannotExpress + "memory limits"
@@ -228,6 +241,9 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 	var before inspectedForDeploy
 	var networkMode string
 	r.step(s.Name, protocol.StepPrecondition, func() (string, string) {
+		if r.defaultRuntime == "" {
+			return protocol.OutcomeFailed, "the daemon's default runtime could not be read"
+		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		if err := r.c.get(cctx, "/containers/"+old+"/json", &before); err != nil {
@@ -239,7 +255,7 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		if before.ID != s.Replaces.ContainerID || before.Image != s.Replaces.ImageID || before.Created.Unix() != s.Replaces.CreatedUnix {
 			return protocol.OutcomeDenied, "the container is not the one this plan was decided about"
 		}
-		if detail := undescribed(before, r.req.Project+"_default"); detail != "" {
+		if detail := undescribed(before, r.req.Project+"_default", r.defaultRuntime); detail != "" {
 			return protocol.OutcomeDenied, detail
 		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)

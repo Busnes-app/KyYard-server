@@ -88,7 +88,10 @@ Runs services in order under `ctx` bounded by `req.Deadline`. Every Engine call 
    `NetworkSettings`, `Mounts` or `HostConfig.Privileged`/`AutoRemove`/`ReadonlyRootfs` are absent. Refuse "the container has configuration the definition cannot express: <reason>" for
    mounts, `HostConfig.Tmpfs`, auto-remove, read-only root, privileged, `CapAdd`/`CapDrop`,
    `SecurityOpt`, `Devices`, a `PidMode` other than `""`/`private`, an `IpcMode` other than the
-   daemon defaults `""`/`private`/`shareable`, `Config.User`, a `Runtime` other than `""`/`runc`,
+   daemon defaults `""`/`private`/`shareable`, `Config.User`, a non-empty `Runtime` other than the
+   daemon's `DefaultRuntime` (read once per run from `GET /info` under `callBudget` before the
+   first service; a failed read is `failed` "the daemon's default runtime could not be read" at
+   the first precondition),
    `Memory`/`MemorySwap`/`MemoryReservation`, `NanoCpus`/`CpuShares`/`CpuQuota`/`CpusetCpus`, a
    non-zero `PidsLimit`, `Ulimits`, `Sysctls`, `DeviceRequests`, `Init` true, `UsernsMode`,
    `CgroupParent`, `GroupAdd`, `ExtraHosts`, `Dns`/`DnsOptions`/`DnsSearch`, `Links`,
@@ -96,7 +99,8 @@ Runs services in order under `ctx` bounded by `req.Deadline`. Every Engine call 
    `NetworkSettings.Networks` other than exactly the accepted network (`bridge`, or
    `<project>_default` for the project network mode). Last, `GET /images/{replaces.image_id}/json`
    (404 is `denied` "the container's image is no longer present") and refuse when the
-   container's `Cmd`, `Entrypoint` (nil equals empty), `Healthcheck` (null equals absent),
+   container's `Cmd`, `Entrypoint` (nil equals empty), `Healthcheck` (`Test`, `Interval`, `Timeout`,
+   `StartPeriod`, `Retries`; absent, no test and `["NONE"]` all mean none),
    `WorkingDir` or `StopSignal` differs from the image's: a run-time override would be replaced
    by the image default. Log configuration (it mirrors the daemon default, which recreation on
    the same daemon reproduces) and settings outside this list are not compared. A container 404 is `denied` "the container no
