@@ -79,8 +79,8 @@ UNIQUE(instance_id)
   `application.read`; list is newest first, bounded to 100. Responses carry a computed
   `expired` boolean; nothing rewrites state on read.
 - `PreflightApplication` is refactored so the transaction body becomes
-  `preflight(ctx, tx, a, id, lock) (*DeploymentPreflight, *ApplicationMapping, error)` and both
-  callers share it. The public function keeps its contract unchanged.
+  `preflight(ctx, tx, a, id, lock)` returning the preflight, mapping, parsed spec, parsed
+  snapshot and revision digest, and both callers share it. The public function keeps its contract unchanged.
 - `ReleaseApplication` gains the live-plan check and the delete.
 
 `internal/permissions`: `ApplicationDeploy = "application.deploy"` for organization admin,
