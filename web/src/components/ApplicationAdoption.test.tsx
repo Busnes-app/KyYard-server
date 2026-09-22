@@ -40,3 +40,14 @@ it('names the application and host when releasing an exact instance', async () =
   expect(confirm).toHaveBeenCalledWith(expect.stringContaining('App'));
   await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce());
 });
+it('shows fixed text for a live plan instead of the server body when release is refused', async () => {
+  vi.stubGlobal('confirm', vi.fn(() => true));
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'DELETE') return json({ error: 'secret-canary', code: 'deployment_planned' }, 409);
+    return json([]);
+  }));
+  render(<ApplicationAdoption base="/applications/app" applicationName="App" org="a" env="env" instance={{ id: 'instance', application_id: 'app', endpoint_id: 'host', endpoint_name: 'Docker host', project: 'shop', revision: 1, mapping_version: 0, container_count: 0, containers: [] }} onChanged={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Release adoption' }));
+  await screen.findByText(/deployment plan for this instance is still valid/);
+  expect(document.body.textContent).not.toContain('secret-canary');
+});

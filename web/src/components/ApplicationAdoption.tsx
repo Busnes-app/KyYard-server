@@ -22,6 +22,12 @@ export function ApplicationAdoption({ base, org, env, applicationName, instance,
       const r = await secureFetch(`${base}/adoption`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instance_id: instance.id, confirm: instance.project }) });
       if (r.ok) { onChanged(); return; }
       setUncertain(r.status >= 500);
+      if (r.status === 409) {
+        const payload: unknown = await r.json().catch(() => null);
+        const code = payload && typeof payload === 'object' && 'code' in payload ? (payload as { code?: unknown }).code : undefined;
+        setMessage(code === 'deployment_planned' ? 'A deployment plan for this instance is still valid. Plans expire ten minutes after they are made; release after that.' : 'Release refused. Refresh applications and check your access.');
+        return;
+      }
       setMessage(r.status >= 500 ? 'Outcome unknown. Refresh applications before continuing.' : 'Release refused. Refresh applications and check your access.');
     } catch { setUncertain(true); setMessage('Outcome unknown. Refresh applications before continuing.'); }
     finally { setBusy(false); }
