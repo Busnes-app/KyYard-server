@@ -56,8 +56,9 @@ UNIQUE(instance_id)
   so replacing it loses nothing. The apply slice will add non-terminal states and turn the unique
   constraint into a partial index over live states.
 - No foreign key to `application_instances`. Release checks explicitly: a `planned` row whose
-  `expires_at` is in the future refuses release with `ErrInUse` (409). An expired plan does not
-  block release; release deletes the instance's plan rows.
+  `expires_at` is in the future refuses release with `ErrDeploymentPlanned` (409
+  `deployment_planned`). An expired plan does not block release; release deletes the instance's
+  plan rows.
 - `ON DELETE CASCADE` from `applications`: discarding a draft already requires release first,
   and a plan is not deployed history.
 - SQLite backup drill: the table is covered by the store's snapshot recovery test alongside
