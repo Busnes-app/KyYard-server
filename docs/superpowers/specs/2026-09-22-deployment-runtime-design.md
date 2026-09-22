@@ -8,7 +8,8 @@ capability is advertised, no route exists. PR B wires it.
 Decisions recorded 2026-09-22 (Yoshi): two PRs, A then B; images must already be present on
 the host (no pull, no registry credentials until M7a); replacement is stop, rename, create,
 start, remove, with no automatic rollback; secrets travel only inside the apply frame and become
-container environment.
+container environment. Ruling 2026-09-22: Compose project networks (`<project>_default`) are
+accepted and preserved with the service alias; other network modes are refused.
 
 ## Wire types (`internal/agent/protocol/deployment.go`)
 
@@ -76,10 +77,14 @@ Runs services in order under `ctx` bounded by `req.Deadline`. Every Engine call 
 
 1. **precondition**: `GET /containers/{replaces.id}/json`. Refuse (`denied`) unless `Id`,
    `Image` and `Created.Unix()` equal `Replaces`, `Mounts` is empty, `HostConfig.NetworkMode` is
-   `default` or `bridge`, and `HostConfig.Privileged` is false. A 404 is `denied` "the container
-   no longer exists". The subset the plan expresses has no mounts or networks, so a container
-   that has them would lose them on recreation; refusing is the safe default and the message
-   names the reason. The old container's `Name` is recorded for the rename.
+   `default`, `bridge` or the Compose project network (`<project>_default`), and
+   `HostConfig.Privileged` is false. A 404 is `denied` "the container no longer exists". The
+   subset the plan expresses has no mounts or extra networks, so a container that has them would
+   lose them on recreation; refusing is the safe default and the message names the reason. When
+   the old container is on the project network, the new one is created on it
+   (`HostConfig.NetworkMode`) with `NetworkingConfig.EndpointsConfig[<project>_default].Aliases =
+   [service]` so Compose service DNS survives. The old container's `Name` is recorded for the
+   rename.
 2. **image**: `GET /images/{image_id}/json`; `Id` must equal `ImageID`. 404 is `failed`
    "the pinned image is not present on this host".
 3. **stop**: `POST /containers/{old}/stop?t=10`; 304 counts as succeeded.
