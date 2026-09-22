@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +56,17 @@ func TestDeploymentRequestValidation(t *testing.T) {
 			s.ContainerName = "shop-db-1"
 			r.Services = append(r.Services, s)
 		},
+		"duplicate port in service": func(r *DeploymentRequest) {
+			p := r.Services[0].Ports[0]
+			p.Container = 81
+			r.Services[0].Ports = append(r.Services[0].Ports, p)
+		},
+		"duplicate port across services": func(r *DeploymentRequest) {
+			s := r.Services[0]
+			s.Name, s.ContainerName, s.Replaces.ContainerID = "db", "shop-db-1", strings.Repeat("d", 64)
+			s.Ports = []Port{{Container: 5432, Host: 8080, Protocol: "tcp", HostIP: "127.0.0.1"}}
+			r.Services = append(r.Services, s)
+		},
 		"duplicate name": func(r *DeploymentRequest) {
 			s := r.Services[0]
 			s.Name = "db"
@@ -101,5 +114,57 @@ func TestDeploymentResultValidation(t *testing.T) {
 	skipped.Steps = []DeploymentStep{{Service: "web", Step: StepStop, Outcome: OutcomeSkipped}}
 	if err := skipped.Validate(); err != nil {
 		t.Fatalf("skipped step refused: %v", err)
+	}
+}
+
+// The largest result Deploy can produce must fit the frame, or an honest agent could not report.
+// Deploy writes a detail only on the step that ended the run; succeeded and skipped steps carry
+// none. The run's own detail is at its maximum in both cases.
+func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
+	steps := []string{StepPrecondition, StepImage, StepRename, StepCreate, StepStop, StepStart, StepRemove}
+	detail := strings.Repeat("d", MaxDeploymentStepDetailBytes)
+	build := func(outcome string, stepOutcome func(service, step int) string, identities int) DeploymentResult {
+		r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: outcome, Detail: strings.Repeat("r", MaxResultDetailBytes)}
+		for i := 0; i < MaxDeploymentServices; i++ {
+			name := fmt.Sprintf("s%02d", i) + strings.Repeat("x", 60)
+			for j, step := range steps {
+				s := DeploymentStep{Service: name, Step: step, Outcome: stepOutcome(i, j)}
+				if s.Outcome != OutcomeSucceeded && s.Outcome != OutcomeSkipped {
+					s.Detail = detail
+				}
+				r.Steps = append(r.Steps, s)
+			}
+			if i < identities {
+				r.Services = append(r.Services, DeploymentIdentity{Service: name, ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000})
+			}
+		}
+		return r
+	}
+	for name, r := range map[string]DeploymentResult{
+		"all succeeded": build(OutcomeSucceeded, func(int, int) string { return OutcomeSucceeded }, MaxDeploymentServices),
+		"failed at last step": build(OutcomeFailed, func(i, j int) string {
+			if i == MaxDeploymentServices-1 && j == len(steps)-1 {
+				return OutcomeFailed
+			}
+			return OutcomeSucceeded
+		}, MaxDeploymentServices),
+		"failed at first step": build(OutcomeTimedOut, func(i, j int) string {
+			if i == 0 && j == 0 {
+				return OutcomeTimedOut
+			}
+			return OutcomeSkipped
+		}, 0),
+	} {
+		if err := r.Validate(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		raw, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) > MaxDeploymentResultBytes {
+			t.Fatalf("%s: %d bytes exceeds %d", name, len(raw), MaxDeploymentResultBytes)
+		}
+		t.Logf("%s: %d of %d bytes", name, len(raw), MaxDeploymentResultBytes)
 	}
 }

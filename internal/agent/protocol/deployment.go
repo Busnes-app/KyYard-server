@@ -17,7 +17,7 @@ const (
 	TypeDeploymentResult         = "deployment.result"
 	CapabilityDeploymentApply    = "deployment.apply"
 	MaxDeploymentRequestBytes    = 192 << 10
-	MaxDeploymentResultBytes     = 64 << 10
+	MaxDeploymentResultBytes     = 160 << 10
 	DeploymentLifetime           = 15 * time.Minute
 	MaxDeploymentServices        = 100
 	MaxDeploymentEnvEntries      = 128
@@ -79,7 +79,12 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 	if len(r.Services) == 0 || len(r.Services) > MaxDeploymentServices {
 		return errors.New("invalid service count")
 	}
-	names, containers, replaces := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	type binding struct {
+		ip       string
+		port     int
+		protocol string
+	}
+	names, containers, replaces, bindings := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}
 	for _, s := range r.Services {
 		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !fullImageID(s.ImageID) || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] {
 			return errors.New("invalid deployment service")
@@ -97,6 +102,11 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 					return errors.New("invalid host address")
 				}
 			}
+			b := binding{p.HostIP, p.Host, p.Protocol}
+			if bindings[b] {
+				return errors.New("duplicate port binding")
+			}
+			bindings[b] = true
 		}
 		if len(s.Env) > MaxDeploymentEnvEntries {
 			return errors.New("too many environment entries")
