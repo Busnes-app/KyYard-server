@@ -73,3 +73,11 @@ func TestApplicationRoleMatrix(t *testing.T) {
 		}
 	}
 }
+
+func TestApplicationDeployFollowsTheMatrix(t *testing.T) {
+	for role, want := range map[string]bool{"organization_admin": true, "environment_admin": true, "developer": true, "operator": false, "read_only": false, "": false} {
+		if got := Allows(role, ApplicationDeploy); got != want {
+			t.Fatalf("%q application.deploy = %v, want %v", role, got, want)
+		}
+	}
+}

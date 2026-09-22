@@ -29,7 +29,8 @@ func TestDeploymentPreflightImages(t *testing.T) {
 		{name: "incomplete", ref: "nginx:1", blocker: "image_inventory_incomplete", truncated: true, images: []protocol.Image{{ID: id, Tags: []string{"nginx:1"}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := &ApplicationMapping{Preview: &AdoptionPreview{}, Version: 1, MappedRevision: 1, Bindings: map[string]string{"web": "owned"}}
+			owned := AdoptedContainer{ID: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64), CreatedAt: time.Unix(1700000000, 0)}
+			m := &ApplicationMapping{Preview: &AdoptionPreview{Containers: []AdoptedContainer{owned}}, Version: 1, MappedRevision: 1, Bindings: map[string]string{"web": owned.ID}}
 			m.Preview.Revision = 1
 			snapshot := protocol.Snapshot{Images: tc.images}
 			if tc.truncated {
@@ -45,6 +46,34 @@ func TestDeploymentPreflightImages(t *testing.T) {
 					t.Fatalf("resolution: %+v", row)
 				}
 			} else if row.ImageID != "" || !slices.Contains(row.Blockers, tc.blocker) {
+				t.Fatalf("expected %s: %+v", tc.blocker, row)
+			}
+		})
+	}
+}
+
+func TestDeploymentPreflightReplacementIdentity(t *testing.T) {
+	containerID := strings.Repeat("c", 64)
+	for _, tc := range []struct {
+		name    string
+		imageID string
+		blocker string
+	}{
+		{name: "valid identity", imageID: "sha256:" + strings.Repeat("d", 64)},
+		{name: "missing sha256 prefix", imageID: strings.Repeat("b", 64), blocker: "replacement_identity_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owned := AdoptedContainer{ID: containerID, ImageID: tc.imageID, CreatedAt: time.Unix(1700000000, 0)}
+			m := &ApplicationMapping{Preview: &AdoptionPreview{Containers: []AdoptedContainer{owned}}, Version: 1, MappedRevision: 1, Bindings: map[string]string{"web": containerID}}
+			m.Preview.Revision = 1
+			snapshot := protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}}
+			p := buildDeploymentPreflight(m, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}}, snapshot)
+			row := p.Services[0]
+			if tc.blocker == "" {
+				if row.InspectionTarget == nil || slices.Contains(row.Blockers, "replacement_identity_invalid") {
+					t.Fatalf("valid identity flagged: %+v", row)
+				}
+			} else if row.InspectionTarget != nil || !slices.Contains(row.Blockers, tc.blocker) {
 				t.Fatalf("expected %s: %+v", tc.blocker, row)
 			}
 		})

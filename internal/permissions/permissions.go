@@ -42,6 +42,9 @@ const (
 	// stops it at the developer and audits every session.
 	ContainerLogs Action = "container.logs"
 	ContainerExec Action = "container.exec"
+	// ApplicationDeploy mints and, in a later slice, applies a deployment plan. The matrix gives
+	// it to developers because a plan is desired state made concrete, not host authority.
+	ApplicationDeploy Action = "application.deploy"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -52,12 +55,12 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "environment_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ApplicationAdopt, ApplicationRelease, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
 			return true
 		}
 	case "operator":
@@ -71,7 +74,7 @@ func Allows(role string, action Action) bool {
 		// A developer reads logs and edits saved desired state, but has no runtime
 		// operation, destruction or exec authority.
 		switch action {
-		case ApplicationRead, ApplicationEdit, OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs:
+		case ApplicationRead, ApplicationEdit, ApplicationDeploy, OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs:
 			return true
 		}
 	case "read_only":

@@ -20,12 +20,13 @@ var (
 	// ErrEndpointOffline says the endpoint is not connected, so there is nowhere to send a
 	// command. It is distinct from a bad request: the caller asked for something reasonable
 	// that cannot happen right now.
-	ErrEndpointOffline = errors.New("endpoint is not connected")
-	ErrInUse           = errors.New("record is still referenced")
-	ErrRotationPending = errors.New("a rotated key is already awaiting review")
-	ErrRotationBlocked = errors.New("rotation is blocked until a duplicate connection is cleared")
-	ErrSessionExpired  = errors.New("session expired")
-	ErrPairingExpired  = errors.New("pairing session expired")
+	ErrEndpointOffline   = errors.New("endpoint is not connected")
+	ErrInUse             = errors.New("record is still referenced")
+	ErrRotationPending   = errors.New("a rotated key is already awaiting review")
+	ErrRotationBlocked   = errors.New("rotation is blocked until a duplicate connection is cleared")
+	ErrSessionExpired    = errors.New("session expired")
+	ErrPairingExpired    = errors.New("pairing session expired")
+	ErrDeploymentPlanned = errors.New("a live deployment plan exists")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
@@ -161,6 +162,9 @@ type TenancyStore interface {
 	AppendApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int, spec ApplicationSpec) (int, error)
 	ListApplications(ctx context.Context, access TenantAccess, offset, limit int) ([]Application, error)
 	PreflightApplication(ctx context.Context, access TenantAccess, applicationID string) (*DeploymentPreflight, error)
+	PlanDeployment(ctx context.Context, access TenantAccess, applicationID string, request PlanRequest) (*Deployment, error)
+	ReadDeployment(ctx context.Context, access TenantAccess, applicationID, id string) (*Deployment, error)
+	ListDeployments(ctx context.Context, access TenantAccess, applicationID string) ([]Deployment, error)
 	ReadApplicationMapping(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMapping, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)

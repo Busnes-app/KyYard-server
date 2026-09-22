@@ -84,7 +84,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `application.release` (release recorded ownership only) | ✓ | ✓ | – | – | – | no | success, exact instance |
 | `application.adopt` / `import` | ✓ | ✓ | – | – | – | no | success |
 | `application.edit` (create a new revision from desired configuration) | ✓ | ✓ | – | ✓ | – | secret references only | success, target = revision |
-| `application.deploy` (preview, deploy approved revision) | ✓ | ✓ | – | ✓ | – | no | success/partial/failure/unknown per step |
+| `application.deploy` (preview, deploy approved revision; plan implemented, apply pending) | ✓ | ✓ | – | ✓ | – | no | success/partial/failure/unknown per step |
 | `application.update` (manual image update, 0.1) | ✓ | ✓ | ✓ | – | – | no | success/failure |
 | `application.destroy` (remove application, keep data) | ✓ | ✓ | – | – | – | no | success |
 | `secret.reveal` (internal imported-value resolution) | ✓ | – | – | – | – | plaintext, only after audit commits | success/failure |

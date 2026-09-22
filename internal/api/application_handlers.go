@@ -201,3 +201,32 @@ func (s *Server) handleApplicationPreflight(w http.ResponseWriter, r *http.Reque
 	}
 	s.writeJSON(w, http.StatusOK, result)
 }
+func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	var input store.PlanRequest
+	if strictJSON(r, &input) != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, d)
+}
+func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	list, err := s.store.Tenancy().ListDeployments(r.Context(), a, r.PathValue("application"))
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, list)
+}
+func (s *Server) handleDeployment(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	d, err := s.store.Tenancy().ReadDeployment(r.Context(), a, r.PathValue("application"), r.PathValue("deployment"))
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, d)
+}
