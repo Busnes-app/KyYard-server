@@ -96,7 +96,7 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
           <label><input type="checkbox" checked={clear} onChange={(e) => { setClear(e.target.checked); setCredential(''); }} />Clear credential</label>
           {privateEnabled && <label><input type="checkbox" checked={form.allowPrivate} onChange={(e) => setForm({ ...form, allowPrivate: e.target.checked })} />Allow private addresses</label>}
           {policy.data && !privateEnabled && <p style={{ flexBasis: '100%', margin: 0, color: 'var(--ink)', fontSize: 13 }}>{privateDisabled}</p>}
-          <button type="submit" disabled={busy || !form.host.trim() || !form.name.trim()}>Save registry</button>
+          <button type="submit" disabled={busy || !policy.data || !form.host.trim() || !form.name.trim()}>Save registry</button>
           {editing && <button type="button" className="btn-secondary" onClick={() => { reset(); setMessage(''); }}>Cancel</button>}
         </form>
       )}

@@ -203,8 +203,8 @@ func (t *tenancyStore) SetAnonymousPull(ctx context.Context, a TenantAccess, ena
 }
 
 func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess, action permissions.Action, ref string, key []byte) (*RegistryAccess, error) {
-	// Every member holds registry.read; the credential needs the operation's own permission.
-	if action == permissions.RegistryRead {
+	// The credential is unlocked only by an operation that uses it, never by a read permission.
+	if action != permissions.ImagePull && action != permissions.ApplicationDeploy {
 		return nil, ErrForbidden
 	}
 	parsed, err := registry.ParseReference(ref)

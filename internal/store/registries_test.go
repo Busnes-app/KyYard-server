@@ -229,6 +229,9 @@ func TestRegistryRoles(t *testing.T) {
 			}
 		}
 	}
+	if _, err := ts.ResolveRegistryAccess(ctx, admin, permissions.ApplicationRead, "ghcr.io/org/app", key); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("admin resolve under application.read: %v, want ErrForbidden", err)
+	}
 	if _, err := ts.ResolveRegistryAccess(ctx, admin, permissions.RegistryRead, "ghcr.io/org/app", key); !errors.Is(err, ErrForbidden) {
 		t.Errorf("admin resolve under registry.read: %v", err)
 	}
