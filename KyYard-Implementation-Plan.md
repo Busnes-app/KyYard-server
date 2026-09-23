@@ -2,7 +2,7 @@
 
 # KyYard implementation plan
 
-Updated 2026-09-18. Compose import and explicit snapshot adoption are implemented; section 8 records the remaining M6 work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
+Updated 2026-09-22. Compose import, explicit snapshot adoption and deployment apply are implemented; section 8 records the remaining M6 work. Milestone acceptance gates remain independent of implementation status; the 24-hour capacity soak has not run.
 
 ## 1. Outcome and scope
 
@@ -235,9 +235,11 @@ Current M6 live preflight UI: mapped services expose an on-demand, cancellable n
 
 Implemented M6 deployment plans: persisted executable previews minted from a clean preflight under `application.deploy`, binding instance, mapping version, revision, spec digest, pinned image IDs and replaced-container identities, expiring after 10 minutes, one per instance, refusing release while live. No agent command.
 
-Implemented M6 deployment runtime: `deployment.apply`/`deployment.result` wire types with bounds, and `docker.Client.Deploy` replacing mapped containers natively through the Engine API with preconditions, per-step outcomes, no pull, no volume access and no rollback, proven against a fake Engine and real Docker in CI. Not reachable from the server yet.
+Implemented M6 deployment runtime: `deployment.apply`/`deployment.result` wire types with bounds, and `docker.Client.Deploy` replacing mapped containers natively through the Engine API with preconditions, per-step outcomes, no pull, no volume access and no rollback, proven against a fake Engine and real Docker in CI.
 
-Next M6 slice: the apply transport (agent frame handling and ledger, capability, migration for deployment states and events, apply route with secret resolution, resource rebinding and `current_revision`, UI apply and status), then history, reapply and remove.
+Implemented M6 apply: the agent runs `Deploy` one at a time on its root context, persists results to a durable ledger before sending and re-sends them across reconnects; the wire is capped both directions and a protocol violation closes the socket. The apply route rechecks every plan precondition, resolves secret values internally, and moves `planned → applying` by compare-and-set; `SettleDeployment` rebinds `application_resources` to the new containers, advances `current_revision`/`previous_revision` on success, and writes the apply audit row in the same transaction, with `unknown` non-terminal until a later result or the deadline sweep resolves it. The UI applies a plan with a typed confirmation, polls per-step status while applying and shows fixed-text outcomes. Proven against a fake agent socket and a real Docker regression (`TestApplyRealDocker`).
+
+Next M6 slice: deployment history beyond the list, deliberate reapply and application removal, then M7a (registry access, detection, deliberate recreate).
 
 The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 
