@@ -376,6 +376,9 @@ func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 	if n, err := s.store.Tenancy().AbandonCommands(wctx, c.endpointID); err == nil && n > 0 {
 		log.Printf("agent %s: %d commands left unknown when the connection ended", c.endpointID, n)
 	}
+	if n, err := s.store.Tenancy().AbandonDeployments(wctx, c.endpointID); err == nil && n > 0 {
+		log.Printf("agent %s: %d deployments left unknown when the connection ended", c.endpointID, n)
+	}
 }
 
 // handleAgentFrame applies one received frame and reports whether the session must end. A
@@ -416,7 +419,11 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 		return true
 	}
-	if f.Type != protocol.TypeInventory && f.Type != protocol.TypeLogChunk && len(f.Payload) > maxControlPayload {
+	if f.Type == protocol.TypeDeploymentResult && len(f.Payload) > protocol.MaxDeploymentResultBytes {
+		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+		return true
+	}
+	if f.Type != protocol.TypeInventory && f.Type != protocol.TypeLogChunk && f.Type != protocol.TypeDeploymentResult && len(f.Payload) > maxControlPayload {
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 		return true
 	}
@@ -481,6 +488,23 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 				id = res.ID
 			}
 			log.Printf("agent %s: settling command %s: %v", c.endpointID, id, err)
+		}
+	case protocol.TypeDeploymentResult:
+		if pending {
+			return false
+		}
+		var res protocol.DeploymentResult
+		if err := json.Unmarshal(f.Payload, &res); err != nil || res.Validate() != nil {
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		// ErrNotFound is a result for a row this endpoint may not settle: nothing to report.
+		if err := ts.SettleDeployment(fctx, c.endpointID, res); err != nil && !errors.Is(err, store.ErrNotFound) {
+			id := "an unrecognised id"
+			if _, uErr := uuid.Parse(res.Deployment); uErr == nil {
+				id = res.Deployment
+			}
+			log.Printf("agent %s: settling deployment %s: %v", c.endpointID, id, err)
 		}
 	case protocol.TypeInspectionResult:
 		var result protocol.InspectionResult

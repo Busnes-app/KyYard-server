@@ -1,0 +1,207 @@
+package api_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/google/uuid"
+)
+
+// Apply sends the resolved plan to the agent once, the agent's answer settles it and rebinds
+// the resources it replaced, and a socket that ends first leaves the row unknown. Resolved
+// values reach the agent and nobody else.
+func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"}))
+	must(ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"}))
+	admin := loginAs(t, s, st, "envadmin", "user")
+	viewer := loginAs(t, s, st, "viewer", "user")
+	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"}))
+	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_viewer", Role: store.RoleReadOnly, Status: "active"}))
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-apply")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	const canary = "apply-secret-canary"
+	request := func(cookie *http.Cookie, method, path, body string, status int) string {
+		t.Helper()
+		w := tenantRequest(s, cookie, method, path, body, true)
+		if w.Code != status {
+			t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), canary) {
+			t.Fatalf("%s %s leaked a resolved value", method, path)
+		}
+		return w.Body.String()
+	}
+	oldID, newID := strings.Repeat("a", 64), strings.Repeat("e", 64)
+	oldImage, newImage := "sha256:"+strings.Repeat("b", 64), "sha256:"+strings.Repeat("c", 64)
+	created := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	gen := uint64(time.Now().Unix())
+	inventory := func(sock *agentSocket, id, image string, at time.Time) {
+		t.Helper()
+		gen++
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{
+			Generation: gen, Engine: protocol.Engine{Version: "1"},
+			Containers: []protocol.Container{{ID: id, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: at, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}},
+			Images:     []protocol.Image{{ID: newImage, Tags: []string{"nginx:1"}, Digests: []string{}}},
+			Networks:   []protocol.Network{}, Volumes: []protocol.Volume{},
+		})
+	}
+	// sync proves every frame written before it has been handled: the loop is sequential.
+	sync := func(sock *agentSocket) {
+		t.Helper()
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+		if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeHeartbeat {
+			t.Fatalf("expected a heartbeat, got %s", f.Type)
+		}
+	}
+	online := func(capabilities []string) *agentSocket {
+		t.Helper()
+		waitFor(t, func() bool { return !s.Connected(ag.id) })
+		sock, reason := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+		if sock == nil {
+			t.Fatalf("connect refused: %s", reason)
+		}
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities})
+		return sock
+	}
+
+	sock := online([]string{protocol.CapabilityDeploymentApply})
+	inventory(sock, oldID, oldImage, created)
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+	sync(sock)
+
+	base := "/api/organizations/a/environments/env-a/applications"
+	importBody, _ := json.Marshal(map[string]string{"name": "shop", "compose": "services: {web: {image: nginx:1, environment: {TOKEN: " + canary + "}}}"})
+	var app store.Application
+	must(json.Unmarshal([]byte(request(admin, "POST", base, string(importBody), 201)), &app))
+	adoption := base + "/" + app.ID + "/adoption"
+	var preview store.AdoptionPreview
+	must(json.Unmarshal([]byte(request(admin, "GET", adoption+"?endpoint="+ag.id+"&project=shop", "", 200)), &preview))
+	adoptionBody, _ := json.Marshal(store.AdoptionRequest{EndpointID: ag.id, Project: "shop", Digest: preview.Digest, Confirm: "shop"})
+	var instance store.ApplicationInstance
+	must(json.Unmarshal([]byte(request(admin, "POST", adoption, string(adoptionBody), 201)), &instance))
+	mapping := base + "/" + app.ID + "/mapping"
+	var mapped store.ApplicationMapping
+	must(json.Unmarshal([]byte(request(admin, "GET", mapping, "", 200)), &mapped))
+	mappingBody, _ := json.Marshal(store.MappingRequest{InstanceID: instance.ID, Version: mapped.Version, Digest: mapped.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": oldID}})
+	request(admin, "PUT", mapping, string(mappingBody), 204)
+	deployments := base + "/" + app.ID + "/deployments"
+	planBody, _ := json.Marshal(store.PlanRequest{InstanceID: instance.ID, MappingVersion: mapped.Version + 1, Revision: 1, Confirm: "shop"})
+	plan := func() store.Deployment {
+		t.Helper()
+		var d store.Deployment
+		must(json.Unmarshal([]byte(request(admin, "POST", deployments, string(planBody), 201)), &d))
+		return d
+	}
+	state := func(id string) store.Deployment {
+		t.Helper()
+		var d store.Deployment
+		must(json.Unmarshal([]byte(request(admin, "GET", deployments+"/"+id, "", 200)), &d))
+		return d
+	}
+
+	planned := plan()
+	apply := deployments + "/" + planned.ID + "/apply"
+	request(nil, "POST", apply, `{"confirm":"shop"}`, 401)
+	if w := tenantRequest(s, admin, "POST", apply, `{"confirm":"shop"}`, false); w.Code != 403 {
+		t.Fatalf("apply without CSRF: %d", w.Code)
+	}
+	request(viewer, "POST", apply, `{"confirm":"shop"}`, 403)
+	var applying store.Deployment
+	must(json.Unmarshal([]byte(request(admin, "POST", apply, `{"confirm":"shop"}`, 202)), &applying))
+	if applying.State != "applying" || applying.ID != planned.ID {
+		t.Fatalf("the 202 body is not the applying row: %+v", applying)
+	}
+	frame := readEnvelope(t, ctx, sock.conn)
+	if frame.Type != protocol.TypeDeploymentApply {
+		t.Fatalf("expected %s, got %s", protocol.TypeDeploymentApply, frame.Type)
+	}
+	var sent protocol.DeploymentRequest
+	must(json.Unmarshal(frame.Payload, &sent))
+	if sent.Deployment != planned.ID || len(sent.Services) != 1 || sent.Services[0].Env["TOKEN"] != canary || sent.Services[0].ContainerName != "shop-web" {
+		t.Fatalf("the frame did not carry the resolved plan: %+v", sent)
+	}
+	if got := state(planned.ID); got.State != "applying" {
+		t.Fatalf("GET after apply: %+v", got)
+	}
+	request(admin, "POST", apply, `{"confirm":"shop"}`, 409)
+
+	// An answer for a deployment this endpoint was not given changes nothing. It is larger than
+	// a control frame, which a result may be.
+	steps := make([]protocol.DeploymentStep, 400)
+	for i := range steps {
+		steps[i] = protocol.DeploymentStep{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeFailed, Detail: strings.Repeat("d", 200)}
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{Deployment: uuid.NewString(), Outcome: protocol.OutcomeFailed, Steps: steps, Services: []protocol.DeploymentIdentity{}})
+	sync(sock)
+	if got := state(planned.ID); got.State != "applying" {
+		t.Fatalf("a foreign result moved the row: %+v", got)
+	}
+	// A result frame past its bound ends the session.
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{Deployment: planned.ID, Outcome: protocol.OutcomeFailed, Detail: strings.Repeat("x", protocol.MaxDeploymentResultBytes)})
+	if _, _, err := sock.conn.Read(ctx); err == nil {
+		t.Fatal("an oversized result frame was accepted")
+	}
+
+	// The real answer after reconnecting settles the row and rebinds the replaced container.
+	sock = online([]string{protocol.CapabilityDeploymentApply})
+	replacedAt := created.Add(30 * time.Minute)
+	inventory(sock, newID, newImage, replacedAt)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{
+		Deployment: planned.ID, Outcome: protocol.OutcomeSucceeded,
+		Steps:    []protocol.DeploymentStep{{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}},
+		Services: []protocol.DeploymentIdentity{{Service: "web", ContainerID: newID, ImageID: newImage, CreatedUnix: replacedAt.Unix()}},
+	})
+	sync(sock)
+	waitFor(t, func() bool { return state(planned.ID).State == protocol.OutcomeSucceeded })
+	must(json.Unmarshal([]byte(request(admin, "GET", mapping, "", 200)), &mapped))
+	if len(mapped.Preview.Containers) != 1 || mapped.Preview.Containers[0].ID != newID || mapped.Bindings["web"] != newID {
+		t.Fatalf("the mapping still names the replaced container: %+v", mapped)
+	}
+	var instances []store.ApplicationInstance
+	must(json.Unmarshal([]byte(request(admin, "GET", base+"/instances", "", 200)), &instances))
+	if len(instances) != 1 || instances[0].CurrentRevision != 1 {
+		t.Fatalf("the instance did not record the applied revision: %+v", instances)
+	}
+
+	// The socket ending mid-apply leaves the row unknown.
+	second := plan()
+	request(admin, "POST", deployments+"/"+second.ID+"/apply", `{"confirm":"shop"}`, 202)
+	if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeDeploymentApply {
+		t.Fatalf("expected the second apply frame, got %s", f.Type)
+	}
+	sock.conn.CloseNow()
+	waitFor(t, func() bool { return state(second.ID).State == protocol.OutcomeUnknown })
+
+	// An agent that does not advertise the capability is never sent a plan.
+	sock = online(nil)
+	inventory(sock, newID, newImage, replacedAt)
+	sync(sock)
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+	third := plan()
+	request(admin, "POST", deployments+"/"+third.ID+"/apply", `{"confirm":"shop"}`, 501)
+	if got := state(third.ID); got.State != "planned" {
+		t.Fatalf("a refused apply moved the row: %+v", got)
+	}
+	sock.conn.CloseNow()
+}

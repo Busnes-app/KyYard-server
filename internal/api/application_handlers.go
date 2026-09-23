@@ -3,8 +3,10 @@ package api
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/applications"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
@@ -229,4 +231,46 @@ func (s *Server) handleDeployment(w http.ResponseWriter, r *http.Request, a stor
 		return
 	}
 	s.writeJSON(w, http.StatusOK, d)
+}
+
+// handleApplyDeployment records the apply before the frame leaves; a frame that cannot be
+// queued fails the row rather than leaving it applying with nothing on the wire.
+func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	var input struct {
+		Confirm string `json:"confirm"`
+	}
+	if strictJSON(r, &input) != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	app, id := r.PathValue("application"), r.PathValue("deployment")
+	plan, err := s.store.Tenancy().ReadDeployment(r.Context(), a, app, id)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, plan.EndpointID)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if !slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentApply) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable deployments")
+		return
+	}
+	if !s.Connected(plan.EndpointID) {
+		s.tenantError(w, store.ErrEndpointOffline)
+		return
+	}
+	applied, req, err := s.store.Tenancy().ApplyDeployment(r.Context(), a, app, id, input.Confirm, s.config.Security.EncryptionKey)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if !s.agents.deliver(plan.EndpointID, envelope(protocol.TypeDeploymentApply, req)) {
+		_ = s.store.Tenancy().FailDeployment(r.Context(), applied.ID, "the endpoint disconnected before the deployment was sent")
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The endpoint disconnected before the deployment was sent", "code": "deployment_not_sent"})
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, applied)
 }
