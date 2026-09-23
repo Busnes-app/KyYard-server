@@ -33,6 +33,9 @@ const (
 	StepStart                    = "start"
 	StepRemove                   = "remove"
 	OutcomeSkipped               = "skipped"
+	TypeDeploymentRemove         = "deployment.remove"
+	CapabilityDeploymentRemove   = "deployment.remove"
+	MaxRemovalTargets            = 1000
 )
 
 var (
@@ -165,6 +168,41 @@ func (r DeploymentResult) Validate() error {
 		if !deploymentService.MatchString(id.Service) || (InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil {
 			return errors.New("invalid deployment identity")
 		}
+	}
+	return nil
+}
+
+// RemovalRequest tears down services a deployment no longer plans, identified by the same
+// pinned target an inspection or replacement would use rather than a name a daemon restart
+// could reassign.
+type RemovalRequest struct {
+	Deployment string          `json:"deployment"`
+	Endpoint   string          `json:"endpoint"`
+	Project    string          `json:"project"`
+	Deadline   time.Time       `json:"deadline"`
+	Containers []RemovalTarget `json:"containers"`
+}
+type RemovalTarget struct {
+	Service string           `json:"service"`
+	Target  InspectionTarget `json:"target"`
+}
+
+func (r RemovalRequest) Validate(now time.Time) error {
+	if !deploymentUUID.MatchString(r.Deployment) || !execStreamID.MatchString(r.Endpoint) || !deploymentProject.MatchString(r.Project) {
+		return errors.New("invalid removal identity")
+	}
+	if !r.Deadline.After(now) || r.Deadline.After(now.Add(DeploymentLifetime)) {
+		return errors.New("invalid removal deadline")
+	}
+	if len(r.Containers) == 0 || len(r.Containers) > MaxRemovalTargets {
+		return errors.New("invalid container count")
+	}
+	names, containers := map[string]bool{}, map[string]bool{}
+	for _, c := range r.Containers {
+		if !deploymentService.MatchString(c.Service) || names[c.Service] || c.Target.Validate() != nil || containers[c.Target.ContainerID] {
+			return errors.New("invalid removal target")
+		}
+		names[c.Service], containers[c.Target.ContainerID] = true, true
 	}
 	return nil
 }
