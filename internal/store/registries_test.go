@@ -34,6 +34,14 @@ func registryAudit(t *testing.T, st *SQLStore, action, resource string) (details
 	return details
 }
 
+func auditCount(t *testing.T, st *SQLStore, action, result string) (n int) {
+	t.Helper()
+	if err := st.db.QueryRowContext(context.Background(), st.rebind(`SELECT COUNT(*) FROM audit_records WHERE action=? AND result=?`), action, result).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func ptr(s string) *string { return &s }
 
 func TestRegistryCredentialIsWriteOnly(t *testing.T) {
@@ -109,12 +117,12 @@ func TestRegistryInputValidation(t *testing.T) {
 	st, a, key := registryFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	for host, want := range map[string]string{"docker.io": "docker.io", "index.docker.io": "docker.io", "Registry-1.Docker.io": "docker.io", "registry.example:5000": "registry.example:5000", "localhost:5000": "localhost:5000", "10.0.0.5": "10.0.0.5"} {
+	for host, want := range map[string]string{"docker.io": "docker.io", "index.docker.io": "docker.io", "Registry-1.Docker.io": "docker.io", "registry.example:5000": "registry.example:5000", "localhost:5000": "localhost:5000", "localhost": "localhost", "10.0.0.5": "10.0.0.5"} {
 		if got, err := NormalizeRegistryHost(host); err != nil || got != want {
 			t.Errorf("NormalizeRegistryHost(%q) = %q, %v", host, got, err)
 		}
 	}
-	for _, host := range []string{"", "-bad.io", "ghcr.io/org", "https://ghcr.io", "ghcr.io:", "ghcr.io:123456", "gh cr.io", "ghcr.io\n", strings.Repeat("a", 254)} {
+	for _, host := range []string{"", "-bad.io", "ghcr.io/org", "https://ghcr.io", "ghcr.io:", "ghcr.io:123456", "gh cr.io", "ghcr.io\n", strings.Repeat("a", 254), "myregistry", "a..b", "-a.b", "a-.b", "a.b.", "a.b:70000", "a.b:0"} {
 		if _, err := NormalizeRegistryHost(host); !errors.Is(err, ErrInvalid) {
 			t.Errorf("NormalizeRegistryHost(%q) accepted", host)
 		}
@@ -127,6 +135,7 @@ func TestRegistryInputValidation(t *testing.T) {
 		{Host: "ghcr.io", Name: "bad‮name"},
 		{Host: "ghcr.io", Name: "n", Username: strings.Repeat("u", 256)},
 		{Host: "ghcr.io", Name: "n", Username: "bad\nuser"},
+		{Host: "ghcr.io", Name: "n", Username: "bad:user"},
 		{Host: "ghcr.io", Name: "n", Credential: ptr(strings.Repeat("s", 4097))},
 		{Host: "ghcr.io", Name: "n", Credential: ptr("nul\x00secret")},
 		{Host: "ghcr.io", Name: "n", Credential: ptr("\xff\xfe")},
@@ -175,6 +184,9 @@ func TestRegistryRoles(t *testing.T) {
 		if err := ts.SetAnonymousPull(ctx, a, true); !errors.Is(err, ErrForbidden) {
 			t.Errorf("%s policy set: %v", role, err)
 		}
+	}
+	if n := auditCount(t, st, "registry.manage", "denied"); n != 12 {
+		t.Fatalf("denied audit rows = %d, want 12", n)
 	}
 	if list, _ := ts.ListRegistries(ctx, admin); len(list) != 1 {
 		t.Fatal("a denied write changed the list")
@@ -226,6 +238,10 @@ func TestRegistryPolicyAndResolution(t *testing.T) {
 	}
 	if _, err := ts.ResolveRegistryAccess(ctx, a, "quay.io/org/app", key); !errors.Is(err, ErrRegistryNotConfigured) {
 		t.Fatalf("opt-in off again: %v", err)
+	}
+	// Resolution audits nothing itself, whether configured, anonymous or not configured.
+	if n := auditCount(t, st, "registry.read", "failure") + auditCount(t, st, "registry.read", "success"); n != 0 {
+		t.Fatalf("resolve wrote %d registry.read audit rows", n)
 	}
 }
 

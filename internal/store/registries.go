@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,13 +21,18 @@ import (
 
 const maxRegistryCredentialBytes = 4096
 
-var registryHost = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,252}(:[0-9]{1,5})?$`)
+var registryHostName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
 
 // NormalizeRegistryHost returns host as image references name it: lowercase host[:port], with
-// Docker Hub's aliases folded into docker.io.
+// Docker Hub's aliases folded into docker.io. Like ParseReference, it takes only localhost or a
+// name with a dot or port as a registry.
 func NormalizeRegistryHost(host string) (string, error) {
 	host = registry.CanonicalHost(host)
-	if !registryHost.MatchString(host) {
+	name, port, hasPort := strings.Cut(host, ":")
+	if len(name) > 253 || !registryHostName.MatchString(name) || !(hasPort || name == "localhost" || strings.Contains(name, ".")) {
+		return "", ErrInvalid
+	}
+	if n, err := strconv.Atoi(port); hasPort && (err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port) {
 		return "", ErrInvalid
 	}
 	return host, nil
@@ -44,7 +50,8 @@ func validRegistryInput(in RegistryInput, key []byte) bool {
 	if name == "" || len(name) > 64 || protocol.CleanText(name, 64) != name {
 		return false
 	}
-	if len(in.Username) > 255 || protocol.CleanText(in.Username, 255) != in.Username || len(key) != 32 {
+	// Basic auth cannot carry a ':' in the user-id.
+	if len(in.Username) > 255 || protocol.CleanText(in.Username, 255) != in.Username || strings.ContainsRune(in.Username, ':') || len(key) != 32 {
 		return false
 	}
 	if c := in.Credential; c != nil && (len(*c) > maxRegistryCredentialBytes || !utf8.ValidString(*c) || strings.ContainsRune(*c, 0)) {
@@ -104,7 +111,6 @@ func (t *tenancyStore) PutRegistry(ctx context.Context, a TenantAccess, in Regis
 		} else if err != nil {
 			return err
 		}
-		target = "registries/" + r.ID
 		state := "kept"
 		switch {
 		case in.Credential == nil:
@@ -122,6 +128,9 @@ func (t *tenancyStore) PutRegistry(ctx context.Context, a TenantAccess, in Regis
 			_, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE registries SET name=?,username=?,credential_enc=?,allow_private=?,updated_at=? WHERE organization_id=? AND id=?`), r.Name, r.Username, enc, r.AllowPrivate, now, a.OrganizationID, r.ID)
 		} else {
 			_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO registries (id,organization_id,host,name,username,credential_enc,allow_private,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`), r.ID, r.OrganizationID, host, r.Name, r.Username, enc, r.AllowPrivate, r.CreatedBy, now, now)
+		}
+		if err == nil {
+			target = "registries/" + r.ID
 		}
 		return err
 	})
@@ -194,6 +203,8 @@ func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess
 		return nil, ErrInvalid
 	}
 	var access RegistryAccess
+	notConfigured := false
+	// Not configured is a result, not a failure: returned outside the op so it audits nothing.
 	err = t.readTenant(ctx, a, permissions.RegistryRead, func(tx *sql.Tx) error {
 		r, credential, err := t.registryFor(ctx, tx, a.OrganizationID, parsed.Host, key)
 		if errors.Is(err, ErrNotFound) {
@@ -201,10 +212,7 @@ func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess
 			if err != nil {
 				return err
 			}
-			if !enabled {
-				return ErrRegistryNotConfigured
-			}
-			access.Anonymous = true
+			notConfigured, access.Anonymous = !enabled, enabled
 			return nil
 		}
 		access.Registry, access.Credential = r, credential
@@ -212,6 +220,9 @@ func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess
 	})
 	if err != nil {
 		return nil, err
+	}
+	if notConfigured {
+		return nil, ErrRegistryNotConfigured
 	}
 	return &access, nil
 }
