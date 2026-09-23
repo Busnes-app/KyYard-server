@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -268,7 +270,9 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	if !s.agents.deliver(plan.EndpointID, envelope(protocol.TypeDeploymentApply, req)) {
-		_ = s.store.Tenancy().FailDeployment(r.Context(), applied.ID, "the endpoint disconnected before the deployment was sent")
+		if err := s.store.Tenancy().FailDeployment(context.WithoutCancel(r.Context()), applied.ID, "the endpoint disconnected before the deployment was sent"); err != nil {
+			log.Printf("deployment %s: recording an unsent frame: %v", applied.ID, err)
+		}
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The endpoint disconnected before the deployment was sent", "code": "deployment_not_sent"})
 		return
 	}

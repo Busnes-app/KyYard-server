@@ -145,6 +145,9 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 		t.Fatalf("GET after apply: %+v", got)
 	}
 	request(admin, "POST", apply, `{"confirm":"shop"}`, 409)
+	if body := request(admin, "POST", deployments, string(planBody), 409); !strings.Contains(body, `"deployment_in_progress"`) {
+		t.Fatalf("planning over an applying row: %s", body)
+	}
 
 	// An answer for a deployment this endpoint was not given changes nothing. It is larger than
 	// a control frame, which a result may be.
@@ -157,10 +160,30 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	if got := state(planned.ID); got.State != "applying" {
 		t.Fatalf("a foreign result moved the row: %+v", got)
 	}
-	// A result frame past its bound ends the session.
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{Deployment: planned.ID, Outcome: protocol.OutcomeFailed, Detail: strings.Repeat("x", protocol.MaxDeploymentResultBytes)})
+	// A small result that fails validation ends the session and changes nothing.
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{Deployment: planned.ID, Outcome: "bogus", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}})
+	if _, _, err := sock.conn.Read(ctx); err == nil {
+		t.Fatal("an invalid result frame was accepted")
+	}
+	if got := state(planned.ID); got.State != "applying" {
+		t.Fatalf("an invalid result moved the row: %+v", got)
+	}
+	// A result that validates but is past its byte bound ends the session too: the size check
+	// is what refuses it.
+	big := protocol.DeploymentResult{Deployment: planned.ID, Outcome: protocol.OutcomeFailed, Steps: make([]protocol.DeploymentStep, 700), Services: []protocol.DeploymentIdentity{}}
+	for i := range big.Steps {
+		big.Steps[i] = protocol.DeploymentStep{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeFailed, Detail: strings.Repeat("d", protocol.MaxDeploymentStepDetailBytes)}
+	}
+	if raw, _ := json.Marshal(big); big.Validate() != nil || len(raw) <= protocol.MaxDeploymentResultBytes {
+		t.Fatalf("the oversized fixture must validate and exceed the bound: %d bytes", len(raw))
+	}
+	sock = online([]string{protocol.CapabilityDeploymentApply})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, big)
 	if _, _, err := sock.conn.Read(ctx); err == nil {
 		t.Fatal("an oversized result frame was accepted")
+	}
+	if got := state(planned.ID); got.State != "applying" {
+		t.Fatalf("an oversized result moved the row: %+v", got)
 	}
 
 	// The real answer after reconnecting settles the row and rebinds the replaced container.

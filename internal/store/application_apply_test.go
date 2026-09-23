@@ -128,6 +128,61 @@ func TestApplyDeploymentPreconditions(t *testing.T) {
 	}
 }
 
+// One stored value may feed several variables, and JSON escapes '<' as six bytes, so a
+// revision inside every value and per-service cap still marshals past the frame bound. Apply
+// refuses before the row leaves planned.
+func TestApplyDeploymentRefusesAnOversizedFrame(t *testing.T) {
+	st, a, app, _, _, _ := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	key := make([]byte, 32)
+	env := map[string]ApplicationSecretRef{}
+	for _, n := range []string{"A", "B", "C", "D", "E", "F"} {
+		env["V"+n] = ApplicationSecretRef{SecretRef: "web-a"}
+	}
+	values := map[string]string{"web-a": strings.Repeat("<", 10000)}
+	spec := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Environment: env}}}
+	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, spec, values, key); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("oversized frame: %v", err)
+	}
+	var state string
+	if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "planned" {
+		t.Fatalf("refused apply left state %s (%v)", state, err)
+	}
+}
+
+// A frame that never left fails its row even when a disconnect abandoned it first.
+func TestFailDeploymentCoversApplyingAndUnknown(t *testing.T) {
+	st, a, app, endpoint, _, _, d, key := applyFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.FailDeployment(ctx, d.ID, "never sent"); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "failed" {
+		t.Fatalf("state %s (%v)", state, err)
+	}
+}
+
 func settledResult(d *Deployment, outcome string, newID string) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: d.ID, Outcome: outcome, Steps: []protocol.DeploymentStep{{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}}, Services: []protocol.DeploymentIdentity{}}
 	if newID != "" {

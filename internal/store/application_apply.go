@@ -106,6 +106,11 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 		if err := req.Validate(now); err != nil {
 			return ErrInvalid
 		}
+		// The agent closes the session on a frame past its bound, so refuse it while the row
+		// is still planned rather than send one that can only end unknown.
+		if raw, err := json.Marshal(req); err != nil || len(raw) > protocol.MaxDeploymentRequestBytes {
+			return ErrInvalid
+		}
 		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=? WHERE id=? AND state='planned'`), a.ActorID, now, req.Deadline, d.ID)
 		if err != nil {
 			return err
@@ -127,9 +132,10 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 	return out, req, nil
 }
 
-// FailDeployment records that the frame never left the server.
+// FailDeployment records that the frame never left the server. An unknown row qualifies too:
+// a disconnect may have abandoned it first, but the server knows nothing reached the agent.
 func (t *tenancyStore) FailDeployment(ctx context.Context, id, detail string) error {
-	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='failed',detail=?,settled_at=? WHERE id=? AND state='applying'`), protocol.CleanText(detail, 255), time.Now().UTC(), id)
+	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='failed',detail=?,settled_at=? WHERE id=? AND state IN ('applying','unknown')`), protocol.CleanText(detail, 255), time.Now().UTC(), id)
 	return err
 }
 

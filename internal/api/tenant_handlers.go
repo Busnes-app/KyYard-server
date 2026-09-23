@@ -60,7 +60,7 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrInUse):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Discard the environment's draft applications and revoke its endpoints first", "code": "environment_in_use"})
 	case errors.Is(err, store.ErrEndpointOffline):
-		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The endpoint is not connected, so the command was not sent", "code": "endpoint_offline"})
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The endpoint is not connected, so nothing was sent", "code": "endpoint_offline"})
 	case errors.Is(err, store.ErrDeploymentInProgress):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A deployment is being applied; wait for its result", "code": "deployment_in_progress"})
 	case errors.Is(err, store.ErrLastAdmin):
