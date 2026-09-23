@@ -28,7 +28,13 @@ const (
 	// pressure, so summaries give space back as the raw window does rather than being the one
 	// telemetry pruning cannot reclaim.
 	DegradedRollupRetention = 24 * time.Hour
-	PruneBatch              = 5000
+	// DeploymentHistoryRetention keeps settled deployments; the latest succeeded row of an
+	// instance's current and previous revision, and every row of a removed application (its
+	// own retention prunes them), stay past it.
+	DeploymentHistoryRetention = 90 * 24 * time.Hour
+	// ApplicationRemovedRetention keeps a removed application's revisions and history.
+	ApplicationRemovedRetention = 90 * 24 * time.Hour
+	PruneBatch                  = 5000
 )
 
 // MaxSampleRowsPerEndpoint is the backstop against container-ID cardinality: 100 containers ×
@@ -218,7 +224,7 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 		samples, rollups = DegradedSampleRetention, DegradedRollupRetention
 	}
 	// An applying row past its deadline, plus slack for a result in flight, has lost its agent.
-	if _, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='unknown',detail=? WHERE state='applying' AND deadline<?`), "no result arrived before the deadline", now.Add(-2*time.Minute)); err != nil {
+	if _, err := t.systemTransition(ctx, `state='applying' AND deadline<?`, now.Add(-2*time.Minute), `state='unknown',detail=?`, []any{"no result arrived before the deadline"}, "swept", auditResults[protocol.OutcomeUnknown]); err != nil {
 		return 0, err
 	}
 	var total int64
@@ -232,6 +238,7 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 		// Settled commands only. One whose outcome nobody knows is the record an operator
 		// most needs, so it stays until they have dealt with it.
 		{`DELETE FROM endpoint_commands WHERE id IN (SELECT id FROM endpoint_commands WHERE settled_at IS NOT NULL AND settled_at<? LIMIT ?)`, now.Add(-CommandRetention)},
+		{`DELETE FROM deployments WHERE id IN (SELECT d.id FROM deployments d WHERE d.settled_at IS NOT NULL AND d.settled_at<? AND NOT (d.kind='apply' AND d.state='succeeded' AND EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id AND d.revision IN (i.current_revision,i.previous_revision)) AND NOT EXISTS (SELECT 1 FROM deployments n WHERE n.instance_id=d.instance_id AND n.revision=d.revision AND n.kind='apply' AND n.state='succeeded' AND (n.settled_at>d.settled_at OR (n.settled_at=d.settled_at AND n.id>d.id)))) AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.id=d.application_id AND a.removed_at IS NOT NULL) LIMIT ?)`, now.Add(-DeploymentHistoryRetention)},
 	} {
 		result, err := t.store.db.ExecContext(ctx, t.store.rebind(q.sql), q.arg, PruneBatch)
 		if err != nil {
@@ -240,7 +247,49 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 		n, _ := result.RowsAffected()
 		total += n
 	}
-	return total, nil
+	n, err := t.pruneRemovedApplications(ctx, now.Add(-ApplicationRemovedRetention))
+	return total + n, err
+}
+
+// pruneRemovedApplications deletes applications removed before cutoff with their history and
+// revisions. One re-adopted since keeps its instance and is left alone.
+func (t *tenancyStore) pruneRemovedApplications(ctx context.Context, cutoff time.Time) (int64, error) {
+	tx, err := t.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	lock := ""
+	if t.store.driver == "postgres" {
+		lock = " FOR UPDATE"
+	}
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT a.id FROM applications a WHERE a.removed_at IS NOT NULL AND a.removed_at<? AND NOT EXISTS (SELECT 1 FROM application_instances i WHERE i.application_id=a.id) ORDER BY a.id LIMIT ?`+lock), cutoff, PruneBatch)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		for _, q := range []string{`DELETE FROM deployments WHERE application_id=?`, `DELETE FROM application_revisions WHERE application_id=?`, `DELETE FROM applications WHERE id=?`} {
+			if _, err := tx.ExecContext(ctx, t.store.rebind(q), id); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return int64(len(ids)), tx.Commit()
 }
 
 // ParseStoredTime reads a timestamp in whichever shape the driver returned it. It is exported

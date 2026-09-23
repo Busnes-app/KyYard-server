@@ -115,8 +115,11 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 	if err := f.inspect.QueryRowContext(ctx, `SELECT MIN(observed_at) FROM container_samples`).Scan(&oldestSample); err != nil {
 		return err
 	}
+	// An unreadable roll-up window (e.g. the table is gone) is a retention failure to report,
+	// not a driver error to abort on: aborting here would hide the very failure this check
+	// exists to surface, and every other assertion below still has something to say.
 	if err := f.inspect.QueryRowContext(ctx, `SELECT MIN(hour) FROM container_rollups`).Scan(&oldestRollup); err != nil {
-		return err
+		r.Failures = append(r.Failures, fmt.Sprintf("roll-up window unreadable: %.200s", err))
 	}
 	now := time.Now().UTC()
 	// Both windows go through one helper: checking the sample age against the summary window

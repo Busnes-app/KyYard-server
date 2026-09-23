@@ -140,6 +140,102 @@ func TestDeployRealDocker(t *testing.T) {
 	}
 }
 
+// Same fixture pattern as TestDeployRealDocker, with a named and an anonymous volume attached:
+// Remove deletes the container and leaves the project network and both volumes in place. Only
+// the anonymous one proves no v=1 was sent; Docker never deletes a named volume with a container.
+func TestRemoveRealDocker(t *testing.T) {
+	image := os.Getenv("KY_TEST_DOCKER_DEPLOY_IMAGE")
+	if image == "" {
+		t.Skip("set KY_TEST_DOCKER_DEPLOY_IMAGE to an existing shell image")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	project := "kyyardremovefixture"
+	name := project + "-web-1"
+	network := project + "_default"
+	volume := project + "_data"
+	fixtureImage := project + ":local"
+	builder := project + "-build"
+	docker := func(args ...string) (string, error) {
+		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	var anonymous string // the fixture's anonymous volume, once known
+	cleanup := func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer ccancel()
+		ids, _ := exec.CommandContext(cctx, "docker", "ps", "-aq", "--filter", "label=com.docker.compose.project="+project).Output()
+		for _, id := range strings.Fields(string(ids)) {
+			_ = exec.CommandContext(cctx, "docker", "rm", "-f", id).Run()
+		}
+		_ = exec.CommandContext(cctx, "docker", "rm", "-f", builder).Run()
+		_ = exec.CommandContext(cctx, "docker", "rmi", "-f", fixtureImage).Run()
+		_ = exec.CommandContext(cctx, "docker", "network", "rm", network).Run()
+		_ = exec.CommandContext(cctx, "docker", "volume", "rm", volume).Run()
+		if anonymous != "" {
+			_ = exec.CommandContext(cctx, "docker", "volume", "rm", anonymous).Run()
+		}
+	}
+	// Idempotent setup: a prior aborted run may have left any of these behind.
+	cleanup()
+	t.Cleanup(cleanup)
+	if out, err := docker("create", "--pull", "never", "--name", builder, image); err != nil {
+		t.Fatalf("fixture image source: %v: %s", err, out)
+	}
+	if out, err := docker("commit", "--change", `CMD ["sleep","300"]`, builder, fixtureImage); err != nil {
+		t.Fatalf("fixture image: %v: %s", err, out)
+	}
+	if out, err := docker("rm", "-f", builder); err != nil {
+		t.Fatalf("fixture image source removal: %v: %s", err, out)
+	}
+	if out, err := docker("network", "create", network); err != nil {
+		t.Fatalf("fixture network: %v: %s", err, out)
+	}
+	id, err := docker("run", "-d", "--pull", "never", "--name", name, "--network", network, "-v", volume+":/data", "-v", "/scratch",
+		"--label", "com.docker.compose.project="+project, "--label", "com.docker.compose.service=web", fixtureImage)
+	if err != nil {
+		t.Fatalf("fixture: %v: %s", err, id)
+	}
+	raw, err := docker("inspect", "--format", "{{json .}}", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity struct {
+		Image   string
+		Created time.Time
+		Mounts  []struct{ Name, Destination string }
+	}
+	if err = json.Unmarshal([]byte(raw), &identity); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range identity.Mounts {
+		if m.Destination == "/scratch" {
+			anonymous = m.Name
+		}
+	}
+	if anonymous == "" {
+		t.Fatalf("fixture has no anonymous volume: %s", raw)
+	}
+	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, Deadline: time.Now().Add(5 * time.Minute),
+		Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: id, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}}}}
+	res := New("/var/run/docker.sock").Remove(ctx, req)
+	if serialized, _ := json.Marshal(res); res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
+		t.Fatalf("remove: %s", serialized)
+	}
+	if _, err = docker("inspect", id); err == nil {
+		t.Fatal("container survived removal")
+	}
+	if out, err := docker("network", "inspect", network); err != nil {
+		t.Fatalf("project network removed: %s", out)
+	}
+	if out, err := docker("volume", "inspect", volume); err != nil {
+		t.Fatalf("named volume removed: %s", out)
+	}
+	if out, err := docker("volume", "inspect", anonymous); err != nil {
+		t.Fatalf("anonymous volume removed: %s", out)
+	}
+}
+
 // A status the Engine sent is an answer even when the session has since dropped: only a call
 // with no answer is unknown.
 func TestDeployAnswerAfterCancelIsFailed(t *testing.T) {

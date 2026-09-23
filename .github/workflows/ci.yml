@@ -94,7 +94,7 @@ jobs:
           KY_TEST_DOCKER_DEPLOY_IMAGE: alpine:3.24
         run: |
           docker pull "$KY_TEST_DOCKER_EXEC_IMAGE"
-          go test -race ./internal/runtime/docker -run '^Test(Exec|Inspection|Deploy)RealDocker$' -count=1
+          go test -race ./internal/runtime/docker -run '^Test(Exec|Inspection|Deploy|Remove)RealDocker$' -count=1
           go test -race ./internal/api -run '^Test(BrowserExec|Apply)RealDocker$' -count=1
 
       - name: Coverage summary

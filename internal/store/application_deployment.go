@@ -36,15 +36,28 @@ type PlannedService struct {
 	Ports       []ApplicationPort         `json:"ports"`
 	SecretRefs  []string                  `json:"secret_refs"`
 }
+
+// DeploymentPlan is what a row decided: the services an apply replaces, or the containers a
+// removal stops and deletes (Services then empty).
 type DeploymentPlan struct {
-	Project  string           `json:"project"`
-	Services []PlannedService `json:"services"`
+	Project    string              `json:"project"`
+	Services   []PlannedService    `json:"services"`
+	Containers []RemovalPlanTarget `json:"containers,omitempty"`
+}
+type RemovalPlanTarget struct {
+	Service     string `json:"service"`
+	ContainerID string `json:"container_id"`
+	ImageID     string `json:"image_id"`
+	CreatedUnix int64  `json:"created_unix"`
+	Name        string `json:"name"`
 }
 type Deployment struct {
 	ID             string                     `json:"id"`
 	ApplicationID  string                     `json:"application_id"`
 	InstanceID     string                     `json:"instance_id"`
 	EndpointID     string                     `json:"endpoint_id"`
+	EndpointName   string                     `json:"endpoint_name"`
+	Kind           string                     `json:"kind"`
 	State          string                     `json:"state"`
 	Revision       int                        `json:"revision"`
 	SpecDigest     string                     `json:"spec_digest"`
@@ -87,11 +100,11 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	planID := uuid.NewString()
 	var out *Deployment
 	err = t.withTenantTarget(ctx, a, permissions.ApplicationDeploy, id.String()+"/deployments/"+planID, func(tx *sql.Tx) error {
-		p, m, spec, snapshot, digest, err := t.preflight(ctx, tx, a, id.String(), true)
+		p, m, spec, snapshot, digest, err := t.preflight(ctx, tx, a, id.String(), true, r.Revision)
 		if err != nil {
 			return err
 		}
-		if r.InstanceID != m.InstanceID || r.MappingVersion != m.Version || r.Revision != p.Revision || r.Confirm != m.Preview.Project {
+		if r.InstanceID != m.InstanceID || r.MappingVersion != m.Version || (r.Revision != 0 && r.Revision != p.Revision) || r.Confirm != m.Preview.Project {
 			return ErrAdoptionChanged
 		}
 		blockers := []string{}
@@ -141,7 +154,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 			return ErrInvalid
 		}
 		now := time.Now().UTC()
-		out = &Deployment{ID: planID, ApplicationID: id.String(), InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
+		out = &Deployment{ID: planID, ApplicationID: id.String(), InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Kind: "apply", State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
 		var liveID, liveState string
 		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,state FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=? AND state IN ('planned','applying')`), a.OrganizationID, a.EnvironmentID, m.InstanceID).Scan(&liveID, &liveState)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -164,17 +177,22 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	return out, nil
 }
 
-const deploymentColumns = `id,application_id,instance_id,endpoint_id,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline,settled_at,detail,result`
+// selectDeployments reads rows aliased d with the endpoint's current name (empty once the
+// endpoint is gone); the caller appends the WHERE clause.
+const selectDeployments = `SELECT d.id,d.application_id,d.instance_id,d.endpoint_id,COALESCE(e.name,''),d.kind,d.state,d.revision,d.spec_digest,d.mapping_version,d.plan,d.created_by,d.created_at,d.expires_at,d.applied_by,d.applied_at,d.deadline,d.settled_at,d.detail,d.result FROM deployments d LEFT JOIN endpoints e ON e.id=d.endpoint_id `
 
 func scanDeployment(rows interface{ Scan(...any) error }) (*Deployment, error) {
 	var d Deployment
 	var raw, result string
 	var appliedAt, deadline, settledAt sql.NullTime
-	if err := rows.Scan(&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result); err != nil {
+	if err := rows.Scan(&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.EndpointName, &d.Kind, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result); err != nil {
 		return nil, err
 	}
 	if json.Unmarshal([]byte(raw), &d.Plan) != nil {
 		return nil, ErrRevisionCorrupt
+	}
+	if d.Plan.Services == nil {
+		d.Plan.Services = []PlannedService{}
 	}
 	if appliedAt.Valid {
 		d.AppliedAt = &appliedAt.Time
@@ -207,7 +225,7 @@ func (t *tenancyStore) ReadDeployment(ctx context.Context, a TenantAccess, app, 
 	}
 	var out *Deployment
 	err = t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
-		out, err = scanDeployment(tx.QueryRowContext(ctx, t.store.rebind(`SELECT `+deploymentColumns+` FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, appID.String(), parsedID.String()))
+		out, err = scanDeployment(tx.QueryRowContext(ctx, t.store.rebind(selectDeployments+`WHERE d.organization_id=? AND d.environment_id=? AND d.application_id=? AND d.id=?`), a.OrganizationID, a.EnvironmentID, appID.String(), parsedID.String()))
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -226,7 +244,7 @@ func (t *tenancyStore) ListDeployments(ctx context.Context, a TenantAccess, app 
 	}
 	out := []Deployment{}
 	err = t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT `+deploymentColumns+` FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? ORDER BY created_at DESC, id LIMIT 100`), a.OrganizationID, a.EnvironmentID, appID.String())
+		rows, err := tx.QueryContext(ctx, t.store.rebind(selectDeployments+`WHERE d.organization_id=? AND d.environment_id=? AND d.application_id=? ORDER BY d.created_at DESC, d.id LIMIT 100`), a.OrganizationID, a.EnvironmentID, appID.String())
 		if err != nil {
 			return err
 		}

@@ -1,5 +1,5 @@
 import { ApplicationPreflight } from './ApplicationPreflight';
-import { ApplicationDeploymentPlan } from './ApplicationDeploymentPlan';
+import { ApplicationDeploymentPlan, ApplicationHistory } from './ApplicationDeploymentPlan';
 import { ApplicationMapping } from './ApplicationMapping';
 import { ApplicationRevisionEditor } from './ApplicationRevisionEditor';
 import { ApplicationComparison } from './ApplicationComparison';
@@ -10,7 +10,7 @@ import { secureFetch } from '../api';
 import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 
-type Draft = { id: string; name: string; latest_revision: number };
+type Draft = { id: string; name: string; latest_revision: number; removed_at?: string | null };
 type Revision = { digest: string; spec: { services: { name: string; image: string; restart?: string; ports?: { target: number; published: number; host_ip?: string; protocol: string }[]; environment?: Record<string, { secret_ref: string }> }[] } };
 
 function RevisionView({ base, draft }: { base: string; draft: Draft }) {
@@ -74,14 +74,14 @@ export function Applications({ org, env }: { org: string; env: string }) {
     {drafts.state === 'ready' && <ul className="ky-list">
       {drafts.data?.length === 0 && <li>No saved applications in this environment.</li>}
       {pagination.rows.map((draft) => <li key={draft.id}>
-        <strong>{draft.name}</strong> · {instances.state !== 'ready' ? 'Ownership unavailable' : instances.data?.some((i) => i.application_id === draft.id) ? 'Adopted' : 'Draft'} · Revision {draft.latest_revision}
+        <strong>{draft.name}</strong> · {draft.removed_at ? `Removed ${new Date(draft.removed_at).toLocaleDateString()}` : instances.state !== 'ready' ? 'Ownership unavailable' : instances.data?.some((i) => i.application_id === draft.id) ? 'Adopted' : 'Draft'} · Revision {draft.latest_revision}
         <div className="ky-inline-form">
           <button type="button" className="btn-secondary" onClick={() => setSelected(selected === draft.id ? '' : draft.id)}>View configuration for {draft.name}</button>
-          <button type="button" className="btn-danger" disabled={busy || uncertain || instances.state !== 'ready' || instances.data?.some((i) => i.application_id === draft.id)} onClick={() => {
+          <button type="button" className="btn-danger" disabled={busy || uncertain || (!draft.removed_at && (instances.state !== 'ready' || instances.data?.some((i) => i.application_id === draft.id)))} onClick={() => {
             if (window.confirm(`Discard draft "${draft.name}" and all its saved revisions? Running containers are unchanged.`)) void write('DELETE', `${base}/${encodeURIComponent(draft.id)}`, { expected_revision: draft.latest_revision });
           }}>Discard {draft.name}</button>
         </div>
-        {selected === draft.id && <><RevisionView key={`${draft.id}/${draft.latest_revision}`} base={base} draft={draft} /><ApplicationRevisionEditor key={`edit/${draft.id}/${draft.latest_revision}`} base={`${base}/${encodeURIComponent(draft.id)}`} name={draft.name} expected={draft.latest_revision} onSaved={() => { refresh(); setMessage('New revision saved. Running containers were not changed.'); }} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={refresh} />}{instances.state === 'ready' && instances.data?.filter((i) => i.application_id === draft.id).map((i) => <div key={i.id}><ApplicationMapping base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationComparison base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationPreflight org={org} base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationDeploymentPlan base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /></div>)}</>}
+        {selected === draft.id && <><RevisionView key={`${draft.id}/${draft.latest_revision}`} base={base} draft={draft} /><ApplicationRevisionEditor key={`edit/${draft.id}/${draft.latest_revision}`} base={`${base}/${encodeURIComponent(draft.id)}`} name={draft.name} expected={draft.latest_revision} onSaved={() => { refresh(); setMessage('New revision saved. Running containers were not changed.'); }} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={(status) => { refresh(); setMessage(status ?? ''); }} />}{instances.state === 'ready' && !instances.data?.some((i) => i.application_id === draft.id) && <ApplicationHistory base={`${base}/${encodeURIComponent(draft.id)}`} />}{instances.state === 'ready' && instances.data?.filter((i) => i.application_id === draft.id).map((i) => <div key={i.id}><ApplicationMapping base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationComparison base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationPreflight org={org} base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationDeploymentPlan base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} latestRevision={draft.latest_revision} instance={i} /></div>)}</>}
       </li>)}
     </ul>}
     <details><summary>Import Compose draft</summary>

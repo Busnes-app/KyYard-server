@@ -98,6 +98,62 @@ func TestDeploymentRequestValidation(t *testing.T) {
 	}
 }
 
+func goodRemoval(now time.Time) RemovalRequest {
+	return RemovalRequest{
+		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", Deadline: now.Add(5 * time.Minute),
+		Containers: []RemovalTarget{
+			{Service: "web", Target: InspectionTarget{ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}},
+			{Service: "unmapped-0123456789ab", Target: InspectionTarget{ContainerID: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64), CreatedUnix: 1700000000}},
+		},
+	}
+}
+
+func TestRemovalRequestValidation(t *testing.T) {
+	now := time.Now()
+	if err := goodRemoval(now).Validate(now); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*RemovalRequest){
+		"bad uuid":      func(r *RemovalRequest) { r.Deployment = "nope" },
+		"bad endpoint":  func(r *RemovalRequest) { r.Endpoint = "a b" },
+		"bad project":   func(r *RemovalRequest) { r.Project = "-shop" },
+		"deadline past": func(r *RemovalRequest) { r.Deadline = now.Add(-time.Second) },
+		"deadline far":  func(r *RemovalRequest) { r.Deadline = now.Add(DeploymentLifetime + time.Second) },
+		"no containers": func(r *RemovalRequest) { r.Containers = nil },
+		"bad service":   func(r *RemovalRequest) { r.Containers[0].Service = "Web" },
+		"bad target":    func(r *RemovalRequest) { r.Containers[0].Target.CreatedUnix = 0 },
+		"duplicate service": func(r *RemovalRequest) {
+			r.Containers[1].Service = r.Containers[0].Service
+		},
+		"duplicate container": func(r *RemovalRequest) {
+			r.Containers[1].Target.ContainerID = r.Containers[0].Target.ContainerID
+		},
+		"too many containers": func(r *RemovalRequest) {
+			for i := len(r.Containers); i <= MaxRemovalTargets; i++ {
+				r.Containers = append(r.Containers, RemovalTarget{Service: fmt.Sprintf("s%d", i), Target: InspectionTarget{ContainerID: fmt.Sprintf("%064x", i), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}})
+			}
+		},
+	} {
+		r := goodRemoval(now)
+		mutate(&r)
+		if r.Validate(now) == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	// The cap is inclusive: MaxRemovalTargets targets pass, one more is refused.
+	r := goodRemoval(now)
+	for i := len(r.Containers); i < MaxRemovalTargets; i++ {
+		r.Containers = append(r.Containers, RemovalTarget{Service: fmt.Sprintf("s%d", i), Target: InspectionTarget{ContainerID: fmt.Sprintf("%064x", i), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}})
+	}
+	if err := r.Validate(now); err != nil {
+		t.Fatalf("%d targets: %v", len(r.Containers), err)
+	}
+	r.Containers = append(r.Containers, RemovalTarget{Service: "extra", Target: InspectionTarget{ContainerID: strings.Repeat("e", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}})
+	if len(r.Containers) != MaxRemovalTargets+1 || r.Validate(now) == nil {
+		t.Fatalf("%d targets accepted", len(r.Containers))
+	}
+}
+
 func TestDeploymentResultValidation(t *testing.T) {
 	good := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: OutcomeSucceeded, Steps: []DeploymentStep{{Service: "web", Step: StepCreate, Outcome: OutcomeSucceeded}}, Services: []DeploymentIdentity{{Service: "web", ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}}}
 	if err := good.Validate(); err != nil {

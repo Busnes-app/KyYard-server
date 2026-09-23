@@ -119,64 +119,89 @@ func denied(id, detail string) protocol.DeploymentResult {
 	return protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeDenied, Detail: detail, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 }
 
-// handle answers one deployment.apply payload. Refusals are sent and not remembered; a run's
-// result is remembered and then sent to the current session. handle runs on the session loop,
-// which is out's only reader, so every send happens off it.
-func (d *deployer) handle(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
+// handleApply answers one deployment.apply payload; see run.
+func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
 	var req protocol.DeploymentRequest
 	if json.Unmarshal(payload, &req) != nil {
 		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "invalid deployment request")))
 		return
 	}
+	var exec func(context.Context) protocol.DeploymentResult
+	if deploy := d.opts.Deploy; deploy != nil {
+		exec = func(ctx context.Context) protocol.DeploymentResult {
+			res := deploy(ctx, req)
+			for i := range req.Services {
+				clear(req.Services[i].Env)
+			}
+			return res
+		}
+	}
+	d.run(sessionCtx, out, req.Deployment, req.Endpoint, endpointID, req.Validate, exec, "this agent has no runtime to deploy")
+}
+
+// handleRemoval answers one deployment.remove payload; see run.
+func (d *deployer) handleRemoval(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
+	var req protocol.RemovalRequest
+	if json.Unmarshal(payload, &req) != nil {
+		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "invalid deployment request")))
+		return
+	}
+	var exec func(context.Context) protocol.DeploymentResult
+	if remove := d.opts.Remove; remove != nil {
+		exec = func(ctx context.Context) protocol.DeploymentResult { return remove(ctx, req) }
+	}
+	d.run(sessionCtx, out, req.Deployment, req.Endpoint, endpointID, req.Validate, exec, "this agent has no runtime to remove")
+}
+
+// run gates and runs one decoded request in the agent's single deployment slot. Refusals are
+// sent and not remembered; a run's result is remembered and then sent to the current session.
+// run is called on the session loop, which is out's only reader, so every send happens off it.
+func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, endpoint, endpointID string, validate func(time.Time) error, exec func(context.Context) protocol.DeploymentResult, noRuntime string) {
 	// A re-sent frame for the live run: a refusal would settle the row it is still applying,
 	// so say nothing and let the real result answer, even once the frame's deadline has passed.
 	d.mu.Lock()
-	live := req.Deployment != "" && d.running == req.Deployment
+	live := id != "" && d.running == id
 	d.mu.Unlock()
 	if live {
 		return
 	}
-	if req.Validate(time.Now()) != nil {
-		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "invalid deployment request")))
+	if validate(time.Now()) != nil {
+		go send(sessionCtx, out, resultFrame(denied(id, "invalid deployment request")))
 		return
 	}
-	if req.Endpoint != endpointID {
-		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "this deployment is addressed to another endpoint")))
+	if endpoint != endpointID {
+		go send(sessionCtx, out, resultFrame(denied(id, "this deployment is addressed to another endpoint")))
 		return
 	}
-	deploy := d.opts.Deploy
 	d.mu.Lock()
-	prior, replay := d.done[req.Deployment]
+	prior, replay := d.done[id]
 	running := d.running
-	if !replay && deploy != nil && running == "" {
-		d.running = req.Deployment
+	if !replay && exec != nil && running == "" {
+		d.running = id
 	}
 	d.mu.Unlock()
 	switch {
 	case replay:
 		go send(sessionCtx, out, resultFrame(prior.Result))
 		return
-	case deploy == nil:
-		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "this agent has no runtime to deploy")))
+	case exec == nil:
+		go send(sessionCtx, out, resultFrame(denied(id, noRuntime)))
 		return
-	case running == req.Deployment:
+	case running == id:
 		return
 	case running != "":
-		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "this agent is already applying a deployment")))
+		go send(sessionCtx, out, resultFrame(denied(id, "this agent is already applying a deployment")))
 		return
 	}
 	d.runs.Add(1)
 	go func() {
-		res := deploy(d.root, req)
-		for i := range req.Services {
-			clear(req.Services[i].Env)
-		}
+		res := exec(d.root)
 		if res.Deployment == "" {
-			res.Deployment = req.Deployment
+			res.Deployment = id
 		}
 		// Never record or send what the server would refuse to read: the host may have acted.
-		if res.Deployment != req.Deployment || res.Validate() != nil {
-			res = protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeUnknown, Detail: "the runtime returned an unreadable result", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+		if res.Deployment != id || res.Validate() != nil {
+			res = protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeUnknown, Detail: "the runtime returned an unreadable result", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 		}
 		link := d.finish(res)
 		d.runs.Done()

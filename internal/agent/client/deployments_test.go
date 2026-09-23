@@ -35,6 +35,10 @@ func testRequest(endpoint string) protocol.DeploymentRequest {
 	return protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: endpoint, Project: "shop", Revision: 1, Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64), Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}, Env: map[string]string{"TOKEN": "agent-secret-canary"}}}}
 }
 
+func testRemoval(endpoint string) protocol.RemovalRequest {
+	return protocol.RemovalRequest{Deployment: "6c5e4f3a-1b0d-4e9f-8a7b-4f5a6b7c8d9e", Endpoint: endpoint, Project: "shop", Deadline: time.Now().Add(5 * time.Minute), Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}}}}
+}
+
 func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
 	dir := t.TempDir()
 	started := make(chan struct{})
@@ -60,7 +64,7 @@ func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
 	detach1 := d.attach(session1, out1)
 	req := testRequest("ep_1")
 	raw, _ := json.Marshal(req)
-	d.handle(session1, "ep_1", raw, out1)
+	d.handleApply(session1, "ep_1", raw, out1)
 	<-started
 	cancel1() // the socket dropped; the run must continue
 	detach1()
@@ -101,7 +105,7 @@ func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
 		ran = true
 		return protocol.DeploymentResult{}
 	}
-	d.handle(session2, "ep_1", raw, out2)
+	d.handleApply(session2, "ep_1", raw, out2)
 	f = <-out2
 	if ran || f.Type != protocol.TypeDeploymentResult {
 		t.Fatal("replay ran the deployment again")
@@ -124,18 +128,18 @@ func TestDeployerStaysSilentForTheRunningDeployment(t *testing.T) {
 	defer d.attach(ctx, out)()
 	req := testRequest("ep_1")
 	raw, _ := json.Marshal(req)
-	d.handle(ctx, "ep_1", raw, out)
+	d.handleApply(ctx, "ep_1", raw, out)
 	<-started
-	d.handle(ctx, "ep_1", raw, out)
+	d.handleApply(ctx, "ep_1", raw, out)
 	// Still silent once the frame's deadline has passed: the running ID is checked first.
 	late := req
 	late.Deadline = time.Now().Add(-time.Minute)
 	rawLate, _ := json.Marshal(late)
-	d.handle(ctx, "ep_1", rawLate, out)
+	d.handleApply(ctx, "ep_1", rawLate, out)
 	other := testRequest("ep_1")
 	other.Deployment = "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c"
 	raw2, _ := json.Marshal(other)
-	d.handle(ctx, "ep_1", raw2, out)
+	d.handleApply(ctx, "ep_1", raw2, out)
 	var res protocol.DeploymentResult
 	if decodeResult(<-out, &res) != nil || res.Deployment != other.Deployment || res.Outcome != protocol.OutcomeDenied {
 		t.Fatalf("different deployment: %+v", res)
@@ -164,7 +168,7 @@ func TestDeployerWaitsForTheRunToRecord(t *testing.T) {
 	}})
 	req := testRequest("ep_1")
 	raw, _ := json.Marshal(req)
-	d.handle(context.Background(), "ep_1", raw, make(chan outFrame, 1))
+	d.handleApply(context.Background(), "ep_1", raw, make(chan outFrame, 1))
 	<-started
 	cancel()
 	d.wait()
@@ -184,7 +188,7 @@ func TestDeployerReplacesAnUnreadableResult(t *testing.T) {
 	defer d.attach(context.Background(), out)()
 	req := testRequest("ep_1")
 	raw, _ := json.Marshal(req)
-	d.handle(context.Background(), "ep_1", raw, out)
+	d.handleApply(context.Background(), "ep_1", raw, out)
 	var res protocol.DeploymentResult
 	select {
 	case f := <-out:
@@ -223,7 +227,7 @@ func TestDeployerRefusals(t *testing.T) {
 	}
 	// Foreign endpoint.
 	raw, _ := json.Marshal(testRequest("someone-else"))
-	d.handle(context.Background(), "ep_1", raw, out)
+	d.handleApply(context.Background(), "ep_1", raw, out)
 	if res := read(); res.Outcome != protocol.OutcomeDenied || calls != 0 {
 		t.Fatalf("foreign: %+v", res)
 	}
@@ -231,18 +235,18 @@ func TestDeployerRefusals(t *testing.T) {
 	bad := testRequest("ep_1")
 	bad.Services = nil
 	raw, _ = json.Marshal(bad)
-	d.handle(context.Background(), "ep_1", raw, out)
+	d.handleApply(context.Background(), "ep_1", raw, out)
 	if res := read(); res.Outcome != protocol.OutcomeDenied || calls != 0 {
 		t.Fatalf("invalid: %+v", res)
 	}
 	// Busy: a second request while one runs is denied.
 	req := testRequest("ep_1")
 	raw, _ = json.Marshal(req)
-	d.handle(context.Background(), "ep_1", raw, out)
+	d.handleApply(context.Background(), "ep_1", raw, out)
 	second := testRequest("ep_1")
 	second.Deployment = "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c"
 	raw2, _ := json.Marshal(second)
-	d.handle(context.Background(), "ep_1", raw2, out)
+	d.handleApply(context.Background(), "ep_1", raw2, out)
 	first, next := read(), read()
 	if first.Outcome != protocol.OutcomeDenied && next.Outcome != protocol.OutcomeDenied {
 		t.Fatalf("one of two concurrent applies must be denied: %+v %+v", first, next)
@@ -252,7 +256,7 @@ func TestDeployerRefusals(t *testing.T) {
 	}
 	// No runtime.
 	d2 := newDeployer(context.Background(), t.TempDir(), &Options{})
-	d2.handle(context.Background(), "ep_1", raw, out)
+	d2.handleApply(context.Background(), "ep_1", raw, out)
 	if res := read(); res.Outcome != protocol.OutcomeDenied {
 		t.Fatalf("no runtime: %+v", res)
 	}
@@ -283,9 +287,17 @@ func TestDeployerResendsPersistedResults(t *testing.T) {
 	}
 }
 
-// The session advertises the capability, re-sends the ledger after hello, answers an apply, and
-// closes on an oversized one.
+// The session advertises each capability only with its runtime, re-sends the ledger after hello,
+// answers an apply (and a removal when it can), and closes on an oversized frame.
 func TestSessionCarriesDeployments(t *testing.T) {
+	remove := func(_ context.Context, req protocol.RemovalRequest) protocol.DeploymentResult {
+		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	}
+	t.Run("apply only", func(t *testing.T) { sessionCarriesDeployments(t, nil) })
+	t.Run("apply and remove", func(t *testing.T) { sessionCarriesDeployments(t, remove) })
+}
+
+func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	dir := t.TempDir()
@@ -294,6 +306,7 @@ func TestSessionCarriesDeployments(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), ledger, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	withRemove := remove != nil
 	checked := make(chan error, 1)
 	var once sync.Once
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -318,8 +331,10 @@ func TestSessionCarriesDeployments(t *testing.T) {
 				return err
 			}
 			req := testRequest("endpoint")
-			advertised, resent, applied := false, false, false
-			for !applied {
+			removal := testRemoval("endpoint")
+			removal.Deployment = "5b4d3e2f-0a9c-4d8e-9f7a-3e4f5a6b7c8d"
+			advertised, advertisedRemove, resent, applied, removed := false, false, false, false, !withRemove
+			for !applied || !removed {
 				f, err := read(ctx, conn)
 				if err != nil {
 					return err
@@ -329,6 +344,7 @@ func TestSessionCarriesDeployments(t *testing.T) {
 					var hello protocol.Hello
 					_ = json.Unmarshal(f.Payload, &hello)
 					advertised = slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentApply)
+					advertisedRemove = slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentRemove)
 					if err := write(ctx, conn, protocol.TypeDeploymentApply, req); err != nil {
 						return err
 					}
@@ -340,15 +356,26 @@ func TestSessionCarriesDeployments(t *testing.T) {
 						resent = true
 					case res.Deployment == req.Deployment && res.Outcome == protocol.OutcomeSucceeded:
 						applied = true
+						if withRemove {
+							if err := write(ctx, conn, protocol.TypeDeploymentRemove, removal); err != nil {
+								return err
+							}
+						}
+					case withRemove && res.Deployment == removal.Deployment && res.Outcome == protocol.OutcomeSucceeded:
+						removed = true
 					default:
 						return errors.New("unexpected result " + string(f.Payload))
 					}
 				}
 			}
-			if !advertised || !resent {
-				return errors.New("capability not advertised or ledger not re-sent")
+			if !advertised || !resent || advertisedRemove != withRemove {
+				return errors.New("capabilities not advertised as configured or ledger not re-sent")
 			}
-			if err := write(ctx, conn, protocol.TypeDeploymentApply, strings.Repeat("a", protocol.MaxDeploymentRequestBytes)); err != nil {
+			oversized := protocol.TypeDeploymentApply
+			if withRemove {
+				oversized = protocol.TypeDeploymentRemove
+			}
+			if err := write(ctx, conn, oversized, strings.Repeat("a", protocol.MaxDeploymentRequestBytes)); err != nil {
 				return err
 			}
 			for {
@@ -367,7 +394,7 @@ func TestSessionCarriesDeployments(t *testing.T) {
 	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
 	opts := Options{HTTPClient: stub.Client(), IdentityDir: dir, Log: log.New(io.Discard, "", 0), Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
 		return protocol.DeploymentResult{Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
-	}}
+	}, Remove: remove}
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, id, opts) }()
 	select {
@@ -393,8 +420,8 @@ func TestDeployerNeverBlocksTheSessionLoop(t *testing.T) {
 	go func() {
 		defer close(returned)
 		raw, _ := json.Marshal(testRequest("ep_1"))
-		d.handle(ctx, "ep_1", raw, full)
-		d.handle(ctx, "ep_1", []byte("{"), full)
+		d.handleApply(ctx, "ep_1", raw, full)
+		d.handleApply(ctx, "ep_1", []byte("{"), full)
 	}()
 	select {
 	case <-returned:
@@ -403,5 +430,187 @@ func TestDeployerNeverBlocksTheSessionLoop(t *testing.T) {
 	}
 	if f := <-full; f.Type != protocol.TypeDeploymentResult {
 		t.Fatalf("answer: %+v", f)
+	}
+}
+
+func removed(req protocol.RemovalRequest) protocol.DeploymentResult {
+	return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+}
+
+func readResult(t *testing.T, out <-chan outFrame) protocol.DeploymentResult {
+	t.Helper()
+	select {
+	case f := <-out:
+		var res protocol.DeploymentResult
+		if f.Type != protocol.TypeDeploymentResult || decodeResult(f, &res) != nil {
+			t.Fatalf("frame: %+v", f)
+		}
+		return res
+	case <-time.After(5 * time.Second):
+		t.Fatal("no result")
+	}
+	return protocol.DeploymentResult{}
+}
+
+// A removal runs Options.Remove on the root context, is recorded before it is delivered to the
+// session current when it finishes, and replays from the ledger without running again.
+func TestDeployerRunsARemoval(t *testing.T) {
+	dir := t.TempDir()
+	started, finish := make(chan struct{}), make(chan struct{})
+	var ranCtx context.Context
+	opts := &Options{Remove: func(ctx context.Context, req protocol.RemovalRequest) protocol.DeploymentResult {
+		ranCtx = ctx
+		close(started)
+		<-finish
+		return removed(req)
+	}}
+	root, cancelRoot := context.WithCancel(context.Background())
+	defer cancelRoot()
+	d := newDeployer(root, dir, opts)
+	session1, cancel1 := context.WithCancel(context.Background())
+	out1 := make(chan outFrame, 4)
+	detach1 := d.attach(session1, out1)
+	req := testRemoval("ep_1")
+	raw, _ := json.Marshal(req)
+	d.handleRemoval(session1, "ep_1", raw, out1)
+	<-started
+	cancel1()
+	detach1()
+	session2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	out2 := make(chan outFrame, 4)
+	defer d.attach(session2, out2)()
+	close(finish)
+	res := readResult(t, out2)
+	if res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeSucceeded || len(out1) != 0 {
+		t.Fatalf("result: %+v, dead session got %d", res, len(out1))
+	}
+	if ranCtx.Err() != nil {
+		t.Fatal("removal ran on the session's context")
+	}
+	// The ledger is written before the frame is sent.
+	stored, err := os.ReadFile(filepath.Join(dir, "deployments.json"))
+	if err != nil || !strings.Contains(string(stored), req.Deployment) {
+		t.Fatalf("ledger: %v %s", err, stored)
+	}
+	opts.Remove = func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult {
+		t.Error("replay ran the removal again")
+		return protocol.DeploymentResult{}
+	}
+	d.handleRemoval(session2, "ep_1", raw, out2)
+	if res := readResult(t, out2); res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("replay: %+v", res)
+	}
+}
+
+// A removal result persisted by an earlier process replays without touching the runtime.
+func TestDeployerReplaysAPersistedRemoval(t *testing.T) {
+	dir := t.TempDir()
+	req := testRemoval("ep_1")
+	ledger, _ := json.Marshal(map[string]deploymentEntry{req.Deployment: {Result: protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeFailed, Detail: "x", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}})
+	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), ledger, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := newDeployer(context.Background(), dir, &Options{Remove: func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult {
+		t.Error("replay ran the removal")
+		return protocol.DeploymentResult{}
+	}})
+	out := make(chan outFrame, 1)
+	raw, _ := json.Marshal(req)
+	d.handleRemoval(context.Background(), "ep_1", raw, out)
+	if res := readResult(t, out); res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeFailed {
+		t.Fatalf("replay: %+v", res)
+	}
+}
+
+// Apply and removal share one slot: a removal while an apply runs is refused, the apply still
+// answers, and a repeat of the running removal is silent.
+func TestDeployerSharesTheSlotWithRemoval(t *testing.T) {
+	applyStarted, applyFinish := make(chan struct{}), make(chan struct{})
+	removeStarted, removeFinish := make(chan struct{}), make(chan struct{})
+	d := newDeployer(context.Background(), t.TempDir(), &Options{
+		Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+			close(applyStarted)
+			<-applyFinish
+			return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+		},
+		Remove: func(_ context.Context, req protocol.RemovalRequest) protocol.DeploymentResult {
+			close(removeStarted)
+			<-removeFinish
+			return removed(req)
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := make(chan outFrame, 8)
+	defer d.attach(ctx, out)()
+	apply := testRequest("ep_1")
+	rawApply, _ := json.Marshal(apply)
+	removal := testRemoval("ep_1")
+	rawRemoval, _ := json.Marshal(removal)
+	d.handleApply(ctx, "ep_1", rawApply, out)
+	<-applyStarted
+	d.handleRemoval(ctx, "ep_1", rawRemoval, out)
+	if res := readResult(t, out); res.Deployment != removal.Deployment || res.Outcome != protocol.OutcomeDenied || res.Detail != "this agent is already applying a deployment" {
+		t.Fatalf("removal during apply: %+v", res)
+	}
+	close(applyFinish)
+	if res := readResult(t, out); res.Deployment != apply.Deployment || res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("apply: %+v", res)
+	}
+	d.wait()
+	d.handleRemoval(ctx, "ep_1", rawRemoval, out)
+	<-removeStarted
+	d.handleRemoval(ctx, "ep_1", rawRemoval, out)
+	late := removal
+	late.Deadline = time.Now().Add(-time.Minute)
+	rawLate, _ := json.Marshal(late)
+	d.handleRemoval(ctx, "ep_1", rawLate, out)
+	// An apply while the removal runs is refused too.
+	other := testRequest("ep_1")
+	other.Deployment = "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c"
+	rawOther, _ := json.Marshal(other)
+	d.handleApply(ctx, "ep_1", rawOther, out)
+	if res := readResult(t, out); res.Deployment != other.Deployment || res.Outcome != protocol.OutcomeDenied {
+		t.Fatalf("apply during removal: %+v", res)
+	}
+	close(removeFinish)
+	if res := readResult(t, out); res.Deployment != removal.Deployment || res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("removal: %+v", res)
+	}
+	select {
+	case f := <-out:
+		t.Fatalf("extra answer: %s", payloadText(f))
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestDeployerRemovalRefusals(t *testing.T) {
+	out := make(chan outFrame, 4)
+	raw, _ := json.Marshal(testRemoval("ep_1"))
+	d := newDeployer(context.Background(), t.TempDir(), &Options{})
+	d.handleRemoval(context.Background(), "ep_1", raw, out)
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Detail != "this agent has no runtime to remove" {
+		t.Fatalf("no runtime: %+v", res)
+	}
+	d = newDeployer(context.Background(), t.TempDir(), &Options{Remove: func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult {
+		t.Error("refused removal ran")
+		return protocol.DeploymentResult{}
+	}})
+	foreign, _ := json.Marshal(testRemoval("someone-else"))
+	d.handleRemoval(context.Background(), "ep_1", foreign, out)
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Detail != "this deployment is addressed to another endpoint" {
+		t.Fatalf("foreign: %+v", res)
+	}
+	bad := testRemoval("ep_1")
+	bad.Containers = nil
+	rawBad, _ := json.Marshal(bad)
+	d.handleRemoval(context.Background(), "ep_1", rawBad, out)
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Detail != "invalid deployment request" {
+		t.Fatalf("invalid: %+v", res)
+	}
+	d.handleRemoval(context.Background(), "ep_1", []byte("{"), out)
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied {
+		t.Fatalf("unreadable: %+v", res)
 	}
 }

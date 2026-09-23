@@ -62,6 +62,10 @@ type Options struct {
 	// context, not the session's, so a dropped socket never stops it; the request bounds it by
 	// its deadline. Nil means this agent has no runtime, and every apply is refused.
 	Deploy func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult
+	// Remove tears down the containers a removal names and reports its result. It shares
+	// Deploy's single slot and root context and is bounded by the request's deadline. Nil
+	// means this agent has no runtime, and every removal is refused.
+	Remove func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -265,6 +269,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	if opts.Deploy != nil {
 		capabilities = append(capabilities, protocol.CapabilityDeploymentApply)
 	}
+	if opts.Remove != nil {
+		capabilities = append(capabilities, protocol.CapabilityDeploymentRemove)
+	}
 	if err := write(ctx, conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities, AgentVersion: opts.Version}); err != nil {
 		return err
 	}
@@ -453,7 +460,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 						return err
 					}
 				}
-			case protocol.TypeDeploymentApply:
+			case protocol.TypeDeploymentApply, protocol.TypeDeploymentRemove:
 				if len(f.Payload) > protocol.MaxDeploymentRequestBytes {
 					conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 					return errors.New("deployment request too large")
@@ -461,7 +468,11 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				if hello.State == "pending" {
 					break
 				}
-				deployments.handle(ctx, id.EndpointID, f.Payload, outbound)
+				if f.Type == protocol.TypeDeploymentRemove {
+					deployments.handleRemoval(ctx, id.EndpointID, f.Payload, outbound)
+				} else {
+					deployments.handleApply(ctx, id.EndpointID, f.Payload, outbound)
+				}
 			case protocol.TypeLogOpen:
 				var req protocol.LogRequest
 				if json.Unmarshal(f.Payload, &req) != nil || req.Stream == "" {

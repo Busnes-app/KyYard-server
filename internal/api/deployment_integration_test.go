@@ -17,7 +17,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
-// Opt-in, already-present image only: import, adopt, map, plan and apply through the real
+// Opt-in, already-present image only: import, adopt, map, plan, apply and remove through the real
 // server, agent client and Docker Engine. Everything created carries the fixture project
 // label or name and is removed by label, name and tag; nothing else on the host is touched.
 func TestApplyRealDocker(t *testing.T) {
@@ -94,7 +94,7 @@ func TestApplyRealDocker(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- client.Run(agentCtx, &client.Identity{EndpointID: ag.id, PrivateKey: ag.priv, InstanceFingerprint: ag.inst, Server: httpSrv.URL}, client.Options{
-			IdentityDir: t.TempDir(), Snapshot: engine.Snapshot, Inspect: engine.InspectContainer, Deploy: engine.Deploy, InventoryEvery: 2 * time.Second,
+			IdentityDir: t.TempDir(), Snapshot: engine.Snapshot, Inspect: engine.InspectContainer, Deploy: engine.Deploy, Remove: engine.Remove, InventoryEvery: 2 * time.Second,
 		})
 	}()
 	defer func() { stop(); <-done; s.WaitDetached() }()
@@ -194,6 +194,44 @@ func TestApplyRealDocker(t *testing.T) {
 	if out, err := run("inspect", oldID); err == nil {
 		t.Fatalf("old container survived: %s", out)
 	}
+
+	// Removal refuses while inventory still shows a project container it did not adopt, so wait
+	// for a report taken after the apply removed the old one.
+	eventually("inventory without the replaced container", 30*time.Second, func() bool {
+		w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/inventory", "", true)
+		var inv struct {
+			Snapshot protocol.Snapshot `json:"snapshot"`
+		}
+		return w.Code == 200 && json.Unmarshal(w.Body.Bytes(), &inv) == nil && slices.ContainsFunc(inv.Snapshot.Containers, func(c protocol.Container) bool { return c.ID == newID }) && !slices.ContainsFunc(inv.Snapshot.Containers, func(c protocol.Container) bool { return c.ID == oldID })
+	})
+	// Removal stops and deletes the adopted container and keeps the network; the application
+	// stays, marked removed, until it is discarded.
+	removalBody, _ := json.Marshal(store.RemovalBody{InstanceID: instance.ID, Confirm: project})
+	var removing store.Deployment
+	must(json.Unmarshal([]byte(request("POST", base+"/"+app.ID+"/removal", string(removalBody), 202)), &removing))
+	eventually("removal settled", 90*time.Second, func() bool {
+		w := tenantRequest(s, admin, "GET", deployments+"/"+removing.ID, "", true)
+		return w.Code == 200 && json.Unmarshal(w.Body.Bytes(), &settled) == nil && settled.State != "applying"
+	})
+	if serialized, _ = json.Marshal(settled); settled.State != protocol.OutcomeSucceeded || settled.Kind != "remove" {
+		t.Fatalf("removal: %s", serialized)
+	}
+	if out, err := run("inspect", newID); err == nil {
+		t.Fatalf("the removed container survived: %s", out)
+	}
+	if out, err := run("network", "inspect", network); err != nil {
+		t.Fatalf("removal took the network: %v: %s", err, out)
+	}
+	must(json.Unmarshal([]byte(request("GET", base+"/instances", "", 200)), &instances))
+	if len(instances) != 0 {
+		t.Fatalf("the instance was not released: %+v", instances)
+	}
+	var apps []store.Application
+	must(json.Unmarshal([]byte(request("GET", base, "", 200)), &apps))
+	if len(apps) != 1 || apps[0].RemovedAt == nil {
+		t.Fatalf("the application is not marked removed: %+v", apps)
+	}
+	request("DELETE", base+"/"+app.ID, `{"expected_revision":1}`, 204)
 	if strings.Contains(bodies.String(), canary) {
 		t.Fatal("a resolved value reached an API body")
 	}

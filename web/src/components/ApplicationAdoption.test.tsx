@@ -51,3 +51,59 @@ it('shows fixed text for a live plan instead of the server body when release is 
   await screen.findByText(/deployment plan for this instance is still valid/);
   expect(document.body.textContent).not.toContain('secret-canary');
 });
+const adopted = { id: 'instance', application_id: 'app', endpoint_id: 'host', endpoint_name: 'Docker host', project: 'shop', revision: 1, current_revision: 1, previous_revision: 0, mapping_version: 0, container_count: 2, containers: [] };
+it('removes an adopted application only after typing the project', async () => {
+  document.cookie = 'ky_csrf=csrf';
+  const changed = vi.fn();
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      expect(url).toBe('/applications/app/removal');
+      expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf');
+      expect(JSON.parse(String(init.body))).toEqual({ instance_id: 'instance', confirm: 'shop' });
+      return json({ id: 'r1' }, 202);
+    }
+    return json([]);
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationAdoption base="/applications/app" applicationName="App" org="a" env="env" instance={adopted} onChanged={changed} />);
+  expect(document.body.textContent).toContain('Stops and removes the 2 adopted containers of shop on Docker host. Named volumes, images and the saved revisions are kept; the application is marked removed and can be discarded later. Nothing rolls back.');
+  const remove = screen.getByRole('button', { name: 'Remove application' });
+  expect(remove.hasAttribute('disabled')).toBe(true);
+  fireEvent.change(screen.getByLabelText('Confirm removal project'), { target: { value: 'shop' } });
+  fireEvent.click(remove);
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledWith('Removal sent; watch Deployment history for progress.'));
+});
+it.each([
+  [501, {}, 'Upgrade the host agent to enable application removal.'],
+  [409, { code: 'deployment_in_progress' }, 'A deployment is planned or running for this instance; wait or let the plan expire.'],
+  [409, { code: 'removal_too_large' }, 'This instance has more containers than KyYard removes in one operation; release it and remove the containers by hand.'],
+  [409, { code: 'preflight_blocked', blockers: ['unadopted_project_containers', 'made_up_blocker'] }, 'The host reported containers of this project that are not adopted. Inventory can be up to a minute stale after a deployment: retry shortly; if they remain, adopt or remove them by hand.'],
+  [409, { code: 'preflight_blocked', blockers: ['apply_outcome_unknown'] }, "The last apply's outcome is unknown; inspect the host before removing."],
+])('maps a %i removal refusal to fixed text', async (status, extra, text) => {
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? json({ error: 'secret-canary', ...extra }, status) : json([])));
+  const changed = vi.fn();
+  render(<ApplicationAdoption base="/applications/app" applicationName="App" org="a" env="env" instance={adopted} onChanged={changed} />);
+  fireEvent.change(screen.getByLabelText('Confirm removal project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Remove application' }));
+  await screen.findByText(text);
+  expect(document.body.textContent).not.toContain('secret-canary');
+  expect(changed).not.toHaveBeenCalled();
+});
+it('offers removal only for an adopted instance', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json([])));
+  render(<ApplicationAdoption base="/applications/app" applicationName="App" org="a" env="env" onChanged={vi.fn()} />);
+  await screen.findByLabelText('Docker host');
+  expect(screen.queryByRole('button', { name: 'Remove application' })).toBeNull();
+});
+it('keeps removal retryable after a refusal', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? json({ code: 'deployment_in_progress' }, 409) : json([])));
+  render(<ApplicationAdoption base="/applications/app" applicationName="App" org="a" env="env" instance={adopted} onChanged={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText('Confirm removal project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Remove application' }));
+  await screen.findByText('A deployment is planned or running for this instance; wait or let the plan expire.');
+  const input = screen.getByLabelText('Confirm removal project');
+  expect(input).toHaveProperty('value', '');
+  expect(screen.getByRole('button', { name: 'Remove application' }).hasAttribute('disabled')).toBe(true);
+  fireEvent.change(input, { target: { value: 'shop' } });
+  expect(screen.getByRole('button', { name: 'Remove application' }).hasAttribute('disabled')).toBe(false);
+});

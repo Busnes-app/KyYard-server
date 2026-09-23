@@ -30,6 +30,8 @@ var (
 	// ErrDeploymentInProgress says a deployment is applying: neither a new plan nor a
 	// release may proceed until it settles.
 	ErrDeploymentInProgress = errors.New("a deployment is being applied")
+	// ErrRemovalTooLarge says an instance holds more containers than one removal frame names.
+	ErrRemovalTooLarge = errors.New("instance has more containers than one removal takes")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
@@ -156,6 +158,7 @@ type TenancyStore interface {
 	AdoptApplication(context.Context, TenantAccess, string, AdoptionRequest) (*ApplicationInstance, error)
 	ReleaseApplication(context.Context, TenantAccess, string, string, string) error
 	ListApplicationInstances(context.Context, TenantAccess, string) ([]ApplicationInstance, error)
+	ReadApplicationInstance(ctx context.Context, access TenantAccess, applicationID, id string) (*ApplicationInstance, error)
 
 	ReplaceApplicationRevision(ctx context.Context, access TenantAccess, id string, expected int, spec ApplicationSpec, values map[string]string, key []byte) (int, error)
 	ImportApplication(ctx context.Context, access TenantAccess, name string, spec ApplicationSpec, values map[string]string, key []byte) (*Application, error)
@@ -172,6 +175,7 @@ type TenancyStore interface {
 	SettleDeployment(ctx context.Context, endpointID string, res protocol.DeploymentResult) error
 	RefuseDeploymentResult(ctx context.Context, endpointID, id, detail string) error
 	AbandonDeployments(ctx context.Context, endpointID string) (int64, error)
+	RemoveApplication(ctx context.Context, access TenantAccess, applicationID string, body RemovalBody) (*Deployment, *protocol.RemovalRequest, error)
 	ListDeployments(ctx context.Context, access TenantAccess, applicationID string) ([]Deployment, error)
 	ReadApplicationMapping(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMapping, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error

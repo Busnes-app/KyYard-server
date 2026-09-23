@@ -56,3 +56,58 @@ it('reads historical definitions without changing the head used for a new save',
   fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
   expect(screen.getByRole('button', { name: 'Save revision 3' })).toBeTruthy();
 });
+it('labels a removed application, enables discard and offers re-adoption only', async () => {
+  const removedAt = '2026-09-20T12:00:00Z';
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/revisions/')) return json({ digest: 'digest', spec: { services: [] } });
+    if (url.includes('/instances') || url.includes('/endpoints')) return json([]);
+    return json([{ id: 'app', name: 'shop', latest_revision: 2, removed_at: removedAt }]);
+  }));
+  render(<Applications org="a" env="env" />);
+  await vi.waitFor(() => expect(document.body.textContent).toContain(`shop · Removed ${new Date(removedAt).toLocaleDateString()} · Revision 2`));
+  expect(document.body.textContent).not.toMatch(/· (Draft|Adopted) ·/);
+  expect(screen.getByRole('button', { name: 'Discard shop' }).hasAttribute('disabled')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'View configuration for shop' }));
+  await screen.findByText(/Revision 2 · digest/);
+  expect(await screen.findByRole('heading', { name: 'Adopt an existing Compose project' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Map services to containers' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Deployment plan' })).toBeNull();
+});
+const removalRow = { id: 'r1', application_id: 'app', instance_id: 'gone', endpoint_id: 'host', endpoint_name: 'Docker', kind: 'remove', state: 'succeeded', revision: 2, spec_digest: 'x', mapping_version: 0, created_by: 'u', created_at: '2026-09-20T11:00:00Z', expires_at: '2026-09-20T11:15:00Z', expired: true, applied_by: 'admin-user', applied_at: '2026-09-20T11:00:00Z', settled_at: '2026-09-20T11:01:00Z', detail: '', result: { steps: [{ service: 'web', step: 'precondition', outcome: 'succeeded', detail: '' }, { service: 'web', step: 'stop', outcome: 'succeeded', detail: '' }, { service: 'web', step: 'remove', outcome: 'succeeded', detail: '' }], services: [] }, plan: { project: 'shop', services: [], containers: [{ service: 'web', container_id: 'f'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1, name: 'shop-web-1' }] } };
+it('shows the history of a removed application, which has no instance', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/revisions/')) return json({ digest: 'digest', spec: { services: [] } });
+    if (url.endsWith('/deployments')) return json([removalRow]);
+    if (url.includes('/instances') || url.includes('/endpoints')) return json([]);
+    return json([{ id: 'app', name: 'shop', latest_revision: 2, removed_at: '2026-09-20T11:01:00Z' }]);
+  }));
+  render(<Applications org="a" env="env" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'View configuration for shop' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Deployment history' }));
+  await screen.findByRole('heading', { name: 'Deployment history' });
+  const row = screen.getAllByRole('row').find(r => r.textContent?.includes('admin-user'));
+  expect(row?.textContent).toContain('Removal');
+  expect(row?.textContent).toContain('succeeded');
+  fireEvent.click(screen.getByRole('button', { name: 'Show steps' }));
+  expect(screen.getByText('shop-web-1')).toBeTruthy();
+  expect(screen.getByText('f'.repeat(64))).toBeTruthy();
+});
+it('says a removal was sent and reloads the instances', async () => {
+  const instance = { id: 'i', application_id: 'app', endpoint_id: 'host', endpoint_name: 'Docker', project: 'shop', revision: 1, current_revision: 1, previous_revision: 0, mapping_version: 1, container_count: 1, containers: [] };
+  let instanceReads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') return json({ id: 'r1' }, 202);
+    if (url.includes('/revisions/')) return json({ digest: 'digest', spec: { services: [] } });
+    if (url.endsWith('/instances')) { instanceReads += 1; return json([instance]); }
+    if (url.includes('/endpoints') || url.endsWith('/deployments')) return json([]);
+    if (url.endsWith('/applications?limit=100')) return json([{ id: 'app', name: 'shop', latest_revision: 1 }]);
+    return json({});
+  }));
+  render(<Applications org="a" env="env" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'View configuration for shop' }));
+  fireEvent.change(await screen.findByLabelText('Confirm removal project'), { target: { value: 'shop' } });
+  const before = instanceReads;
+  fireEvent.click(screen.getByRole('button', { name: 'Remove application' }));
+  expect(await screen.findByText('Removal sent; watch Deployment history for progress.')).toBeTruthy();
+  expect(instanceReads).toBeGreaterThan(before);
+});

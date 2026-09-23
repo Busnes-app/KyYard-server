@@ -4,7 +4,8 @@ import { ApplicationDeploymentPlan } from './ApplicationDeploymentPlan';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const mapping = { instance_id: 'i', version: 3, mapped_revision: 2, services: [], bindings: {}, preview: { revision: 2, digest: 'd', project: 'shop', endpoint_name: 'Docker', containers: [] } };
 const plan = { id: 'd1', application_id: 'app', instance_id: 'i', endpoint_id: 'host', state: 'planned', revision: 2, spec_digest: 'x', mapping_version: 1, created_by: 'u', created_at: '2026-09-22T12:00:00Z', expires_at: '2999-01-01T00:00:00Z', expired: false, detail: '', result: null, plan: { project: 'shop', services: [{ name: 'web', reference: 'nginx:1', image_id: `sha256:${'a'.repeat(64)}`, image_digest: '', container_id: 'b'.repeat(64), replaces: { container_id: 'b'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1 }, restart: 'always', ports: [], secret_refs: ['TOKEN'] }] } };
-const props = { base: '/app', instanceID: 'i' };
+const instance = { id: 'i', application_id: 'app', endpoint_id: 'host', endpoint_name: 'Docker', project: 'shop', revision: 2, current_revision: 2, previous_revision: 0, mapping_version: 3, container_count: 1, containers: [] };
+const props = { base: '/app', instanceID: 'i', latestRevision: 2, instance };
 function stubFetch(deploymentsBody: unknown) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
@@ -54,7 +55,8 @@ it('shows an expired plan as expired and hides a plan for another instance', asy
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   await screen.findByText(/expired/i);
-  expect(screen.getAllByRole('row').length).toBe(2); // header + one service
+  expect(screen.getAllByRole('table')[0].querySelectorAll('tr').length).toBe(2); // header + one service
+  expect(screen.getAllByRole('button', { name: 'Show steps' }).length).toBe(1); // history excludes the other instance
 });
 it('shows adoption changed and no form when the mapping names a different instance', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -224,4 +226,71 @@ it('stops polling three minutes past the deadline and says so', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   expect(fetcher.mock.calls.length).toBe(before);
   vi.useRealTimers();
+});
+it('plans a prior revision with the reapply warning', async () => {
+  const fetcher = stubFetch([]);
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('No plan for this instance.');
+  expect(screen.getByText('Current revision 2 · previous none')).toBeTruthy();
+  const select = screen.getByLabelText('Revision to plan');
+  expect((select as HTMLSelectElement).value).toBe('2');
+  expect(document.body.textContent).not.toContain('uses its own saved environment values');
+  fireEvent.change(select, { target: { value: '1' } });
+  expect(screen.getByText('Revision 1 uses its own saved environment values. Data written since is not reversed. The service mapping was reviewed against revision 2.')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Confirm plan project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Plan deployment' }));
+  await vi.waitFor(() => expect(fetcher.mock.calls.some(c => (c[1] as RequestInit | undefined)?.method === 'POST')).toBe(true));
+  const post = fetcher.mock.calls.find(c => (c[1] as RequestInit | undefined)?.method === 'POST');
+  expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({ instance_id: 'i', mapping_version: 3, revision: 1, confirm: 'shop' });
+});
+const removal = { ...plan, id: 'r1', kind: 'remove', state: 'denied', revision: 2, applied_by: 'admin-user', applied_at: '2026-09-23T10:00:00Z', settled_at: '2026-09-23T10:01:00Z', detail: '', result: { steps: [{ service: 'web', step: 'precondition', outcome: 'denied', detail: 'the container is not the one this plan names' }], services: [] }, plan: { project: 'shop', services: [], containers: [{ service: 'web', container_id: 'f'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1, name: 'shop-web-1' }] } };
+const applied = { ...settled, id: 'a1', kind: 'apply', revision: 1, applied_by: 'operator-user', applied_at: '2026-09-22T10:00:00Z', settled_at: '2026-09-22T10:01:00Z' };
+it('lists deployment history newest first and expands steps', async () => {
+  vi.stubGlobal('fetch', stubFetch([removal, applied]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByRole('heading', { name: 'Deployment history' });
+  const rows = screen.getAllByRole('row').filter(r => r.textContent?.includes('-user'));
+  expect(rows.length).toBe(2);
+  expect(rows[0].textContent).toContain('Removal');
+  expect(rows[0].textContent).toContain('denied');
+  expect(rows[1].textContent).toContain('Apply');
+  expect(rows[1].textContent).toContain('succeeded');
+  const toggles = screen.getAllByRole('button', { name: 'Show steps' });
+  fireEvent.click(toggles[1]);
+  expect(screen.getByText('e'.repeat(64))).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Hide steps' })).toBeTruthy();
+});
+it('renders a removal plan as its container list', async () => {
+  vi.stubGlobal('fetch', stubFetch([removal]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('f'.repeat(64));
+  expect(screen.getByText('shop-web-1')).toBeTruthy();
+  expect(screen.queryByRole('columnheader', { name: 'Pinned image' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Apply deployment' })).toBeNull();
+});
+it('advises on a denied removal precondition without asking to plan again', async () => {
+  vi.stubGlobal('fetch', stubFetch([removal]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  const alerts = await screen.findAllByText('A container of this application is not the one recorded; refresh the inventory and, if it was recreated outside KyYard, release and adopt it again.');
+  expect(alerts.length).toBeGreaterThan(0);
+  expect(document.body.textContent).not.toContain('plan again');
+});
+it('explains a prior revision whose services differ from the mapping', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (init?.method === 'POST') return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['revision_services_differ'] }), { status: 409 });
+    return new Response('[]');
+  }));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('No plan for this instance.');
+  fireEvent.change(screen.getByLabelText('Revision to plan'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('Confirm plan project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Plan deployment' }));
+  await screen.findByText("The chosen revision's services differ from the mapped ones. Map against the latest definition or choose another revision.");
 });

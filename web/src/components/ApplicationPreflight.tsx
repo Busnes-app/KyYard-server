@@ -4,7 +4,7 @@ import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
-type Blocker = 'runtime_verification_required' | 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid';
+type Blocker = 'runtime_verification_required' | 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ';
 export const messages: Record<Blocker, string> = {
   runtime_verification_required: 'Deployment execution is not available yet. Live inspection provides selected observations; configuration parity, secrets and safe replacement remain unverified.',
   mapping_requires_review: 'Review and save service mapping for the latest definition.',
@@ -18,7 +18,13 @@ export const messages: Record<Blocker, string> = {
   reported_port_overlap: 'A published port overlaps a reported binding outside the mapped containers.',
   desired_port_overlap: 'A published port overlaps another binding in the saved definition.',
   replacement_identity_invalid: 'A mapped container\'s recorded identity is incomplete. Release and adopt the project again before planning.',
+  revision_services_differ: "The chosen revision's services differ from the mapped ones. Map against the latest definition or choose another revision.",
 };
+// knownBlockers reads a 409 preflight_blocked body, keeping only the codes table describes.
+export function knownBlockers<K extends string>(payload: unknown, table: Record<K, string>): K[] {
+  const blockers = payload && typeof payload === 'object' ? (payload as { blockers?: unknown }).blockers : undefined;
+  return Array.isArray(blockers) ? blockers.filter((b): b is K => typeof b === 'string' && Object.hasOwn(table, b)) : [];
+}
 type Preflight = { instance_id: string; endpoint_id: string; endpoint_name: string; revision: number; mapping_version: number; received_at: string; executable: boolean; blockers: Blocker[]; services: { name: string; reference: string; image_id: string; container_id: string; inspection_target?: InspectionTarget; blockers: Blocker[] }[] };
 export function ApplicationPreflight({ base, instanceID, org }: { base: string; instanceID: string; org: string }) {
   const [open, setOpen] = useState(false);
