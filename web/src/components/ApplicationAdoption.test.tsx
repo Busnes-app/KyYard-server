@@ -77,7 +77,7 @@ it.each([
   [501, {}, 'Upgrade the host agent to enable application removal.'],
   [409, { code: 'deployment_in_progress' }, 'A deployment is planned or running for this instance; wait or let the plan expire.'],
   [409, { code: 'removal_too_large' }, 'This instance has more containers than KyYard removes in one operation; release it and remove the containers by hand.'],
-  [409, { code: 'preflight_blocked', blockers: ['unadopted_project_containers', 'made_up_blocker'] }, 'The host runs containers of this project that are not adopted; adopt or remove them by hand first.'],
+  [409, { code: 'preflight_blocked', blockers: ['unadopted_project_containers', 'made_up_blocker'] }, 'The host reported containers of this project that are not adopted. Inventory can be up to a minute stale after a deployment: retry shortly; if they remain, adopt or remove them by hand.'],
   [409, { code: 'preflight_blocked', blockers: ['apply_outcome_unknown'] }, "The last apply's outcome is unknown; inspect the host before removing."],
 ])('maps a %i removal refusal to fixed text', async (status, extra, text) => {
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? json({ error: 'secret-canary', ...extra }, status) : json([])));

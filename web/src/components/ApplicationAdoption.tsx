@@ -16,7 +16,7 @@ const REMOVAL_CODES: Record<string, string> = {
   removal_too_large: 'This instance has more containers than KyYard removes in one operation; release it and remove the containers by hand.',
 };
 const REMOVAL_BLOCKERS = {
-  unadopted_project_containers: 'The host runs containers of this project that are not adopted; adopt or remove them by hand first.',
+  unadopted_project_containers: 'The host reported containers of this project that are not adopted. Inventory can be up to a minute stale after a deployment: retry shortly; if they remain, adopt or remove them by hand.',
   apply_outcome_unknown: "The last apply's outcome is unknown; inspect the host before removing.",
 };
 const REMOVAL_SENT = 'Removal sent; watch Deployment history for progress.';
