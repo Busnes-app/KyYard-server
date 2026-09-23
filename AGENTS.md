@@ -134,6 +134,7 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 - [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
 - [internal/scim/AGENTS.md](internal/scim/AGENTS.md): Retained legacy SCIM library tests; no product HTTP routes.
 - [internal/backup/AGENTS.md](internal/backup/AGENTS.md): Product-side adapters over `ky-primitives/recoveryclient`: payload collection, drill checks, settings and sealer glue.
+- [internal/registry/AGENTS.md](internal/registry/AGENTS.md): Image reference parsing and the guarded registry client that resolves manifest digests.
 - [internal/devices/AGENTS.md](internal/devices/AGENTS.md): Retained legacy pairing library/storage compatibility; no product HTTP routes.
 - [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
 - [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
