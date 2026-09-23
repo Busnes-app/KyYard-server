@@ -205,7 +205,7 @@ type TenancyStore interface {
 	// ResolveRegistryAccess decrypts the credential for ref's host under action, the permission
 	// of the operation that uses it (registry.read is refused). It audits only denials and
 	// failures; callers audit the operation and never return the secret.
-	ResolveRegistryAccess(ctx context.Context, access TenantAccess, action permissions.Action, ref string, key []byte) (*RegistryAccess, error)
+	ResolveRegistryAccess(ctx context.Context, access TenantAccess, action permissions.Action, ref string, key []byte, privateAllowed bool) (*RegistryAccess, error)
 	// ListMemberOrganizations returns the caller's own active memberships; it is not tenant-scoped.
 	ListMemberOrganizations(ctx context.Context, userID string) ([]MemberOrganization, error)
 

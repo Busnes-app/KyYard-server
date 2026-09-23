@@ -76,7 +76,7 @@ func TestRegistryCredentialIsWriteOnly(t *testing.T) {
 	if err != nil || kept.ID != r.ID || !kept.HasCredential || kept.Name != "GitHub 2" || !kept.AllowPrivate || !kept.CreatedAt.Equal(r.CreatedAt) {
 		t.Fatalf("keep: %+v %v", kept, err)
 	}
-	access, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "ghcr.io/org/app:v1", key)
+	access, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "ghcr.io/org/app:v1", key, true)
 	if err != nil || access.Credential == nil || access.Credential.Secret != registrySecret || access.Credential.Username != "bot" || access.Anonymous || access.Registry.ID != r.ID {
 		t.Fatalf("resolve after keep: %+v %v", access, err)
 	}
@@ -84,7 +84,7 @@ func TestRegistryCredentialIsWriteOnly(t *testing.T) {
 	if err != nil || cleared.ID != r.ID || cleared.HasCredential {
 		t.Fatalf("clear: %+v %v", cleared, err)
 	}
-	access, err = ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "ghcr.io/org/app:v1", key)
+	access, err = ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "ghcr.io/org/app:v1", key, true)
 	if err != nil || access.Credential != nil || access.Anonymous {
 		t.Fatalf("resolve after clear: %+v %v", access, err)
 	}
@@ -179,6 +179,13 @@ func TestPrivateRegistriesNeedTheOperatorOptIn(t *testing.T) {
 	if r, err := ts.PutRegistry(ctx, a, RegistryInput{Host: "registry.lan:5000", Name: "LAN", AllowPrivate: true}, key, true); err != nil || !r.AllowPrivate {
 		t.Fatalf("private with opt-in: %+v %v", r, err)
 	}
+	// A stored allow_private row is re-gated on every use, so turning the opt-in off takes effect at once.
+	for _, allowed := range []bool{false, true} {
+		access, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "registry.lan:5000/app:1", key, allowed)
+		if err != nil || access.Registry == nil || access.Registry.AllowPrivate != allowed {
+			t.Fatalf("resolve with opt-in %t: %+v %v", allowed, access, err)
+		}
+	}
 }
 
 func TestRegistryRoles(t *testing.T) {
@@ -216,11 +223,11 @@ func TestRegistryRoles(t *testing.T) {
 			t.Errorf("%s policy set: %v", role, err)
 		}
 		// registry.read is every member's; it never unlocks the credential.
-		if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.RegistryRead, "ghcr.io/org/app", key); !errors.Is(err, ErrForbidden) {
+		if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.RegistryRead, "ghcr.io/org/app", key, true); !errors.Is(err, ErrForbidden) {
 			t.Errorf("%s resolve under registry.read: %v", role, err)
 		}
 		for i, action := range []permissions.Action{permissions.ApplicationDeploy, permissions.ImagePull} {
-			access, err := ts.ResolveRegistryAccess(ctx, a, action, "ghcr.io/org/app", key)
+			access, err := ts.ResolveRegistryAccess(ctx, a, action, "ghcr.io/org/app", key, true)
 			if uses[role][i] && (err != nil || access.Credential == nil || access.Credential.Secret != registrySecret) {
 				t.Errorf("%s resolve under %s: %+v %v", role, action, access, err)
 			}
@@ -229,10 +236,10 @@ func TestRegistryRoles(t *testing.T) {
 			}
 		}
 	}
-	if _, err := ts.ResolveRegistryAccess(ctx, admin, permissions.ApplicationRead, "ghcr.io/org/app", key); !errors.Is(err, ErrForbidden) {
+	if _, err := ts.ResolveRegistryAccess(ctx, admin, permissions.ApplicationRead, "ghcr.io/org/app", key, true); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("admin resolve under application.read: %v, want ErrForbidden", err)
 	}
-	if _, err := ts.ResolveRegistryAccess(ctx, admin, permissions.RegistryRead, "ghcr.io/org/app", key); !errors.Is(err, ErrForbidden) {
+	if _, err := ts.ResolveRegistryAccess(ctx, admin, permissions.RegistryRead, "ghcr.io/org/app", key, true); !errors.Is(err, ErrForbidden) {
 		t.Errorf("admin resolve under registry.read: %v", err)
 	}
 	if d, p := auditCount(t, st, "application.deploy", "denied"), auditCount(t, st, "image.pull", "denied"); d != 2 || p != 2 {
@@ -258,15 +265,15 @@ func TestRegistryPolicyAndResolution(t *testing.T) {
 		t.Fatalf("hub: %+v %v", hub, err)
 	}
 	for _, ref := range []string{"nginx", "nginx:1", "library/nginx:1", "docker.io/library/nginx:1", "registry-1.docker.io/org/app"} {
-		access, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, ref, key)
+		access, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, ref, key, true)
 		if err != nil || access.Registry == nil || access.Registry.ID != hub.ID || access.Credential == nil || access.Credential.Secret != registrySecret {
 			t.Errorf("resolve %q: %+v %v", ref, access, err)
 		}
 	}
-	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "../etc", key); !errors.Is(err, ErrInvalid) {
+	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "../etc", key, true); !errors.Is(err, ErrInvalid) {
 		t.Errorf("bad ref: %v", err)
 	}
-	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "quay.io/org/app", key); !errors.Is(err, ErrRegistryNotConfigured) {
+	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "quay.io/org/app", key, true); !errors.Is(err, ErrRegistryNotConfigured) {
 		t.Fatalf("unconfigured with opt-in off: %v", err)
 	}
 	policy, err := ts.ReadRegistryPolicy(ctx, a)
@@ -279,7 +286,7 @@ func TestRegistryPolicyAndResolution(t *testing.T) {
 	if policy, err := ts.ReadRegistryPolicy(ctx, a); err != nil || !policy.AnonymousPullEnabled {
 		t.Fatalf("policy after set: %+v %v", policy, err)
 	}
-	access, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "quay.io/org/app", key)
+	access, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "quay.io/org/app", key, true)
 	if err != nil || !access.Anonymous || access.Registry != nil || access.Credential != nil {
 		t.Fatalf("unconfigured with opt-in on: %+v %v", access, err)
 	}
@@ -289,7 +296,7 @@ func TestRegistryPolicyAndResolution(t *testing.T) {
 	if got := registryAudit(t, st, "registry.manage", "registry-policy"); strings.Join(got, "|") != "old=false new=true|old=true new=false" {
 		t.Fatalf("policy audit %q", got)
 	}
-	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "quay.io/org/app", key); !errors.Is(err, ErrRegistryNotConfigured) {
+	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "quay.io/org/app", key, true); !errors.Is(err, ErrRegistryNotConfigured) {
 		t.Fatalf("opt-in off again: %v", err)
 	}
 	// A permitted resolution audits nothing, whether configured, anonymous or not configured.
@@ -314,10 +321,10 @@ func TestRegistryCredentialIsBoundToItsRow(t *testing.T) {
 	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE registries SET credential_enc=(SELECT credential_enc FROM registries WHERE id=?) WHERE id=?`), first.ID, second.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "quay.io/org/app", key); !errors.Is(err, ErrInvalid) {
+	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "quay.io/org/app", key, true); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("moved ciphertext: %v", err)
 	}
-	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "ghcr.io/org/app", []byte(strings.Repeat("x", 32))); !errors.Is(err, ErrInvalid) {
+	if _, err := ts.ResolveRegistryAccess(ctx, a, permissions.ApplicationDeploy, "ghcr.io/org/app", []byte(strings.Repeat("x", 32)), true); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("wrong key: %v", err)
 	}
 }
@@ -353,7 +360,7 @@ func TestRegistriesAreOrganizationScoped(t *testing.T) {
 	if err := ts.DeleteRegistry(ctx, b, mine.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-organization delete: %v", err)
 	}
-	access, err := ts.ResolveRegistryAccess(ctx, b, permissions.ApplicationDeploy, "ghcr.io/org/app", key)
+	access, err := ts.ResolveRegistryAccess(ctx, b, permissions.ApplicationDeploy, "ghcr.io/org/app", key, true)
 	if err != nil || access.Credential.Secret != "theirs" {
 		t.Fatalf("resolve in b: %+v %v", access, err)
 	}
@@ -364,7 +371,7 @@ func TestRegistriesAreOrganizationScoped(t *testing.T) {
 	if _, err := ts.ListRegistries(ctx, TenantAccess{ActorID: "other-admin", OrganizationID: a.OrganizationID}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("non-member list: %v", err)
 	}
-	if _, err := ts.ResolveRegistryAccess(ctx, TenantAccess{ActorID: "other-admin", OrganizationID: a.OrganizationID}, permissions.ApplicationDeploy, "ghcr.io/org/app", key); !errors.Is(err, ErrForbidden) {
+	if _, err := ts.ResolveRegistryAccess(ctx, TenantAccess{ActorID: "other-admin", OrganizationID: a.OrganizationID}, permissions.ApplicationDeploy, "ghcr.io/org/app", key, true); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("non-member resolve: %v", err)
 	}
 }

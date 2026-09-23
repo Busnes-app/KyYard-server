@@ -128,7 +128,7 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 			t.Fatal("backup lost encrypted values")
 		}
 	}
-	access, err := restored.Tenancy().ResolveRegistryAccess(ctx, orgAccess, permissions.ApplicationDeploy, "ghcr.io/org/app:v1", restoredKey)
+	access, err := restored.Tenancy().ResolveRegistryAccess(ctx, orgAccess, permissions.ApplicationDeploy, "ghcr.io/org/app:v1", restoredKey, true)
 	mustTenant(t, err)
 	if access.Credential == nil || access.Credential.Username != "bot" || access.Credential.Secret != registryCredential {
 		t.Fatal("backup lost the registry credential")

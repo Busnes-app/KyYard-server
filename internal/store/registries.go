@@ -202,7 +202,9 @@ func (t *tenancyStore) SetAnonymousPull(ctx context.Context, a TenantAccess, ena
 	})
 }
 
-func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess, action permissions.Action, ref string, key []byte) (*RegistryAccess, error) {
+// ResolveRegistryAccess re-checks the operator's opt-in on every use: a row saved as
+// allow_private stops allowing private addresses the moment privateAllowed is off.
+func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess, action permissions.Action, ref string, key []byte, privateAllowed bool) (*RegistryAccess, error) {
 	// The credential is unlocked only by an operation that uses it, never by a read permission.
 	if action != permissions.ImagePull && action != permissions.ApplicationDeploy {
 		return nil, ErrForbidden
@@ -224,8 +226,12 @@ func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess
 			notConfigured, access.Anonymous = !enabled, enabled
 			return nil
 		}
+		if err != nil {
+			return err
+		}
+		r.AllowPrivate = r.AllowPrivate && privateAllowed
 		access.Registry, access.Credential = r, credential
-		return err
+		return nil
 	})
 	if err != nil {
 		return nil, err
