@@ -8,7 +8,7 @@ import { messages } from './ApplicationPreflight';
 type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[] };
 type DeployStep = { service: string; step: string; outcome: string; detail: string };
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number };
-type Deployment = { id: string; instance_id: string; endpoint_id: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; applied_at?: string | null; settled_at?: string | null; result: { steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services: PlannedService[] } };
+type Deployment = { id: string; instance_id: string; endpoint_id: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services: PlannedService[] } };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
 type Props = { base: string; instanceID: string };
 
@@ -18,12 +18,14 @@ const APPLY_CODES: Record<string, string> = {
   endpoint_offline: 'The host is not connected. Reconnect it before applying.',
   deployment_not_sent: 'The deployment was not sent. Refresh and try again.',
 };
-// Fixed adapter detail prefixes (internal/runtime/docker/deploy.go, internal/agent/client/deployments.go);
-// anything else is server text and stays hidden.
+// Fixed detail prefixes: the adapter (internal/runtime/docker/deploy.go), the agent
+// (internal/agent/client/deployments.go) and the server (internal/store, internal/api).
+// Anything else stays hidden.
 const FIXED_DETAIL_PREFIXES = [
   'the container', 'the pinned image', 'the runtime', 'the daemon', 'the deployment', 'this deployment',
   'not enough time', 'a container', 'service ', 'the host reported', 'the run was cancelled',
   'this agent', 'invalid deployment request',
+  'the connection ended', 'no result arrived', 'the endpoint disconnected', "the host's result",
 ];
 function fixedDetail(detail: string): string {
   return FIXED_DETAIL_PREFIXES.some(p => detail.startsWith(p)) ? detail : '';
@@ -35,10 +37,22 @@ function isDeployment(x: unknown): x is Deployment {
     && typeof d.expires_at === 'string' && typeof d.expired === 'boolean'
     && typeof d.plan === 'object' && d.plan !== null;
 }
-function explanationFor(result: Deployment['result']): string {
-  const failing = result?.steps.find(s => s.outcome !== 'succeeded' && s.outcome !== 'skipped');
+function preconditionExplanation(detail: string): string {
+  if (detail.includes('no longer exists')) return 'The mapped container no longer exists on the host; refresh the inventory and plan again.';
+  if (detail.includes('not the one this plan')) return 'The mapped container changed on the host; plan again.';
+  if (detail.includes('image is no longer present')) return "The mapped container's image is no longer present on the host. Review it on the host before planning again.";
+  return 'A mapped container has configuration the definition does not describe. Review it on the host before planning again.';
+}
+// The row's state decides first: an unknown or timed-out row may carry no steps, and a failed
+// row without a result never reached the host (FailDeployment).
+function explanationFor(current: Deployment): string {
+  if (current.state === 'unknown') return 'The host may or may not have acted. Inspect it before planning again.';
+  if (current.state === 'timed_out') return 'The host did not answer in time.';
+  if (current.state === 'failed' && current.result === null) return 'The deployment was not sent to the host.';
+  const failing = current.result?.steps.find(s => s.outcome !== 'succeeded' && s.outcome !== 'skipped');
   if (!failing) return '';
-  if (failing.outcome === 'denied' && failing.step === 'precondition') return 'A mapped container has configuration the definition does not describe. Review it on the host before planning again.';
+  if (failing.outcome === 'denied' && failing.step === 'precondition') return preconditionExplanation(failing.detail);
+  if (failing.detail.includes('pinned image is not present')) return 'The pinned image is no longer present on the host.';
   if (failing.outcome === 'unknown') return 'The host may or may not have acted. Inspect it before planning again.';
   if (failing.outcome === 'timed_out') return 'The host did not answer in time.';
   if (failing.outcome === 'failed') return 'A step failed on the host; the previous container may remain renamed with a .kyyard-prev suffix.';
@@ -57,7 +71,7 @@ function isExpired(d: Deployment): boolean {
 }
 function ResultSection({ current }: { current: Deployment }) {
   const steps = usePagination(current.result?.steps ?? [], `${current.id}-steps`);
-  const explanation = explanationFor(current.result);
+  const explanation = explanationFor(current);
   const detail = fixedDetail(current.detail);
   return <>
     <p>State: {current.state}{current.settled_at ? `, settled ${new Date(current.settled_at).toLocaleString()}` : ''}.</p>
@@ -103,11 +117,14 @@ function PlanView({ base, instanceID }: Props) {
     setPollPaused(false);
     if (!current || current.state !== 'applying') return;
     const controller = new AbortController();
-    let ticks = 0;
+    // Poll until three minutes past the row's deadline (the server sweeps it to unknown two
+    // minutes past), or 15 minutes from the first tick when the row carries none.
+    const deadline = current.deadline ? Date.parse(current.deadline) : NaN;
+    let stopAt = Number.isNaN(deadline) ? 0 : deadline + 3 * 60_000;
     let failures = 0;
     const id = window.setInterval(() => {
-      ticks += 1;
-      if (ticks > 144) { window.clearInterval(id); return; }
+      if (!stopAt) stopAt = Date.now() + 15 * 60_000;
+      if (Date.now() > stopAt) { setPollPaused(true); window.clearInterval(id); return; }
       fetch(`${base}/deployments`, { signal: controller.signal, cache: 'no-store' })
         .then(async r => {
           if (controller.signal.aborted) return;
@@ -128,7 +145,7 @@ function PlanView({ base, instanceID }: Props) {
         });
     }, 5000);
     return () => { controller.abort(); window.clearInterval(id); };
-  }, [base, instanceID, current?.id, current?.state]);
+  }, [base, instanceID, current?.id, current?.state, current?.deadline]);
 
   const plan = async () => {
     if (!mapping.data) return;
@@ -177,13 +194,13 @@ function PlanView({ base, instanceID }: Props) {
     finally { setApplyBusy(false); }
   };
   return <>
-    <p>A plan records the exact revision, mapping and image identities a deployment would use. It is not executed here: no containers change, no images are pulled and no secret values are read. Runtime configuration remains unverified.</p>
+    <p>A plan records the exact revision, mapping and image identities a deployment would use. Planning executes nothing: no containers change, no images are pulled and no secret values are read. Runtime configuration remains unverified.</p>
     <StateNotice state={deployments.state} onRetry={reload} />
     {deployments.state === 'ready' && <>
       {mismatched && <p role="alert">Adoption changed. Refresh applications before planning.</p>}
       {pollPaused && <p role="status">Status updates paused; refresh to continue.</p>}
       {!mismatched && (current ? <>
-        <p>Plan for revision {current.revision}, mapping version {current.mapping_version}, project <bdi>{current.plan.project}</bdi>. {isExpired(current) ? 'This plan has expired; plan again to continue.' : `Expires ${new Date(current.expires_at).toLocaleString()}.`} It remains inert on its own; only planning again replaces it.</p>
+        <p>Plan for revision {current.revision}, mapping version {current.mapping_version}, project <bdi>{current.plan.project}</bdi>. {isExpired(current) ? 'This plan has expired; plan again to continue.' : `Expires ${new Date(current.expires_at).toLocaleString()}.`}</p>
         {page.controls}
         <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Pinned image</th><th>Replaces container</th><th>Secrets</th></tr></thead><tbody>{page.rows.map(s => <tr key={s.name}>
           <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>

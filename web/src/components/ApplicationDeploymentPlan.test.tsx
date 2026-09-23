@@ -17,7 +17,8 @@ it('loads the current plan on open', async () => {
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   await screen.findByText(`sha256:${'a'.repeat(64)}`);
-  expect(screen.getByText(/not executed/i)).toBeTruthy();
+  expect(screen.getByText(/Planning executes nothing/)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('inert');
 });
 it('plans on explicit confirmation and posts the observed bindings', async () => {
   const fetcher = stubFetch([]);
@@ -181,4 +182,46 @@ it('shows a step detail with a recognized adapter prefix and hides an unrecogniz
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   await screen.findByText('this agent is already applying a deployment');
   expect(document.body.textContent).not.toContain('unexpected raw server text');
+});
+it('explains an abandoned unknown row with fixed text', async () => {
+  vi.stubGlobal('fetch', stubFetch([{ ...plan, state: 'unknown', detail: 'the connection ended before a result arrived', result: null }]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('The host may or may not have acted. Inspect it before planning again.');
+  expect(screen.getByText('the connection ended before a result arrived')).toBeTruthy();
+});
+it('explains a deployment that was never sent', async () => {
+  vi.stubGlobal('fetch', stubFetch([{ ...plan, state: 'failed', detail: 'the endpoint disconnected before the deployment was sent', result: null }]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('The deployment was not sent to the host.');
+  expect(document.body.textContent).not.toContain('.kyyard-prev');
+});
+it('keys a refused precondition on its step detail', async () => {
+  const gone = { ...refused, result: { steps: [{ service: 'web', step: 'precondition', outcome: 'denied', detail: 'the container no longer exists' }], services: [] } };
+  vi.stubGlobal('fetch', stubFetch([gone]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('The mapped container no longer exists on the host; refresh the inventory and plan again.');
+});
+it('stops polling three minutes past the deadline and says so', async () => {
+  vi.useFakeTimers();
+  const running = { ...applying, deadline: new Date(Date.now() + 60_000).toISOString() };
+  const fetcher = vi.fn(async (url: string) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    return new Response(JSON.stringify([running]));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByText(/State: applying/));
+  // Three minutes in: still polling. Past four (deadline + 3 minutes): paused.
+  for (let i = 0; i < 9; i++) await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  expect(document.body.textContent).not.toContain('Status updates paused');
+  for (let i = 0; i < 4; i++) await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  expect(document.body.textContent).toContain('Status updates paused; refresh to continue.');
+  const before = fetcher.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(fetcher.mock.calls.length).toBe(before);
+  vi.useRealTimers();
 });
