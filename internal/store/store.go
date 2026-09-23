@@ -27,6 +27,9 @@ var (
 	ErrSessionExpired    = errors.New("session expired")
 	ErrPairingExpired    = errors.New("pairing session expired")
 	ErrDeploymentPlanned = errors.New("a live deployment plan exists")
+	// ErrDeploymentInProgress says a deployment is applying: neither a new plan nor a
+	// release may proceed until it settles.
+	ErrDeploymentInProgress = errors.New("a deployment is being applied")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
