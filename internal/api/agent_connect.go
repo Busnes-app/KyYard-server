@@ -505,8 +505,10 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			return false
 		}
 		switch err := ts.SettleDeployment(fctx, c.endpointID, res); {
-		case err == nil, errors.Is(err, store.ErrNotFound):
-			// ErrNotFound is a row this endpoint may not settle: nothing to report.
+		case err == nil:
+		case errors.Is(err, store.ErrNotFound):
+			// A row this endpoint may not settle: nothing to report to the agent.
+			log.Printf("agent %s: late deployment result ignored: %s", c.endpointID, res.Deployment)
 		case errors.Is(err, store.ErrInvalid), errors.Is(err, store.ErrAdoptionChanged):
 			// The host may have acted, but not as planned: record that rather than guess.
 			if err := ts.RefuseDeploymentResult(fctx, c.endpointID, res.Deployment, "the host's result did not match the plan; inspect the host"); err != nil && !errors.Is(err, store.ErrNotFound) {

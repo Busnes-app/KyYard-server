@@ -19,12 +19,17 @@ import (
 // lock before the read: a deferred read-then-write transaction would otherwise lose to a
 // concurrent revocation and fail with BUSY_SNAPSHOT instead of waiting behind it.
 func (t *tenancyStore) withTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, "", true, op)
+	return t.run(ctx, a, action, "", nil, true, op)
 }
 
 // withTenantTarget is withTenant auditing an explicit target (for example a member's user ID).
 func (t *tenancyStore) withTenantTarget(ctx context.Context, a TenantAccess, action permissions.Action, target string, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, target, true, op)
+	return t.run(ctx, a, action, target, nil, true, op)
+}
+
+// withTenantTargetDetails is withTenantTarget whose success row carries the details op sets.
+func (t *tenancyStore) withTenantTargetDetails(ctx context.Context, a TenantAccess, action permissions.Action, target string, details *string, op func(*sql.Tx) error) error {
+	return t.run(ctx, a, action, target, details, true, op)
 }
 
 // auditedReads are the low-volume, sensitive reads that keep a success row: who looked at the
@@ -43,10 +48,10 @@ var auditedReads = map[permissions.Action]bool{
 // list reads arrive every few seconds per endpoint and would be the audit-growth threat
 // themselves.
 func (t *tenancyStore) readTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, "", false, op)
+	return t.run(ctx, a, action, "", nil, false, op)
 }
 
-func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, target string, lock bool, op func(*sql.Tx) error) error {
+func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, target string, details *string, lock bool, op func(*sql.Tx) error) error {
 	if a.ActorID == "" || a.OrganizationID == "" {
 		return ErrForbidden
 	}
@@ -114,7 +119,10 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 		return tx.Commit()
 	}
 	record.Result = "success"
-	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), record.UserID, record.Action, record.Resource, record.IPAddress, record.CreatedAt, record.Scope, record.OrganizationID, record.EnvironmentID, record.CorrelationID, record.Result)
+	if details != nil {
+		record.Details = protocol.CleanText(*details, 255)
+	}
+	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?,?)`), record.UserID, record.Action, record.Resource, record.Details, record.IPAddress, record.CreatedAt, record.Scope, record.OrganizationID, record.EnvironmentID, record.CorrelationID, record.Result)
 	if err != nil {
 		return err
 	}

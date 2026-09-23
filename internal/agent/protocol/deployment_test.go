@@ -140,6 +140,18 @@ func TestRemovalRequestValidation(t *testing.T) {
 			t.Fatalf("%s accepted", name)
 		}
 	}
+	// The cap is inclusive: MaxRemovalTargets targets pass, one more is refused.
+	r := goodRemoval(now)
+	for i := len(r.Containers); i < MaxRemovalTargets; i++ {
+		r.Containers = append(r.Containers, RemovalTarget{Service: fmt.Sprintf("s%d", i), Target: InspectionTarget{ContainerID: fmt.Sprintf("%064x", i), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}})
+	}
+	if err := r.Validate(now); err != nil {
+		t.Fatalf("%d targets: %v", len(r.Containers), err)
+	}
+	r.Containers = append(r.Containers, RemovalTarget{Service: "extra", Target: InspectionTarget{ContainerID: strings.Repeat("e", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}})
+	if len(r.Containers) != MaxRemovalTargets+1 || r.Validate(now) == nil {
+		t.Fatalf("%d targets accepted", len(r.Containers))
+	}
 }
 
 func TestDeploymentResultValidation(t *testing.T) {

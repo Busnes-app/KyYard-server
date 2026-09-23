@@ -59,6 +59,16 @@ func TestRemovalOverTheAgentSocket(t *testing.T) {
 			t.Fatalf("expected a heartbeat, got %s", f.Type)
 		}
 	}
+	inventory := func(sock *agentSocket, extra ...protocol.Container) {
+		t.Helper()
+		gen++
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{
+			Generation: gen, Engine: protocol.Engine{Version: "1"},
+			Containers: append([]protocol.Container{{ID: containerID, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: created, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}}, extra...),
+			Images:     []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
+		})
+		sync(sock)
+	}
 	online := func(capabilities ...string) *agentSocket {
 		t.Helper()
 		waitFor(t, func() bool { return !s.Connected(ag.id) })
@@ -67,13 +77,7 @@ func TestRemovalOverTheAgentSocket(t *testing.T) {
 			t.Fatalf("connect refused: %s", reason)
 		}
 		writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities})
-		gen++
-		writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{
-			Generation: gen, Engine: protocol.Engine{Version: "1"},
-			Containers: []protocol.Container{{ID: containerID, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: created, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}},
-			Images:     []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
-		})
-		sync(sock)
+		inventory(sock)
 		waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 		return sock
 	}
@@ -120,6 +124,20 @@ func TestRemovalOverTheAgentSocket(t *testing.T) {
 	request(viewer, "POST", removal, body, 403)
 	request(developer, "POST", removal, body, 403)
 	request(admin, "POST", removal, `{"instance_id":"`+instance.ID+`","confirm":"other"}`, 400)
+	// A container of the project KyYard never adopted would be orphaned by the release.
+	inventory(sock, protocol.Container{ID: strings.Repeat("f", 64), Name: "shop-web-old", ImageID: image, State: "exited", ComposeProject: "shop", CreatedAt: created, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}})
+	var blocked struct {
+		Code     string   `json:"code"`
+		Blockers []string `json:"blockers"`
+	}
+	must(json.Unmarshal([]byte(request(admin, "POST", removal, body, 409)), &blocked))
+	if blocked.Code != "preflight_blocked" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "unadopted_project_containers" {
+		t.Fatalf("unadopted project container: %+v", blocked)
+	}
+	if rows := history(); len(rows) != 0 {
+		t.Fatalf("a blocked removal recorded a row: %+v", rows)
+	}
+	inventory(sock)
 	remove := func() (store.Deployment, protocol.RemovalRequest) {
 		t.Helper()
 		var d store.Deployment

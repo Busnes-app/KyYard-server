@@ -172,9 +172,9 @@ func (r DeploymentResult) Validate() error {
 	return nil
 }
 
-// RemovalRequest tears down services a deployment no longer plans, identified by the same
-// pinned target an inspection or replacement would use rather than a name a daemon restart
-// could reassign.
+// RemovalRequest stops and deletes every adopted container of an application being removed,
+// each identified by the same pinned target an inspection or replacement would use rather
+// than a name a daemon restart could reassign.
 type RemovalRequest struct {
 	Deployment string          `json:"deployment"`
 	Endpoint   string          `json:"endpoint"`

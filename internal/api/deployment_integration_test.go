@@ -195,6 +195,15 @@ func TestApplyRealDocker(t *testing.T) {
 		t.Fatalf("old container survived: %s", out)
 	}
 
+	// Removal refuses while inventory still shows a project container it did not adopt, so wait
+	// for a report taken after the apply removed the old one.
+	eventually("inventory without the replaced container", 30*time.Second, func() bool {
+		w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/inventory", "", true)
+		var inv struct {
+			Snapshot protocol.Snapshot `json:"snapshot"`
+		}
+		return w.Code == 200 && json.Unmarshal(w.Body.Bytes(), &inv) == nil && slices.ContainsFunc(inv.Snapshot.Containers, func(c protocol.Container) bool { return c.ID == newID }) && !slices.ContainsFunc(inv.Snapshot.Containers, func(c protocol.Container) bool { return c.ID == oldID })
+	})
 	// Removal stops and deletes the adopted container and keeps the network; the application
 	// stays, marked removed, until it is discarded.
 	removalBody, _ := json.Marshal(store.RemovalBody{InstanceID: instance.ID, Confirm: project})

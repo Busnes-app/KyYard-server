@@ -30,6 +30,8 @@ var (
 	// ErrDeploymentInProgress says a deployment is applying: neither a new plan nor a
 	// release may proceed until it settles.
 	ErrDeploymentInProgress = errors.New("a deployment is being applied")
+	// ErrRemovalTooLarge says an instance holds more containers than one removal frame names.
+	ErrRemovalTooLarge = errors.New("instance has more containers than one removal takes")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.

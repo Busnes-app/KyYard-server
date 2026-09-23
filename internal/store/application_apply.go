@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -146,8 +147,8 @@ func (t *tenancyStore) FailDeployment(ctx context.Context, id, detail string) er
 }
 
 // systemTransition moves the deployments matching filter with set, one audited row each under
-// the system actor (a removal's under application.destroy). It selects first and updates each row under the same filter, so a row a
-// concurrent settle took is neither changed nor audited.
+// the system actor (a removal's under application.destroy). It selects first and updates each
+// row under the same filter, so a row a concurrent settle took is neither changed nor audited.
 func (t *tenancyStore) systemTransition(ctx context.Context, filter string, arg any, set string, setArgs []any, outcome, result string) (int64, error) {
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -413,8 +414,8 @@ func (t *tenancyStore) RefuseDeploymentResult(ctx context.Context, endpointID, i
 	if err != nil {
 		return err
 	}
-	var org, env, appID string
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND `+settleable+lock), id, endpointID).Scan(&org, &env, &appID)
+	var org, env, appID, kind string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.kind FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND `+settleable+lock), id, endpointID).Scan(&org, &env, &appID, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -434,7 +435,11 @@ func (t *tenancyStore) RefuseDeploymentResult(ctx context.Context, endpointID, i
 		return nil
 	}
 	now := time.Now().UTC()
-	if err := t.auditDeployment(ctx, tx, "agent:"+endpointID, permissions.ApplicationDeploy, org, env, appID, id, "refused", auditResults[protocol.OutcomeUnknown], now); err != nil {
+	action := permissions.ApplicationDeploy
+	if kind == "remove" {
+		action = permissions.ApplicationDestroy
+	}
+	if err := t.auditDeployment(ctx, tx, "agent:"+endpointID, action, org, env, appID, id, "refused", auditResults[protocol.OutcomeUnknown], now); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -454,6 +459,8 @@ type RemovalBody struct {
 // RemoveApplication starts stopping and deleting every adopted container of the instance. The
 // row goes straight to applying: there is nothing to review beyond the typed project name, and
 // the frame names each container by its pinned identity. Volumes, networks and images stay.
+// It refuses while a fresh inventory shows an unadopted container of the project, or the last
+// apply's outcome is unknown: releasing the instance then would orphan a running container.
 // See docs/application-schema.md, Delete semantics.
 func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, app string, r RemovalBody) (*Deployment, *protocol.RemovalRequest, error) {
 	appID, err := uuid.Parse(app)
@@ -467,7 +474,8 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 	id := uuid.NewString()
 	var out *Deployment
 	var req *protocol.RemovalRequest
-	err = t.withTenantTarget(ctx, a, permissions.ApplicationDestroy, appID.String()+"/deployments/"+id, func(tx *sql.Tx) error {
+	var details string
+	err = t.withTenantTargetDetails(ctx, a, permissions.ApplicationDestroy, appID.String()+"/deployments/"+id, &details, func(tx *sql.Tx) error {
 		// Application row first, the lock order every deployment writer takes.
 		lock := ""
 		if t.store.driver == "postgres" {
@@ -545,6 +553,12 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		if len(plan.Containers) == 0 {
 			return ErrAdoptionChanged
 		}
+		if len(plan.Containers) > protocol.MaxRemovalTargets {
+			return ErrRemovalTooLarge
+		}
+		if err := t.removalBlockers(ctx, tx, endpoint, instanceID.String(), project, plan.Containers); err != nil {
+			return err
+		}
 		if req.Validate(now) != nil {
 			return ErrInvalid
 		}
@@ -557,10 +571,53 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		}
 		out = &Deployment{ID: id, ApplicationID: appID.String(), InstanceID: instanceID.String(), EndpointID: endpoint, EndpointName: endpointName, Kind: "remove", State: "applying", Revision: head, SpecDigest: digest, MappingVersion: mappingVersion, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: req.Deadline, AppliedBy: a.ActorID, AppliedAt: &now, Deadline: &req.Deadline}
 		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,kind,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), out.ID, a.OrganizationID, a.EnvironmentID, out.ApplicationID, out.InstanceID, out.EndpointID, project, out.Kind, out.State, out.Revision, out.SpecDigest, out.MappingVersion, string(raw), out.CreatedBy, now, out.ExpiresAt, out.AppliedBy, now, req.Deadline)
+		details = fmt.Sprintf("project=%s endpoint=%s containers=%d", project, endpoint, len(plan.Containers))
 		return err
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	return out, req, nil
+}
+
+// removalBlockers refuses a removal the host may not survive: a fresh inventory must show no
+// container of the project outside the adopted ones, and the instance's last acted-on row must
+// not be an apply of unknown outcome, which may have left a replacement KyYard never recorded.
+func (t *tenancyStore) removalBlockers(ctx context.Context, tx *sql.Tx, endpoint, instance, project string, adopted []RemovalPlanTarget) error {
+	var state, raw string
+	var received, observed time.Time
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT e.state,v.snapshot,v.received_at,v.observed_at FROM endpoints e JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE e.id=?`), endpoint).Scan(&state, &raw, &received, &observed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAdoptionChanged
+	}
+	if err != nil {
+		return err
+	}
+	snapshot, _, err := freshInventory(state, raw, received, observed)
+	if err != nil {
+		return err
+	}
+	owned := map[string]bool{}
+	for _, c := range adopted {
+		owned[c.ContainerID] = true
+	}
+	blockers := []string{}
+	for _, c := range snapshot.Containers {
+		if c.ComposeProject == project && !owned[c.ID] {
+			blockers = append(blockers, "unadopted_project_containers")
+			break
+		}
+	}
+	var kind, last string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT kind,state FROM deployments WHERE instance_id=? AND state<>'planned' ORDER BY created_at DESC,id DESC LIMIT 1`), instance).Scan(&kind, &last)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if kind == "apply" && last == "unknown" {
+		blockers = append(blockers, "apply_outcome_unknown")
+	}
+	if len(blockers) > 0 {
+		return &PreflightBlockedError{Blockers: blockers}
+	}
+	return nil
 }

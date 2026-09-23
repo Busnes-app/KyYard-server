@@ -65,6 +65,8 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A deployment is being applied; wait for its result", "code": "deployment_in_progress"})
 	case errors.Is(err, store.ErrLastAdmin):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The organization needs at least one active administrator", "code": "last_administrator"})
+	case errors.Is(err, store.ErrRemovalTooLarge):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "This instance has more containers than KyYard removes in one operation; release it and remove the containers by hand", "code": "removal_too_large"})
 	case errors.Is(err, store.ErrDeploymentPlanned):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A live deployment plan exists; let it expire before releasing", "code": "deployment_planned"})
 	case errors.Is(err, store.ErrInvalid):

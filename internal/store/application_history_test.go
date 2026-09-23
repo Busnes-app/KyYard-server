@@ -97,8 +97,23 @@ func TestPlanPriorRevision(t *testing.T) {
 	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
 	r = planRequest(m)
 	r.Revision = 2
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "unassigned_adopted_containers") {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"revision_services_differ"}) {
 		t.Fatalf("stray binding: %v", err)
+	}
+	// A prior revision defining a service the mapping lacks is blocked the same way.
+	webOnly := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Environment: map[string]ApplicationSecretRef{"TOKEN": {SecretRef: "web-token"}}}}}
+	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 3, webOnly, map[string]string{"web-token": "revision-four"}, key); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
+	r = planRequest(m)
+	r.Revision = 3
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"revision_services_differ"}) {
+		t.Fatalf("unmapped service in a prior revision: %v", err)
 	}
 }
 
@@ -125,7 +140,7 @@ func TestRemoveApplicationBuildsARemovalAndSettles(t *testing.T) {
 	if err != nil || got.Kind != "remove" || got.EndpointName != "host" || got.Plan.Services == nil {
 		t.Fatalf("read: %+v %v", got, err)
 	}
-	if n := countRows(t, st, `SELECT COUNT(*) FROM audit_records WHERE action='application.destroy' AND user_id=? AND resource=? AND result='success'`, a.ActorID, app.ID+"/deployments/"+d.ID); n != 1 {
+	if n := countRows(t, st, `SELECT COUNT(*) FROM audit_records WHERE action='application.destroy' AND user_id=? AND resource=? AND result='success' AND details=?`, a.ActorID, app.ID+"/deployments/"+d.ID, "project=shop endpoint="+endpoint+" containers=1"); n != 1 {
 		t.Fatalf("removal audit: %d", n)
 	}
 	res := removalResult(d, protocol.OutcomeSucceeded, removalSteps("web", protocol.OutcomeSucceeded, protocol.OutcomeSucceeded, protocol.OutcomeSucceeded))
@@ -201,7 +216,13 @@ func TestRemovalPreconditions(t *testing.T) {
 				}
 			}
 			return RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"}
-		}, ErrInvalid},
+		}, ErrRemovalTooLarge},
+		"stale inventory": {func(t *testing.T, st *SQLStore, _ TenantAccess, _ *Application, endpoint string, m *ApplicationMapping) RemovalBody {
+			if _, err := st.db.Exec(st.rebind(`UPDATE endpoint_inventory SET received_at=? WHERE endpoint_id=?`), time.Now().UTC().Add(-4*time.Minute), endpoint); err != nil {
+				t.Fatal(err)
+			}
+			return RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"}
+		}, ErrAdoptionChanged},
 		"operator": {func(t *testing.T, st *SQLStore, a TenantAccess, _ *Application, _ string, m *ApplicationMapping) RemovalBody {
 			if err := st.Tenancy().SetMembership(ctx, &OrganizationMembership{OrganizationID: a.OrganizationID, UserID: a.ActorID, Role: RoleOperator, Status: "active"}); err != nil {
 				t.Fatal(err)
@@ -305,7 +326,9 @@ func TestRemovalPartialSettle(t *testing.T) {
 	if got, err := ts.ReadDeployment(ctx, a, app.ID, d.ID); err != nil || got.State != "denied" || got.Result == nil || len(got.Result.Steps) != 6 {
 		t.Fatalf("partial result not recorded: %+v %v", got, err)
 	}
-	// Again: the remaining container is already gone, which counts as removed.
+	// Again: the remaining container is already gone, which counts as removed. The first one
+	// left the inventory when it was removed.
+	putAdoptionSnapshot(t, st, endpoint, protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{}})
 	d, _, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: instance, Confirm: "shop"})
 	if err != nil || len(d.Plan.Containers) != 1 {
 		t.Fatalf("second removal: %+v %v", d, err)
@@ -566,5 +589,110 @@ func TestDeploymentCarriesEndpointName(t *testing.T) {
 	list, err := ts.ListDeployments(ctx, a, app.ID)
 	if err != nil || len(list) != 1 || list[0].EndpointName != "renamed" {
 		t.Fatalf("list: %+v %v", list, err)
+	}
+}
+
+// A removal releases the instance, so it refuses while the host may run a container of the
+// project KyYard would stop tracking: an unadopted one in the inventory, or one an apply of
+// unknown outcome may have created.
+func TestRemovalRefusesOrphaningContainers(t *testing.T) {
+	ctx := context.Background()
+	refused := func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, instance, want string) {
+		t.Helper()
+		before := countRows(t, st, `SELECT COUNT(*) FROM deployments`)
+		var blocked *PreflightBlockedError
+		if _, _, err := st.Tenancy().RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: instance, Confirm: "shop"}); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{want}) {
+			t.Fatalf("want %s: %v", want, err)
+		}
+		if countRows(t, st, `SELECT COUNT(*) FROM deployments`) != before || countRows(t, st, `SELECT COUNT(*) FROM application_instances WHERE id=?`, instance) != 1 {
+			t.Fatal("refused removal changed state")
+		}
+	}
+
+	// Every project container adopted, another project's beside it: allowed.
+	st, a, app, endpoint, snapshot, m := planFixture(t)
+	other := protocol.Container{ID: strings.Repeat("f", 64), Name: "blog-web", ImageID: "sha256:" + strings.Repeat("b", 64), CreatedAt: time.Now().UTC().Add(-time.Hour), ComposeProject: "blog"}
+	withOther := snapshot
+	withOther.Containers = append(append([]protocol.Container{}, snapshot.Containers...), other)
+	putAdoptionSnapshot(t, st, endpoint, withOther)
+	if _, _, err := st.Tenancy().RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"}); err != nil {
+		t.Fatalf("adopted project: %v", err)
+	}
+
+	// A leftover of the project that was never adopted.
+	st, a, app, endpoint, snapshot, m = planFixture(t)
+	leftover := other
+	leftover.Name, leftover.ComposeProject = "shop-web-old", "shop"
+	withLeftover := snapshot
+	withLeftover.Containers = append(append([]protocol.Container{}, snapshot.Containers...), leftover)
+	putAdoptionSnapshot(t, st, endpoint, withLeftover)
+	refused(t, st, a, app, m.InstanceID, "unadopted_project_containers")
+
+	// The last apply was abandoned; a newer remove row that is still planned does not hide it.
+	st, a, app, endpoint, _, m, d, key := applyFixture(t)
+	if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Tenancy().AbandonDeployments(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	refused(t, st, a, app, m.InstanceID, "apply_outcome_unknown")
+	// Once the result settles it, removal proceeds.
+	if err := st.Tenancy().SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeFailed, "")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Tenancy().RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"}); err != nil {
+		t.Fatalf("after settle: %v", err)
+	}
+}
+
+// A removed application's history is kept by its own retention, not the 90-day history rule.
+func TestPruneKeepsRemovedApplicationHistory(t *testing.T) {
+	st, a, app, endpoint, _, m, d, key := applyFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeFailed, "")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET settled_at=? WHERE id=?`), time.Now().UTC().Add(-DeploymentHistoryRetention-time.Hour), d.ID); err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SettleDeployment(ctx, endpoint, removalResult(r, protocol.OutcomeSucceeded, removalSteps("web", protocol.OutcomeSucceeded, protocol.OutcomeSucceeded, protocol.OutcomeSucceeded))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, st, `SELECT COUNT(*) FROM deployments WHERE id=?`, d.ID) != 1 {
+		t.Fatal("history of a removed application pruned by age")
+	}
+	if _, err := st.db.Exec(st.rebind(`UPDATE applications SET removed_at=? WHERE id=?`), time.Now().UTC().Add(-ApplicationRemovedRetention-time.Hour), app.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`SELECT COUNT(*) FROM applications WHERE id=?`, `SELECT COUNT(*) FROM application_revisions WHERE application_id=?`, `SELECT COUNT(*) FROM deployments WHERE application_id=?`} {
+		if n := countRows(t, st, q, app.ID); n != 0 {
+			t.Fatalf("%s: %d", q, n)
+		}
+	}
+}
+
+// A refused removal result audits as application.destroy.
+func TestRefuseRemovalResultAuditsDestroy(t *testing.T) {
+	st, _, app, endpoint, _, d := twoContainerRemoval(t)
+	if err := st.Tenancy().RefuseDeploymentResult(context.Background(), endpoint, d.ID, "refused"); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM audit_records WHERE action='application.destroy' AND user_id=? AND resource=? AND details='outcome=refused'`, "agent:"+endpoint, app.ID+"/deployments/"+d.ID); n != 1 {
+		t.Fatalf("refuse audit: %d", n)
 	}
 }

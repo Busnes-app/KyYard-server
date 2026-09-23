@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -84,28 +85,16 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 	if err != nil {
 		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
 	}
-	if instance != m.InstanceID || version != m.Version || head != m.Preview.Revision || state != "active" || time.Since(received) > 3*time.Minute || time.Until(received) > time.Minute || time.Since(observed) > 5*time.Minute || time.Until(observed) > 5*time.Minute {
+	if instance != m.InstanceID || version != m.Version || head != m.Preview.Revision {
 		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
+	}
+	snapshot, current, err := freshInventory(state, raw, received, observed)
+	if err != nil {
+		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
 	}
 	var spec ApplicationSpec
-	var snapshot protocol.Snapshot
 	if applicationSpecDigest([]byte(specRaw)) != digest || json.Unmarshal([]byte(specRaw), &spec) != nil || ValidateApplicationSpec(spec) != nil {
 		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrRevisionCorrupt
-	}
-	if json.Unmarshal([]byte(raw), &snapshot) != nil || len(snapshot.Containers) > protocol.MaxContainers || snapshot.Engine.Version == "" {
-		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
-	}
-	for _, part := range snapshot.Truncated {
-		if part == "containers" {
-			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
-		}
-	}
-	current := map[string]protocol.Container{}
-	for _, c := range snapshot.Containers {
-		if _, found := current[c.ID]; found {
-			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
-		}
-		current[c.ID] = c
 	}
 	for _, c := range m.Preview.Containers {
 		now, found := current[c.ID]
@@ -113,27 +102,55 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
 		}
 	}
-	out := buildDeploymentPreflight(m, spec, snapshot)
+	out := buildDeploymentPreflight(m, spec, snapshot, number == head)
 	out.Revision, out.ReceivedAt = number, received
 	return out, m, spec, snapshot, digest, nil
 }
 
-func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snapshot protocol.Snapshot) *DeploymentPreflight {
+// freshInventory parses an endpoint's stored snapshot and indexes its containers by ID. A
+// snapshot from an inactive endpoint, received over 3 minutes ago, observed over 5 minutes
+// either side of now, or with a partial or duplicated container list is ErrAdoptionChanged.
+func freshInventory(state, raw string, received, observed time.Time) (protocol.Snapshot, map[string]protocol.Container, error) {
+	var snapshot protocol.Snapshot
+	if state != "active" || time.Since(received) > 3*time.Minute || time.Until(received) > time.Minute || time.Since(observed) > 5*time.Minute || time.Until(observed) > 5*time.Minute {
+		return snapshot, nil, ErrAdoptionChanged
+	}
+	if json.Unmarshal([]byte(raw), &snapshot) != nil || len(snapshot.Containers) > protocol.MaxContainers || snapshot.Engine.Version == "" || slices.Contains(snapshot.Truncated, "containers") {
+		return snapshot, nil, ErrAdoptionChanged
+	}
+	current := map[string]protocol.Container{}
+	for _, c := range snapshot.Containers {
+		if _, found := current[c.ID]; found {
+			return snapshot, nil, ErrAdoptionChanged
+		}
+		current[c.ID] = c
+	}
+	return snapshot, current, nil
+}
+
+// buildDeploymentPreflight checks spec against the mapping. latest says spec is the latest
+// revision; a prior one whose services differ from the mapped ones gets one blocker.
+func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snapshot protocol.Snapshot, latest bool) *DeploymentPreflight {
 	out := &DeploymentPreflight{InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Revision: m.Preview.Revision, MappingVersion: m.Version, Blockers: []string{"runtime_verification_required"}, Services: []PreflightService{}}
 	if m.Version == 0 || m.MappedRevision != m.Preview.Revision {
 		out.Blockers = append(out.Blockers, "mapping_requires_review")
 	}
-	// Every adopted container is bound, and to a service of the revision being checked (a
-	// prior revision may lack a service the latest mapping binds).
+	// Every adopted container is bound, and to a service of the revision being checked. A
+	// prior revision whose services are not exactly the mapped ones is revision_services_differ.
 	defined := map[string]bool{}
+	differ := false
 	for _, s := range spec.Services {
 		defined[s.Name] = true
+		differ = differ || m.Bindings[s.Name] == ""
 	}
 	stray := false
 	for service := range m.Bindings {
 		stray = stray || !defined[service]
 	}
-	if stray || len(m.Bindings) != len(m.Preview.Containers) {
+	if !latest && (stray || differ) {
+		out.Blockers = append(out.Blockers, "revision_services_differ")
+	}
+	if (latest && stray) || len(m.Bindings) != len(m.Preview.Containers) {
 		out.Blockers = append(out.Blockers, "unassigned_adopted_containers")
 	}
 	imagesComplete := len(snapshot.Images) <= protocol.MaxImages
@@ -188,7 +205,9 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 			row.InspectionTarget = &target
 		}
 		if row.ContainerID == "" {
-			row.Blockers = append(row.Blockers, "service_unmapped")
+			if latest {
+				row.Blockers = append(row.Blockers, "service_unmapped")
+			}
 		} else if row.InspectionTarget == nil {
 			row.Blockers = append(row.Blockers, "replacement_identity_invalid")
 		}
