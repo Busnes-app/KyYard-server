@@ -423,6 +423,10 @@ func TestRefuseDeploymentResult(t *testing.T) {
 	if got.State != "unknown" || got.Detail != "the host's result did not match the plan; inspect the host" {
 		t.Fatalf("refused: %+v", got)
 	}
+	// A re-sent mismatch changes nothing and writes no second audit row.
+	if err := ts.RefuseDeploymentResult(ctx, endpoint, d.ID, "the host's result did not match the plan; inspect the host"); err != nil {
+		t.Fatal(err)
+	}
 	var audits int
 	if err := st.db.QueryRow(st.rebind(`SELECT COUNT(*) FROM audit_records WHERE action=? AND resource=? AND user_id=? AND result='unknown' AND details='outcome=refused'`), "application.deploy", app.ID+"/deployments/"+d.ID, "agent:"+endpoint).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("refuse audit: %d %v", audits, err)
@@ -435,6 +439,38 @@ func TestRefuseDeploymentResult(t *testing.T) {
 	}
 	if got, _ = ts.ReadDeployment(ctx, a, app.ID, d.ID); got.State != "failed" {
 		t.Fatalf("settled row rewritten: %+v", got)
+	}
+}
+
+// A refusal follows the settle rule: a row superseded by a newer applied one is left alone.
+func TestRefuseSupersededDeploymentResult(t *testing.T) {
+	st, a, app, endpoint, _, m, d, key := applyFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := ts.ReadDeployment(ctx, a, app.ID, d.ID)
+	if err := ts.RefuseDeploymentResult(ctx, endpoint, d.ID, "refused"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("superseded row: %v", err)
+	}
+	after, _ := ts.ReadDeployment(ctx, a, app.ID, d.ID)
+	var audits int
+	if err := st.db.QueryRow(st.rebind(`SELECT COUNT(*) FROM audit_records WHERE details='outcome=refused'`)).Scan(&audits); err != nil || audits != 0 {
+		t.Fatalf("refuse audit: %d %v", audits, err)
+	}
+	if after.State != "unknown" || after.Detail != before.Detail {
+		t.Fatalf("superseded row rewritten: %+v", after)
 	}
 }
 
@@ -498,8 +534,9 @@ func TestConcurrentSettlesCommitOnce(t *testing.T) {
 	}
 	// A success must name every planned service, so it carries the identity; the failure none.
 	results := []protocol.DeploymentResult{settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64)), settledResult(d, protocol.OutcomeFailed, "")}
-	// Hold the row so both settles are in flight and queued on it before either can commit;
-	// otherwise the first usually finishes before the second starts and the race never runs.
+	// Hold the row so both settles are in flight and queued before either can commit; otherwise
+	// the first usually finishes before the second starts and the race never runs. The first
+	// waits on the deployment row, the second on the application row the first holds.
 	holder, err := st.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -515,7 +552,7 @@ func TestConcurrentSettlesCommitOnce(t *testing.T) {
 	}
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		var waiting int
-		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM deployments%'`).Scan(&waiting); err != nil {
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND (query LIKE '%FROM deployments%' OR query LIKE '%FROM applications%')`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting >= 2 {

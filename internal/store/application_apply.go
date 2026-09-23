@@ -149,6 +149,29 @@ func (t *tenancyStore) FailDeployment(ctx context.Context, id, detail string) er
 // outcome itself goes in the details.
 var auditResults = map[string]string{protocol.OutcomeSucceeded: "success", protocol.OutcomeFailed: "failure", protocol.OutcomeTimedOut: "failure", protocol.OutcomeDenied: "denied", protocol.OutcomeUnknown: "unknown"}
 
+// settleable selects a deployment row d that may still take a result: applying, or unknown
+// while its instance exists and no newer row for it has been applied or settled.
+const settleable = `(d.state='applying' OR (d.state='unknown' AND EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id) AND NOT EXISTS (SELECT 1 FROM deployments n WHERE n.instance_id=d.instance_id AND n.created_at>d.created_at AND n.state<>'planned')))`
+
+// lockDeploymentApplication takes the application row lock before the deployment row, the
+// order ApplyDeployment and PlanDeployment use, so a late result cannot interleave with an
+// apply of a newer plan. It returns the row-lock suffix for the deployment select. PostgreSQL
+// only: SQLite already serializes writers.
+func (t *tenancyStore) lockDeploymentApplication(ctx context.Context, tx *sql.Tx, endpointID, id string) (string, error) {
+	if t.store.driver != "postgres" {
+		return "", nil
+	}
+	var app string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT a.id FROM applications a JOIN deployments d ON d.application_id=a.id WHERE d.id=? AND d.endpoint_id=? FOR UPDATE OF a`), id, endpointID).Scan(&app)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return " FOR UPDATE", nil
+}
+
 // SettleDeployment is the one writer for outcomes, scoped to the endpoint that ran it. An
 // applying row always settles. An unknown row (abandoned or swept) settles only while its
 // instance exists and no newer row for it has been applied or settled, so a late answer never
@@ -167,14 +190,13 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 		return err
 	}
 	defer tx.Rollback()
-	// PostgreSQL: a concurrent settle waits here, then re-evaluates the state and finds nothing.
-	lock := ""
-	if t.store.driver == "postgres" {
-		lock = " FOR UPDATE"
+	lock, err := t.lockDeploymentApplication(ctx, tx, endpointID, res.Deployment)
+	if err != nil {
+		return err
 	}
 	var org, env, appID, instance, planRaw string
 	var revision int
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.instance_id,d.revision,d.plan FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND (d.state='applying' OR (d.state='unknown' AND EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id) AND NOT EXISTS (SELECT 1 FROM deployments n WHERE n.instance_id=d.instance_id AND n.created_at>d.created_at AND n.state<>'planned')))`+lock), res.Deployment, endpointID).Scan(&org, &env, &appID, &instance, &revision, &planRaw)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.instance_id,d.revision,d.plan FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND `+settleable+lock), res.Deployment, endpointID).Scan(&org, &env, &appID, &instance, &revision, &planRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -248,28 +270,39 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 
 // RefuseDeploymentResult records that the endpoint answered with a result that does not fit
 // the plan: the host may have acted, so the row becomes unknown with the caller's fixed detail.
+// It selects rows as SettleDeployment does, and a repeat (already unknown with this detail)
+// changes nothing and writes no audit row, so an agent re-sending the result cannot grow the log.
 func (t *tenancyStore) RefuseDeploymentResult(ctx context.Context, endpointID, id, detail string) error {
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	lock := ""
-	if t.store.driver == "postgres" {
-		lock = " FOR UPDATE"
+	lock, err := t.lockDeploymentApplication(ctx, tx, endpointID, id)
+	if err != nil {
+		return err
 	}
 	var org, env, appID string
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT organization_id,environment_id,application_id FROM deployments WHERE id=? AND endpoint_id=? AND state IN ('applying','unknown')`+lock), id, endpointID).Scan(&org, &env, &appID)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND `+settleable+lock), id, endpointID).Scan(&org, &env, &appID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='unknown',detail=? WHERE id=? AND state IN ('applying','unknown')`), protocol.CleanText(detail, 255), id); err != nil {
+	detail = protocol.CleanText(detail, 255)
+	updated, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='unknown',detail=? WHERE id=? AND (state='applying' OR (state='unknown' AND detail<>?))`), detail, id, detail)
+	if err != nil {
 		return err
 	}
+	n, err := updated.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return nil
+	}
+	now := time.Now().UTC()
 	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), "agent:"+endpointID, string(permissions.ApplicationDeploy), protocol.CleanText(appID+"/deployments/"+id, 255), "outcome=refused", now, "organization", org, env, uuid.NewString(), auditResults[protocol.OutcomeUnknown]); err != nil {
 		return err
 	}
