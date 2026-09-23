@@ -56,7 +56,7 @@ it('reads historical definitions without changing the head used for a new save',
   fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
   expect(screen.getByRole('button', { name: 'Save revision 3' })).toBeTruthy();
 });
-it('labels a removed application, enables discard and hides its panels', async () => {
+it('labels a removed application, enables discard and offers re-adoption only', async () => {
   const removedAt = '2026-09-20T12:00:00Z';
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (url.includes('/revisions/')) return json({ digest: 'digest', spec: { services: [] } });
@@ -69,6 +69,7 @@ it('labels a removed application, enables discard and hides its panels', async (
   expect(screen.getByRole('button', { name: 'Discard shop' }).hasAttribute('disabled')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'View configuration for shop' }));
   await screen.findByText(/Revision 2 · digest/);
-  expect(screen.queryByText('Adopt an existing Compose project')).toBeNull();
+  expect(await screen.findByRole('heading', { name: 'Adopt an existing Compose project' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Map services to containers' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Deployment plan' })).toBeNull();
 });

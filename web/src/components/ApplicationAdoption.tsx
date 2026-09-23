@@ -100,14 +100,14 @@ function ConfirmAdoption({ base, endpoint, project, onChanged }: { base: string;
 function RemoveApplication({ base, instance, onChanged }: { base: string; instance: ApplicationInstance; onChanged: () => void }) {
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
-  const [blocked, setBlocked] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
   const [message, setMessage] = useState('');
   const remove = async () => {
     setBusy(true); setMessage('');
     try {
       const r = await secureFetch(`${base}/removal`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instance_id: instance.id, confirm }) });
       if (r.status === 202) { onChanged(); return; }
-      setBlocked(true);
+      setConfirm('');
       if (r.status === 403) { setMessage('Only an administrator can remove applications.'); return; }
       if (r.status === 501) { setMessage('Upgrade the host agent to enable application removal.'); return; }
       if (r.status === 409) {
@@ -116,15 +116,16 @@ function RemoveApplication({ base, instance, onChanged }: { base: string; instan
         setMessage((typeof code === 'string' && REMOVAL_CODES[code]) || REMOVAL_REFUSED);
         return;
       }
+      setUncertain(r.status >= 500);
       setMessage(r.status >= 500 ? OUTCOME_UNKNOWN : REMOVAL_REFUSED);
-    } catch { setBlocked(true); setMessage(OUTCOME_UNKNOWN); }
+    } catch { setUncertain(true); setMessage(OUTCOME_UNKNOWN); }
     finally { setBusy(false); }
   };
   return <form className="dr-stack" onSubmit={(e) => { e.preventDefault(); void remove(); }}>
     <h3>Remove application</h3>
     <p>Stops and removes the {instance.container_count} adopted containers of <bdi>{instance.project}</bdi> on {instance.endpoint_name}. Named volumes, images and the saved revisions are kept; the application is marked removed and can be discarded later. Nothing rolls back.</p>
-    <label>Confirm removal project<input value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={busy || blocked} autoComplete="off" /></label>
-    <button className="btn-danger" disabled={busy || blocked || confirm !== instance.project}>Remove application</button>
+    <label>Confirm removal project<input value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={busy || uncertain} autoComplete="off" /></label>
+    <button className="btn-danger" disabled={busy || uncertain || confirm !== instance.project}>Remove application</button>
     {message && <p role="alert">{message}</p>}
   </form>;
 }

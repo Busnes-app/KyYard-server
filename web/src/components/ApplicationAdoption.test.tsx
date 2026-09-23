@@ -92,3 +92,15 @@ it('offers removal only for an adopted instance', async () => {
   await screen.findByLabelText('Docker host');
   expect(screen.queryByRole('button', { name: 'Remove application' })).toBeNull();
 });
+it('keeps removal retryable after a refusal', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? json({ code: 'deployment_in_progress' }, 409) : json([])));
+  render(<ApplicationAdoption base="/applications/app" applicationName="App" org="a" env="env" instance={adopted} onChanged={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText('Confirm removal project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Remove application' }));
+  await screen.findByText('A deployment is planned or running for this instance; wait or let the plan expire.');
+  const input = screen.getByLabelText('Confirm removal project');
+  expect(input).toHaveProperty('value', '');
+  expect(screen.getByRole('button', { name: 'Remove application' }).hasAttribute('disabled')).toBe(true);
+  fireEvent.change(input, { target: { value: 'shop' } });
+  expect(screen.getByRole('button', { name: 'Remove application' }).hasAttribute('disabled')).toBe(false);
+});
