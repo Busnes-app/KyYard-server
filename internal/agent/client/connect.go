@@ -271,6 +271,8 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 		if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
 			return err
 		}
+		// Attach before the re-send, so a run finishing in between is delivered here or re-sent.
+		defer deployments.attach(ctx, outbound)()
 		go deployments.resend(ctx, outbound)
 		if id.PendingFingerprint != "" && time.Since(id.PendingSince) > PendingKeyLife {
 			// Forget the offer but keep the key material until a new offer replaces it: if a

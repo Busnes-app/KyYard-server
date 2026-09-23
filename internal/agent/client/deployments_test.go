@@ -1,4 +1,3 @@
-// internal/agent/client/deployments_test.go
 package client
 
 import (
@@ -36,7 +35,7 @@ func testRequest(endpoint string) protocol.DeploymentRequest {
 	return protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: endpoint, Project: "shop", Revision: 1, Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64), Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}, Env: map[string]string{"TOKEN": "agent-secret-canary"}}}}
 }
 
-func TestDeployerRunsOffTheSessionAndPersistsBeforeSending(t *testing.T) {
+func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
 	dir := t.TempDir()
 	started := make(chan struct{})
 	finish := make(chan struct{})
@@ -56,46 +55,94 @@ func TestDeployerRunsOffTheSessionAndPersistsBeforeSending(t *testing.T) {
 	root, cancelRoot := context.WithCancel(context.Background())
 	defer cancelRoot()
 	d := newDeployer(root, dir, opts)
-	sessionCtx, cancelSession := context.WithCancel(context.Background())
-	out := make(chan outFrame, 4)
+	session1, cancel1 := context.WithCancel(context.Background())
+	out1 := make(chan outFrame, 4)
+	detach1 := d.attach(session1, out1)
 	req := testRequest("ep_1")
 	raw, _ := json.Marshal(req)
-	d.handle(sessionCtx, "ep_1", raw, out)
+	d.handle(session1, "ep_1", raw, out1)
 	<-started
-	cancelSession() // the socket dropped; the run must continue
+	cancel1() // the socket dropped; the run must continue
+	detach1()
+	session2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	out2 := make(chan outFrame, 4)
+	defer d.attach(session2, out2)()
 	close(finish)
-	// The run releases its slot after recording; its own send may be dropped with the session,
-	// so the next session's re-send is what carries it.
-	d.busy <- struct{}{}
-	<-d.busy
-	d.resend(context.Background(), out)
-	f := <-out
+	// No resend: the run itself delivers to the session connected when it finishes.
+	var f outFrame
+	select {
+	case f = <-out2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("result not delivered to the current session")
+	}
 	var res protocol.DeploymentResult
 	if f.Type != protocol.TypeDeploymentResult || decodeResult(f, &res) != nil || res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("result: %+v", f)
 	}
+	if len(out1) != 0 {
+		t.Fatal("result sent to the dead session")
+	}
 	stored, err := os.ReadFile(filepath.Join(dir, "deployments.json"))
 	if err != nil || !strings.Contains(string(stored), req.Deployment) || strings.Contains(string(stored), "agent-secret-canary") {
 		t.Fatalf("ledger: %v %s", err, stored)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "deployments.json")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("ledger mode: %v %v", info, err)
 	}
 	mu.Lock()
 	if len(seen.Services[0].Env) != 0 {
 		t.Fatal("env values survived the run")
 	}
 	mu.Unlock()
-	for len(out) > 0 {
-		<-out
-	}
 	// Replay: the same ID answers from the ledger without running again.
 	ran := false
 	opts.Deploy = func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult {
 		ran = true
 		return protocol.DeploymentResult{}
 	}
-	d.handle(context.Background(), "ep_1", raw, out)
-	f = <-out
+	d.handle(session2, "ep_1", raw, out2)
+	f = <-out2
 	if ran || f.Type != protocol.TypeDeploymentResult {
 		t.Fatal("replay ran the deployment again")
+	}
+}
+
+// A frame for the deployment already running gets no answer (a refusal would settle the live
+// row); a different deployment is refused.
+func TestDeployerStaysSilentForTheRunningDeployment(t *testing.T) {
+	finish := make(chan struct{})
+	started := make(chan struct{})
+	d := newDeployer(context.Background(), t.TempDir(), &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+		close(started)
+		<-finish
+		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := make(chan outFrame, 8)
+	defer d.attach(ctx, out)()
+	req := testRequest("ep_1")
+	raw, _ := json.Marshal(req)
+	d.handle(ctx, "ep_1", raw, out)
+	<-started
+	d.handle(ctx, "ep_1", raw, out)
+	other := testRequest("ep_1")
+	other.Deployment = "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c"
+	raw2, _ := json.Marshal(other)
+	d.handle(ctx, "ep_1", raw2, out)
+	var res protocol.DeploymentResult
+	if decodeResult(<-out, &res) != nil || res.Deployment != other.Deployment || res.Outcome != protocol.OutcomeDenied {
+		t.Fatalf("different deployment: %+v", res)
+	}
+	close(finish)
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("running deployment answered with %+v", res)
+	}
+	select {
+	case f := <-out:
+		t.Fatalf("extra answer: %s", payloadText(f))
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
@@ -109,6 +156,7 @@ func TestDeployerRefusals(t *testing.T) {
 	}}
 	d := newDeployer(context.Background(), dir, opts)
 	out := make(chan outFrame, 8)
+	defer d.attach(context.Background(), out)()
 	read := func() protocol.DeploymentResult {
 		f := <-out
 		var res protocol.DeploymentResult
