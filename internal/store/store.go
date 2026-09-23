@@ -167,6 +167,10 @@ type TenancyStore interface {
 	PreflightApplication(ctx context.Context, access TenantAccess, applicationID string) (*DeploymentPreflight, error)
 	PlanDeployment(ctx context.Context, access TenantAccess, applicationID string, request PlanRequest) (*Deployment, error)
 	ReadDeployment(ctx context.Context, access TenantAccess, applicationID, id string) (*Deployment, error)
+	ApplyDeployment(ctx context.Context, access TenantAccess, applicationID, id, confirm string, key []byte) (*Deployment, *protocol.DeploymentRequest, error)
+	FailDeployment(ctx context.Context, id, detail string) error
+	SettleDeployment(ctx context.Context, endpointID string, res protocol.DeploymentResult) error
+	AbandonDeployments(ctx context.Context, endpointID string) (int64, error)
 	ListDeployments(ctx context.Context, access TenantAccess, applicationID string) ([]Deployment, error)
 	ReadApplicationMapping(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMapping, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error

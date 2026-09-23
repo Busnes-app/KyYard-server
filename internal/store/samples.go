@@ -217,6 +217,10 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 	if t.store.Pressure() != PressureNormal {
 		samples, rollups = DegradedSampleRetention, DegradedRollupRetention
 	}
+	// An applying row past its deadline, plus slack for a result in flight, has lost its agent.
+	if _, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='unknown',detail=? WHERE state='applying' AND deadline<?`), "no result arrived before the deadline", now.Add(-2*time.Minute)); err != nil {
+		return 0, err
+	}
 	var total int64
 	for _, q := range []struct {
 		sql string
