@@ -6,6 +6,14 @@ import { usePagination } from './Pagination';
 
 export type ApplicationInstance = { id: string; application_id: string; endpoint_id: string; endpoint_name: string; project: string; revision: number; current_revision: number; previous_revision: number; mapping_version: number; container_count: number; containers: AdoptedContainer[] };
 type AdoptedContainer = { id: string; name: string; image_id: string; created_at: string };
+const REMOVAL_CODES: Record<string, string> = {
+  endpoint_offline: 'The host is not connected.',
+  deployment_planned: 'A deployment is planned or running for this instance; wait or let the plan expire.',
+  deployment_in_progress: 'A deployment is planned or running for this instance; wait or let the plan expire.',
+  deployment_not_sent: 'The removal could not be sent to the host.',
+};
+const REMOVAL_REFUSED = 'Removal refused. Refresh applications and check your access.';
+const OUTCOME_UNKNOWN = 'Outcome unknown. Refresh applications before continuing.';
 type Preview = { application_name: string; endpoint_name: string; endpoint_id: string; project: string; revision: number; digest: string; containers: AdoptedContainer[] };
 
 export function ApplicationAdoption({ base, org, env, applicationName, instance, onChanged }: { base: string; org: string; env: string; applicationName: string; instance?: ApplicationInstance; onChanged: () => void }) {
@@ -36,6 +44,7 @@ export function ApplicationAdoption({ base, org, env, applicationName, instance,
     <p>Adopted project <bdi>{instance.project}</bdi> · host {instance.endpoint_name} · {instance.container_count} recorded containers. Adoption does not mean the running configuration matches revision {instance.revision}.</p>
     <button className="btn-secondary" disabled={busy || uncertain} onClick={() => void release()}>Release adoption</button>
     {message && <p role="status">{message}</p>}
+    <RemoveApplication base={base} instance={instance} onChanged={onChanged} />
   </div>;
   return <div className="dr-stack">
     <h3>Adopt an existing Compose project</h3>
@@ -87,4 +96,35 @@ function ConfirmAdoption({ base, endpoint, project, onChanged }: { base: string;
     </>}
     {message && <p role="status">{message}</p>}
   </>;
+}
+function RemoveApplication({ base, instance, onChanged }: { base: string; instance: ApplicationInstance; onChanged: () => void }) {
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [blocked, setBlocked] = useState(false);
+  const [message, setMessage] = useState('');
+  const remove = async () => {
+    setBusy(true); setMessage('');
+    try {
+      const r = await secureFetch(`${base}/removal`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instance_id: instance.id, confirm }) });
+      if (r.status === 202) { onChanged(); return; }
+      setBlocked(true);
+      if (r.status === 403) { setMessage('Only an administrator can remove applications.'); return; }
+      if (r.status === 501) { setMessage('Upgrade the host agent to enable application removal.'); return; }
+      if (r.status === 409) {
+        const payload: unknown = await r.json().catch(() => null);
+        const code = payload && typeof payload === 'object' && 'code' in payload ? (payload as { code?: unknown }).code : undefined;
+        setMessage((typeof code === 'string' && REMOVAL_CODES[code]) || REMOVAL_REFUSED);
+        return;
+      }
+      setMessage(r.status >= 500 ? OUTCOME_UNKNOWN : REMOVAL_REFUSED);
+    } catch { setBlocked(true); setMessage(OUTCOME_UNKNOWN); }
+    finally { setBusy(false); }
+  };
+  return <form className="dr-stack" onSubmit={(e) => { e.preventDefault(); void remove(); }}>
+    <h3>Remove application</h3>
+    <p>Stops and removes the {instance.container_count} adopted containers of <bdi>{instance.project}</bdi> on {instance.endpoint_name}. Named volumes, images and the saved revisions are kept; the application is marked removed and can be discarded later. Nothing rolls back.</p>
+    <label>Confirm removal project<input value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={busy || blocked} autoComplete="off" /></label>
+    <button className="btn-danger" disabled={busy || blocked || confirm !== instance.project}>Remove application</button>
+    {message && <p role="alert">{message}</p>}
+  </form>;
 }

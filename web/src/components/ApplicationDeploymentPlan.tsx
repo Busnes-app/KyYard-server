@@ -1,16 +1,18 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useTenantResource } from '../tenant';
 import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 import { messages } from './ApplicationPreflight';
+import type { ApplicationInstance } from './ApplicationAdoption';
 
 type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[] };
 type DeployStep = { service: string; step: string; outcome: string; detail: string };
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number };
-type Deployment = { id: string; instance_id: string; endpoint_id: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services: PlannedService[] } };
+type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
+type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[] } };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
-type Props = { base: string; instanceID: string };
+type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance };
 
 const APPLY_CODES: Record<string, string> = {
   deployment_in_progress: 'A deployment is already in progress for this instance.',
@@ -55,6 +57,7 @@ function explanationFor(current: Deployment): string {
   if (failing.detail.includes('pinned image is not present')) return 'The pinned image is no longer present on the host.';
   if (failing.outcome === 'unknown') return 'The host may or may not have acted. Inspect it before planning again.';
   if (failing.outcome === 'timed_out') return 'The host did not answer in time.';
+  if (failing.outcome === 'failed' && current.kind === 'remove') return 'A step failed on the host; containers removed before it are gone and the rest stay adopted.';
   if (failing.outcome === 'failed') return 'A step failed on the host; the previous container may remain renamed with a .kyyard-prev suffix.';
   return '';
 }
@@ -63,7 +66,7 @@ export function ApplicationDeploymentPlan(props: Props) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
     <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close deployment plan' : 'Deployment plan'}</button>
-    {open && <PlanView key={props.instanceID} {...props} />}
+    {open && <PlanView key={`${props.instanceID}/${props.latestRevision}`} {...props} />}
   </section>;
 }
 function isExpired(d: Deployment): boolean {
@@ -89,7 +92,51 @@ function ResultSection({ current }: { current: Deployment }) {
     </>}
   </>;
 }
-function PlanView({ base, instanceID }: Props) {
+function PlanDetails({ d }: { d: Deployment }) {
+  const services = usePagination(d.plan.services ?? [], `${d.id}-services`);
+  const containers = usePagination(d.plan.containers ?? [], `${d.id}-containers`);
+  if (d.kind === 'remove') return <>
+    {containers.controls}
+    <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Name</th><th>Container</th></tr></thead><tbody>{containers.rows.map(c => <tr key={c.container_id}>
+      <td data-label="Service">{c.service}</td>
+      <td data-label="Name">{c.name}</td>
+      <td data-label="Container">{c.container_id}</td>
+    </tr>)}</tbody></table>
+  </>;
+  return <>
+    {services.controls}
+    <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Pinned image</th><th>Replaces container</th><th>Secrets</th></tr></thead><tbody>{services.rows.map(s => <tr key={s.name}>
+      <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>
+      <td data-label="Pinned image"><div className="ky-resource-name"><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small></div></td>
+      <td data-label="Replaces container"><div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div></td>
+      <td data-label="Secrets">{s.secret_refs.length ? `${s.secret_refs.length} reference(s), values not shown` : 'None'}</td>
+    </tr>)}</tbody></table>
+  </>;
+}
+const when = (t?: string | null) => t ? new Date(t).toLocaleString() : '—';
+function History({ rows }: { rows: Deployment[] }) {
+  const page = usePagination(rows, 'history');
+  const [shown, setShown] = useState('');
+  return <>
+    <h3>Deployment history</h3>
+    {rows.length === 0 ? <p>No deployments recorded for this instance.</p> : <>
+      {page.controls}
+      <table className="ky-table ky-responsive-table"><thead><tr><th>Kind</th><th>Revision</th><th>State</th><th>Applied by</th><th>Applied</th><th>Settled</th><th>Steps</th></tr></thead><tbody>{page.rows.map(d => <Fragment key={d.id}>
+        <tr>
+          <td data-label="Kind">{d.kind === 'remove' ? 'Removal' : 'Apply'}</td>
+          <td data-label="Revision">{d.revision}</td>
+          <td data-label="State">{d.state}</td>
+          <td data-label="Applied by">{d.applied_by || '—'}</td>
+          <td data-label="Applied">{when(d.applied_at)}</td>
+          <td data-label="Settled">{when(d.settled_at)}</td>
+          <td data-label="Steps"><button type="button" className="btn-secondary" onClick={() => setShown(shown === d.id ? '' : d.id)}>{shown === d.id ? 'Hide steps' : 'Show steps'}</button></td>
+        </tr>
+        {shown === d.id && <tr><td colSpan={7}>{d.kind === 'remove' && <PlanDetails d={d} />}<ResultSection current={d} /></td></tr>}
+      </Fragment>)}</tbody></table>
+    </>}
+  </>;
+}
+function PlanView({ base, instanceID, latestRevision, instance }: Props) {
   const mapping = useTenantResource<Mapping>(`${base}/mapping`);
   const deployments = useTenantResource<Deployment[]>(`${base}/deployments`);
   const [confirm, setConfirm] = useState('');
@@ -100,7 +147,9 @@ function PlanView({ base, instanceID }: Props) {
   const found = deployments.data?.find(d => d.instance_id === instanceID) ?? null;
   useEffect(() => { if (found) setPlanned(found); }, [found]);
   const current = planned ?? found;
-  const page = usePagination(current?.plan.services ?? [], base);
+  const rows = deployments.data?.filter(d => d.instance_id === instanceID) ?? [];
+  const history = current ? [current, ...rows.filter(d => d.id !== current.id)] : rows;
+  const [revision, setRevision] = useState(latestRevision);
   const reload = () => { mapping.reload(); deployments.reload(); };
   const mismatched = mapping.data !== null && mapping.data.instance_id !== instanceID;
 
@@ -151,7 +200,7 @@ function PlanView({ base, instanceID }: Props) {
     if (!mapping.data) return;
     setBusy(true); setError([]);
     try {
-      const r = await secureFetch(`${base}/deployments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instance_id: mapping.data.instance_id, mapping_version: mapping.data.version, revision: mapping.data.preview.revision, confirm }) });
+      const r = await secureFetch(`${base}/deployments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instance_id: mapping.data.instance_id, mapping_version: mapping.data.version, revision, confirm }) });
       if (r.ok) {
         const body: unknown = await r.json().catch(() => null);
         if (body && typeof body === 'object' && 'instance_id' in body) setPlanned(body as Deployment);
@@ -195,19 +244,16 @@ function PlanView({ base, instanceID }: Props) {
   };
   return <>
     <p>A plan records the exact revision, mapping and image identities a deployment would use. Planning executes nothing: no containers change, no images are pulled and no secret values are read. Runtime configuration remains unverified.</p>
+    <p>Current revision {instance.current_revision || 'none'} · previous {instance.previous_revision || 'none'}</p>
     <StateNotice state={deployments.state} onRetry={reload} />
     {deployments.state === 'ready' && <>
       {mismatched && <p role="alert">Adoption changed. Refresh applications before planning.</p>}
       {pollPaused && <p role="status">Status updates paused; refresh to continue.</p>}
       {!mismatched && (current ? <>
-        <p>Plan for revision {current.revision}, mapping version {current.mapping_version}, project <bdi>{current.plan.project}</bdi>. {isExpired(current) ? 'This plan has expired; plan again to continue.' : `Expires ${new Date(current.expires_at).toLocaleString()}.`}</p>
-        {page.controls}
-        <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Pinned image</th><th>Replaces container</th><th>Secrets</th></tr></thead><tbody>{page.rows.map(s => <tr key={s.name}>
-          <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>
-          <td data-label="Pinned image"><div className="ky-resource-name"><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small></div></td>
-          <td data-label="Replaces container"><div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div></td>
-          <td data-label="Secrets">{s.secret_refs.length ? `${s.secret_refs.length} reference(s), values not shown` : 'None'}</td>
-        </tr>)}</tbody></table>
+        {current.kind === 'remove'
+          ? <p>Removal of project <bdi>{current.plan.project}</bdi> on {current.endpoint_name || current.endpoint_id}: these containers are stopped and removed.</p>
+          : <p>Plan for revision {current.revision}, mapping version {current.mapping_version}, project <bdi>{current.plan.project}</bdi>. {isExpired(current) ? 'This plan has expired; plan again to continue.' : `Expires ${new Date(current.expires_at).toLocaleString()}.`}</p>}
+        <PlanDetails d={current} />
       </> : <p>No plan for this instance.</p>)}
       {!mismatched && current && current.state === 'planned' && !isExpired(current) && <form className="dr-stack" onSubmit={e => { e.preventDefault(); void apply(); }}>
         <p>Applying replaces the mapped containers on {current.endpoint_id} with revision {current.revision} of {current.plan.project}. Nothing rolls back on failure; a failed run leaves the previous container renamed on the host.</p>
@@ -216,9 +262,12 @@ function PlanView({ base, instanceID }: Props) {
         {applyError && <p role="alert">{applyError}</p>}
       </form>}
       {!mismatched && current && current.state !== 'planned' && <ResultSection current={current} />}
+      {!mismatched && <History rows={history} />}
     </>}
     {mapping.state === 'ready' && !mismatched && mapping.data && <form className="dr-stack" onSubmit={e => { e.preventDefault(); void plan(); }}>
-      <p>Planning replaces any earlier plan for this instance. Type the project name <bdi>{mapping.data.preview.project}</bdi> to confirm planning revision {mapping.data.preview.revision}. Nothing runs.</p>
+      <label>Revision to plan<select value={revision} onChange={e => setRevision(Number(e.target.value))} disabled={busy || blocked}>{Array.from({ length: latestRevision }, (_, i) => latestRevision - i).map(n => <option key={n} value={n}>Revision {n}{n === latestRevision ? ' · latest' : ''}</option>)}</select></label>
+      {revision < latestRevision && <p role="note">Revision {revision} uses its own saved environment values. Data written since is not reversed. The service mapping was reviewed against revision {latestRevision}.</p>}
+      <p>Planning replaces any earlier plan for this instance. Type the project name <bdi>{mapping.data.preview.project}</bdi> to confirm planning revision {revision}. Nothing runs.</p>
       <label>Confirm plan project<input value={confirm} onChange={e => setConfirm(e.target.value)} disabled={busy || blocked} autoComplete="off" /></label>
       <button disabled={busy || blocked || confirm !== mapping.data.preview.project}>Plan deployment</button>
       <button type="button" className="btn-secondary" disabled={busy} onClick={() => { setBlocked(false); setError([]); setPlanned(null); reload(); }}>Refresh plan</button>
