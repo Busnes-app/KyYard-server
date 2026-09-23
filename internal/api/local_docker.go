@@ -70,7 +70,7 @@ func (s *Server) RunLocalDocker(ctx context.Context) error {
 	engine := docker.New(socket)
 	// Only the command ledger needs disk persistence. Generation resumes from SQL;
 	// client.SaveIdentity must not persist the derived private key or ephemeral URL.
-	return client.Run(ctx, id, client.Options{Version: "builtin", CommandDir: dir, Snapshot: engine.Snapshot, Metrics: engine.Stats, Operate: engine.Operate, Logs: engine.Logs, Inspect: engine.InspectContainer, Deploy: engine.Deploy, Exec: func(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
+	return client.Run(ctx, id, client.Options{Version: "builtin", CommandDir: dir, Snapshot: engine.Snapshot, Metrics: engine.Stats, Operate: engine.Operate, Logs: engine.Logs, Inspect: engine.InspectContainer, Deploy: engine.Deploy, Remove: engine.Remove, Exec: func(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
 		return engine.OpenExec(ctx, spec)
 	}, InventoryEvery: time.Minute})
 }

@@ -59,6 +59,7 @@ func main() {
 	var inspect func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error)
 	var exec func(context.Context, protocol.ExecSpec) (client.ExecSession, error)
 	var deploy func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult
+	var remove func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult
 	runtimeVersion := ""
 	if *socket != "" {
 		engine := docker.New(*socket)
@@ -73,6 +74,7 @@ func main() {
 		logs = engine.Logs
 		inspect = engine.InspectContainer
 		deploy = engine.Deploy
+		remove = engine.Remove
 		exec = func(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
 			return engine.OpenExec(ctx, spec)
 		}
@@ -113,7 +115,7 @@ func main() {
 	if *enrollOnly {
 		return
 	}
-	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, Deploy: deploy, InventoryEvery: *inventoryEvery}); err != nil {
+	if err := client.Run(ctx, id, client.Options{HTTPClient: httpClient, Version: version, IdentityDir: *dir, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, Deploy: deploy, Remove: remove, InventoryEvery: *inventoryEvery}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

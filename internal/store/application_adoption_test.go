@@ -71,6 +71,15 @@ func TestAdoptionPinsResourcesAndReleasePreservesRuntime(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].ID != next.ID {
 		t.Fatalf("list: %v", err)
 	}
+	if got, err := ts.ReadApplicationInstance(ctx, a, app.ID, next.ID); err != nil || got.EndpointID != endpoint || got.Project != "shop" || got.ContainerCount != 1 {
+		t.Fatalf("read instance: %+v %v", got, err)
+	}
+	if _, err := ts.ReadApplicationInstance(ctx, a, app.ID, instance.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("read a released instance: %v", err)
+	}
+	if _, err := ts.ReadApplicationInstance(ctx, a, "00000000-0000-0000-0000-000000000000", next.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("read an instance through another application: %v", err)
+	}
 	inv, err := ts.ReadInventory(ctx, a, endpoint)
 	if err != nil || !strings.Contains(string(inv.Snapshot), snapshot.Containers[0].ID) {
 		t.Fatal("runtime observation changed")

@@ -278,3 +278,45 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 	}
 	s.writeJSON(w, http.StatusAccepted, applied)
 }
+
+// handleRemoveApplication records the removal before the frame leaves, like an apply. The
+// store enforces application.destroy; the reads before it only choose the endpoint.
+func (s *Server) handleRemoveApplication(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	var input store.RemovalBody
+	if strictJSON(r, &input) != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	app := r.PathValue("application")
+	instance, err := s.store.Tenancy().ReadApplicationInstance(r.Context(), a, app, input.InstanceID)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, instance.EndpointID)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if !slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentRemove) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable application removal")
+		return
+	}
+	if !s.Connected(ep.ID) {
+		s.tenantError(w, store.ErrEndpointOffline)
+		return
+	}
+	removing, req, err := s.store.Tenancy().RemoveApplication(r.Context(), a, app, input)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if !s.agents.deliver(removing.EndpointID, envelope(protocol.TypeDeploymentRemove, req)) {
+		if err := s.store.Tenancy().FailDeployment(context.WithoutCancel(r.Context()), removing.ID, "the endpoint disconnected before the removal was sent"); err != nil {
+			log.Printf("deployment %s: recording an unsent frame: %v", removing.ID, err)
+		}
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The removal could not be sent to the endpoint", "code": "deployment_not_sent"})
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, removing)
+}

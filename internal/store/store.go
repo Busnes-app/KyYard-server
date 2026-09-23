@@ -156,6 +156,7 @@ type TenancyStore interface {
 	AdoptApplication(context.Context, TenantAccess, string, AdoptionRequest) (*ApplicationInstance, error)
 	ReleaseApplication(context.Context, TenantAccess, string, string, string) error
 	ListApplicationInstances(context.Context, TenantAccess, string) ([]ApplicationInstance, error)
+	ReadApplicationInstance(ctx context.Context, access TenantAccess, applicationID, id string) (*ApplicationInstance, error)
 
 	ReplaceApplicationRevision(ctx context.Context, access TenantAccess, id string, expected int, spec ApplicationSpec, values map[string]string, key []byte) (int, error)
 	ImportApplication(ctx context.Context, access TenantAccess, name string, spec ApplicationSpec, values map[string]string, key []byte) (*Application, error)

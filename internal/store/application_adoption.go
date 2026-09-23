@@ -240,6 +240,26 @@ func (t *tenancyStore) ReleaseApplication(ctx context.Context, a TenantAccess, a
 		return nil
 	})
 }
+
+// ReadApplicationInstance reads one instance of the application, without its containers.
+func (t *tenancyStore) ReadApplicationInstance(ctx context.Context, a TenantAccess, app, id string) (*ApplicationInstance, error) {
+	if a.EnvironmentID == "" {
+		return nil, ErrInvalid
+	}
+	i := ApplicationInstance{Containers: []AdoptedContainer{}}
+	err := t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.id,i.application_id,i.endpoint_id,i.project,i.revision,i.mapping_version,i.current_revision,i.previous_revision,i.created_by,i.created_at,e.name,(SELECT COUNT(*) FROM application_resources r WHERE r.instance_id=i.id) FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND i.environment_id=? AND i.application_id=? AND i.id=?`), a.OrganizationID, a.EnvironmentID, app, id).Scan(&i.ID, &i.ApplicationID, &i.EndpointID, &i.Project, &i.Revision, &i.MappingVersion, &i.CurrentRevision, &i.PreviousRevision, &i.CreatedBy, &i.CreatedAt, &i.EndpointName, &i.ContainerCount)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &i, nil
+}
+
 func (t *tenancyStore) ListApplicationInstances(ctx context.Context, a TenantAccess, endpoint string) ([]ApplicationInstance, error) {
 	out := []ApplicationInstance{}
 	err := t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
