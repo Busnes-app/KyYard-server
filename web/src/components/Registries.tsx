@@ -1,24 +1,8 @@
 import React, { useState } from 'react';
-import { secureFetch } from '../api';
 import { EmptyNotice, StateNotice } from './StateNotice';
-import { useTenantResource } from '../tenant';
+import { tenantWrite, useTenantResource, type Registry, type RegistryPolicy } from '../tenant';
 
-interface Registry { id: string; host: string; name: string; username: string; has_credential: boolean; allow_private: boolean }
-interface RegistryPolicy { anonymous_pull_enabled: boolean }
-
-// Response bodies are never shown: every outcome maps to fixed text.
-async function write(url: string, method: string, body?: unknown): Promise<string> {
-  try {
-    const resp = await secureFetch(url, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
-    if (resp.ok) return '';
-    if (resp.status === 403) return 'Only an organization administrator can manage registries.';
-    if (resp.status === 400) return 'Check the host, name and username, then try again.';
-    if (resp.status === 404) return 'That registry no longer exists in this access scope.';
-    return `Request failed (${resp.status}).`;
-  } catch {
-    return 'Offline: the server could not be reached.';
-  }
-}
+const texts = { forbidden: 'Only an organization administrator can manage registries.', invalid: 'Check the host, name and credential (at most 4096 bytes).' };
 
 const emptyForm = { host: '', name: '', username: '', allowPrivate: false };
 
@@ -27,6 +11,7 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
   const registries = useTenantResource<Registry[]>(`${base}/registries`);
   const policy = useTenantResource<RegistryPolicy>(`${base}/registry-policy`);
   const [form, setForm] = useState(emptyForm);
+  const [editing, setEditing] = useState('');
   // The credential is write-only: never prefilled, dropped after every submit.
   const [credential, setCredential] = useState('');
   const [clear, setClear] = useState(false);
@@ -35,7 +20,7 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
 
   const run = async (url: string, method: string, body?: unknown) => {
     setBusy(true);
-    const err = await write(url, method, body);
+    const err = await tenantWrite(url, method, body, texts);
     setBusy(false);
     setMessage(err);
     return !err;
@@ -48,10 +33,12 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
     else if (credential) body.credential = credential;
     setCredential('');
     setClear(false);
-    if (await run(`${base}/registries`, 'PUT', body)) { setForm(emptyForm); registries.reload(); }
+    if (await run(`${base}/registries`, 'PUT', body)) { reset(); registries.reload(); }
   };
+  const reset = () => { setForm(emptyForm); setEditing(''); setCredential(''); setClear(false); };
   const edit = (r: Registry) => {
     setForm({ host: r.host, name: r.name, username: r.username, allowPrivate: r.allow_private });
+    setEditing(r.host);
     setCredential('');
     setClear(false);
     setMessage('');
@@ -61,12 +48,13 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
     if (await run(`${base}/registries/${encodeURIComponent(r.id)}`, 'DELETE')) registries.reload();
   };
   const setAnonymous = async (enabled: boolean) => {
+    if (enabled && !window.confirm('Allow anonymous pulls from hosts without a registry entry? This weakens the default and is audited.')) return;
     if (await run(`${base}/registry-policy`, 'PUT', { anonymous_pull_enabled: enabled })) policy.reload();
   };
 
   return (
     <section className="panel" aria-labelledby="registries-heading">
-      <h2 id="registries-heading" style={{ fontSize: 18 }}>Registries</h2>
+      <div className="panel-header"><h2 id="registries-heading" style={{ fontSize: 16 }}>Registries</h2></div>
       <StateNotice state={registries.state} onRetry={registries.reload} />
       {registries.state === 'ready' && registries.data && (registries.data.length === 0 ? <EmptyNotice>No registries. Images from hosts without an entry pull only when anonymous pulls are on.</EmptyNotice> : (
         <div style={{ overflowX: 'auto' }}>
@@ -80,8 +68,8 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
                   <td data-label="Username">{r.username}</td>
                   <td data-label="Credential">{r.has_credential ? 'credential set' : 'no credential'}</td>
                   <td data-label="Private addresses">{r.allow_private ? 'private addresses allowed' : 'public only'}</td>
-                  <td data-label="Actions" style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn-secondary" disabled={busy} onClick={() => edit(r)} aria-label={`Edit ${r.host}`}>Edit</button>
+                  <td data-label="Actions">
+                    <button className="btn-secondary" disabled={busy} onClick={() => edit(r)} aria-label={`Edit ${r.host}`}>Edit</button>{' '}
                     <button className="btn-danger" disabled={busy} onClick={() => void remove(r)} aria-label={`Delete ${r.host}`}>Delete</button>
                   </td>
                 </tr>
@@ -92,6 +80,7 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
       ))}
       {registries.state === 'ready' && (
         <form onSubmit={(e) => { e.preventDefault(); void save(); }} className="ky-inline-form" aria-label="Add or update a registry">
+          {editing && <p style={{ flexBasis: '100%', margin: 0 }}>Editing {editing}</p>}
           <label htmlFor="registry-host">Host</label>
           <input id="registry-host" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} required maxLength={261} placeholder="ghcr.io" />
           <label htmlFor="registry-name">Name</label>
@@ -104,6 +93,7 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
           <label><input type="checkbox" checked={clear} onChange={(e) => { setClear(e.target.checked); setCredential(''); }} />Clear credential</label>
           <label><input type="checkbox" checked={form.allowPrivate} onChange={(e) => setForm({ ...form, allowPrivate: e.target.checked })} />Allow private addresses</label>
           <button type="submit" disabled={busy || !form.host.trim() || !form.name.trim()}>Save registry</button>
+          {editing && <button type="button" className="btn-secondary" onClick={() => { reset(); setMessage(''); }}>Cancel</button>}
         </form>
       )}
       <h3 style={{ fontSize: 16, marginTop: 16 }}>Anonymous pulls</h3>

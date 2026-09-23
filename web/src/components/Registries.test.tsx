@@ -104,22 +104,34 @@ it('deletes after confirmation and refreshes', async () => {
   expect(writes).toEqual([{ url: '/api/organizations/a/registries/reg-1', method: 'DELETE', csrf: 'csrf-test', body: undefined }]);
 });
 
-it('the anonymous-pull switch sends PUT and re-renders', async () => {
+it('the anonymous-pull switch confirms turning on, sends PUT and re-renders', async () => {
   const writes = serve([]);
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
   render(<Registries org="a" />);
   const toggle = await screen.findByRole('switch', { name: 'Allow anonymous pulls' }) as HTMLInputElement;
   expect(toggle.checked).toBe(false);
   expect(screen.getByText('Off: images from hosts without a registry entry cannot be pulled. On: anonymous pulls are allowed; audited.')).toBeTruthy();
   fireEvent.click(toggle);
+  expect(confirm).toHaveBeenLastCalledWith('Allow anonymous pulls from hosts without a registry entry? This weakens the default and is audited.');
+  expect(writes).toHaveLength(0);
+  expect(toggle.checked).toBe(false);
+  fireEvent.click(toggle);
   await waitFor(() => expect((screen.getByRole('switch', { name: 'Allow anonymous pulls' }) as HTMLInputElement).checked).toBe(true));
   expect(writes).toEqual([{ url: '/api/organizations/a/registry-policy', method: 'PUT', csrf: 'csrf-test', body: { anonymous_pull_enabled: true } }]);
+  // Turning it off restores the default and needs no confirmation.
+  fireEvent.click(screen.getByRole('switch', { name: 'Allow anonymous pulls' }));
+  await waitFor(() => expect((screen.getByRole('switch', { name: 'Allow anonymous pulls' }) as HTMLInputElement).checked).toBe(false));
+  expect(confirm).toHaveBeenCalledTimes(2);
+  expect(writes[1].body).toEqual({ anonymous_pull_enabled: false });
 });
 
 it('403 shows the fixed refusal and never the response body', async () => {
   serve([ghcr], false, 403);
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   render(<Registries org="a" />);
   fireEvent.click(await screen.findByRole('switch', { name: 'Allow anonymous pulls' }));
   expect((await screen.findByRole('alert')).textContent).toBe('Only an organization administrator can manage registries.');
+  expect((screen.getByRole('switch', { name: 'Allow anonymous pulls' }) as HTMLInputElement).checked).toBe(false);
   expect(document.body.textContent).not.toContain('secret server detail');
 });
 
@@ -130,4 +142,41 @@ it('other failures show generic fixed text', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Delete ghcr.io' }));
   expect((await screen.findByRole('alert')).textContent).toBe('Request failed (500).');
   expect(document.body.textContent).not.toContain('secret server detail');
+});
+
+it('a failed save still empties the credential field', async () => {
+  const writes = serve([], false, 500);
+  render(<Registries org="a" />);
+  await screen.findByText(/No registries/);
+  fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ghcr.io' } });
+  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'GitHub' } });
+  fireEvent.change(screen.getByLabelText('Credential'), { target: { value: 's3cret' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save registry' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('Request failed (500).');
+  expect((screen.getByLabelText('Credential') as HTMLInputElement).value).toBe('');
+  expect(writes).toHaveLength(1);
+  expect((writes[0].body as { credential: string }).credential).toBe('s3cret');
+});
+
+it('400 names the fields and the credential limit', async () => {
+  serve([], false, 400);
+  render(<Registries org="a" />);
+  await screen.findByText(/No registries/);
+  fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ghcr.io' } });
+  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'GitHub' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save registry' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('Check the host, name and credential (at most 4096 bytes).');
+  expect(document.body.textContent).not.toContain('secret server detail');
+});
+
+it('edit mode names the entry and Cancel resets the form', async () => {
+  serve([ghcr]);
+  render(<Registries org="a" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit ghcr.io' }));
+  expect(screen.getByText('Editing ghcr.io')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Credential'), { target: { value: 'typed' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByText('Editing ghcr.io')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+  for (const field of ['Host', 'Name', 'Username', 'Credential']) expect((screen.getByLabelText(field) as HTMLInputElement).value).toBe('');
 });
