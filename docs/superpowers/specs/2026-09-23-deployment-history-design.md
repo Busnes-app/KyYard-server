@@ -46,7 +46,7 @@ type RemovalRequest struct {
 	Endpoint   string
 	Project    string
 	Deadline   time.Time         // at most DeploymentLifetime out
-	Containers []RemovalTarget   // 1..1000, the instance's adopted resources
+	Containers []RemovalTarget   // 1..100, the instance's adopted resources
 }
 type RemovalTarget struct {
 	Service string            // service name, or "unmapped-<12 hex>" for an unmapped resource

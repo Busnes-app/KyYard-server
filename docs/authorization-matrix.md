@@ -86,7 +86,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `application.edit` (create a new revision from desired configuration) | ✓ | ✓ | – | ✓ | – | secret references only | success, target = revision |
 | `application.deploy` (preview, plan and apply an approved revision; implemented) | ✓ | ✓ | – | ✓ | – | no | audited by `SettleDeployment` in the settle transaction, result mapped to success/denied/failure/unknown |
 | `application.update` (manual image update, 0.1) | ✓ | ✓ | ✓ | – | – | no | success/failure |
-| `application.destroy` (remove application, keep data) | ✓ | ✓ | – | – | – | no | success |
+| `application.destroy` (remove application, keep data; implemented, `POST .../applications/{application}/removal`) | ✓ | ✓ | – | – | – | no | one row per removal (`withTenantTarget`); settle audits the same action for the agent's result, `outcome=abandoned/swept/not_sent` for a disconnect, sweep or undeliverable frame |
 | `secret.reveal` (internal imported-value resolution) | ✓ | – | – | – | – | plaintext, only after audit commits | success/failure |
 | `secret.manage` (create, rotate, delete secret values) | ✓ | – | – | – | – | write-only; values never returned | success, target = secret name |
 | `secret.use` (deploy with a secret reference) | implied by `application.deploy` | | | | | no | recorded on the deployment |
@@ -122,7 +122,7 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Exec | organization administrators only in 0.1 | proposed |
 | Per-environment grants | not in 0.1 | proposed |
 
-Application persistence implements `application.read`, `application.import`, `application.edit` and draft-only `application.destroy` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. Destroy explicitly discards an undeployed draft/history at the expected head and releases quota. HTTP import/list/read/discard routes are implemented; explicit adoption/release are implemented; public editing and runtime deployment remain absent. Internal `secret.reveal` permits organization administrators only, commits audit before returning values and has no HTTP endpoint. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.
+Application persistence implements `application.read`, `application.import`, `application.edit` and `application.destroy` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. `application.destroy` covers two operations: discarding an undeployed draft (and a removed application's history) at the expected head, which releases quota, and `RemoveApplication`, which stops and removes an adopted application's containers through `deployment.remove` and keeps its data. HTTP import/list/read/discard/removal routes are implemented; explicit adoption/release are implemented. Internal `secret.reveal` permits organization administrators only, commits audit before returning values and has no HTTP endpoint. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.
 
 ### Live redacted container inspection
 
