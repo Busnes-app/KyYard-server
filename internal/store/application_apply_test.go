@@ -345,10 +345,10 @@ func TestConcurrentSettlesCommitOnce(t *testing.T) {
 	}
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		var waiting int
-		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&waiting); err != nil {
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM deployments%'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting == 2 {
+		if waiting >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
