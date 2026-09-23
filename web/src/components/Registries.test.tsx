@@ -11,7 +11,7 @@ const lan = { id: 'reg-2', organization_id: 'a', host: 'registry.lan:5000', name
 type Write = { url: string; method: string; body?: unknown; csrf: string | null };
 
 // A fake server: GETs read the current state, writes are recorded and applied by `apply`.
-function serve(rows: unknown[], anonymous = false, writeStatus = 0) {
+function serve(rows: unknown[], anonymous = false, writeStatus = 0, privateEnabled = true) {
   const writes: Write[] = [];
   const state = { rows: [...rows], anonymous };
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -19,7 +19,7 @@ function serve(rows: unknown[], anonymous = false, writeStatus = 0) {
     const method = init?.method ?? 'GET';
     if (method === 'GET') {
       if (url === '/api/organizations/a/registries') return json(state.rows);
-      if (url === '/api/organizations/a/registry-policy') return json({ anonymous_pull_enabled: state.anonymous });
+      if (url === '/api/organizations/a/registry-policy') return json({ anonymous_pull_enabled: state.anonymous, private_registries_enabled: privateEnabled });
       return json({ error: 'not found' }, 404);
     }
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -75,7 +75,7 @@ it('updates without touching the credential and sends no credential key', async 
   expect((screen.getByLabelText('Host') as HTMLInputElement).value).toBe('ghcr.io');
   expect((screen.getByLabelText('Username') as HTMLInputElement).value).toBe('bot');
   expect((screen.getByLabelText('Credential') as HTMLInputElement).value).toBe('');
-  fireEvent.click(screen.getByLabelText('Allow private addresses'));
+  fireEvent.click(await screen.findByLabelText('Allow private addresses'));
   fireEvent.click(screen.getByRole('button', { name: 'Save registry' }));
   await waitFor(() => expect(writes).toHaveLength(1));
   expect(writes[0].body).toEqual({ host: 'ghcr.io', name: 'GitHub', username: 'bot', allow_private: true });
@@ -179,4 +179,30 @@ it('edit mode names the entry and Cancel resets the form', async () => {
   expect(screen.queryByText('Editing ghcr.io')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
   for (const field of ['Host', 'Name', 'Username', 'Credential']) expect((screen.getByLabelText(field) as HTMLInputElement).value).toBe('');
+});
+
+it('hides the private-address switch when the operator has not allowed it', async () => {
+  const writes = serve([lan], false, 0, false);
+  render(<Registries org="a" />);
+  expect(await screen.findByText('Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).')).toBeTruthy();
+  expect(screen.queryByLabelText('Allow private addresses')).toBeNull();
+  // Editing a row stored with the flag drops it rather than sending a refused value.
+  fireEvent.click(screen.getByRole('button', { name: 'Edit registry.lan:5000' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save registry' }));
+  await waitFor(() => expect(writes).toHaveLength(1));
+  expect(writes[0].body).toEqual({ host: 'registry.lan:5000', name: 'LAN', username: '', allow_private: false });
+});
+
+it('shows the private-address switch when the operator allows it', async () => {
+  serve([], false, 0, true);
+  render(<Registries org="a" />);
+  expect(await screen.findByLabelText('Allow private addresses')).toBeTruthy();
+  expect(screen.queryByText(/disabled by the operator/)).toBeNull();
+});
+
+it('a private_registries_disabled refusal shows the operator text', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'x', code: 'private_registries_disabled' }, 403)));
+  document.cookie = 'ky_csrf=csrf-test';
+  const { tenantWrite } = await import('../tenant');
+  expect(await tenantWrite('/api/organizations/a/registries', 'PUT', {}, { forbidden: 'no' })).toBe('Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).');
 });

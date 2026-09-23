@@ -35,6 +35,9 @@ var (
 	// ErrRegistryNotConfigured says an image's host has no registry entry and the
 	// organization has not opted in to anonymous pulls.
 	ErrRegistryNotConfigured = errors.New("registry not configured")
+	// ErrPrivateRegistriesDisabled refuses allow_private while the operator has not set
+	// KY_REGISTRY_ALLOW_PRIVATE.
+	ErrPrivateRegistriesDisabled = errors.New("private registries are disabled by the operator")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
@@ -195,13 +198,14 @@ type TenancyStore interface {
 	PutMembership(ctx context.Context, access TenantAccess, userID string, role TenantRole, status string) error
 	RemoveMembership(ctx context.Context, access TenantAccess, userID string) error
 	ListRegistries(ctx context.Context, access TenantAccess) ([]Registry, error)
-	PutRegistry(ctx context.Context, access TenantAccess, in RegistryInput, key []byte) (*Registry, error)
+	PutRegistry(ctx context.Context, access TenantAccess, in RegistryInput, key []byte, privateAllowed bool) (*Registry, error)
 	DeleteRegistry(ctx context.Context, access TenantAccess, id string) error
 	ReadRegistryPolicy(ctx context.Context, access TenantAccess) (RegistryPolicy, error)
 	SetAnonymousPull(ctx context.Context, access TenantAccess, enabled bool) error
-	// ResolveRegistryAccess decrypts the credential for ref's host. It audits nothing itself;
-	// callers audit the operation that uses it and never return the secret.
-	ResolveRegistryAccess(ctx context.Context, access TenantAccess, ref string, key []byte) (*RegistryAccess, error)
+	// ResolveRegistryAccess decrypts the credential for ref's host under action, the permission
+	// of the operation that uses it (registry.read is refused). It audits only denials and
+	// failures; callers audit the operation and never return the secret.
+	ResolveRegistryAccess(ctx context.Context, access TenantAccess, action permissions.Action, ref string, key []byte) (*RegistryAccess, error)
 	// ListMemberOrganizations returns the caller's own active memberships; it is not tenant-scoped.
 	ListMemberOrganizations(ctx context.Context, userID string) ([]MemberOrganization, error)
 

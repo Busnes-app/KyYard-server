@@ -21,6 +21,7 @@ type Config struct {
 	SSO      SSOConfig      `json:"sso"`
 	SCIM     SCIMConfig     `json:"scim"`
 	Backup   BackupConfig   `json:"backup"`
+	Registry RegistryConfig `json:"registry"`
 	Captcha  CaptchaConfig  `json:"captcha"`
 }
 
@@ -102,6 +103,13 @@ type BackupConfig struct {
 	// AllowPrivateRecovery admits private and CGNAT KyRecovery destinations (HTTPS still
 	// required). Off by default: KyRecovery destinations must be public.
 	AllowPrivateRecovery bool `json:"allow_private_recovery"`
+}
+
+// RegistryConfig holds the operator's limits on organization registries.
+type RegistryConfig struct {
+	// AllowPrivate lets organization admins set allow_private on a registry, admitting
+	// private and CGNAT destinations. Off by default: a tenant must not reach the server's network.
+	AllowPrivate bool `json:"allow_private"`
 }
 
 // CaptchaConfig holds anti-abuse settings (PoW default, Turnstile, Friendly).
@@ -285,6 +293,7 @@ func LoadFromEnv() (*Config, error) {
 			DepositInterval:      depositInterval,
 			AllowPrivateRecovery: getEnvBool("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", false),
 		},
+		Registry: RegistryConfig{AllowPrivate: getEnvBool("KY_REGISTRY_ALLOW_PRIVATE", false)},
 		Captcha: CaptchaConfig{
 			Provider:      getEnv("KY_CAPTCHA_PROVIDER", "pow"),
 			SiteKey:       getEnv("KY_CAPTCHA_SITE_KEY", ""),

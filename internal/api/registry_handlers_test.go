@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -55,6 +56,9 @@ func TestRegistryRoutes(t *testing.T) {
 	if w := tenantRequest(s, admin, "PUT", list, put, false); w.Code != 403 {
 		t.Fatalf("registry write bypassed CSRF: %d", w.Code)
 	}
+	if w := check(admin, "GET", list, "", 200); w.Body.String() != "[]\n" && w.Body.String() != "[]" {
+		t.Fatalf("a CSRF-refused write changed the list: %q", w.Body.String())
+	}
 	if w := tenantRequest(s, admin, "PUT", policy, `{"anonymous_pull_enabled":true}`, false); w.Code != 403 {
 		t.Fatalf("policy write bypassed CSRF: %d", w.Code)
 	}
@@ -62,7 +66,15 @@ func TestRegistryRoutes(t *testing.T) {
 	check(admin, "PUT", list, `{"host":"bad host/x","name":"x","username":"","allow_private":false}`, 400)
 	check(admin, "PUT", list, `{"host":"ghcr.io","name":"x","organization_id":"b"}`, 400)
 
-	w := check(admin, "PUT", list, put, 200)
+	// allow_private needs the operator's KY_REGISTRY_ALLOW_PRIVATE, off here.
+	w := check(admin, "PUT", list, `{"host":"registry.lan:5000","name":"LAN","allow_private":true}`, 403)
+	var refusal struct{ Code string }
+	must(json.Unmarshal(w.Body.Bytes(), &refusal))
+	if refusal.Code != "private_registries_disabled" {
+		t.Fatalf("private refusal: %s", w.Body.String())
+	}
+
+	w = check(admin, "PUT", list, put, 200)
 	noSecret(w)
 	var row store.Registry
 	must(json.Unmarshal(w.Body.Bytes(), &row))
@@ -100,11 +112,16 @@ func TestRegistryRoutes(t *testing.T) {
 	}
 
 	// Policy round trip; environment admins read it but cannot change it.
-	var p store.RegistryPolicy
-	must(json.Unmarshal(check(envadmin, "GET", policy, "", 200).Body.Bytes(), &p))
-	if p.AnonymousPullEnabled {
-		t.Fatal("anonymous pull on by default")
+	var p struct {
+		store.RegistryPolicy
+		PrivateRegistriesEnabled *bool `json:"private_registries_enabled"`
 	}
+	must(json.Unmarshal(check(envadmin, "GET", policy, "", 200).Body.Bytes(), &p))
+	if p.AnonymousPullEnabled || p.PrivateRegistriesEnabled == nil || *p.PrivateRegistriesEnabled {
+		t.Fatalf("default policy: %+v", p)
+	}
+	// The read-only field is not part of the PUT body.
+	check(admin, "PUT", policy, `{"anonymous_pull_enabled":false,"private_registries_enabled":true}`, 400)
 	check(envadmin, "PUT", policy, `{"anonymous_pull_enabled":true}`, 403)
 	check(admin, "PUT", policy, `{"anonymous_pull_enabled":true}`, 204)
 	must(json.Unmarshal(check(admin, "GET", policy, "", 200).Body.Bytes(), &p))
@@ -132,4 +149,26 @@ func TestRegistryRoutes(t *testing.T) {
 	check(admin, "DELETE", list+"/00000000-0000-4000-8000-000000000000", "", 404)
 	check(admin, "DELETE", list+"/"+row.ID, "", 204)
 	check(admin, "DELETE", list+"/"+row.ID, "", 404)
+}
+
+// With KY_REGISTRY_ALLOW_PRIVATE on, an organization admin may set allow_private.
+func TestRegistryPrivateOptIn(t *testing.T) {
+	s, st, _ := setupTestServerWith(t, func(c *config.Config) { c.Registry.AllowPrivate = true })
+	ctx := context.Background()
+	if err := st.Tenancy().CreateOrganization(ctx, &store.Organization{ID: "a", Name: "Org a"}); err != nil {
+		t.Fatal(err)
+	}
+	admin := loginAs(t, s, st, "tenant", "user")
+	if err := st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_tenant", Role: store.RoleOrganizationAdmin, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w := tenantRequest(s, admin, "PUT", "/api/organizations/a/registries", `{"host":"registry.lan:5000","name":"LAN","allow_private":true}`, true)
+	var row store.Registry
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &row) != nil || !row.AllowPrivate {
+		t.Fatalf("private put: %d %s", w.Code, w.Body.String())
+	}
+	w = tenantRequest(s, admin, "GET", "/api/organizations/a/registry-policy", "", true)
+	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"private_registries_enabled":true`)) {
+		t.Fatalf("policy: %d %s", w.Code, w.Body.String())
+	}
 }

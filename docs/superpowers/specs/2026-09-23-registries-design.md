@@ -57,26 +57,37 @@ type Options struct{ AllowPrivate bool; Timeout time.Duration } // Timeout defau
 type Resolved struct {
 	Digest    string   // "sha256:…" of the manifest or index the tag points at (Docker-Content-Digest)
 	MediaType string
-	Platforms []string // "os/arch[/variant]" from an index; empty for a single manifest
+	Platforms []string // "os/arch[/variant]" from an index; empty for a single manifest, nil from Head
 	Checked   time.Time
 }
 func New(opts Options) *Client
 func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (Resolved, error)
+func (c *Client) Head(ctx context.Context, ref Reference, cred *Credential) (Resolved, error)
 ```
+
+- `Head` is `Resolve` with `HEAD` on the manifest URL: same auth flow, guard and budget (two
+  HEADs plus one token GET). The digest is the `Docker-Content-Digest` header (format checked,
+  equal to a requested digest), the media type the `Content-Type`; no body is read, so nothing
+  is hash-verified. The header is TLS-authenticated and a pull by digest verifies the content.
+  Docker Hub counts a manifest GET as a pull and not a HEAD, so PR B polls with `Head` and calls
+  `Resolve` only when the digest changed or platforms are needed.
 
 - HTTPS only. `GET https://<host>/v2/<repo>/manifests/<tag|digest>` with `Accept` for the OCI
   index, OCI manifest, Docker manifest list and Docker manifest v2. The digest is the
-  `Docker-Content-Digest` header, verified against the SHA-256 of the body (mismatch →
-  `ErrDigestMismatch`; an empty body is `ErrUnavailable`).
+  `Docker-Content-Digest` header, verified against the SHA-256 of the body on this GET path
+  (mismatch → `ErrDigestMismatch`; an empty body is `ErrUnavailable`).
 - Token flow: a 401 with `WWW-Authenticate: Bearer realm=…,service=…,scope=…` triggers one
   `GET <realm>?service=…&scope=…`; with a credential the request carries HTTP basic auth,
-  anonymously it carries none; the bearer token is used for one retry. `Basic` challenges are
+  anonymously it carries none; the bearer token (at most 8 KiB, else `ErrUnavailable`) is used
+  for one retry. `Basic` challenges are
   answered with the credential directly. The credential goes only to the configured host and to
   the realm that host itself advertised, both HTTPS, never on a redirect.
 - Redirects are not followed (`http.ErrUseLastResponse`); a 3xx is `ErrUnavailable`.
 - Egress guard: the host must resolve to public unicast addresses; loopback, link-local,
   private and carrier-grade NAT are refused with `ErrPrivateDestination` unless
-  `AllowPrivate`; loopback is never allowed. Resolution is done once and the dialer is pinned
+  `AllowPrivate`; loopback is never allowed. A caller sets `AllowPrivate` only when the row's
+  `allow_private` is set, which the store admits only under the operator's
+  `KY_REGISTRY_ALLOW_PRIVATE`. Resolution is done once and the dialer is pinned
   to the checked address (no rebinding between check and connect).
 - Bounds: 15 s per request, two requests per resolve (plus the token request), response bodies
   ≤ 4 MiB, header values bounded. Errors are typed: `ErrUnauthorized` (401/403 after the token
@@ -93,32 +104,39 @@ func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (
 
 - Permissions: `registry.read` (all five roles), `registry.manage` (organization admin only).
 - `ListRegistries(ctx, a) ([]Registry, error)` (`registry.read`; no credential fields, `has_credential`).
-- `PutRegistry(ctx, a, RegistryInput{Host, Name, Username, Credential *string, AllowPrivate}, key) (*Registry, error)`
-  (`registry.manage`; create or update by host; `Credential` nil keeps the stored one, `""` clears
+- `PutRegistry(ctx, a, RegistryInput{Host, Name, Username, Credential *string, AllowPrivate}, key, privateAllowed) (*Registry, error)`
+  (`registry.manage`; create or update by host; `AllowPrivate` without `privateAllowed`, the
+  operator's `KY_REGISTRY_ALLOW_PRIVATE`, is `ErrPrivateRegistriesDisabled` after the permission check, audited, nothing written; `Credential` nil keeps the stored one, `""` clears
   it; audited with target `registries/<id>` and details `host=… allow_private=… credential=set|kept|cleared`).
 - `DeleteRegistry(ctx, a, id)` (`registry.manage`, audited).
 - `SetAnonymousPull(ctx, a, enabled bool)` (`registry.manage`; audited with `old=… new=…` in
   details) and `ReadRegistryPolicy(ctx, a) (RegistryPolicy{AnonymousPullEnabled bool}, error)` (`registry.read`).
 - Internal, for PR B/C: `registryFor(ctx, tx, org, host) (id, username, secret string, allowPrivate bool, found bool, err error)`
-  decrypting with the key inside the transaction; and `ResolveRegistryAccess(ctx, a, ref) (RegistryAccess, error)`
+  decrypting with the key inside the transaction; and `ResolveRegistryAccess(ctx, a, action, ref, key) (*RegistryAccess, error)`
   that returns `{Registry *Registry, Credential *registry.Credential, Anonymous bool}` or
-  `ErrRegistryNotConfigured` when the host has no row and the opt-in is off. It audits nothing
-  itself; callers audit the operation that uses it.
+  `ErrRegistryNotConfigured` when the host has no row and the opt-in is off. `action` is the
+  permission of the operation that uses the credential (`application.deploy`, `image.pull`,
+  PR B's detection action); the read runs under it, so a denial is audited against it, and
+  `registry.read` itself is `ErrForbidden`. A permitted resolution audits nothing; callers audit
+  the operation.
 
 ## API
 
 - `GET /api/organizations/{organization}/registries` → list.
 - `PUT /api/organizations/{organization}/registries` body `{host, name, username, credential?, allow_private}` → 200 row (credential omitted) — create or update.
 - `DELETE /api/organizations/{organization}/registries/{registry}` → 204.
-- `GET /api/organizations/{organization}/registry-policy` → `{anonymous_pull_enabled}`;
-  `PUT` same path body `{anonymous_pull_enabled}` → 204 (`registry.manage`).
+- `GET /api/organizations/{organization}/registry-policy` → `{anonymous_pull_enabled, private_registries_enabled}`
+  (the second is the operator's `KY_REGISTRY_ALLOW_PRIVATE`, read-only);
+  `PUT` same path body `{anonymous_pull_enabled}` only → 204 (`registry.manage`).
 - All through `tenantRoute` (CSRF on writes). Errors: 403 without the permission, 400 invalid
-  host/name, 409 `registry_in_use` is not needed in PR A.
+  host/name, 403 `private_registries_disabled` for `allow_private` without the operator opt-in,
+  409 `registry_in_use` is not needed in PR A.
 
 ## UI
 
 `web/src/components/Registries.tsx` on the organization page (beside members): list with host,
-name, username, "credential set", allow-private flag; a form to add/update (credential field
+name, username, "credential set", allow-private flag; a form (the allow-private checkbox only
+when `private_registries_enabled`, otherwise a line naming `KY_REGISTRY_ALLOW_PRIVATE`) to add/update (credential field
 never prefilled, write-only, cleared on submit), delete with confirmation, and the anonymous-pull
 switch with its explanation ("Off: images from hosts without a registry entry cannot be pulled.
 On: anonymous pulls are allowed; audited."). Admin-only controls are hidden for other roles by

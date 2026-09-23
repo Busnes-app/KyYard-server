@@ -90,8 +90,8 @@ func (t *tenancyStore) ListRegistries(ctx context.Context, a TenantAccess) ([]Re
 }
 
 // PutRegistry creates or updates the organization's entry for a host. A nil credential keeps
-// the stored one; "" clears it.
-func (t *tenancyStore) PutRegistry(ctx context.Context, a TenantAccess, in RegistryInput, key []byte) (*Registry, error) {
+// the stored one; "" clears it. privateAllowed is the operator's KY_REGISTRY_ALLOW_PRIVATE.
+func (t *tenancyStore) PutRegistry(ctx context.Context, a TenantAccess, in RegistryInput, key []byte, privateAllowed bool) (*Registry, error) {
 	host, err := NormalizeRegistryHost(in.Host)
 	if err != nil || !validRegistryInput(in, key) {
 		return nil, ErrInvalid
@@ -100,6 +100,11 @@ func (t *tenancyStore) PutRegistry(ctx context.Context, a TenantAccess, in Regis
 	r := Registry{OrganizationID: a.OrganizationID, Host: host, Name: strings.TrimSpace(in.Name), Username: in.Username, AllowPrivate: in.AllowPrivate, CreatedBy: a.ActorID, CreatedAt: now, UpdatedAt: now}
 	target, details := "registries", ""
 	err = t.run(ctx, a, permissions.RegistryManage, &target, &details, true, func(tx *sql.Tx) error {
+		// allow_private is a tenant's switch; only the operator's opt-in makes it available.
+		// Checked after the permission, so a refusal is an audited failure.
+		if in.AllowPrivate && !privateAllowed {
+			return ErrPrivateRegistriesDisabled
+		}
 		if err := t.lockOrganization(ctx, tx, a.OrganizationID); err != nil {
 			return err
 		}
@@ -197,7 +202,11 @@ func (t *tenancyStore) SetAnonymousPull(ctx context.Context, a TenantAccess, ena
 	})
 }
 
-func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess, ref string, key []byte) (*RegistryAccess, error) {
+func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess, action permissions.Action, ref string, key []byte) (*RegistryAccess, error) {
+	// Every member holds registry.read; the credential needs the operation's own permission.
+	if action == permissions.RegistryRead {
+		return nil, ErrForbidden
+	}
 	parsed, err := registry.ParseReference(ref)
 	if err != nil || len(key) != 32 {
 		return nil, ErrInvalid
@@ -205,7 +214,7 @@ func (t *tenancyStore) ResolveRegistryAccess(ctx context.Context, a TenantAccess
 	var access RegistryAccess
 	notConfigured := false
 	// Not configured is a result, not a failure: returned outside the op so it audits nothing.
-	err = t.readTenant(ctx, a, permissions.RegistryRead, func(tx *sql.Tx) error {
+	err = t.readTenant(ctx, a, action, func(tx *sql.Tx) error {
 		r, credential, err := t.registryFor(ctx, tx, a.OrganizationID, parsed.Host, key)
 		if errors.Is(err, ErrNotFound) {
 			enabled, err := t.anonymousPull(ctx, tx, a.OrganizationID)

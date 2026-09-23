@@ -25,7 +25,7 @@ func (s *Server) handlePutRegistry(w http.ResponseWriter, r *http.Request, a sto
 		s.tenantError(w, err)
 		return
 	}
-	row, err := s.store.Tenancy().PutRegistry(r.Context(), a, in, s.config.Security.EncryptionKey)
+	row, err := s.store.Tenancy().PutRegistry(r.Context(), a, in, s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
 	if err != nil {
 		s.tenantError(w, err)
 		return
@@ -47,7 +47,11 @@ func (s *Server) handleRegistryPolicy(w http.ResponseWriter, r *http.Request, a 
 		s.tenantError(w, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, p)
+	// The operator's switch rides on the read only; PUT still takes RegistryPolicy alone.
+	s.writeJSON(w, http.StatusOK, struct {
+		store.RegistryPolicy
+		PrivateRegistriesEnabled bool `json:"private_registries_enabled"`
+	}{p, s.config.Registry.AllowPrivate})
 }
 
 func (s *Server) handleSetRegistryPolicy(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {

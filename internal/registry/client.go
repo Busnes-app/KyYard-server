@@ -35,6 +35,7 @@ var (
 const (
 	maxBody      = 4 << 20
 	maxChallenge = 4 << 10
+	maxToken     = 8 << 10
 	maxPlatforms = 64
 	// dockerHubAPI serves docker.io's registry API.
 	dockerHubAPI = "registry-1.docker.io"
@@ -69,7 +70,7 @@ type Options struct {
 type Resolved struct {
 	Digest    string // Docker-Content-Digest of the manifest or index
 	MediaType string
-	Platforms []string // "os/arch[/variant]" from an index; empty for a single manifest
+	Platforms []string // "os/arch[/variant]" from an index; empty for a single manifest, nil from Head
 	Checked   time.Time
 }
 
@@ -85,7 +86,7 @@ func New(opts Options) *Client {
 	return &Client{opts: opts}
 }
 
-// session is one Resolve: its transport dials only addresses the guard pinned.
+// session is one Resolve or Head: its transport dials only addresses the guard pinned.
 type session struct {
 	c      *Client
 	http   *http.Client
@@ -125,9 +126,20 @@ func newSession(c *Client) *session {
 	return s
 }
 
-// Resolve reads the manifest digest ref names: at most two manifest requests and one token
-// request. cred goes only to ref's host or the token realm that host advertises.
+// Resolve GETs the manifest ref names and verifies its digest against the body: at most two
+// manifest requests and one token request. cred goes only to ref's host or the token realm
+// that host advertises. Docker Hub counts every manifest GET as a pull.
 func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (Resolved, error) {
+	return c.manifest(ctx, http.MethodGet, ref, cred)
+}
+
+// Head reads the digest ref names from Docker-Content-Digest without the body, so Docker Hub
+// does not count a pull. Platforms are nil; the same request budget and guard apply.
+func (c *Client) Head(ctx context.Context, ref Reference, cred *Credential) (Resolved, error) {
+	return c.manifest(ctx, http.MethodHead, ref, cred)
+}
+
+func (c *Client) manifest(ctx context.Context, method string, ref Reference, cred *Credential) (Resolved, error) {
 	if ref.Host == "" || ref.Repository == "" || (ref.Tag == "" && ref.Digest == "") {
 		return Resolved{}, ErrInvalidReference
 	}
@@ -151,7 +163,7 @@ func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (
 		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return Resolved{}, ErrInvalidReference
 	}
-	resp, body, err := s.get(ctx, manifestURL, "", true)
+	resp, body, err := s.do(ctx, method, manifestURL, "", true)
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -160,19 +172,22 @@ func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (
 		if err != nil {
 			return Resolved{}, err
 		}
-		if resp, body, err = s.get(ctx, manifestURL, auth, true); err != nil {
+		if resp, body, err = s.do(ctx, method, manifestURL, auth, true); err != nil {
 			return Resolved{}, err
 		}
 	}
 	if err := statusErr(host, resp.StatusCode); err != nil {
 		return Resolved{}, err
 	}
+	if method == http.MethodHead {
+		return parseHead(host, resp.Header, ref.Digest)
+	}
 	return parseManifest(host, resp.Header, body, ref.Digest)
 }
 
-// get sends one GET to a pinned address and reads at most maxBody bytes.
-func (s *session) get(ctx context.Context, rawURL, auth string, manifest bool) (*http.Response, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+// do sends one request to a pinned address; a GET reads at most maxBody bytes, a HEAD none.
+func (s *session) do(ctx context.Context, method, rawURL, auth string, manifest bool) (*http.Response, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: bad request URL", ErrUnavailable)
 	}
@@ -200,6 +215,9 @@ func (s *session) get(ctx context.Context, rawURL, auth string, manifest bool) (
 		return nil, nil, fmt.Errorf("%w: %s: %w", ErrUnavailable, req.URL.Host, err)
 	}
 	defer resp.Body.Close()
+	if method == http.MethodHead {
+		return resp, nil, nil
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %s: %w", ErrUnavailable, req.URL.Host, err)
@@ -261,7 +279,7 @@ func (s *session) token(ctx context.Context, host, repo, params string, cred *Cr
 		req.SetBasicAuth(cred.Username, cred.Secret)
 		auth = req.Header.Get("Authorization")
 	}
-	resp, body, err := s.get(ctx, req.URL.String(), auth, false)
+	resp, body, err := s.do(ctx, http.MethodGet, req.URL.String(), auth, false)
 	if err != nil {
 		return "", err
 	}
@@ -284,6 +302,10 @@ func (s *session) token(ctx context.Context, host, repo, params string, cred *Cr
 	if t.Token == "" {
 		t.Token = t.AccessToken
 	}
+	// It becomes a request header; a hostile realm must not make that header megabytes.
+	if len(t.Token) > maxToken {
+		return "", fmt.Errorf("%w: %s token over 8 KiB", ErrUnavailable, realm.Host)
+	}
 	return "Bearer " + t.Token, nil
 }
 
@@ -304,18 +326,44 @@ func statusErr(host string, code int) error {
 	return fmt.Errorf("%w: %s %d", err, host, code)
 }
 
-func parseManifest(host string, h http.Header, body []byte, want string) (Resolved, error) {
+// headerDigest is the response's Docker-Content-Digest, which must equal a requested digest.
+func headerDigest(host string, h http.Header, want string) (string, error) {
 	d := h.Get("Docker-Content-Digest")
 	if !digestRE.MatchString(d) {
-		return Resolved{}, fmt.Errorf("%w: %s sent no valid Docker-Content-Digest", ErrUnavailable, host)
+		return "", fmt.Errorf("%w: %s sent no valid Docker-Content-Digest", ErrUnavailable, host)
+	}
+	if want != "" && d != want {
+		return "", fmt.Errorf("%w: %s", ErrDigestMismatch, host)
+	}
+	return d, nil
+}
+
+func mediaType(h http.Header) string {
+	mt, _, _ := mime.ParseMediaType(h.Get("Content-Type"))
+	if len(mt) > 255 {
+		return ""
+	}
+	return mt
+}
+
+// parseHead trusts the TLS-authenticated header; a pull by digest verifies the content.
+func parseHead(host string, h http.Header, want string) (Resolved, error) {
+	d, err := headerDigest(host, h, want)
+	if err != nil {
+		return Resolved{}, err
+	}
+	return Resolved{Digest: d, MediaType: mediaType(h), Checked: time.Now().UTC()}, nil
+}
+
+func parseManifest(host string, h http.Header, body []byte, want string) (Resolved, error) {
+	d, err := headerDigest(host, h, want)
+	if err != nil {
+		return Resolved{}, err
 	}
 	if len(body) == 0 {
 		return Resolved{}, fmt.Errorf("%w: %s sent an empty manifest", ErrUnavailable, host)
 	}
 	if sum := sha256.Sum256(body); "sha256:"+hex.EncodeToString(sum[:]) != d {
-		return Resolved{}, fmt.Errorf("%w: %s", ErrDigestMismatch, host)
-	}
-	if want != "" && d != want {
 		return Resolved{}, fmt.Errorf("%w: %s", ErrDigestMismatch, host)
 	}
 	var doc struct {
@@ -331,12 +379,9 @@ func parseManifest(host string, h http.Header, body []byte, want string) (Resolv
 	if json.Unmarshal(body, &doc) != nil {
 		return Resolved{}, fmt.Errorf("%w: %s manifest is not JSON", ErrUnavailable, host)
 	}
-	mt, _, _ := mime.ParseMediaType(h.Get("Content-Type"))
+	mt := mediaType(h)
 	if mt == "" && slices.Contains(manifestTypes, doc.MediaType) {
 		mt = doc.MediaType
-	}
-	if len(mt) > 255 {
-		mt = ""
 	}
 	var platforms []string
 	for _, m := range doc.Manifests {

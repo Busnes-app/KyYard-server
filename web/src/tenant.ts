@@ -21,7 +21,10 @@ export interface Inventory { endpoint_id: string; state: string; generation: num
 export interface AuditRecord { id: number; user_id: string; action: string; resource: string; environment_id: string; correlation_id: string; result: string; created_at: string }
 
 export interface Registry { id: string; host: string; name: string; username: string; has_credential: boolean; allow_private: boolean }
-export interface RegistryPolicy { anonymous_pull_enabled: boolean }
+// private_registries_enabled is the operator's KY_REGISTRY_ALLOW_PRIVATE, read-only here.
+export interface RegistryPolicy { anonymous_pull_enabled: boolean; private_registries_enabled: boolean }
+
+export const privateDisabled = 'Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).';
 
 export const tenantRoles = ['organization_admin', 'environment_admin', 'operator', 'developer', 'read_only'] as const;
 
@@ -64,6 +67,7 @@ export async function tenantWrite(url: string, method: string, body?: unknown, t
     if (resp.ok) return '';
     const payload = await resp.json().catch(() => ({}));
     if (payload.code === 'last_administrator') return 'At least one active administrator is required.';
+    if (payload.code === 'private_registries_disabled') return privateDisabled;
     if (resp.status === 403) return texts.forbidden ?? 'You do not have permission to do that.';
     if (resp.status === 400 && texts.invalid) return texts.invalid;
     if (resp.status === 404) return 'Not found in this access scope.';

@@ -40,7 +40,7 @@ var (
 	singleBody = []byte(`{"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[]}`)
 )
 
-type hit struct{ Host, Path, Auth string }
+type hit struct{ Host, Path, Auth, Method string }
 
 // recorder logs every request any fake server receives, so a test can prove where a
 // credential went.
@@ -52,7 +52,7 @@ type recorder struct {
 func (rc *recorder) wrap(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rc.mu.Lock()
-		rc.hits = append(rc.hits, hit{r.Host, r.URL.Path, r.Header.Get("Authorization")})
+		rc.hits = append(rc.hits, hit{r.Host, r.URL.Path, r.Header.Get("Authorization"), r.Method})
 		rc.mu.Unlock()
 		h(w, r)
 	})
@@ -92,10 +92,14 @@ func digestOf(b []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-func serve(w http.ResponseWriter, mediaType string, body []byte) {
+// serve answers like a registry: ServeMux hands HEAD to this GET handler, which then sends
+// the headers only.
+func serve(w http.ResponseWriter, r *http.Request, mediaType string, body []byte) {
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Docker-Content-Digest", digestOf(body))
-	_, _ = w.Write(body)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
 }
 
 // testClient trusts the fake servers' certificate and dials every *.example.com name to
@@ -141,7 +145,7 @@ func TestResolveAnonymousIndex(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		serve(w, indexType, indexBody)
+		serve(w, r, indexType, indexBody)
 	})
 	got, err := testClient(t, srv, Options{}).Resolve(context.Background(), ref(srv), nil)
 	if err != nil {
@@ -159,7 +163,7 @@ func TestResolveAnonymousIndex(t *testing.T) {
 }
 
 func TestResolveSingleManifest(t *testing.T) {
-	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) { serve(w, singleType, singleBody) })
+	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) { serve(w, r, singleType, singleBody) })
 	got, err := testClient(t, srv, Options{}).Resolve(context.Background(), ref(srv), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +174,7 @@ func TestResolveSingleManifest(t *testing.T) {
 }
 
 func TestResolveByDigestMustMatch(t *testing.T) {
-	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) { serve(w, singleType, singleBody) })
+	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) { serve(w, r, singleType, singleBody) })
 	c := testClient(t, srv, Options{})
 	r := ref(srv)
 	r.Tag, r.Digest = "", digestOf(singleBody)
@@ -201,7 +205,7 @@ func bearerPair(t *testing.T, rc *recorder, wantBasic string) *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		serve(w, indexType, indexBody)
+		serve(w, r, indexType, indexBody)
 	})
 	return reg
 }
@@ -264,7 +268,7 @@ func TestResolveBasicChallenge(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		serve(w, singleType, singleBody)
+		serve(w, r, singleType, singleBody)
 	})
 	c := testClient(t, srv, Options{})
 	if _, err := c.Resolve(context.Background(), ref(srv), testCred); err != nil {
@@ -406,7 +410,7 @@ func TestResolveRefusesPrivateDestination(t *testing.T) {
 // redirect from either never carries it anywhere.
 func TestCredentialNeverLeavesTheConfiguredHosts(t *testing.T) {
 	rc := &recorder{}
-	other := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) { serve(w, singleType, singleBody) })
+	other := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) { serve(w, r, singleType, singleBody) })
 	otherURL := "https://" + hostOf(other, "other") + "/v2/library/alpine/manifests/3.24"
 
 	t.Run("redirect after basic", func(t *testing.T) {
@@ -553,7 +557,7 @@ func TestResolveCapsPlatforms(t *testing.T) {
 		entries = append(entries, fmt.Sprintf(`{"platform":{"os":"linux","architecture":"arch%d"}}`, i))
 	}
 	body := []byte(`{"manifests":[` + strings.Join(entries, ",") + `]}`)
-	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) { serve(w, indexType, body) })
+	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) { serve(w, r, indexType, body) })
 	got, err := testClient(t, srv, Options{}).Resolve(context.Background(), ref(srv), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -618,5 +622,140 @@ func TestResolveHonoursTimeouts(t *testing.T) {
 	_, err = testClient(t, srv, Options{}).Resolve(ctx, ref(srv), nil)
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatalf("context deadline: err %v after %v", err, time.Since(start))
+	}
+}
+
+func TestHeadAnonymous(t *testing.T) {
+	rc := &recorder{}
+	srv := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/library/alpine/manifests/3.24" || !strings.Contains(r.Header.Get("Accept"), indexType) {
+			http.NotFound(w, r)
+			return
+		}
+		serve(w, r, indexType, indexBody)
+	})
+	got, err := testClient(t, srv, Options{}).Head(context.Background(), ref(srv), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Digest != digestOf(indexBody) || got.MediaType != indexType || got.Platforms != nil || got.Checked.IsZero() {
+		t.Fatalf("got %+v", got)
+	}
+	if hits := rc.all(); len(hits) != 1 || hits[0].Method != http.MethodHead {
+		t.Fatalf("hits %+v, want one HEAD", hits)
+	}
+}
+
+func TestHeadBearerChallenge(t *testing.T) {
+	rc := &recorder{}
+	reg := bearerPair(t, rc, basicAuth)
+	got, err := testClient(t, reg, Options{}).Head(context.Background(), ref(reg), testCred)
+	if err != nil || got.Digest != digestOf(indexBody) {
+		t.Fatalf("got %+v %v", got, err)
+	}
+	want := []hit{
+		{Path: "/v2/library/alpine/manifests/3.24", Method: http.MethodHead},
+		{Path: "/token", Auth: basicAuth, Method: http.MethodGet},
+		{Path: "/v2/library/alpine/manifests/3.24", Auth: "Bearer " + testToken, Method: http.MethodHead},
+	}
+	hits := rc.all()
+	if len(hits) != len(want) {
+		t.Fatalf("hits %+v", hits)
+	}
+	for i, h := range hits {
+		h.Host = ""
+		if h != want[i] {
+			t.Fatalf("request %d: %+v, want %+v", i, h, want[i])
+		}
+	}
+}
+
+func TestHeadErrors(t *testing.T) {
+	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/missing"):
+			w.WriteHeader(http.StatusNotFound)
+		case strings.HasSuffix(r.URL.Path, "/nodigest"):
+			w.WriteHeader(http.StatusOK)
+		default:
+			serve(w, r, singleType, singleBody)
+		}
+	})
+	c := testClient(t, srv, Options{})
+	r := ref(srv)
+	r.Tag = "missing"
+	if _, err := c.Head(context.Background(), r, nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("404: %v, want ErrNotFound", err)
+	}
+	r.Tag = "nodigest"
+	if _, err := c.Head(context.Background(), r, nil); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("no digest: %v, want ErrUnavailable", err)
+	}
+	r.Tag, r.Digest = "", digestOf(singleBody)
+	if got, err := c.Head(context.Background(), r, nil); err != nil || got.Digest != r.Digest {
+		t.Errorf("requested digest: %+v %v", got, err)
+	}
+	r.Digest = "sha256:" + strings.Repeat("0", 64)
+	if _, err := c.Head(context.Background(), r, nil); !errors.Is(err, ErrDigestMismatch) {
+		t.Errorf("other digest: %v, want ErrDigestMismatch", err)
+	}
+}
+
+func TestHeadRequestBudget(t *testing.T) {
+	rc := &recorder{}
+	auth := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"` + testToken + `"}`))
+	})
+	reg := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="https://`+hostOf(auth, "auth")+`/token"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	_, err := testClient(t, reg, Options{}).Head(context.Background(), ref(reg), testCred)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("err %v, want ErrUnauthorized", err)
+	}
+	noSecrets(t, err)
+	var heads, gets int
+	for _, h := range rc.all() {
+		switch {
+		case h.Path == "/token" && h.Method == http.MethodGet:
+			gets++
+		case h.Method == http.MethodHead:
+			heads++
+		default:
+			t.Errorf("unexpected request %+v", h)
+		}
+	}
+	if heads != 2 || gets != 1 {
+		t.Fatalf("%d HEADs and %d token GETs, want 2 and 1", heads, gets)
+	}
+}
+
+// The bearer token becomes a header, so a realm cannot make it larger than 8 KiB.
+func TestTokenIsCapped(t *testing.T) {
+	for _, tc := range []struct {
+		size int
+		want error
+	}{{maxToken, nil}, {maxToken + 1, ErrUnavailable}} {
+		rc := &recorder{}
+		token := strings.Repeat("t", tc.size)
+		auth := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"token":"` + token + `"}`))
+		})
+		reg := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="https://`+hostOf(auth, "auth")+`/token"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			serve(w, r, singleType, singleBody)
+		})
+		_, err := testClient(t, reg, Options{}).Head(context.Background(), ref(reg), nil)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("token of %d bytes: err %v, want %v", tc.size, err, tc.want)
+		}
+		if n := rc.count("/v2/library/alpine/manifests/3.24"); tc.want != nil && n != 1 {
+			t.Errorf("token of %d bytes: %d manifest requests, want 1 (no retry)", tc.size, n)
+		}
 	}
 }

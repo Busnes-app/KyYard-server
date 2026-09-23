@@ -14,7 +14,7 @@ Owns the permission matrix; store owns live membership checks and transactional 
 - `container.exec` is organization-administrator-only, separate from lifecycle operations, logs and environment administration. Platform administrators gain no tenant exec authority.
 - Unknown actions/roles deny. Platform `admin` authorizes only platform administration; it never substitutes for organization membership.
 - Organization administrators manage all implemented tenant actions, and are the only role holding `organization.members.manage`. Environment administrators read organization/environment data, manage environments, and hold `endpoint.enroll`, `endpoint.update` and `endpoint.revoke`, plus `container.operate`, `container.destroy`, `image.pull` and `image.destroy`. Every membership role holds `endpoint.read`. Operator, developer and read-only roles read organization/environment data; operators also hold `container.operate` and `image.pull`. Application, exec, log and registry actions are in the bullets of this file.
-- Every membership role holds `registry.read` (rows carry no secret); only organization administrators hold `registry.manage` (registries, credentials, anonymous-pull opt-in).
+- Every membership role holds `registry.read` (rows carry no secret); only organization administrators hold `registry.manage` (registries, credentials, anonymous-pull opt-in). `registry.read` never unlocks a credential: `store.ResolveRegistryAccess` runs under the using operation's action (`image.pull`, `application.deploy`) and refuses `registry.read`.
 - Membership status and user status are database facts, not part of this pure mapping.
 
 ## Work Guidance

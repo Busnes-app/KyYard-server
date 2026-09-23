@@ -79,6 +79,9 @@ func runServer() {
 	if cfg.Backup.AllowPrivateRecovery {
 		log.Printf("[BACKUP] KY_BACKUP_ALLOW_PRIVATE_RECOVERY is on: RFC1918 and CGNAT destinations admitted; loopback, link-local and other reserved addresses remain refused (HTTPS still required)")
 	}
+	if cfg.Registry.AllowPrivate {
+		log.Printf("[REGISTRY] KY_REGISTRY_ALLOW_PRIVATE is on: organization admins may admit RFC1918 and CGNAT registry destinations; loopback and link-local remain refused")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

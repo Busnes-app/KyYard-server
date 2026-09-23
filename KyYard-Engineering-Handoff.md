@@ -166,8 +166,7 @@ Permissions should be named actions such as `endpoint.read`, `container.exec`, `
 - `application_instances`
 - `deployments`
 - `deployment_events`
-- `registries`
-- `registry_credentials`
+- `registries` (the credential is a sealed column)
 - `update_policies`
 - `maintenance_windows`
 

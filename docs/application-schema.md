@@ -139,9 +139,9 @@ An adopted ID can be present, missing, changed in image/creation identity, or mo
 
 - Migration 26 adds `registries` (one row per organization and normalised host, `UNIQUE(organization_id, host)`, cascade on organization delete) and `organizations.anonymous_pull_enabled` (default off). The table joins the SQLite recovery drill, which proves the credential decrypts after restore.
 - Host normalisation: lowercase; `index.docker.io` and `registry-1.docker.io` fold into `docker.io`, and a reference with no host is `docker.io` with one-component repositories under `library/`. Like `ParseReference`, only `localhost` or a name with a `.` or a port is a registry host; DNS labels, name at most 253 bytes, port 1..65535.
-- The credential is sealed with AES-GCM under a key derived from the encryption key, the organization and the row ID, so ciphertext moved to another row does not decrypt. It is never returned: rows carry `has_credential`. Update with no credential keeps it; an empty credential clears it. `allow_private` admits private and CGNAT addresses for that host; loopback is never reachable.
-- `ResolveRegistryAccess` (internal, `registry.read`) returns the host's row and decrypted credential, `Anonymous` for an unconfigured host when the opt-in is on, or `registry_not_configured`. Callers hold their own stronger permission and never return the secret.
-- `internal/registry` resolves a tag or digest to the registry's manifest digest and platforms server-side (HTTPS, token flow, no redirects, egress guard); nothing calls it from a route yet.
+- The credential is sealed with AES-GCM under a key derived from the encryption key, the organization and the row ID, so ciphertext moved to another row does not decrypt. It is never returned: rows carry `has_credential`. Update with no credential keeps it; an empty credential clears it. `allow_private` admits private and CGNAT addresses for that host and is accepted only when the operator set `KY_REGISTRY_ALLOW_PRIVATE`; loopback is never reachable.
+- `ResolveRegistryAccess` (internal) runs under the calling operation's permission (`image.pull`, `application.deploy`; `registry.read` is refused) and returns the host's row and decrypted credential, `Anonymous` for an unconfigured host when the opt-in is on, or `registry_not_configured`. Callers never return the secret.
+- `internal/registry` resolves a tag or digest to the registry's manifest digest and platforms server-side (HTTPS, token flow, no redirects, egress guard); `Head` reads the digest alone without counting as a Docker Hub pull. Nothing calls either from a route yet.
 - Deferred: PR B compares per-service digests for an adopted instance and reports updates without deploying; PR C pins a repository digest in a plan, adds the agent `pull` step with the credential carried in the frame, and enforces `registry_not_configured` at preview and pull.
 
 ## Kubernetes (M8)
@@ -160,7 +160,7 @@ The common model maps to Deployments/StatefulSets, Services, ConfigMaps, Secrets
 | `env_file` values | secret references by default, plain only by explicit choice | proposed |
 | Unconfigured registry | refuse by default; anonymous pull is an audited per-organization opt-in gated by `registry.manage` (see `authorization-matrix.md`) | implemented for PR A (setting and `ResolveRegistryAccess`); enforced at preview and pull with PR C |
 | Registry credentials | one per organization and host, sealed to its row, write-only | implemented (PR A) |
-| Private registry addresses | refused unless the row sets `allow_private`; loopback always refused | implemented (PR A) |
+| Private registry addresses | refused unless the row sets `allow_private`, which needs the operator's `KY_REGISTRY_ALLOW_PRIVATE`; loopback always refused | implemented (PR A) |
 | Application removal | keeps volumes and images | implemented |
 | Revision retention after removal | 90 days | implemented, see retention-policy.md |
 

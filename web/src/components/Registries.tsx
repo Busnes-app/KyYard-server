@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { EmptyNotice, StateNotice } from './StateNotice';
-import { tenantWrite, useTenantResource, type Registry, type RegistryPolicy } from '../tenant';
+import { privateDisabled, tenantWrite, useTenantResource, type Registry, type RegistryPolicy } from '../tenant';
 
 const texts = { forbidden: 'Only an organization administrator can manage registries.', invalid: 'Check the host, name and credential (at most 4096 bytes).' };
 
@@ -26,8 +26,11 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
     return !err;
   };
 
+  const privateEnabled = policy.data?.private_registries_enabled === true;
+
   const save = async () => {
-    const body: Record<string, unknown> = { host: form.host.trim(), name: form.name.trim(), username: form.username.trim(), allow_private: form.allowPrivate };
+    // Without the operator's opt-in the server refuses allow_private, so an edit drops it.
+    const body: Record<string, unknown> = { host: form.host.trim(), name: form.name.trim(), username: form.username.trim(), allow_private: privateEnabled && form.allowPrivate };
     // An absent key keeps the stored credential; "" removes it.
     if (clear) body.credential = '';
     else if (credential) body.credential = credential;
@@ -91,7 +94,8 @@ export const Registries: React.FC<{ org: string }> = ({ org }) => {
           <input id="registry-credential" type="password" autoComplete="new-password" value={credential} disabled={clear} onChange={(e) => setCredential(e.target.value)} maxLength={4096} aria-describedby="registry-credential-help" />
           <p id="registry-credential-help" style={{ flexBasis: '100%', margin: 0, color: 'var(--ink)', fontSize: 13 }}>Leave empty to keep the stored credential; use Clear to remove it.</p>
           <label><input type="checkbox" checked={clear} onChange={(e) => { setClear(e.target.checked); setCredential(''); }} />Clear credential</label>
-          <label><input type="checkbox" checked={form.allowPrivate} onChange={(e) => setForm({ ...form, allowPrivate: e.target.checked })} />Allow private addresses</label>
+          {privateEnabled && <label><input type="checkbox" checked={form.allowPrivate} onChange={(e) => setForm({ ...form, allowPrivate: e.target.checked })} />Allow private addresses</label>}
+          {policy.data && !privateEnabled && <p style={{ flexBasis: '100%', margin: 0, color: 'var(--ink)', fontSize: 13 }}>{privateDisabled}</p>}
           <button type="submit" disabled={busy || !form.host.trim() || !form.name.trim()}>Save registry</button>
           {editing && <button type="button" className="btn-secondary" onClick={() => { reset(); setMessage(''); }}>Cancel</button>}
         </form>

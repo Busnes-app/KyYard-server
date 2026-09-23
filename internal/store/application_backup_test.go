@@ -15,6 +15,7 @@ import (
 
 	"github.com/Busnes-app/kyyard-server/internal/backup"
 	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busnes-app/kyyard-server/internal/testdb"
 )
@@ -68,7 +69,7 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, err)
 	registryCredential := "registry-backup-canary"
 	orgAccess := store.TenantAccess{ActorID: "actor", OrganizationID: "a"}
-	_, err = ts.PutRegistry(ctx, orgAccess, store.RegistryInput{Host: "ghcr.io", Name: "GitHub", Username: "bot", Credential: &registryCredential}, cfg.Security.EncryptionKey)
+	_, err = ts.PutRegistry(ctx, orgAccess, store.RegistryInput{Host: "ghcr.io", Name: "GitHub", Username: "bot", Credential: &registryCredential}, cfg.Security.EncryptionKey, false)
 	mustTenant(t, err)
 	payload, err := backup.Collect(ctx, cfg, "test")
 	mustTenant(t, err)
@@ -127,7 +128,7 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 			t.Fatal("backup lost encrypted values")
 		}
 	}
-	access, err := restored.Tenancy().ResolveRegistryAccess(ctx, orgAccess, "ghcr.io/org/app:v1", restoredKey)
+	access, err := restored.Tenancy().ResolveRegistryAccess(ctx, orgAccess, permissions.ApplicationDeploy, "ghcr.io/org/app:v1", restoredKey)
 	mustTenant(t, err)
 	if access.Credential == nil || access.Credential.Username != "bot" || access.Credential.Secret != registryCredential {
 		t.Fatal("backup lost the registry credential")
