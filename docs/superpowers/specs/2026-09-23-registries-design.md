@@ -66,8 +66,8 @@ func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (
 
 - HTTPS only. `GET https://<host>/v2/<repo>/manifests/<tag|digest>` with `Accept` for the OCI
   index, OCI manifest, Docker manifest list and Docker manifest v2. The digest is the
-  `Docker-Content-Digest` header, verified against the SHA-256 of the body when a body is
-  returned (mismatch → `ErrDigestMismatch`).
+  `Docker-Content-Digest` header, verified against the SHA-256 of the body (mismatch →
+  `ErrDigestMismatch`; an empty body is `ErrUnavailable`).
 - Token flow: a 401 with `WWW-Authenticate: Bearer realm=…,service=…,scope=…` triggers one
   `GET <realm>?service=…&scope=…`; with a credential the request carries HTTP basic auth,
   anonymously it carries none; the bearer token is used for one retry. `Basic` challenges are

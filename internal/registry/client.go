@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -36,9 +37,17 @@ const (
 	maxChallenge = 4 << 10
 	maxPlatforms = 64
 	// dockerHubAPI serves docker.io's registry API.
-	dockerHubAPI   = "registry-1.docker.io"
-	manifestAccept = "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, " +
-		"application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
+	dockerHubAPI = "registry-1.docker.io"
+)
+
+var (
+	manifestTypes = []string{
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+		"application/vnd.docker.distribution.manifest.v2+json",
+	}
+	manifestAccept = strings.Join(manifestTypes, ", ")
 )
 
 var (
@@ -84,16 +93,7 @@ type session struct {
 	pinned map[string]netip.Addr
 }
 
-// Resolve reads the manifest digest ref names: at most two manifest requests and one token
-// request. cred goes only to ref's host or the token realm that host advertises.
-func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (Resolved, error) {
-	if ref.Host == "" || ref.Repository == "" || (ref.Tag == "" && ref.Digest == "") {
-		return Resolved{}, ErrInvalidReference
-	}
-	host := ref.Host
-	if host == DockerHub {
-		host = dockerHubAPI
-	}
+func newSession(c *Client) *session {
 	s := &session{c: c, pinned: map[string]netip.Addr{}}
 	dialer := &net.Dialer{Timeout: c.opts.Timeout}
 	tr := &http.Transport{
@@ -117,18 +117,40 @@ func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (
 		MaxResponseHeaderBytes: 64 << 10,
 		ForceAttemptHTTP2:      true,
 	}
-	defer tr.CloseIdleConnections()
 	s.http = &http.Client{
 		Transport:     tr,
 		Timeout:       c.opts.Timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+	return s
+}
+
+// Resolve reads the manifest digest ref names: at most two manifest requests and one token
+// request. cred goes only to ref's host or the token realm that host advertises.
+func (c *Client) Resolve(ctx context.Context, ref Reference, cred *Credential) (Resolved, error) {
+	if ref.Host == "" || ref.Repository == "" || (ref.Tag == "" && ref.Digest == "") {
+		return Resolved{}, ErrInvalidReference
+	}
+	host := ref.Host
+	if host == DockerHub {
+		host = dockerHubAPI
+	}
+	s := newSession(c)
+	defer s.http.CloseIdleConnections()
 
 	pin := ref.Digest
 	if pin == "" {
 		pin = ref.Tag
 	}
-	manifestURL := "https://" + host + "/v2/" + ref.Repository + "/manifests/" + pin
+	manifestPath := "/v2/" + ref.Repository + "/manifests/" + pin
+	manifestURL := "https://" + host + manifestPath
+	// Reference fields are public; the URL must name exactly host and path, so a hand-built
+	// Reference cannot send the credential elsewhere.
+	u, err := url.Parse(manifestURL)
+	if err != nil || u.Host != host || u.Path != manifestPath || path.Clean(u.Path) != u.Path ||
+		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return Resolved{}, ErrInvalidReference
+	}
 	resp, body, err := s.get(ctx, manifestURL, "", true)
 	if err != nil {
 		return Resolved{}, err
@@ -287,10 +309,11 @@ func parseManifest(host string, h http.Header, body []byte, want string) (Resolv
 	if !digestRE.MatchString(d) {
 		return Resolved{}, fmt.Errorf("%w: %s sent no valid Docker-Content-Digest", ErrUnavailable, host)
 	}
-	if len(body) > 0 {
-		if sum := sha256.Sum256(body); "sha256:"+hex.EncodeToString(sum[:]) != d {
-			return Resolved{}, fmt.Errorf("%w: %s", ErrDigestMismatch, host)
-		}
+	if len(body) == 0 {
+		return Resolved{}, fmt.Errorf("%w: %s sent an empty manifest", ErrUnavailable, host)
+	}
+	if sum := sha256.Sum256(body); "sha256:"+hex.EncodeToString(sum[:]) != d {
+		return Resolved{}, fmt.Errorf("%w: %s", ErrDigestMismatch, host)
 	}
 	if want != "" && d != want {
 		return Resolved{}, fmt.Errorf("%w: %s", ErrDigestMismatch, host)
@@ -305,11 +328,11 @@ func parseManifest(host string, h http.Header, body []byte, want string) (Resolv
 			} `json:"platform"`
 		} `json:"manifests"`
 	}
-	if len(body) > 0 && json.Unmarshal(body, &doc) != nil {
+	if json.Unmarshal(body, &doc) != nil {
 		return Resolved{}, fmt.Errorf("%w: %s manifest is not JSON", ErrUnavailable, host)
 	}
 	mt, _, _ := mime.ParseMediaType(h.Get("Content-Type"))
-	if mt == "" {
+	if mt == "" && slices.Contains(manifestTypes, doc.MediaType) {
 		mt = doc.MediaType
 	}
 	if len(mt) > 255 {

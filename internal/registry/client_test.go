@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -217,9 +218,23 @@ func TestResolveBearerChallenge(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := &recorder{}
 			reg := bearerPair(t, rc, tc.wantBasic)
-			got, err := testClient(t, reg, Options{}).Resolve(context.Background(), ref(reg), tc.cred)
+			c := testClient(t, reg, Options{})
+			var mu sync.Mutex
+			lookups := map[string]int{}
+			inner := c.opts.DialAddr
+			c.opts.DialAddr = func(ctx context.Context, host string) (netip.Addr, error) {
+				mu.Lock()
+				lookups[host]++
+				mu.Unlock()
+				return inner(ctx, host)
+			}
+			got, err := c.Resolve(context.Background(), ref(reg), tc.cred)
 			if err != nil {
 				t.Fatal(err)
+			}
+			// Each host is resolved once; the retry reuses the pinned address.
+			if want := map[string]int{"registry.example.com": 1, "auth.example.com": 1}; !reflect.DeepEqual(lookups, want) {
+				t.Fatalf("lookups %v, want %v", lookups, want)
 			}
 			if got.Digest != digestOf(indexBody) {
 				t.Fatalf("got %+v", got)
@@ -302,6 +317,9 @@ func TestResolveRefusesBadManifestResponses(t *testing.T) {
 			w.Header().Set("Docker-Content-Digest", digestOf([]byte("other")))
 			_, _ = w.Write(singleBody)
 		}, ErrDigestMismatch},
+		{"empty body", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Docker-Content-Digest", digestOf(nil))
+		}, ErrUnavailable},
 		{"missing digest", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(singleBody) }, ErrUnavailable},
 		{"malformed digest", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Docker-Content-Digest", "sha256:ABC")
@@ -341,6 +359,9 @@ func TestCheckAddr(t *testing.T) {
 		{"fd00::1", false, true},
 		{"::ffff:10.0.0.1", false, true},
 		{"64:ff9b::a00:1", false, true},
+		{"64:ff9b::808:808", true, true},
+		{"64:ff9b:1::a00:1", false, false},
+		{"64:ff9b:1::808:808", false, false},
 		{"127.0.0.1", false, false},
 		{"::1", false, false},
 		{"::ffff:127.0.0.1", false, false},
@@ -431,8 +452,20 @@ func TestCredentialNeverLeavesTheConfiguredHosts(t *testing.T) {
 	}
 }
 
+// The realm must be HTTPS without userinfo; live recording servers prove the credential
+// never reaches a refused realm.
 func TestResolveRefusesRealmThatIsNotHTTPS(t *testing.T) {
-	for _, realm := range []string{"http://auth.example.com/token", "https://robot:pw@auth.example.com/token", "/token", ""} {
+	authRC := &recorder{}
+	token := func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"token":"` + testToken + `"}`)) }
+	plain := httptest.NewServer(authRC.wrap(token))
+	t.Cleanup(plain.Close)
+	tlsAuth := newServer(t, authRC, token)
+	for _, realm := range []string{
+		"http://" + hostOf(plain, "auth") + "/token",
+		"https://robot:pw@" + hostOf(tlsAuth, "auth") + "/token",
+		"/token",
+		"",
+	} {
 		rc := &recorder{}
 		srv := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="`+realm+`",service="fake"`)
@@ -443,7 +476,106 @@ func TestResolveRefusesRealmThatIsNotHTTPS(t *testing.T) {
 			t.Errorf("realm %q: err %v, want ErrUnavailable", realm, err)
 		}
 		if n := len(rc.all()); n != 1 {
-			t.Errorf("realm %q: %d requests, want 1", realm, n)
+			t.Errorf("realm %q: %d registry requests, want 1", realm, n)
+		}
+	}
+	if hits := authRC.all(); len(hits) != 0 {
+		t.Fatalf("a refused realm was contacted: %+v", hits)
+	}
+}
+
+// The realm host passes the same egress guard as the registry host.
+func TestResolveGuardsTheRealmHost(t *testing.T) {
+	rc := &recorder{}
+	auth := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"` + testToken + `"}`))
+	})
+	reg := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="https://`+hostOf(auth, "auth")+`/token"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	pool := x509.NewCertPool()
+	pool.AddCert(reg.Certificate())
+	c := New(Options{RootCAs: pool, DialAddr: func(_ context.Context, host string) (netip.Addr, error) {
+		if host == "auth.example.com" {
+			return netip.MustParseAddr("10.0.0.1"), nil
+		}
+		return netip.MustParseAddr("127.0.0.1"), nil
+	}})
+	c.allowLoopback = true
+	_, err := c.Resolve(context.Background(), ref(reg), testCred)
+	if !errors.Is(err, ErrPrivateDestination) {
+		t.Fatalf("err %v, want ErrPrivateDestination", err)
+	}
+	for _, h := range rc.all() {
+		if strings.HasPrefix(h.Host, "auth.") {
+			t.Fatalf("the private realm was contacted: %+v", h)
+		}
+	}
+}
+
+// The transport dials only hosts the guard has pinned.
+func TestTransportRefusesAnUncheckedHost(t *testing.T) {
+	s := newSession(New(Options{}))
+	conn, err := s.http.Transport.(*http.Transport).DialContext(context.Background(), "tcp", "other.example.com:443")
+	if conn != nil {
+		conn.Close()
+	}
+	if !errors.Is(err, ErrPrivateDestination) {
+		t.Fatalf("err %v, want ErrPrivateDestination", err)
+	}
+}
+
+// A hand-built Reference cannot move the request or its credential off the named host.
+func TestResolveRefusesReferencesThatEscapeTheURL(t *testing.T) {
+	for _, r := range []Reference{
+		{Host: "registry.example.com@evil.com", Repository: "app", Tag: "v1"},
+		{Host: "registry.example.com/evil", Repository: "app", Tag: "v1"},
+		{Host: "registry.example.com", Repository: "app?x=1", Tag: "v1"},
+		{Host: "registry.example.com", Repository: "app#frag", Tag: "v1"},
+		{Host: "registry.example.com", Repository: "../app", Tag: "v1"},
+		{Host: "registry.example.com", Repository: "app%2Fother", Tag: "v1"},
+		{Host: "registry.example.com", Repository: "app", Tag: "v1/../../x"},
+	} {
+		c := New(Options{DialAddr: func(_ context.Context, host string) (netip.Addr, error) {
+			t.Errorf("%+v: looked up %q", r, host)
+			return netip.Addr{}, errors.New("no")
+		}})
+		if _, err := c.Resolve(context.Background(), r, testCred); !errors.Is(err, ErrInvalidReference) {
+			t.Errorf("%+v: err %v, want ErrInvalidReference", r, err)
+		}
+	}
+}
+
+func TestResolveCapsPlatforms(t *testing.T) {
+	var entries []string
+	for i := range maxPlatforms + 10 {
+		entries = append(entries, fmt.Sprintf(`{"platform":{"os":"linux","architecture":"arch%d"}}`, i))
+	}
+	body := []byte(`{"manifests":[` + strings.Join(entries, ",") + `]}`)
+	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) { serve(w, indexType, body) })
+	got, err := testClient(t, srv, Options{}).Resolve(context.Background(), ref(srv), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Platforms) != maxPlatforms {
+		t.Fatalf("%d platforms, want %d", len(got.Platforms), maxPlatforms)
+	}
+}
+
+func TestResolveMediaTypeFallback(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}`: indexType,
+		`{"mediaType":"text/html\u0007<script>"}`:                                "",
+	} {
+		srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Docker-Content-Digest", digestOf([]byte(body)))
+			w.Header()["Content-Type"] = nil
+			_, _ = w.Write([]byte(body))
+		})
+		got, err := testClient(t, srv, Options{}).Resolve(context.Background(), ref(srv), nil)
+		if err != nil || got.MediaType != want {
+			t.Errorf("body %s: media type %q, %v; want %q", body, got.MediaType, err, want)
 		}
 	}
 }

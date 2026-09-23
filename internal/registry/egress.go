@@ -13,6 +13,8 @@ var ErrPrivateDestination = errors.New("registry resolves to a private or reserv
 var (
 	cgnat = netip.MustParsePrefix("100.64.0.0/10")
 	nat64 = netip.MustParsePrefix("64:ff9b::/96")
+	// Local-use NAT64 (RFC 8215) maps into the operator's own IPv4 space.
+	nat64Local = netip.MustParsePrefix("64:ff9b:1::/48")
 )
 
 // checkAddr admits public unicast addresses, and with allowPrivate also private ranges and
@@ -24,7 +26,7 @@ func checkAddr(a netip.Addr, allowPrivate bool) error {
 		a = netip.AddrFrom4([4]byte(b[12:]))
 	}
 	switch {
-	case !a.IsValid(), a.IsLoopback(), a.IsUnspecified(), a.IsMulticast(), a.IsLinkLocalUnicast():
+	case !a.IsValid(), a.IsLoopback(), a.IsUnspecified(), a.IsMulticast(), a.IsLinkLocalUnicast(), nat64Local.Contains(a):
 		return fmt.Errorf("%w: %s", ErrPrivateDestination, a)
 	case !allowPrivate && (a.IsPrivate() || cgnat.Contains(a)):
 		return fmt.Errorf("%w: %s", ErrPrivateDestination, a)
@@ -35,6 +37,8 @@ func checkAddr(a netip.Addr, allowPrivate bool) error {
 // lookup resolves host once and returns the first address the guard admits; the transport
 // dials only that address.
 func (c *Client) lookup(ctx context.Context, host string) (netip.Addr, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.opts.Timeout)
+	defer cancel()
 	var addrs []netip.Addr
 	var err error
 	if c.opts.DialAddr != nil {
