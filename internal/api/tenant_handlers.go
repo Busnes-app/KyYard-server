@@ -69,6 +69,10 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "This instance has more containers than KyYard removes in one operation; release it and remove the containers by hand", "code": "removal_too_large"})
 	case errors.Is(err, store.ErrDeploymentPlanned):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A live deployment plan exists; let it expire before releasing", "code": "deployment_planned"})
+	case errors.Is(err, store.ErrRegistryNotConfigured):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "No registry is configured for this image's host and anonymous pulls are off", "code": "registry_not_configured"})
+	case errors.Is(err, store.ErrPrivateRegistriesDisabled):
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE)", "code": "private_registries_disabled"})
 	case errors.Is(err, store.ErrInvalid):
 		s.writeError(w, http.StatusBadRequest, "Invalid tenant input")
 	default:

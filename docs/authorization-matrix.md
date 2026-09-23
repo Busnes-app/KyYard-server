@@ -69,7 +69,7 @@ Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.e
 | `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |
 | `container.exec` (implemented) | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |
 | `image.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
-| `image.pull` | ✓ | ✓ | ✓ | – | – | uses a registry credential without revealing it, and only when the reference's registry host exactly equals the credential's configured host (`application-schema.md`, Registry) | success/failure |
+| `image.pull` | ✓ | ✓ | ✓ | – | – | uses a registry credential without revealing it, and only when the reference's registry host exactly equals the credential's configured host, or the HTTPS token realm that host advertises, never on a redirect (`application-schema.md`, Registry) | success/failure |
 | `image.destroy` | ✓ | ✓ | – | – | – | no | success/failure |
 | `volume.read`, `network.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
 | `volume.destroy` | ✓ | – | – | – | – | no | success/failure, separate explicit confirmation naming data loss |
@@ -90,10 +90,10 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `secret.reveal` (internal imported-value resolution) | ✓ | – | – | – | – | plaintext, only after audit commits | success/failure |
 | `secret.manage` (create, rotate, delete secret values) | ✓ | – | – | – | – | write-only; values never returned | success, target = secret name |
 | `secret.use` (deploy with a secret reference) | implied by `application.deploy` | | | | | no | recorded on the deployment |
-| `registry.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no credentials | – |
-| `registry.manage` | ✓ | – | – | – | – | write-only credentials | success |
-| `registry.manage` — anonymous-pull opt-in (`registry.anonymous_pull.enabled`) | ✓ | – | – | – | – | no | success, details carry old and new value; the setting is per organization and off by default |
-| `registry.use` | implied by `image.pull` and `application.deploy` | | | | | no | on the operation |
+| `registry.read` (list registries, read the anonymous-pull policy; implemented) | ✓ | ✓ | ✓ | ✓ | ✓ | no credentials; rows carry `has_credential` | denials only |
+| `registry.manage` (create/update by host, delete; implemented) | ✓ | – | – | – | – | write-only credentials | target `registries/<id>`; put details `host=<h> allow_private=<bool> credential=set\|kept\|cleared`, delete details `host=<h>` |
+| `registry.manage` — anonymous-pull opt-in (implemented) | ✓ | – | – | – | – | no | target `registry-policy`, details `old=<bool> new=<bool>`; per organization, off by default |
+| Registry credential use (implemented as `ResolveRegistryAccess`) | the operation's own permission (`image.pull` or `application.deploy`, an allow-list); no separate permission, and no read permission unlocks it | | | | | internal only, never returned | denials of that operation's action; the operation audits its own result |
 | `update_policy.manage` and `maintenance_window.manage` (M7b) | ✓ | ✓ | – | – | – | no | success; scheduler acts as `system:scheduler` with the policy's organization |
 
 ## Streams and revocation

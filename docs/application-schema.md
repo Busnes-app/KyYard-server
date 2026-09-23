@@ -1,6 +1,6 @@
 # KyYard application schema
 
-**Status:** M6 Compose discovery and internal application/revision persistence are implemented. Bounded public draft import and encrypted environment resolution are implemented. Explicit container-snapshot adoption and release are implemented. Deployment plan and apply are implemented end to end (Deploy, below); history UI beyond the list, deliberate reapply and application removal are the next M6 slice, then M7a. Plan-time live inspection of host configuration (beyond the on-demand preflight modal) remains a later slice.
+**Status:** M6 Compose discovery and internal application/revision persistence are implemented. Bounded public draft import and encrypted environment resolution are implemented. Explicit container-snapshot adoption and release are implemented. Deployment plan and apply are implemented end to end (Deploy, below); history, deliberate reapply and application removal are implemented. M7a PR A (registries and the registry client, Registries below) is implemented; update detection (PR B) and the pull step with the controlled recreate (PR C) are next. Plan-time live inspection of host configuration (beyond the on-demand preflight modal) remains a later slice.
 
 ## Vocabulary
 
@@ -9,14 +9,14 @@
 - **Instance** — the placement of an application on one endpoint. One application may have several instances in later milestones; 0.1 uses one.
 - **Deployment** — one attempt to make an instance match a revision, with per-step outcomes.
 - **Resource** — a runtime object (container, image, volume, network, later Kubernetes objects) observed on an endpoint, owned by an instance or unmanaged.
-- **Registry** — a named image source with optional credentials. A credential is sent only when the image reference's registry host exactly equals the registry's configured host (no suffix or wildcard matching), is never attached to a request that follows a redirect to another host, and a reference whose registry host has no configured `registries` row fails the preview and the pull with `registry_not_configured` by default. Anonymous pulls from unconfigured hosts are an explicit per-organization opt-in that only `registry.manage` (organization administrators) may enable, recorded as an audited setting change (`registry.anonymous_pull.enabled`).
+- **Registry** — a named image source per organization and registry host, with an optional write-only credential. A credential is sent only to the registry's configured host (exact match, no suffix or wildcard) and to the HTTPS token realm that host itself advertises, never on a redirect. A reference whose registry host has no `registries` row is `registry_not_configured` unless the organization's anonymous-pull opt-in is on; only `registry.manage` (organization administrators) changes it, audited. Registries below.
 - **Update policy** (M7b) — a rule for detecting and applying image updates.
 
 Desired configuration, observed runtime, drift and last deployment are stored and shown separately; the UI never blends them.
 
 ## Tables
 
-`applications`, `application_revisions`, `application_instances`, `deployments`, `deployment_events`, `registries`, `registry_credentials`, `update_policies`, `maintenance_windows`. Every row carries `organization_id`; rows that belong to an environment carry `environment_id`; composite foreign keys keep every reference inside one organization. Every table joins backup coverage in the slice that creates it.
+`applications`, `application_revisions`, `application_instances`, `deployments`, `deployment_events`, `registries` (the credential is a sealed column, not a separate table), `update_policies`, `maintenance_windows`. Every row carries `organization_id`; rows that belong to an environment carry `environment_id`; composite foreign keys keep every reference inside one organization. Every table joins backup coverage in the slice that creates it.
 
 ## Implemented persistence foundation
 
@@ -135,6 +135,15 @@ An adopted ID can be present, missing, changed in image/creation identity, or mo
 - The UI states, before confirming, when the target revision's images are no longer available, when its secrets have been rotated since, and that data changes are not reversed.
 - M7b automated rollback (health-based) only targets a recorded available revision and reports the same limits.
 
+## Registries (M7a PR A, implemented)
+
+- Migration 26 adds `registries` (one row per organization and normalised host, `UNIQUE(organization_id, host)`, cascade on organization delete) and `organizations.anonymous_pull_enabled` (default off). The table joins the SQLite recovery drill, which proves the credential decrypts after restore.
+- Host normalisation: lowercase; `index.docker.io` and `registry-1.docker.io` fold into `docker.io`, and a reference with no host is `docker.io` with one-component repositories under `library/`. Like `ParseReference`, only `localhost` or a name with a `.` or a port is a registry host; DNS labels, name at most 253 bytes, port 1..65535.
+- The credential is sealed with AES-GCM under a key derived from the encryption key, the organization and the row ID, so ciphertext moved to another row does not decrypt. It is never returned: rows carry `has_credential`. Update with no credential keeps it; an empty credential clears it. `allow_private` admits private and CGNAT addresses for that host and is accepted only when the operator set `KY_REGISTRY_ALLOW_PRIVATE`; loopback is never reachable.
+- `ResolveRegistryAccess` (internal) runs under the calling operation's permission (`image.pull` or `application.deploy`; every other action is refused) and returns the host's row (its `allow_private` re-gated by the operator's `KY_REGISTRY_ALLOW_PRIVATE` on every use) and decrypted credential, `Anonymous` for an unconfigured host when the opt-in is on, or `registry_not_configured`. Callers never return the secret.
+- `internal/registry` resolves a tag or digest to the registry's manifest digest and platforms server-side (HTTPS, token flow, no redirects, egress guard); `Head` reads the digest alone without counting as a Docker Hub pull. Nothing calls either from a route yet.
+- Deferred: PR B compares per-service digests for an adopted instance and reports updates without deploying; PR C pins a repository digest in a plan, adds the agent `pull` step with the credential carried in the frame, and enforces `registry_not_configured` at preview and pull.
+
 ## Kubernetes (M8)
 
 The common model maps to Deployments/StatefulSets, Services, ConfigMaps, Secrets and PVCs. Migration classifies each service as `supported`, `operator_choice_required` (for example bind mounts, host networking) or `blocked` (privileged, host paths without a chosen storage class) and shows the classification before any change.
@@ -149,7 +158,9 @@ The common model maps to Deployments/StatefulSets, Services, ConfigMaps, Secrets
 | Preview validity | 10 minutes, preconditions on touched resources only | implemented (plans) |
 | Apply | resolve values internally, CAS `planned → applying`, settle rebinds resources and advances revisions, `unknown` non-terminal | implemented |
 | `env_file` values | secret references by default, plain only by explicit choice | proposed |
-| Unconfigured registry | refuse by default; anonymous pull is an audited per-organization opt-in gated by `registry.manage` (see `authorization-matrix.md`) | proposed |
+| Unconfigured registry | refuse by default; anonymous pull is an audited per-organization opt-in gated by `registry.manage` (see `authorization-matrix.md`) | implemented for PR A (setting and `ResolveRegistryAccess`); enforced at preview and pull with PR C |
+| Registry credentials | one per organization and host, sealed to its row, write-only | implemented (PR A) |
+| Private registry addresses | refused unless the row sets `allow_private`, which needs the operator's `KY_REGISTRY_ALLOW_PRIVATE`; loopback always refused | implemented (PR A) |
 | Application removal | keeps volumes and images | implemented |
 | Revision retention after removal | 90 days | implemented, see retention-policy.md |
 

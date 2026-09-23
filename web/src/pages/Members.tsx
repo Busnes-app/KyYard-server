@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Users } from 'lucide-react';
 import { Link } from '../components/Link';
+import { Registries } from '../components/Registries';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { orgPath } from '../router';
 import { tenantRoles, tenantWrite, useTenantResource, type Member } from '../tenant';
@@ -74,6 +75,7 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
         )}
         {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
       </section>
+      <Registries org={org} />
     </div>
   );
 };

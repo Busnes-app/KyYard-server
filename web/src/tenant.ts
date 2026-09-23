@@ -20,6 +20,12 @@ export interface Sample { container_id: string; observed_at: string; cpu_percent
 export interface Inventory { endpoint_id: string; state: string; generation: number; observed_at: string; received_at: string; snapshot: Snapshot }
 export interface AuditRecord { id: number; user_id: string; action: string; resource: string; environment_id: string; correlation_id: string; result: string; created_at: string }
 
+export interface Registry { id: string; host: string; name: string; username: string; has_credential: boolean; allow_private: boolean }
+// private_registries_enabled is the operator's KY_REGISTRY_ALLOW_PRIVATE, read-only here.
+export interface RegistryPolicy { anonymous_pull_enabled: boolean; private_registries_enabled: boolean }
+
+export const privateDisabled = 'Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).';
+
 export const tenantRoles = ['organization_admin', 'environment_admin', 'operator', 'developer', 'read_only'] as const;
 
 // Every tenant screen shows exactly one of these; there is no client-side cache to go stale.
@@ -54,13 +60,16 @@ export function useTenantResource<T>(url: string, refreshKey = ''): { state: Loa
 }
 
 // Writes return a message for the form instead of throwing; 409 codes are user-facing.
-export async function tenantWrite(url: string, method: string, body?: unknown): Promise<string> {
+// `texts` lets a screen name its own 403 and 400 refusals.
+export async function tenantWrite(url: string, method: string, body?: unknown, texts: { forbidden?: string; invalid?: string } = {}): Promise<string> {
   try {
     const resp = await secureFetch(url, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     if (resp.ok) return '';
     const payload = await resp.json().catch(() => ({}));
     if (payload.code === 'last_administrator') return 'At least one active administrator is required.';
-    if (resp.status === 403) return 'You do not have permission to do that.';
+    if (payload.code === 'private_registries_disabled') return privateDisabled;
+    if (resp.status === 403) return texts.forbidden ?? 'You do not have permission to do that.';
+    if (resp.status === 400 && texts.invalid) return texts.invalid;
     if (resp.status === 404) return 'Not found in this access scope.';
     if (payload.code === 'environment_in_use') return 'Discard draft applications and revoke every endpoint in this environment before deleting it.';
 

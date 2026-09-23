@@ -30,7 +30,8 @@ func (t *tenancyStore) OpenLogTarget(ctx context.Context, a TenantAccess, endpoi
 		return nil, fmt.Errorf("%w: container", ErrInvalid)
 	}
 	target := &LogTarget{}
-	err := t.run(ctx, a, permissions.ContainerLogs, endpointID+"/"+identifier, nil, false, func(tx *sql.Tx) error {
+	resource := endpointID + "/" + identifier
+	err := t.run(ctx, a, permissions.ContainerLogs, &resource, nil, false, func(tx *sql.Tx) error {
 		var state string
 		row := tx.QueryRowContext(ctx, t.store.rebind(`SELECT state FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
 			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID)

@@ -53,6 +53,7 @@ services:
       - KY_BACKUP_KEEP=${KY_BACKUP_KEEP:-7}
       - KY_BACKUP_DEPOSIT_INTERVAL=${KY_BACKUP_DEPOSIT_INTERVAL:-24h}
       - KY_BACKUP_ALLOW_PRIVATE_RECOVERY=${KY_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
+      - KY_REGISTRY_ALLOW_PRIVATE=${KY_REGISTRY_ALLOW_PRIVATE:-false}
     volumes:
       - kyyard-data:/data
       # Built-in local connection: Docker socket access grants host-level authority.

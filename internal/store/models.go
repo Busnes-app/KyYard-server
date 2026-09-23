@@ -2,6 +2,8 @@ package store
 
 import (
 	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/registry"
 )
 
 // User represents an identity within the system.
@@ -197,4 +199,38 @@ type TenantAccess struct {
 	EnvironmentID  string
 	CorrelationID  string
 	IPAddress      string
+}
+
+// Registry is a per-organization registry entry. The credential is write-only: rows report
+// HasCredential and never carry the secret or its ciphertext.
+type Registry struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organization_id"`
+	Host           string    `json:"host"`
+	Name           string    `json:"name"`
+	Username       string    `json:"username"`
+	HasCredential  bool      `json:"has_credential"`
+	AllowPrivate   bool      `json:"allow_private"`
+	CreatedBy      string    `json:"created_by"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type RegistryInput struct {
+	Host         string  `json:"host"`
+	Name         string  `json:"name"`
+	Username     string  `json:"username"`
+	Credential   *string `json:"credential"` // nil keeps the stored one, "" clears it
+	AllowPrivate bool    `json:"allow_private"`
+}
+
+type RegistryPolicy struct {
+	AnonymousPullEnabled bool `json:"anonymous_pull_enabled"`
+}
+
+// RegistryAccess is internal: it holds a decrypted secret and is never serialized.
+type RegistryAccess struct {
+	Registry   *Registry
+	Credential *registry.Credential `json:"-"` // nil when anonymous or none stored
+	Anonymous  bool                 // the host has no entry and the opt-in allowed it
 }

@@ -787,6 +787,35 @@ ALTER TABLE deployments DROP CONSTRAINT deployments_mapping_version_check;
 ALTER TABLE deployments ADD CONSTRAINT deployments_mapping_version_check CHECK(mapping_version BETWEEN 0 AND 1000000000 AND (kind='remove' OR mapping_version>=1));
 ALTER TABLE applications ADD COLUMN removed_at TIMESTAMPTZ;
 `},
+	{Version: 26, Name: "registries", SQLite: `CREATE TABLE registries (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ host TEXT NOT NULL,
+ name TEXT NOT NULL,
+ username TEXT NOT NULL DEFAULT '',
+ credential_enc TEXT NOT NULL DEFAULT '',
+ allow_private INTEGER NOT NULL DEFAULT 0 CHECK(allow_private IN (0,1)),
+ created_by TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ updated_at DATETIME NOT NULL,
+ UNIQUE(organization_id, host)
+);
+ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled INTEGER NOT NULL DEFAULT 0 CHECK(anonymous_pull_enabled IN (0,1));
+`, Postgres: `CREATE TABLE registries (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ host TEXT NOT NULL,
+ name TEXT NOT NULL,
+ username TEXT NOT NULL DEFAULT '',
+ credential_enc TEXT NOT NULL DEFAULT '',
+ allow_private BOOLEAN NOT NULL DEFAULT false,
+ created_by TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL,
+ updated_at TIMESTAMPTZ NOT NULL,
+ UNIQUE(organization_id, host)
+);
+ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled BOOLEAN NOT NULL DEFAULT false;
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

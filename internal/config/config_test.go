@@ -140,6 +140,18 @@ func TestBackupConfigFromEnv(t *testing.T) {
 	}
 }
 
+func TestRegistryAllowPrivateFromEnv(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil || cfg.Registry.AllowPrivate {
+		t.Fatalf("default: %+v %v", cfg.Registry, err)
+	}
+	t.Setenv("KY_REGISTRY_ALLOW_PRIVATE", "true")
+	if cfg, err = config.LoadFromEnv(); err != nil || !cfg.Registry.AllowPrivate {
+		t.Fatalf("opt-in: %+v %v", cfg.Registry, err)
+	}
+}
+
 func TestBackupKeepBelowOneIsRefused(t *testing.T) {
 	t.Setenv("KY_DATA_DIR", t.TempDir())
 	t.Setenv("KY_BACKUP_KEEP", "0")
