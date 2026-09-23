@@ -58,6 +58,10 @@ type Options struct {
 	// Exec opens a PTY attachment after a nonce-bound control-plane grant.
 	// Nil disables exec when no runtime adapter is configured.
 	Exec func(context.Context, protocol.ExecSpec) (ExecSession, error)
+	// Deploy applies one deployment plan and reports its result. It runs on the agent's root
+	// context, not the session's, so a dropped socket never stops it; the request bounds it by
+	// its deadline. Nil means this agent has no runtime, and every apply is refused.
+	Deploy func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -120,12 +124,15 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 		commandDir = opts.IdentityDir
 	}
 	commands := openLedger(commandDir)
+	deployments := newDeployer(ctx, commandDir, &opts)
+	// A run outlives its session; Run returns only once the result is on disk.
+	defer deployments.wait()
 	running := newBudget()
 	execRunning := &execBudget{}
 	opts.inspectionSlots = make(chan struct{}, protocol.MaxInspectionsPerEndpoint)
 	delay := time.Second
 	for {
-		err := session(ctx, id, target, &opts, commands, running, execRunning)
+		err := session(ctx, id, target, &opts, commands, deployments, running, execRunning)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -159,7 +166,7 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	}
 }
 
-func session(ctx context.Context, id *Identity, target string, opts *Options, commands *ledger, running *budget, execRunning *execBudget) error {
+func session(ctx context.Context, id *Identity, target string, opts *Options, commands *ledger, deployments *deployer, running *budget, execRunning *execBudget) error {
 	// Commands run under the session's own context, so when this returns the work it started
 	// is cancelled rather than left to finish against a host nobody is watching.
 	ctx, endSession := context.WithCancel(ctx)
@@ -255,6 +262,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	if opts.Exec != nil {
 		capabilities = append(capabilities, "container.exec")
 	}
+	if opts.Deploy != nil {
+		capabilities = append(capabilities, protocol.CapabilityDeploymentApply)
+	}
 	if err := write(ctx, conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities, AgentVersion: opts.Version}); err != nil {
 		return err
 	}
@@ -263,6 +273,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 		if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
 			return err
 		}
+		// Attach before the re-send, so a run finishing in between is delivered here or re-sent.
+		defer deployments.attach(ctx, outbound)()
+		go deployments.resend(ctx, outbound)
 		if id.PendingFingerprint != "" && time.Since(id.PendingSince) > PendingKeyLife {
 			// Forget the offer but keep the key material until a new offer replaces it: if a
 			// late acknowledgement retires the current key anyway, key_retired can still promote.
@@ -440,6 +453,15 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 						return err
 					}
 				}
+			case protocol.TypeDeploymentApply:
+				if len(f.Payload) > protocol.MaxDeploymentRequestBytes {
+					conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+					return errors.New("deployment request too large")
+				}
+				if hello.State == "pending" {
+					break
+				}
+				deployments.handle(ctx, id.EndpointID, f.Payload, outbound)
 			case protocol.TypeLogOpen:
 				var req protocol.LogRequest
 				if json.Unmarshal(f.Payload, &req) != nil || req.Stream == "" {

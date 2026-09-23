@@ -41,17 +41,19 @@ type AdoptionRequest struct {
 	Confirm    string `json:"confirm"`
 }
 type ApplicationInstance struct {
-	ContainerCount int                `json:"container_count"`
-	EndpointName   string             `json:"endpoint_name"`
-	ID             string             `json:"id"`
-	ApplicationID  string             `json:"application_id"`
-	EndpointID     string             `json:"endpoint_id"`
-	Project        string             `json:"project"`
-	Revision       int                `json:"revision"`
-	MappingVersion int                `json:"mapping_version"`
-	CreatedBy      string             `json:"created_by"`
-	CreatedAt      time.Time          `json:"created_at"`
-	Containers     []AdoptedContainer `json:"containers"`
+	ContainerCount   int                `json:"container_count"`
+	EndpointName     string             `json:"endpoint_name"`
+	ID               string             `json:"id"`
+	ApplicationID    string             `json:"application_id"`
+	EndpointID       string             `json:"endpoint_id"`
+	Project          string             `json:"project"`
+	Revision         int                `json:"revision"`
+	MappingVersion   int                `json:"mapping_version"`
+	CurrentRevision  int                `json:"current_revision"`
+	PreviousRevision int                `json:"previous_revision"`
+	CreatedBy        string             `json:"created_by"`
+	CreatedAt        time.Time          `json:"created_at"`
+	Containers       []AdoptedContainer `json:"containers"`
 }
 
 // Adoption is a control-plane ownership record, not proof of configuration parity
@@ -203,14 +205,19 @@ func (t *tenancyStore) ReleaseApplication(ctx context.Context, a TenantAccess, a
 			}
 			return err
 		}
-		var live int
-		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND instance_id=? AND expires_at>?`), a.OrganizationID, a.EnvironmentID, app, id, time.Now().UTC()).Scan(&live); err != nil {
+		var liveState string
+		var expiresAt time.Time
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT state,expires_at FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND instance_id=? AND state IN ('planned','applying')`), a.OrganizationID, a.EnvironmentID, app, id).Scan(&liveState, &expiresAt)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if live > 0 {
+		if liveState == "applying" {
+			return ErrDeploymentInProgress
+		}
+		if liveState == "planned" && expiresAt.After(time.Now().UTC()) {
 			return ErrDeploymentPlanned
 		}
-		if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND instance_id=?`), a.OrganizationID, a.EnvironmentID, app, id); err != nil {
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND instance_id=? AND state='planned'`), a.OrganizationID, a.EnvironmentID, app, id); err != nil {
 			return err
 		}
 		// Conditional deletion pins the exact instance the operator reviewed. A later
@@ -232,14 +239,14 @@ func (t *tenancyStore) ReleaseApplication(ctx context.Context, a TenantAccess, a
 func (t *tenancyStore) ListApplicationInstances(ctx context.Context, a TenantAccess, endpoint string) ([]ApplicationInstance, error) {
 	out := []ApplicationInstance{}
 	err := t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT i.id,i.application_id,i.endpoint_id,i.project,i.revision,i.mapping_version,i.created_by,i.created_at,e.name,(SELECT COUNT(*) FROM application_resources r WHERE r.instance_id=i.id) FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND (?='' OR i.environment_id=?) AND (?='' OR i.endpoint_id=?) ORDER BY i.id LIMIT 100`), a.OrganizationID, a.EnvironmentID, a.EnvironmentID, endpoint, endpoint)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT i.id,i.application_id,i.endpoint_id,i.project,i.revision,i.mapping_version,i.current_revision,i.previous_revision,i.created_by,i.created_at,e.name,(SELECT COUNT(*) FROM application_resources r WHERE r.instance_id=i.id) FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND (?='' OR i.environment_id=?) AND (?='' OR i.endpoint_id=?) ORDER BY i.id LIMIT 100`), a.OrganizationID, a.EnvironmentID, a.EnvironmentID, endpoint, endpoint)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var i ApplicationInstance
 			i.Containers = []AdoptedContainer{}
-			if err = rows.Scan(&i.ID, &i.ApplicationID, &i.EndpointID, &i.Project, &i.Revision, &i.MappingVersion, &i.CreatedBy, &i.CreatedAt, &i.EndpointName, &i.ContainerCount); err != nil {
+			if err = rows.Scan(&i.ID, &i.ApplicationID, &i.EndpointID, &i.Project, &i.Revision, &i.MappingVersion, &i.CurrentRevision, &i.PreviousRevision, &i.CreatedBy, &i.CreatedAt, &i.EndpointName, &i.ContainerCount); err != nil {
 				rows.Close()
 				return err
 			}

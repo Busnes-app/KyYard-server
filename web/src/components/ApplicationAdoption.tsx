@@ -4,7 +4,7 @@ import { useTenantResource, type Endpoint, type Inventory } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
-export type ApplicationInstance = { id: string; application_id: string; endpoint_id: string; endpoint_name: string; project: string; revision: number; mapping_version: number; container_count: number; containers: AdoptedContainer[] };
+export type ApplicationInstance = { id: string; application_id: string; endpoint_id: string; endpoint_name: string; project: string; revision: number; current_revision: number; previous_revision: number; mapping_version: number; container_count: number; containers: AdoptedContainer[] };
 type AdoptedContainer = { id: string; name: string; image_id: string; created_at: string };
 type Preview = { application_name: string; endpoint_name: string; endpoint_id: string; project: string; revision: number; digest: string; containers: AdoptedContainer[] };
 

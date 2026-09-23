@@ -16,6 +16,8 @@ import (
 
 const DeploymentPlanTTL = 10 * time.Minute
 const MaxDeploymentPlanBytes = 64 * 1024
+const DeploymentApplyDeadline = 10 * time.Minute
+const MaxDeploymentResultStoredBytes = 160 * 1024
 
 type PlanRequest struct {
 	InstanceID     string `json:"instance_id"`
@@ -39,19 +41,32 @@ type DeploymentPlan struct {
 	Services []PlannedService `json:"services"`
 }
 type Deployment struct {
-	ID             string         `json:"id"`
-	ApplicationID  string         `json:"application_id"`
-	InstanceID     string         `json:"instance_id"`
-	EndpointID     string         `json:"endpoint_id"`
-	State          string         `json:"state"`
-	Revision       int            `json:"revision"`
-	SpecDigest     string         `json:"spec_digest"`
-	MappingVersion int            `json:"mapping_version"`
-	Plan           DeploymentPlan `json:"plan"`
-	CreatedBy      string         `json:"created_by"`
-	CreatedAt      time.Time      `json:"created_at"`
-	ExpiresAt      time.Time      `json:"expires_at"`
-	Expired        bool           `json:"expired"`
+	ID             string                     `json:"id"`
+	ApplicationID  string                     `json:"application_id"`
+	InstanceID     string                     `json:"instance_id"`
+	EndpointID     string                     `json:"endpoint_id"`
+	State          string                     `json:"state"`
+	Revision       int                        `json:"revision"`
+	SpecDigest     string                     `json:"spec_digest"`
+	MappingVersion int                        `json:"mapping_version"`
+	Plan           DeploymentPlan             `json:"plan"`
+	CreatedBy      string                     `json:"created_by"`
+	CreatedAt      time.Time                  `json:"created_at"`
+	ExpiresAt      time.Time                  `json:"expires_at"`
+	Expired        bool                       `json:"expired"`
+	AppliedBy      string                     `json:"applied_by"`
+	AppliedAt      *time.Time                 `json:"applied_at"`
+	Deadline       *time.Time                 `json:"deadline"`
+	SettledAt      *time.Time                 `json:"settled_at"`
+	Detail         string                     `json:"detail"`
+	Result         *protocol.DeploymentResult `json:"result"` // nil until settled
+}
+
+// storedDeploymentResult is the shape kept in the result column. Outcome and Detail already
+// live in the row's state and detail columns, so only the step-by-step record is duplicated.
+type storedDeploymentResult struct {
+	Steps    []protocol.DeploymentStep     `json:"steps"`
+	Services []protocol.DeploymentIdentity `json:"services"`
 }
 
 // PreflightBlockedError names the findings that stopped a plan. A plan never guesses past them.
@@ -127,8 +142,18 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 		}
 		now := time.Now().UTC()
 		out = &Deployment{ID: planID, ApplicationID: id.String(), InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
-		if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=?`), a.OrganizationID, a.EnvironmentID, m.InstanceID); err != nil {
+		var liveID, liveState string
+		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,state FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=? AND state IN ('planned','applying')`), a.OrganizationID, a.EnvironmentID, m.InstanceID).Scan(&liveID, &liveState)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		if liveState == "applying" {
+			return ErrDeploymentInProgress
+		}
+		if liveState == "planned" {
+			if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE id=?`), liveID); err != nil {
+				return err
+			}
 		}
 		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), out.ID, a.OrganizationID, a.EnvironmentID, out.ApplicationID, out.InstanceID, out.EndpointID, plan.Project, out.State, out.Revision, out.SpecDigest, out.MappingVersion, string(raw), out.CreatedBy, out.CreatedAt, out.ExpiresAt)
 		return err
@@ -139,16 +164,33 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	return out, nil
 }
 
-const deploymentColumns = `id,application_id,instance_id,endpoint_id,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at`
+const deploymentColumns = `id,application_id,instance_id,endpoint_id,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline,settled_at,detail,result`
 
 func scanDeployment(rows interface{ Scan(...any) error }) (*Deployment, error) {
 	var d Deployment
-	var raw string
-	if err := rows.Scan(&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt); err != nil {
+	var raw, result string
+	var appliedAt, deadline, settledAt sql.NullTime
+	if err := rows.Scan(&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result); err != nil {
 		return nil, err
 	}
 	if json.Unmarshal([]byte(raw), &d.Plan) != nil {
 		return nil, ErrRevisionCorrupt
+	}
+	if appliedAt.Valid {
+		d.AppliedAt = &appliedAt.Time
+	}
+	if deadline.Valid {
+		d.Deadline = &deadline.Time
+	}
+	if settledAt.Valid {
+		d.SettledAt = &settledAt.Time
+	}
+	if result != "" {
+		var stored storedDeploymentResult
+		if json.Unmarshal([]byte(result), &stored) != nil {
+			return nil, ErrRevisionCorrupt
+		}
+		d.Result = &protocol.DeploymentResult{Deployment: d.ID, Outcome: d.State, Detail: d.Detail, Steps: stored.Steps, Services: stored.Services}
 	}
 	d.Expired = !time.Now().Before(d.ExpiresAt)
 	return &d, nil

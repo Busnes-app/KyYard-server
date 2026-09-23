@@ -226,3 +226,61 @@ func TestReleaseRefusesLivePlanAndDeletesExpired(t *testing.T) {
 		t.Fatal("release kept plan rows")
 	}
 }
+
+func TestMigration24ShapesDeployments(t *testing.T) {
+	st, _ := tenantAtomicStore(t)
+	ctx := context.Background()
+	for _, col := range []string{"applied_by", "applied_at", "deadline", "settled_at", "detail", "result"} {
+		if _, err := st.db.ExecContext(ctx, `SELECT `+col+` FROM deployments LIMIT 1`); err != nil {
+			t.Fatalf("column %s: %v", col, err)
+		}
+	}
+	for _, col := range []string{"current_revision", "previous_revision"} {
+		if _, err := st.db.ExecContext(ctx, `SELECT `+col+` FROM application_instances LIMIT 1`); err != nil {
+			t.Fatalf("instance column %s: %v", col, err)
+		}
+	}
+}
+
+func TestPlanDeploymentRespectsLiveRows(t *testing.T) {
+	st, a, app, _, _, m := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	first, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A settled history row must survive a new plan; only the planned row is replaced.
+	if _, err = st.db.Exec(st.rebind(`UPDATE deployments SET state='succeeded',settled_at=? WHERE id=?`), time.Now().UTC(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := ts.ListDeployments(ctx, a, app.ID)
+	if err != nil || len(list) != 2 || list[0].ID != second.ID || list[1].State != "succeeded" {
+		t.Fatalf("history kept: %+v %v", list, err)
+	}
+	// An applying row blocks a new plan.
+	if _, err = st.db.Exec(st.rebind(`UPDATE deployments SET state='applying' WHERE id=?`), second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ts.PlanDeployment(ctx, a, app.ID, planRequest(m)); !errors.Is(err, ErrDeploymentInProgress) {
+		t.Fatalf("plan during apply: %v", err)
+	}
+	if err = ts.ReleaseApplication(ctx, a, app.ID, m.InstanceID, "shop"); !errors.Is(err, ErrDeploymentInProgress) {
+		t.Fatalf("release during apply: %v", err)
+	}
+	// Settled rows never block release and are kept.
+	if _, err = st.db.Exec(st.rebind(`UPDATE deployments SET state='failed' WHERE id=?`), second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = ts.ReleaseApplication(ctx, a, app.ID, m.InstanceID, "shop"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err = st.db.QueryRow(`SELECT COUNT(*) FROM deployments`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("history after release: %d %v", n, err)
+	}
+}

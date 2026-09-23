@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ApplicationDeploymentPlan } from './ApplicationDeploymentPlan';
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const mapping = { instance_id: 'i', version: 3, mapped_revision: 2, services: [], bindings: {}, preview: { revision: 2, digest: 'd', project: 'shop', endpoint_name: 'Docker', containers: [] } };
-const plan = { id: 'd1', application_id: 'app', instance_id: 'i', endpoint_id: 'host', state: 'planned', revision: 2, spec_digest: 'x', mapping_version: 1, created_by: 'u', created_at: '2026-09-22T12:00:00Z', expires_at: '2999-01-01T00:00:00Z', expired: false, plan: { project: 'shop', services: [{ name: 'web', reference: 'nginx:1', image_id: `sha256:${'a'.repeat(64)}`, image_digest: '', container_id: 'b'.repeat(64), replaces: { container_id: 'b'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1 }, restart: 'always', ports: [], secret_refs: ['TOKEN'] }] } };
+const plan = { id: 'd1', application_id: 'app', instance_id: 'i', endpoint_id: 'host', state: 'planned', revision: 2, spec_digest: 'x', mapping_version: 1, created_by: 'u', created_at: '2026-09-22T12:00:00Z', expires_at: '2999-01-01T00:00:00Z', expired: false, detail: '', result: null, plan: { project: 'shop', services: [{ name: 'web', reference: 'nginx:1', image_id: `sha256:${'a'.repeat(64)}`, image_digest: '', container_id: 'b'.repeat(64), replaces: { container_id: 'b'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1 }, restart: 'always', ports: [], secret_refs: ['TOKEN'] }] } };
 const props = { base: '/app', instanceID: 'i' };
 function stubFetch(deploymentsBody: unknown) {
   return vi.fn(async (url: string, init?: RequestInit) => {
@@ -12,13 +12,13 @@ function stubFetch(deploymentsBody: unknown) {
     return new Response(JSON.stringify(deploymentsBody));
   });
 }
-it('loads the current plan on open and never offers apply', async () => {
+it('loads the current plan on open', async () => {
   vi.stubGlobal('fetch', stubFetch([plan]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   await screen.findByText(`sha256:${'a'.repeat(64)}`);
-  expect(screen.getByText(/not executed/i)).toBeTruthy();
-  expect(screen.queryByRole('button', { name: /apply|deploy now|execute/i })).toBeNull();
+  expect(screen.getByText(/Planning executes nothing/)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('inert');
 });
 it('plans on explicit confirmation and posts the observed bindings', async () => {
   const fetcher = stubFetch([]);
@@ -66,4 +66,162 @@ it('shows adoption changed and no form when the mapping names a different instan
   await screen.findByRole('alert');
   expect(document.body.textContent).toContain('Adoption changed');
   expect(screen.queryByLabelText('Confirm plan project')).toBeNull();
+});
+const applying = { ...plan, state: 'applying', detail: '', result: null };
+const settled = { ...plan, state: 'succeeded', detail: '', result: { steps: [{ service: 'web', step: 'create', outcome: 'succeeded', detail: '' }], services: [{ service: 'web', container_id: 'e'.repeat(64), image_id: `sha256:${'a'.repeat(64)}`, created_unix: 1800000000 }] } };
+const refused = { ...plan, state: 'denied', detail: 'service web, step precondition: the container has mounts', result: { steps: [{ service: 'web', step: 'precondition', outcome: 'denied', detail: 'the container has mounts the definition does not describe' }, { service: 'web', step: 'image', outcome: 'skipped', detail: '' }], services: [] } };
+
+it('applies on typed confirmation and polls until settled', async () => {
+  vi.useFakeTimers();
+  let reads = 0;
+  const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (String(url).endsWith('/apply')) return new Response(JSON.stringify(applying), { status: 202 });
+    reads++;
+    return new Response(JSON.stringify([reads < 3 ? (reads === 1 ? plan : applying) : settled]));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
+  fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
+  const post = fetcher.mock.calls.find(c => String(c[0]).endsWith('/apply'));
+  expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({ confirm: 'shop' });
+  // vi.waitFor's own polling misbehaves under fake timers here; act() forces passive effects
+  // (the setInterval registration and its state updates) to flush on each advance. The interval
+  // is registered mid-flight of the first advance (after the apply POST resolves), so its first
+  // tick lands in the *second* advance; three advances cover two actual polls (reads 2 and 3).
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(document.body.textContent).toMatch(/succeeded/i);
+  const before = fetcher.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
+  expect(fetcher.mock.calls.length).toBe(before); // polling stopped on a terminal state
+  expect(screen.getByText('e'.repeat(64))).toBeTruthy();
+  vi.useRealTimers();
+});
+it('explains a refused precondition with fixed text and hides server detail', async () => {
+  vi.stubGlobal('fetch', stubFetch([refused]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText(/configuration the definition does not describe/i);
+  expect(screen.getByText(/skipped/i)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Apply deployment' })).toBeNull();
+});
+it('shows the plan even when the mapping read fails', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).endsWith('/mapping') ? new Response('{"error":"secret-canary"}', { status: 409 }) : new Response(JSON.stringify([plan]))));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText(`sha256:${'a'.repeat(64)}`);
+  expect(document.body.textContent).not.toContain('secret-canary');
+  expect(screen.queryByRole('button', { name: 'Plan deployment' })).toBeNull();
+});
+it('keeps the panel mounted across polls instead of flashing loading', async () => {
+  vi.useFakeTimers();
+  let reads = 0;
+  const fetcher = vi.fn(async (url: string) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (String(url).endsWith('/apply')) return new Response(JSON.stringify(applying), { status: 202 });
+    reads++;
+    return new Response(JSON.stringify([reads === 1 ? plan : applying]));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
+  fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(document.body.textContent).toMatch(/State: applying/);
+  expect(document.body.textContent).not.toMatch(/Loading/);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(document.body.textContent).toMatch(/State: applying/);
+  expect(document.body.textContent).not.toMatch(/Loading/);
+  vi.useRealTimers();
+});
+it('pauses status updates after three consecutive poll failures and stops polling', async () => {
+  vi.useFakeTimers();
+  let reads = 0;
+  const fetcher = vi.fn(async (url: string) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (String(url).endsWith('/apply')) return new Response(JSON.stringify(applying), { status: 202 });
+    reads++;
+    if (reads === 1) return new Response(JSON.stringify([plan]));
+    return new Response('server error', { status: 500 });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
+  fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
+  // The interval is registered mid-flight of the first advance, so its first tick lands in the
+  // second advance; four advances cover three actual failed polls.
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // registers the interval
+  expect(document.body.textContent).not.toContain('Status updates paused');
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 1
+  expect(document.body.textContent).not.toContain('Status updates paused');
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 2
+  expect(document.body.textContent).not.toContain('Status updates paused');
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 3: pause
+  expect(document.body.textContent).toContain('Status updates paused; refresh to continue.');
+  const before = fetcher.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
+  expect(fetcher.mock.calls.length).toBe(before); // no further polling once paused
+  vi.useRealTimers();
+});
+it('shows a step detail with a recognized adapter prefix and hides an unrecognized one', async () => {
+  const mixed = { ...plan, state: 'failed', detail: '', result: { steps: [
+    { service: 'web', step: 'precondition', outcome: 'denied', detail: 'this agent is already applying a deployment' },
+    { service: 'web', step: 'image', outcome: 'skipped', detail: 'unexpected raw server text' },
+  ], services: [] } };
+  vi.stubGlobal('fetch', stubFetch([mixed]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('this agent is already applying a deployment');
+  expect(document.body.textContent).not.toContain('unexpected raw server text');
+});
+it('explains an abandoned unknown row with fixed text', async () => {
+  vi.stubGlobal('fetch', stubFetch([{ ...plan, state: 'unknown', detail: 'the connection ended before a result arrived', result: null }]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('The host may or may not have acted. Inspect it before planning again.');
+  expect(screen.getByText('the connection ended before a result arrived')).toBeTruthy();
+});
+it('explains a deployment that was never sent', async () => {
+  vi.stubGlobal('fetch', stubFetch([{ ...plan, state: 'failed', detail: 'the endpoint disconnected before the deployment was sent', result: null }]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('The deployment was not sent to the host.');
+  expect(document.body.textContent).not.toContain('.kyyard-prev');
+});
+it('keys a refused precondition on its step detail', async () => {
+  const gone = { ...refused, result: { steps: [{ service: 'web', step: 'precondition', outcome: 'denied', detail: 'the container no longer exists' }], services: [] } };
+  vi.stubGlobal('fetch', stubFetch([gone]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('The mapped container no longer exists on the host; refresh the inventory and plan again.');
+});
+it('stops polling three minutes past the deadline and says so', async () => {
+  vi.useFakeTimers();
+  const running = { ...applying, deadline: new Date(Date.now() + 60_000).toISOString() };
+  const fetcher = vi.fn(async (url: string) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    return new Response(JSON.stringify([running]));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByText(/State: applying/));
+  // Three minutes in: still polling. Past four (deadline + 3 minutes): paused.
+  for (let i = 0; i < 9; i++) await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  expect(document.body.textContent).not.toContain('Status updates paused');
+  for (let i = 0; i < 4; i++) await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  expect(document.body.textContent).toContain('Status updates paused; refresh to continue.');
+  const before = fetcher.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(fetcher.mock.calls.length).toBe(before);
+  vi.useRealTimers();
 });

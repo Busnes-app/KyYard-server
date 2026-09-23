@@ -73,8 +73,8 @@ func (t *tenancyStore) sealApplicationValues(ctx context.Context, tx *sql.Tx, a 
 
 // ResolveApplicationSecrets is an internal, explicitly secret-revealing operation,
 // not an ordinary revision read or HTTP route. Commit its scoped audit before
-// returning plaintext; failure/revocation returns no values. Deployment authority
-// will need its own operation when deployment is implemented.
+// returning plaintext; failure/revocation returns no values. Deployment consumes values
+// through ApplyDeployment instead.
 func (t *tenancyStore) ResolveApplicationSecrets(ctx context.Context, a TenantAccess, id string, number int, key []byte) (map[string]string, error) {
 	parsed, err := uuid.Parse(id)
 	if err != nil {
@@ -83,37 +83,48 @@ func (t *tenancyStore) ResolveApplicationSecrets(ctx context.Context, a TenantAc
 	id = parsed.String()
 	var values map[string]string
 	err = t.withTenantTarget(ctx, a, permissions.SecretReveal, id+"/revisions/"+strconv.Itoa(number), func(tx *sql.Tx) error {
-		if a.EnvironmentID == "" || number < 1 || number > MaxApplicationRevisions || len(key) != 32 {
-			return ErrInvalid
-		}
-		var raw, digest, encrypted string
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest,secrets_enc FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, id, number).Scan(&raw, &digest, &encrypted)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if subtle.ConstantTimeCompare([]byte(applicationSpecDigest([]byte(raw))), []byte(digest)) != 1 {
-			return ErrRevisionCorrupt
-		}
-		plaintext, err := crypto.DecryptAESGCM(encrypted, applicationValuesKey(key, a, id, number, digest))
-		if err != nil {
-			return ErrRevisionCorrupt
-		}
-		if len(plaintext) > MaxApplicationValuesBytes || json.Unmarshal(plaintext, &values) != nil {
-			return ErrRevisionCorrupt
-		}
-		var spec ApplicationSpec
-		if json.Unmarshal([]byte(raw), &spec) != nil || validateApplicationValues(spec, values) != nil {
-			return ErrRevisionCorrupt
-		}
-		return nil
+		var err error
+		_, values, _, err = t.resolveApplicationValues(ctx, tx, a, id, number, key)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return values, nil
+}
+
+// resolveApplicationValues decrypts one revision's values inside the caller's transaction and
+// returns the spec and digest they are bound to. Callers own permission and audit:
+// ResolveApplicationSecrets reveals under secret.reveal; ApplyDeployment consumes under
+// application.deploy and never returns the values.
+func (t *tenancyStore) resolveApplicationValues(ctx context.Context, tx *sql.Tx, a TenantAccess, id string, number int, key []byte) (ApplicationSpec, map[string]string, string, error) {
+	if a.EnvironmentID == "" || number < 1 || number > MaxApplicationRevisions || len(key) != 32 {
+		return ApplicationSpec{}, nil, "", ErrInvalid
+	}
+	var raw, digest, encrypted string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest,secrets_enc FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, id, number).Scan(&raw, &digest, &encrypted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ApplicationSpec{}, nil, "", ErrNotFound
+	}
+	if err != nil {
+		return ApplicationSpec{}, nil, "", err
+	}
+	if subtle.ConstantTimeCompare([]byte(applicationSpecDigest([]byte(raw))), []byte(digest)) != 1 {
+		return ApplicationSpec{}, nil, "", ErrRevisionCorrupt
+	}
+	plaintext, err := crypto.DecryptAESGCM(encrypted, applicationValuesKey(key, a, id, number, digest))
+	if err != nil {
+		return ApplicationSpec{}, nil, "", ErrRevisionCorrupt
+	}
+	var values map[string]string
+	if len(plaintext) > MaxApplicationValuesBytes || json.Unmarshal(plaintext, &values) != nil {
+		return ApplicationSpec{}, nil, "", ErrRevisionCorrupt
+	}
+	var spec ApplicationSpec
+	if json.Unmarshal([]byte(raw), &spec) != nil || validateApplicationValues(spec, values) != nil {
+		return ApplicationSpec{}, nil, "", ErrRevisionCorrupt
+	}
+	return spec, values, digest, nil
 }
 
 // ReplaceApplicationRevision saves a full replacement definition and value bundle.

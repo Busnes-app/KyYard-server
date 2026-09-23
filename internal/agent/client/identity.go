@@ -189,7 +189,13 @@ func SaveIdentity(dir string, id *Identity) error {
 	if err != nil {
 		return err
 	}
-	tmp := identityPath(dir) + ".tmp"
+	return writeDurable(identityPath(dir), raw)
+}
+
+// writeDurable replaces path atomically with a 0600 file whose bytes and rename are on disk
+// when it returns, not in the writeback window a power loss would erase.
+func writeDurable(path string, raw []byte) error {
+	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
@@ -198,8 +204,6 @@ func SaveIdentity(dir string, id *Identity) error {
 		f.Close()
 		return err
 	}
-	// A rotation offer is announced only after this returns, so the bytes must be on disk,
-	// not in the writeback window a power loss would erase.
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return err
@@ -207,10 +211,10 @@ func SaveIdentity(dir string, id *Identity) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, identityPath(dir)); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	d, err := os.Open(dir)
+	d, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
