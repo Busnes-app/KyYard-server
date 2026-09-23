@@ -161,6 +161,23 @@ func TestApplicationMappingRefusalsAndAtomicity(t *testing.T) {
 	}
 }
 
+// A running deployment rebinds the resources it replaces, so the mapping waits for it.
+func TestApplicationMappingRefusedWhileApplying(t *testing.T) {
+	st, a, app, _, _, m, d, key := applyFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); !errors.Is(err, ErrDeploymentInProgress) {
+		t.Fatalf("mapping while applying: %v", err)
+	}
+	after, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err != nil || after.Version != m.Version {
+		t.Fatalf("version moved: %+v %v", after, err)
+	}
+}
+
 func TestApplicationMappingConcurrentAdministrators(t *testing.T) {
 	st, a, app, _, _, m := mappingFixture(t)
 	ctx := context.Background()

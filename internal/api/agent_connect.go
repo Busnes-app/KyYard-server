@@ -494,17 +494,26 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			return false
 		}
 		var res protocol.DeploymentResult
-		if err := json.Unmarshal(f.Payload, &res); err != nil || res.Validate() != nil {
+		if err := json.Unmarshal(f.Payload, &res); err != nil {
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
-		// ErrNotFound is a result for a row this endpoint may not settle: nothing to report.
-		if err := ts.SettleDeployment(fctx, c.endpointID, res); err != nil && !errors.Is(err, store.ErrNotFound) {
-			id := "an unrecognised id"
-			if _, uErr := uuid.Parse(res.Deployment); uErr == nil {
-				id = res.Deployment
+		// The size is already bounded. Closing would only make the agent re-send the same
+		// result on reconnect, so drop it; the row stays until the deadline sweep.
+		if res.Validate() != nil {
+			log.Printf("agent %s: dropped an unreadable deployment result", c.endpointID)
+			return false
+		}
+		switch err := ts.SettleDeployment(fctx, c.endpointID, res); {
+		case err == nil, errors.Is(err, store.ErrNotFound):
+			// ErrNotFound is a row this endpoint may not settle: nothing to report.
+		case errors.Is(err, store.ErrInvalid), errors.Is(err, store.ErrAdoptionChanged):
+			// The host may have acted, but not as planned: record that rather than guess.
+			if err := ts.RefuseDeploymentResult(fctx, c.endpointID, res.Deployment, "the host's result did not match the plan; inspect the host"); err != nil && !errors.Is(err, store.ErrNotFound) {
+				log.Printf("agent %s: refusing deployment %s: store error", c.endpointID, res.Deployment)
 			}
-			log.Printf("agent %s: settling deployment %s: %v", c.endpointID, id, err)
+		default:
+			log.Printf("agent %s: settling deployment %s: store error", c.endpointID, res.Deployment)
 		}
 	case protocol.TypeInspectionResult:
 		var result protocol.InspectionResult

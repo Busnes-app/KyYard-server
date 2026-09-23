@@ -160,14 +160,14 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	if got := state(planned.ID); got.State != "applying" {
 		t.Fatalf("a foreign result moved the row: %+v", got)
 	}
-	// A small result that fails validation ends the session and changes nothing.
+	// A small result that fails validation is dropped: the session stays and nothing changes.
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{Deployment: planned.ID, Outcome: "bogus", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}})
-	if _, _, err := sock.conn.Read(ctx); err == nil {
-		t.Fatal("an invalid result frame was accepted")
-	}
+	sync(sock)
 	if got := state(planned.ID); got.State != "applying" {
 		t.Fatalf("an invalid result moved the row: %+v", got)
 	}
+	sock.conn.CloseNow()
+	waitFor(t, func() bool { return state(planned.ID).State == protocol.OutcomeUnknown })
 	// A result that validates but is past its byte bound ends the session too: the size check
 	// is what refuses it.
 	big := protocol.DeploymentResult{Deployment: planned.ID, Outcome: protocol.OutcomeFailed, Steps: make([]protocol.DeploymentStep, 700), Services: []protocol.DeploymentIdentity{}}
@@ -182,13 +182,36 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	if _, _, err := sock.conn.Read(ctx); err == nil {
 		t.Fatal("an oversized result frame was accepted")
 	}
-	if got := state(planned.ID); got.State != "applying" {
+	if got := state(planned.ID); got.State != protocol.OutcomeUnknown || got.SettledAt != nil {
 		t.Fatalf("an oversized result moved the row: %+v", got)
 	}
 
-	// The real answer after reconnecting settles the row and rebinds the replaced container.
+	// A result that validates but names an image the plan did not pin leaves the row unknown
+	// with a fixed detail and an audit row; the session stays.
 	sock = online([]string{protocol.CapabilityDeploymentApply})
 	replacedAt := created.Add(30 * time.Minute)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{
+		Deployment: planned.ID, Outcome: protocol.OutcomeSucceeded,
+		Steps:    []protocol.DeploymentStep{{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}},
+		Services: []protocol.DeploymentIdentity{{Service: "web", ContainerID: newID, ImageID: oldImage, CreatedUnix: replacedAt.Unix()}},
+	})
+	sync(sock)
+	if got := state(planned.ID); got.State != protocol.OutcomeUnknown || got.Detail != "the host's result did not match the plan; inspect the host" {
+		t.Fatalf("a mismatched result: %+v", got)
+	}
+	records, _, err := st.Audit().ListAuditRecords(ctx, 0, 200)
+	must(err)
+	refused := 0
+	for _, rec := range records {
+		if rec.UserID == "agent:"+ag.id && rec.Resource == app.ID+"/deployments/"+planned.ID && rec.Details == "outcome=refused" {
+			refused++
+		}
+	}
+	if refused != 1 {
+		t.Fatalf("refusal audit rows: %d", refused)
+	}
+
+	// The real answer still settles the unknown row and rebinds the replaced container.
 	inventory(sock, newID, newImage, replacedAt)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{
 		Deployment: planned.ID, Outcome: protocol.OutcomeSucceeded,

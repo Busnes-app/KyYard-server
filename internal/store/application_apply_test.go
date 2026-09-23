@@ -68,7 +68,7 @@ func TestApplyDeploymentBuildsTheRequestAndMovesToApplying(t *testing.T) {
 		t.Fatalf("secret in audit: %d %v", leaked, err)
 	}
 	// Apply twice: the CAS lets one through.
-	if _, _, err = ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); !errors.Is(err, ErrAdoptionChanged) {
+	if _, _, err = ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); !errors.Is(err, ErrDeploymentInProgress) {
 		t.Fatalf("second apply: %v", err)
 	}
 }
@@ -79,7 +79,44 @@ func TestApplyDeploymentPreconditions(t *testing.T) {
 		mutate func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, endpoint string, d *Deployment)
 		want   error
 	}{
-		"wrong confirm": {func(*testing.T, *SQLStore, TenantAccess, *Application, string, *Deployment) {}, ErrAdoptionChanged},
+		"wrong confirm": {func(*testing.T, *SQLStore, TenantAccess, *Application, string, *Deployment) {}, ErrInvalid},
+		"mapping version changed": {func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, _ string, _ *Deployment) {
+			m, err := st.Tenancy().ReadApplicationMapping(ctx, a, app.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Tenancy().SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); err != nil {
+				t.Fatal(err)
+			}
+		}, ErrAdoptionChanged},
+		"spec digest mismatch": {func(t *testing.T, st *SQLStore, _ TenantAccess, _ *Application, _ string, d *Deployment) {
+			if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET spec_digest=? WHERE id=?`), strings.Repeat("0", 64), d.ID); err != nil {
+				t.Fatal(err)
+			}
+		}, ErrAdoptionChanged},
+		"resource missing": {func(t *testing.T, st *SQLStore, _ TenantAccess, _ *Application, _ string, d *Deployment) {
+			if _, err := st.db.Exec(st.rebind(`DELETE FROM application_resources WHERE instance_id=?`), d.InstanceID); err != nil {
+				t.Fatal(err)
+			}
+		}, ErrAdoptionChanged},
+		"instance gone": {func(t *testing.T, st *SQLStore, _ TenantAccess, _ *Application, _ string, d *Deployment) {
+			if _, err := st.db.Exec(st.rebind(`DELETE FROM application_instances WHERE id=?`), d.InstanceID); err != nil {
+				t.Fatal(err)
+			}
+		}, ErrAdoptionChanged},
+		"instance moved": {func(t *testing.T, st *SQLStore, a TenantAccess, _ *Application, endpoint string, d *Deployment) {
+			if _, err := st.db.Exec(st.rebind(`UPDATE endpoints SET name='host-old' WHERE id=?`), endpoint); err != nil {
+				t.Fatal(err)
+			}
+			other := activeEndpointWith(t, st.Tenancy(), a, nil, nil)
+			// Resources are keyed by (instance, endpoint), so they go before the move.
+			if _, err := st.db.Exec(st.rebind(`DELETE FROM application_resources WHERE instance_id=?`), d.InstanceID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.db.Exec(st.rebind(`UPDATE application_instances SET endpoint_id=? WHERE id=?`), other, d.InstanceID); err != nil {
+				t.Fatal(err)
+			}
+		}, ErrAdoptionChanged},
 		"expired": {func(t *testing.T, st *SQLStore, _ TenantAccess, _ *Application, _ string, d *Deployment) {
 			if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET expires_at=? WHERE id=?`), time.Now().Add(-time.Minute), d.ID); err != nil {
 				t.Fatal(err)
@@ -296,7 +333,9 @@ func TestSettleRebindRefusesMissingResource(t *testing.T) {
 	}
 }
 
-func TestLateResultAfterNewerPlanIsIgnored(t *testing.T) {
+// A newer plan was built against the containers the late answer replaces: the answer settles
+// and the plan expires.
+func TestLateResultSettlesPastANewerPlan(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
@@ -306,20 +345,96 @@ func TestLateResultAfterNewerPlanIsIgnored(t *testing.T) {
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m)); err != nil {
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))); !errors.Is(err, ErrNotFound) {
+	newID := strings.Repeat("e", 64)
+	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeSucceeded, newID)); err != nil {
 		t.Fatalf("late settle after a newer plan: %v", err)
 	}
 	got, _ := ts.ReadDeployment(ctx, a, app.ID, d.ID)
 	instances, _ := ts.ListApplicationInstances(ctx, a, endpoint)
 	var container string
+	if err := st.db.QueryRow(st.rebind(`SELECT container_id FROM application_resources WHERE instance_id=?`), m.InstanceID).Scan(&container); err != nil || container != newID {
+		t.Fatalf("resources not rebound: %s %v", container, err)
+	}
+	if got.State != "succeeded" || instances[0].CurrentRevision != 2 {
+		t.Fatalf("late settle: %+v %+v", got, instances)
+	}
+	plan, _ := ts.ReadDeployment(ctx, a, app.ID, newer.ID)
+	if plan.State != "planned" || !plan.Expired {
+		t.Fatalf("newer plan still live: %+v", plan)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key); !errors.Is(err, ErrAdoptionChanged) {
+		t.Fatalf("apply of the expired plan: %v", err)
+	}
+}
+
+// A newer row that has been applied is state someone acted on: the late answer changes nothing.
+func TestLateResultAfterNewerApplyIsIgnored(t *testing.T) {
+	st, a, app, endpoint, _, m, d, key := applyFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("late settle after a newer apply: %v", err)
+	}
+	got, _ := ts.ReadDeployment(ctx, a, app.ID, d.ID)
+	current, _ := ts.ReadDeployment(ctx, a, app.ID, newer.ID)
+	instances, _ := ts.ListApplicationInstances(ctx, a, endpoint)
+	var container string
 	if err := st.db.QueryRow(st.rebind(`SELECT container_id FROM application_resources WHERE instance_id=?`), m.InstanceID).Scan(&container); err != nil || container != d.Plan.Services[0].ContainerID {
 		t.Fatalf("resources moved: %s %v", container, err)
 	}
-	if got.State != "unknown" || instances[0].CurrentRevision != 0 {
-		t.Fatalf("late settle applied: %+v %+v", got, instances)
+	if got.State != "unknown" || current.State != "applying" || instances[0].CurrentRevision != 0 {
+		t.Fatalf("late settle applied: %+v %+v %+v", got, current, instances)
+	}
+}
+
+// A result that does not fit the plan leaves the row unknown with the caller's detail and an
+// audit row; a settled row or another endpoint's row is not touched.
+func TestRefuseDeploymentResult(t *testing.T) {
+	st, a, app, endpoint, _, _, d, key := applyFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.RefuseDeploymentResult(ctx, "other-endpoint", d.ID, "refused"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign endpoint: %v", err)
+	}
+	if err := ts.RefuseDeploymentResult(ctx, endpoint, d.ID, "the host's result did not match the plan; inspect the host"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := ts.ReadDeployment(ctx, a, app.ID, d.ID)
+	if got.State != "unknown" || got.Detail != "the host's result did not match the plan; inspect the host" {
+		t.Fatalf("refused: %+v", got)
+	}
+	var audits int
+	if err := st.db.QueryRow(st.rebind(`SELECT COUNT(*) FROM audit_records WHERE action=? AND resource=? AND user_id=? AND result='unknown' AND details='outcome=refused'`), "application.deploy", app.ID+"/deployments/"+d.ID, "agent:"+endpoint).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("refuse audit: %d %v", audits, err)
+	}
+	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeFailed, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.RefuseDeploymentResult(ctx, endpoint, d.ID, "refused"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("settled row: %v", err)
+	}
+	if got, _ = ts.ReadDeployment(ctx, a, app.ID, d.ID); got.State != "failed" {
+		t.Fatalf("settled row rewritten: %+v", got)
 	}
 }
 

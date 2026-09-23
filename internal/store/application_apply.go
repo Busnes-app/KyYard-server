@@ -46,7 +46,13 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 		if err != nil {
 			return err
 		}
-		if d.State != "planned" || d.Expired || confirm != d.Plan.Project || head != d.Revision {
+		if d.State == "applying" {
+			return ErrDeploymentInProgress
+		}
+		if confirm != d.Plan.Project {
+			return ErrInvalid
+		}
+		if d.State != "planned" || d.Expired || head != d.Revision {
 			return ErrAdoptionChanged
 		}
 		var mappingVersion int
@@ -145,8 +151,9 @@ var auditResults = map[string]string{protocol.OutcomeSucceeded: "success", proto
 
 // SettleDeployment is the one writer for outcomes, scoped to the endpoint that ran it. An
 // applying row always settles. An unknown row (abandoned or swept) settles only while its
-// instance exists and no newer deployment has been planned for it, so a late answer never
-// rewrites state someone has since acted on. Anything else is ErrNotFound.
+// instance exists and no newer row for it has been applied or settled, so a late answer never
+// rewrites state someone has since acted on; a newer plan, built against the containers the
+// late answer replaces, is expired instead. Anything else is ErrNotFound.
 func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, res protocol.DeploymentResult) error {
 	if res.Validate() != nil {
 		return ErrInvalid
@@ -167,7 +174,7 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 	}
 	var org, env, appID, instance, planRaw string
 	var revision int
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.instance_id,d.revision,d.plan FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND (d.state='applying' OR (d.state='unknown' AND EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id) AND NOT EXISTS (SELECT 1 FROM deployments n WHERE n.instance_id=d.instance_id AND n.created_at>d.created_at)))`+lock), res.Deployment, endpointID).Scan(&org, &env, &appID, &instance, &revision, &planRaw)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.instance_id,d.revision,d.plan FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND (d.state='applying' OR (d.state='unknown' AND EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id) AND NOT EXISTS (SELECT 1 FROM deployments n WHERE n.instance_id=d.instance_id AND n.created_at>d.created_at AND n.state<>'planned')))`+lock), res.Deployment, endpointID).Scan(&org, &env, &appID, &instance, &revision, &planRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -228,8 +235,42 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 			return err
 		}
 	}
+	// Only an unknown row can have a newer plan (a live one refuses planning).
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET expires_at=? WHERE instance_id=? AND state='planned' AND created_at>(SELECT created_at FROM deployments WHERE id=?)`), now, instance, res.Deployment); err != nil {
+		return err
+	}
 	// In the same transaction: a settled row without its audit row cannot exist.
 	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), "agent:"+endpointID, string(permissions.ApplicationDeploy), protocol.CleanText(appID+"/deployments/"+res.Deployment, 255), "outcome="+res.Outcome, now, "organization", org, env, uuid.NewString(), auditResults[res.Outcome]); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RefuseDeploymentResult records that the endpoint answered with a result that does not fit
+// the plan: the host may have acted, so the row becomes unknown with the caller's fixed detail.
+func (t *tenancyStore) RefuseDeploymentResult(ctx context.Context, endpointID, id, detail string) error {
+	tx, err := t.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	lock := ""
+	if t.store.driver == "postgres" {
+		lock = " FOR UPDATE"
+	}
+	var org, env, appID string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT organization_id,environment_id,application_id FROM deployments WHERE id=? AND endpoint_id=? AND state IN ('applying','unknown')`+lock), id, endpointID).Scan(&org, &env, &appID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='unknown',detail=? WHERE id=? AND state IN ('applying','unknown')`), protocol.CleanText(detail, 255), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), "agent:"+endpointID, string(permissions.ApplicationDeploy), protocol.CleanText(appID+"/deployments/"+id, 255), "outcome=refused", now, "organization", org, env, uuid.NewString(), auditResults[protocol.OutcomeUnknown]); err != nil {
 		return err
 	}
 	return tx.Commit()

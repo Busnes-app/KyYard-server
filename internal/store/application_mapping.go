@@ -124,6 +124,14 @@ func (t *tenancyStore) SetApplicationMapping(ctx context.Context, a TenantAccess
 		if r.InstanceID != p.InstanceID || r.Version != p.Version || r.Digest != p.Preview.Digest || r.Confirm != p.Preview.Project {
 			return ErrAdoptionChanged
 		}
+		// A running deployment rebinds these resources when it settles.
+		var applying int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=? AND state='applying'`), a.OrganizationID, a.EnvironmentID, p.InstanceID).Scan(&applying); err != nil {
+			return err
+		}
+		if applying > 0 {
+			return ErrDeploymentInProgress
+		}
 		services := map[string]bool{}
 		for _, s := range p.Services {
 			services[s] = true

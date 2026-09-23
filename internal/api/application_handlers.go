@@ -273,7 +273,7 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 		if err := s.store.Tenancy().FailDeployment(context.WithoutCancel(r.Context()), applied.ID, "the endpoint disconnected before the deployment was sent"); err != nil {
 			log.Printf("deployment %s: recording an unsent frame: %v", applied.ID, err)
 		}
-		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The endpoint disconnected before the deployment was sent", "code": "deployment_not_sent"})
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The deployment could not be sent to the endpoint", "code": "deployment_not_sent"})
 		return
 	}
 	s.writeJSON(w, http.StatusAccepted, applied)
