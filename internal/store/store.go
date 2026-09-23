@@ -172,6 +172,7 @@ type TenancyStore interface {
 	SettleDeployment(ctx context.Context, endpointID string, res protocol.DeploymentResult) error
 	RefuseDeploymentResult(ctx context.Context, endpointID, id, detail string) error
 	AbandonDeployments(ctx context.Context, endpointID string) (int64, error)
+	RemoveApplication(ctx context.Context, access TenantAccess, applicationID string, body RemovalBody) (*Deployment, *protocol.RemovalRequest, error)
 	ListDeployments(ctx context.Context, access TenantAccess, applicationID string) ([]Deployment, error)
 	ReadApplicationMapping(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMapping, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error

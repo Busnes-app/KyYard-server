@@ -82,25 +82,26 @@ func TestPlanDeploymentRefusesStaleAndBlocked(t *testing.T) {
 	for name, r := range map[string]PlanRequest{
 		"instance": {InstanceID: "other", MappingVersion: 1, Revision: 1, Confirm: "shop"},
 		"mapping":  {InstanceID: m.InstanceID, MappingVersion: 2, Revision: 1, Confirm: "shop"},
-		"revision": {InstanceID: m.InstanceID, MappingVersion: 1, Revision: 2, Confirm: "shop"},
 		"project":  {InstanceID: m.InstanceID, MappingVersion: 1, Revision: 1, Confirm: "nope"},
 	} {
 		if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.Is(err, ErrAdoptionChanged) {
 			t.Fatalf("%s accepted: %v", name, err)
 		}
 	}
-	// Definition advances: the old approval no longer names the head.
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, PlanRequest{InstanceID: m.InstanceID, MappingVersion: 1, Revision: 2, Confirm: "shop"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unsaved revision: %v", err)
+	}
+	// Definition advances: until the mapping is reviewed against the head, no revision plans.
 	if _, err := ts.AppendApplicationRevision(ctx, a, app.ID, 1, ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m)); !errors.Is(err, ErrAdoptionChanged) {
-		t.Fatal("stale revision accepted")
-	}
-	r := planRequest(m)
-	r.Revision = 2
 	var blocked *PreflightBlockedError
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "mapping_requires_review") {
-		t.Fatalf("mapping stale not reported: %v", err)
+	for _, rev := range []int{1, 2} {
+		r := planRequest(m)
+		r.Revision = rev
+		if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "mapping_requires_review") {
+			t.Fatalf("revision %d: mapping stale not reported: %v", rev, err)
+		}
 	}
 	// Re-map, then remove the image from inventory: a service blocker refuses too.
 	m2, _ := ts.ReadApplicationMapping(ctx, a, app.ID)

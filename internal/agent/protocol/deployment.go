@@ -35,7 +35,7 @@ const (
 	OutcomeSkipped               = "skipped"
 	TypeDeploymentRemove         = "deployment.remove"
 	CapabilityDeploymentRemove   = "deployment.remove"
-	MaxRemovalTargets            = 1000
+	MaxRemovalTargets            = 100 // three steps each fit a result's 8*MaxDeploymentServices
 )
 
 var (

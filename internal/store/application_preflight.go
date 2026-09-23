@@ -45,7 +45,7 @@ func (t *tenancyStore) PreflightApplication(ctx context.Context, a TenantAccess,
 	}
 	var out *DeploymentPreflight
 	err = t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
-		out, _, _, _, _, err = t.preflight(ctx, tx, a, id.String(), false)
+		out, _, _, _, _, err = t.preflight(ctx, tx, a, id.String(), false, 0)
 		return err
 	})
 	if err != nil {
@@ -54,18 +54,30 @@ func (t *tenancyStore) PreflightApplication(ctx context.Context, a TenantAccess,
 	return out, nil
 }
 
-// preflight is the shared diagnostic. lock=true takes the mapping locks for a writer. It also
-// returns the mapping, the parsed spec, the parsed snapshot and the revision digest so a writer
-// can build a plan from exactly what it checked.
-func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, lock bool) (*DeploymentPreflight, *ApplicationMapping, ApplicationSpec, protocol.Snapshot, string, error) {
+// preflight is the shared diagnostic. lock=true takes the mapping locks for a writer. revision
+// picks a saved revision to check, 0 the latest. It also returns the mapping, the parsed spec,
+// the parsed snapshot and the revision digest so a writer can build a plan from exactly what it
+// checked.
+func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, lock bool, revision int) (*DeploymentPreflight, *ApplicationMapping, ApplicationSpec, protocol.Snapshot, string, error) {
 	m, err := t.applicationMapping(ctx, tx, a, app, lock)
 	if err != nil {
 		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
 	}
+	chosen, args := "a.latest_revision", []any{a.OrganizationID, a.EnvironmentID, app}
+	if revision != 0 {
+		var n int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, app, revision).Scan(&n); err != nil {
+			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
+		}
+		if n != 1 {
+			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrNotFound
+		}
+		chosen, args = "?", []any{revision, a.OrganizationID, a.EnvironmentID, app}
+	}
 	var raw, specRaw, digest, instance, state string
-	var version, head int
+	var version, head, number int
 	var received, observed time.Time
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.id,i.mapping_version,a.latest_revision,r.spec,r.digest,e.state,v.snapshot,v.received_at,v.observed_at FROM applications a JOIN application_instances i ON i.application_id=a.id JOIN application_revisions r ON r.application_id=a.id AND r.number=a.latest_revision JOIN endpoints e ON e.id=i.endpoint_id JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE a.organization_id=? AND a.environment_id=? AND a.id=?`), a.OrganizationID, a.EnvironmentID, app).Scan(&instance, &version, &head, &specRaw, &digest, &state, &raw, &received, &observed)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.id,i.mapping_version,a.latest_revision,r.number,r.spec,r.digest,e.state,v.snapshot,v.received_at,v.observed_at FROM applications a JOIN application_instances i ON i.application_id=a.id JOIN application_revisions r ON r.application_id=a.id AND r.number=`+chosen+` JOIN endpoints e ON e.id=i.endpoint_id JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE a.organization_id=? AND a.environment_id=? AND a.id=?`), args...).Scan(&instance, &version, &head, &number, &specRaw, &digest, &state, &raw, &received, &observed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
 	}
@@ -102,7 +114,7 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 		}
 	}
 	out := buildDeploymentPreflight(m, spec, snapshot)
-	out.ReceivedAt = received
+	out.Revision, out.ReceivedAt = number, received
 	return out, m, spec, snapshot, digest, nil
 }
 
@@ -111,7 +123,17 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 	if m.Version == 0 || m.MappedRevision != m.Preview.Revision {
 		out.Blockers = append(out.Blockers, "mapping_requires_review")
 	}
-	if len(m.Bindings) != len(m.Preview.Containers) {
+	// Every adopted container is bound, and to a service of the revision being checked (a
+	// prior revision may lack a service the latest mapping binds).
+	defined := map[string]bool{}
+	for _, s := range spec.Services {
+		defined[s.Name] = true
+	}
+	stray := false
+	for service := range m.Bindings {
+		stray = stray || !defined[service]
+	}
+	if stray || len(m.Bindings) != len(m.Preview.Containers) {
 		out.Blockers = append(out.Blockers, "unassigned_adopted_containers")
 	}
 	imagesComplete := len(snapshot.Images) <= protocol.MaxImages

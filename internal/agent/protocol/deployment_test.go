@@ -128,6 +128,11 @@ func TestRemovalRequestValidation(t *testing.T) {
 		"duplicate container": func(r *RemovalRequest) {
 			r.Containers[1].Target.ContainerID = r.Containers[0].Target.ContainerID
 		},
+		"too many containers": func(r *RemovalRequest) {
+			for i := len(r.Containers); i <= MaxRemovalTargets; i++ {
+				r.Containers = append(r.Containers, RemovalTarget{Service: fmt.Sprintf("s%d", i), Target: InspectionTarget{ContainerID: fmt.Sprintf("%064x", i), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}})
+			}
+		},
 	} {
 		r := goodRemoval(now)
 		mutate(&r)

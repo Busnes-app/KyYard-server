@@ -750,6 +750,43 @@ ALTER TABLE deployments ADD COLUMN applied_by TEXT NOT NULL DEFAULT '', ADD COLU
 CREATE UNIQUE INDEX idx_deployments_live ON deployments(instance_id) WHERE state IN ('planned','applying');
 ALTER TABLE application_instances ADD COLUMN current_revision INTEGER NOT NULL DEFAULT 0 CHECK(current_revision BETWEEN 0 AND 100), ADD COLUMN previous_revision INTEGER NOT NULL DEFAULT 0 CHECK(previous_revision BETWEEN 0 AND 100);
 `},
+	// A removal may run on an instance never mapped (mapping_version 0), so the check widens.
+	{Version: 25, Name: "deployment_history", SQLite: `CREATE TABLE deployments_new (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL,
+ instance_id TEXT NOT NULL,
+ endpoint_id TEXT NOT NULL,
+ project TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('planned','applying','succeeded','failed','denied','timed_out','unknown')),
+ revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 100),
+ spec_digest TEXT NOT NULL,
+ mapping_version INTEGER NOT NULL CHECK(mapping_version BETWEEN 0 AND 1000000000),
+ plan TEXT NOT NULL CHECK(length(plan)<=65536),
+ created_by TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ expires_at DATETIME NOT NULL,
+ applied_by TEXT NOT NULL DEFAULT '',
+ applied_at DATETIME,
+ deadline DATETIME,
+ settled_at DATETIME,
+ detail TEXT NOT NULL DEFAULT '',
+ result TEXT NOT NULL DEFAULT '' CHECK(length(result)<=163840),
+ kind TEXT NOT NULL DEFAULT 'apply' CHECK(kind IN ('apply','remove')),
+ FOREIGN KEY(organization_id,environment_id,application_id) REFERENCES applications(organization_id,environment_id,id) ON DELETE CASCADE
+);
+INSERT INTO deployments_new (id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline,settled_at,detail,result) SELECT id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline,settled_at,detail,result FROM deployments;
+DROP TABLE deployments;
+ALTER TABLE deployments_new RENAME TO deployments;
+CREATE INDEX idx_deployments_application ON deployments(application_id,created_at);
+CREATE UNIQUE INDEX idx_deployments_live ON deployments(instance_id) WHERE state IN ('planned','applying');
+ALTER TABLE applications ADD COLUMN removed_at DATETIME;
+`, Postgres: `ALTER TABLE deployments ADD COLUMN kind TEXT NOT NULL DEFAULT 'apply' CHECK(kind IN ('apply','remove'));
+ALTER TABLE deployments DROP CONSTRAINT deployments_mapping_version_check;
+ALTER TABLE deployments ADD CONSTRAINT deployments_mapping_version_check CHECK(mapping_version BETWEEN 0 AND 1000000000);
+ALTER TABLE applications ADD COLUMN removed_at TIMESTAMPTZ;
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

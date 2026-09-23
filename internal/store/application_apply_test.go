@@ -122,8 +122,8 @@ func TestApplyDeploymentPreconditions(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, ErrAdoptionChanged},
-		"head moved": {func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, _ string, _ *Deployment) {
-			if _, err := st.Tenancy().AppendApplicationRevision(ctx, a, app.ID, 2, ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}}); err != nil {
+		"revision past head": {func(t *testing.T, st *SQLStore, _ TenantAccess, _ *Application, _ string, d *Deployment) {
+			if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET revision=3 WHERE id=?`), d.ID); err != nil {
 				t.Fatal(err)
 			}
 		}, ErrAdoptionChanged},

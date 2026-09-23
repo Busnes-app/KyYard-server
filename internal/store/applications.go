@@ -22,6 +22,9 @@ type Application struct {
 	LatestRevision int       `json:"latest_revision"`
 	CreatedBy      string    `json:"created_by"`
 	CreatedAt      time.Time `json:"created_at"`
+	// RemovedAt is set once a removal took its containers off the host; revisions and history
+	// stay until discard or ApplicationRemovedRetention.
+	RemovedAt *time.Time `json:"removed_at"`
 }
 type ApplicationRevision struct {
 	ID             string          `json:"id"`
@@ -146,15 +149,19 @@ func (t *tenancyStore) ListApplications(ctx context.Context, a TenantAccess, off
 		if a.EnvironmentID == "" || offset < 0 || limit < 1 || limit > 200 {
 			return ErrInvalid
 		}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,environment_id,name,latest_revision,created_by,created_at FROM applications WHERE organization_id=? AND environment_id=? ORDER BY name,id LIMIT ? OFFSET ?`), a.OrganizationID, a.EnvironmentID, limit, offset)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,environment_id,name,latest_revision,created_by,created_at,removed_at FROM applications WHERE organization_id=? AND environment_id=? ORDER BY name,id LIMIT ? OFFSET ?`), a.OrganizationID, a.EnvironmentID, limit, offset)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var app Application
-			if err = rows.Scan(&app.ID, &app.OrganizationID, &app.EnvironmentID, &app.Name, &app.LatestRevision, &app.CreatedBy, &app.CreatedAt); err != nil {
+			var removed sql.NullTime
+			if err = rows.Scan(&app.ID, &app.OrganizationID, &app.EnvironmentID, &app.Name, &app.LatestRevision, &app.CreatedBy, &app.CreatedAt, &removed); err != nil {
 				return err
+			}
+			if removed.Valid {
+				app.RemovedAt = &removed.Time
 			}
 			out = append(out, app)
 		}
