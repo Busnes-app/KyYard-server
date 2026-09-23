@@ -90,9 +90,9 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `secret.reveal` (internal imported-value resolution) | ✓ | – | – | – | – | plaintext, only after audit commits | success/failure |
 | `secret.manage` (create, rotate, delete secret values) | ✓ | – | – | – | – | write-only; values never returned | success, target = secret name |
 | `secret.use` (deploy with a secret reference) | implied by `application.deploy` | | | | | no | recorded on the deployment |
-| `registry.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no credentials | – |
-| `registry.manage` | ✓ | – | – | – | – | write-only credentials | success |
-| `registry.manage` — anonymous-pull opt-in (`registry.anonymous_pull.enabled`) | ✓ | – | – | – | – | no | success, details carry old and new value; the setting is per organization and off by default |
+| `registry.read` (list registries, read the anonymous-pull policy; implemented) | ✓ | ✓ | ✓ | ✓ | ✓ | no credentials; rows carry `has_credential` | denials only |
+| `registry.manage` (create/update by host, delete; implemented) | ✓ | – | – | – | – | write-only credentials | target `registries/<id>`; put details `host=<h> allow_private=<bool> credential=set\|kept\|cleared`, delete details `host=<h>` |
+| `registry.manage` — anonymous-pull opt-in (implemented) | ✓ | – | – | – | – | no | target `registry-policy`, details `old=<bool> new=<bool>`; per organization, off by default |
 | `registry.use` | implied by `image.pull` and `application.deploy` | | | | | no | on the operation |
 | `update_policy.manage` and `maintenance_window.manage` (M7b) | ✓ | ✓ | – | – | – | no | success; scheduler acts as `system:scheduler` with the policy's organization |
 

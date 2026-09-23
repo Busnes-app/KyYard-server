@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// TestResolveDockerHubAlpine talks to the real Docker Hub; CI's Docker job sets the gate.
+// TestResolveDockerHubAlpine talks to the real Docker Hub; CI's real-Docker step sets the gate.
 func TestResolveDockerHubAlpine(t *testing.T) {
 	if os.Getenv("KY_TEST_REGISTRY_ONLINE") != "1" {
 		t.Skip("set KY_TEST_REGISTRY_ONLINE=1 to resolve against Docker Hub")
