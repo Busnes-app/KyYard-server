@@ -403,7 +403,10 @@ func testExecSocketRemainsResponsive(t *testing.T, state string) {
 		return nil, ctx.Err()
 	}}
 	done := make(chan struct{})
-	go func() { defer close(done); _ = session(ctx, id, target, opts, openLedger(t.TempDir()), newBudget(), b) }()
+	go func() {
+		defer close(done)
+		_ = session(ctx, id, target, opts, openLedger(t.TempDir()), newDeployer(ctx, t.TempDir(), opts), newBudget(), b)
+	}()
 	select {
 	case err := <-checked:
 		if err != nil {
@@ -535,7 +538,10 @@ func TestExecSocketWithoutRuntimeRemainsResponsive(t *testing.T) {
 	opts := &Options{HTTPClient: stub.Client(), Log: log.New(io.Discard, "", 0)}
 	ledger := openLedger(t.TempDir())
 	done := make(chan struct{})
-	go func() { defer close(done); _ = session(ctx, id, target, opts, ledger, newBudget(), &execBudget{}) }()
+	go func() {
+		defer close(done)
+		_ = session(ctx, id, target, opts, ledger, newDeployer(ctx, t.TempDir(), opts), newBudget(), &execBudget{})
+	}()
 	select {
 	case err := <-checked:
 		if err != nil {
