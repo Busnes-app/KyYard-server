@@ -272,3 +272,25 @@ it('renders a removal plan as its container list', async () => {
   expect(screen.queryByRole('columnheader', { name: 'Pinned image' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Apply deployment' })).toBeNull();
 });
+it('advises on a denied removal precondition without asking to plan again', async () => {
+  vi.stubGlobal('fetch', stubFetch([removal]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  const alerts = await screen.findAllByText('A container of this application is not the one recorded; refresh the inventory and, if it was recreated outside KyYard, release and adopt it again.');
+  expect(alerts.length).toBeGreaterThan(0);
+  expect(document.body.textContent).not.toContain('plan again');
+});
+it('explains a prior revision whose services differ from the mapping', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (init?.method === 'POST') return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['revision_services_differ'] }), { status: 409 });
+    return new Response('[]');
+  }));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('No plan for this instance.');
+  fireEvent.change(screen.getByLabelText('Revision to plan'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('Confirm plan project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Plan deployment' }));
+  await screen.findByText("The chosen revision's services differ from the mapped ones. Map against the latest definition or choose another revision.");
+});

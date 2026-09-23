@@ -3,7 +3,7 @@ import { useTenantResource } from '../tenant';
 import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
-import { messages } from './ApplicationPreflight';
+import { knownBlockers, messages } from './ApplicationPreflight';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
 type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[] };
@@ -53,7 +53,9 @@ function explanationFor(current: Deployment): string {
   if (current.state === 'failed' && current.result === null) return 'The deployment was not sent to the host.';
   const failing = current.result?.steps.find(s => s.outcome !== 'succeeded' && s.outcome !== 'skipped');
   if (!failing) return '';
-  if (failing.outcome === 'denied' && failing.step === 'precondition') return preconditionExplanation(failing.detail);
+  if (failing.outcome === 'denied' && failing.step === 'precondition') return current.kind === 'remove'
+    ? 'A container of this application is not the one recorded; refresh the inventory and, if it was recreated outside KyYard, release and adopt it again.'
+    : preconditionExplanation(failing.detail);
   if (failing.detail.includes('pinned image is not present')) return 'The pinned image is no longer present on the host.';
   if (failing.outcome === 'unknown') return 'The host may or may not have acted. Inspect it before planning again.';
   if (failing.outcome === 'timed_out') return 'The host did not answer in time.';
@@ -114,12 +116,28 @@ function PlanDetails({ d }: { d: Deployment }) {
   </>;
 }
 const when = (t?: string | null) => t ? new Date(t).toLocaleString() : '—';
+// ApplicationHistory is the read-only history of an application with no instance, such as a
+// removed one: every row, not one instance's.
+export function ApplicationHistory({ base }: { base: string }) {
+  const [open, setOpen] = useState(false);
+  return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
+    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close deployment history' : 'Deployment history'}</button>
+    {open && <HistoryView base={base} />}
+  </section>;
+}
+function HistoryView({ base }: { base: string }) {
+  const deployments = useTenantResource<Deployment[]>(`${base}/deployments`);
+  return <>
+    <StateNotice state={deployments.state} onRetry={deployments.reload} />
+    {deployments.state === 'ready' && <History rows={deployments.data ?? []} />}
+  </>;
+}
 function History({ rows }: { rows: Deployment[] }) {
   const page = usePagination(rows, 'history');
   const [shown, setShown] = useState('');
   return <>
     <h3>Deployment history</h3>
-    {rows.length === 0 ? <p>No deployments recorded for this instance.</p> : <>
+    {rows.length === 0 ? <p>No deployments recorded.</p> : <>
       {page.controls}
       <table className="ky-table ky-responsive-table"><thead><tr><th>Kind</th><th>Revision</th><th>State</th><th>Applied by</th><th>Applied</th><th>Settled</th><th>Steps</th></tr></thead><tbody>{page.rows.map(d => <Fragment key={d.id}>
         <tr>
@@ -209,8 +227,7 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
       }
       setBlocked(true);
       if (r.status === 409) {
-        const payload: unknown = await r.json().catch(() => null);
-        const blockers = payload && typeof payload === 'object' && Array.isArray((payload as { blockers?: unknown }).blockers) ? ((payload as { blockers: unknown[] }).blockers.filter((b): b is keyof typeof messages => typeof b === 'string' && b in messages)) : [];
+        const blockers = knownBlockers(await r.json().catch(() => null), messages);
         setError(blockers.length ? blockers.map(b => messages[b]) : ['Ownership, mapping or the definition changed. Refresh applications and review before planning again.']);
         return;
       }

@@ -3,6 +3,7 @@ import { secureFetch } from '../api';
 import { useTenantResource, type Endpoint, type Inventory } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
+import { knownBlockers } from './ApplicationPreflight';
 
 export type ApplicationInstance = { id: string; application_id: string; endpoint_id: string; endpoint_name: string; project: string; revision: number; current_revision: number; previous_revision: number; mapping_version: number; container_count: number; containers: AdoptedContainer[] };
 type AdoptedContainer = { id: string; name: string; image_id: string; created_at: string };
@@ -11,12 +12,19 @@ const REMOVAL_CODES: Record<string, string> = {
   deployment_planned: 'A deployment is planned or running for this instance; wait or let the plan expire.',
   deployment_in_progress: 'A deployment is planned or running for this instance; wait or let the plan expire.',
   deployment_not_sent: 'The removal could not be sent to the host.',
+  adoption_changed: 'Host inventory is stale or changed. Refresh applications and try again.',
+  removal_too_large: 'This instance has more containers than KyYard removes in one operation; release it and remove the containers by hand.',
 };
+const REMOVAL_BLOCKERS = {
+  unadopted_project_containers: 'The host runs containers of this project that are not adopted; adopt or remove them by hand first.',
+  apply_outcome_unknown: "The last apply's outcome is unknown; inspect the host before removing.",
+};
+const REMOVAL_SENT = 'Removal sent; watch Deployment history for progress.';
 const REMOVAL_REFUSED = 'Removal refused. Refresh applications and check your access.';
 const OUTCOME_UNKNOWN = 'Outcome unknown. Refresh applications before continuing.';
 type Preview = { application_name: string; endpoint_name: string; endpoint_id: string; project: string; revision: number; digest: string; containers: AdoptedContainer[] };
 
-export function ApplicationAdoption({ base, org, env, applicationName, instance, onChanged }: { base: string; org: string; env: string; applicationName: string; instance?: ApplicationInstance; onChanged: () => void }) {
+export function ApplicationAdoption({ base, org, env, applicationName, instance, onChanged }: { base: string; org: string; env: string; applicationName: string; instance?: ApplicationInstance; onChanged: (status?: string) => void }) {
   const [endpoint, setEndpoint] = useState('');
   const [offset, setOffset] = useState(0);
   const hosts = useTenantResource<Endpoint[]>(`/api/organizations/${encodeURIComponent(org)}/environments/${encodeURIComponent(env)}/endpoints?offset=${offset}&limit=20`);
@@ -97,7 +105,7 @@ function ConfirmAdoption({ base, endpoint, project, onChanged }: { base: string;
     {message && <p role="status">{message}</p>}
   </>;
 }
-function RemoveApplication({ base, instance, onChanged }: { base: string; instance: ApplicationInstance; onChanged: () => void }) {
+function RemoveApplication({ base, instance, onChanged }: { base: string; instance: ApplicationInstance; onChanged: (status?: string) => void }) {
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState(false);
@@ -106,14 +114,15 @@ function RemoveApplication({ base, instance, onChanged }: { base: string; instan
     setBusy(true); setMessage('');
     try {
       const r = await secureFetch(`${base}/removal`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instance_id: instance.id, confirm }) });
-      if (r.status === 202) { onChanged(); return; }
+      if (r.status === 202) { onChanged(REMOVAL_SENT); return; }
       setConfirm('');
       if (r.status === 403) { setMessage('Only an administrator can remove applications.'); return; }
       if (r.status === 501) { setMessage('Upgrade the host agent to enable application removal.'); return; }
       if (r.status === 409) {
         const payload: unknown = await r.json().catch(() => null);
         const code = payload && typeof payload === 'object' && 'code' in payload ? (payload as { code?: unknown }).code : undefined;
-        setMessage((typeof code === 'string' && REMOVAL_CODES[code]) || REMOVAL_REFUSED);
+        const blockers = knownBlockers(payload, REMOVAL_BLOCKERS);
+        setMessage(blockers.length ? blockers.map(b => REMOVAL_BLOCKERS[b]).join(' ') : (typeof code === 'string' && REMOVAL_CODES[code]) || REMOVAL_REFUSED);
         return;
       }
       setUncertain(r.status >= 500);
