@@ -154,9 +154,14 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 		return err
 	}
 	defer tx.Rollback()
+	// PostgreSQL: a concurrent settle waits here, then re-evaluates the state and finds nothing.
+	lock := ""
+	if t.store.driver == "postgres" {
+		lock = " FOR UPDATE"
+	}
 	var org, env, appID, instance, planRaw string
 	var revision int
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.instance_id,d.revision,d.plan FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND (d.state='applying' OR (d.state='unknown' AND EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id) AND NOT EXISTS (SELECT 1 FROM deployments n WHERE n.instance_id=d.instance_id AND n.created_at>d.created_at)))`), res.Deployment, endpointID).Scan(&org, &env, &appID, &instance, &revision, &planRaw)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.instance_id,d.revision,d.plan FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND (d.state='applying' OR (d.state='unknown' AND EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id) AND NOT EXISTS (SELECT 1 FROM deployments n WHERE n.instance_id=d.instance_id AND n.created_at>d.created_at)))`+lock), res.Deployment, endpointID).Scan(&org, &env, &appID, &instance, &revision, &planRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -171,11 +176,21 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 	for _, ps := range plan.Services {
 		replaced[ps.Name] = ps
 	}
+	// Each identity names a distinct planned service and runs its pinned image; a success
+	// accounts for every planned service. Checked in full before any write.
+	seen := map[string]bool{}
 	for _, idn := range res.Services {
 		ps, ok := replaced[idn.Service]
-		if !ok {
+		if !ok || seen[idn.Service] || idn.ImageID != ps.ImageID {
 			return ErrInvalid
 		}
+		seen[idn.Service] = true
+	}
+	if res.Outcome == protocol.OutcomeSucceeded && len(seen) != len(plan.Services) {
+		return ErrInvalid
+	}
+	for _, idn := range res.Services {
+		ps := replaced[idn.Service]
 		var name string
 		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT name FROM application_resources WHERE instance_id=? AND endpoint_id=? AND container_id=?`), instance, endpointID, ps.ContainerID).Scan(&name); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -191,8 +206,16 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 		}
 	}
 	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state=?,detail=?,result=?,settled_at=? WHERE id=?`), res.Outcome, protocol.CleanText(res.Detail, 255), string(raw), now, res.Deployment); err != nil {
+	updated, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state=?,detail=?,result=?,settled_at=? WHERE id=? AND state IN ('applying','unknown')`), res.Outcome, protocol.CleanText(res.Detail, 255), string(raw), now, res.Deployment)
+	if err != nil {
 		return err
+	}
+	n, err := updated.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
 	}
 	if res.Outcome == protocol.OutcomeSucceeded {
 		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE application_instances SET previous_revision=current_revision,current_revision=? WHERE id=?`), revision, instance); err != nil {

@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,7 +37,7 @@ func applyFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, string, 
 }
 
 func TestApplyDeploymentBuildsTheRequestAndMovesToApplying(t *testing.T) {
-	st, a, app, endpoint, snapshot, m, d, key := applyFixture(t)
+	st, a, app, endpoint, snapshot, _, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
 	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key)
@@ -68,7 +71,6 @@ func TestApplyDeploymentBuildsTheRequestAndMovesToApplying(t *testing.T) {
 	if _, _, err = ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); !errors.Is(err, ErrAdoptionChanged) {
 		t.Fatalf("second apply: %v", err)
 	}
-	_ = m
 }
 
 func TestApplyDeploymentPreconditions(t *testing.T) {
@@ -170,7 +172,7 @@ func TestSettleDeploymentRebindsAndAdvances(t *testing.T) {
 		t.Fatalf("second settle: %v", err)
 	}
 	var audits int
-	if err := st.db.QueryRow(st.rebind(`SELECT COUNT(*) FROM audit_records WHERE action=? AND resource=?`), "application.deploy", app.ID+"/deployments/"+d.ID).Scan(&audits); err != nil || audits < 1 {
+	if err := st.db.QueryRow(st.rebind(`SELECT COUNT(*) FROM audit_records WHERE action=? AND resource=? AND user_id=? AND result='success' AND details LIKE '%succeeded%'`), "application.deploy", app.ID+"/deployments/"+d.ID, "agent:"+endpoint).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("settle audit: %d %v", audits, err)
 	}
 }
@@ -288,6 +290,104 @@ func TestLateResultAfterReleaseIsIgnored(t *testing.T) {
 	}
 }
 
+func TestSettleDeploymentRefusesIncompleteOrWrongIdentities(t *testing.T) {
+	for name, mutate := range map[string]func(*protocol.DeploymentResult){
+		"succeeded without every service": func(r *protocol.DeploymentResult) { r.Services = r.Services[:0] },
+		"unpinned image":                  func(r *protocol.DeploymentResult) { r.Services[0].ImageID = "sha256:" + strings.Repeat("f", 64) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			st, a, app, endpoint, _, m, d, key := applyFixture(t)
+			ctx := context.Background()
+			ts := st.Tenancy()
+			if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+				t.Fatal(err)
+			}
+			res := settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))
+			mutate(&res)
+			if err := ts.SettleDeployment(ctx, endpoint, res); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("%s: %v", name, err)
+			}
+			got, _ := ts.ReadDeployment(ctx, a, app.ID, d.ID)
+			var container string
+			if err := st.db.QueryRow(st.rebind(`SELECT container_id FROM application_resources WHERE instance_id=?`), m.InstanceID).Scan(&container); err != nil || container != d.Plan.Services[0].ContainerID || got.State != "applying" {
+				t.Fatalf("%s wrote: %s %+v %v", name, container, got, err)
+			}
+		})
+	}
+}
+
+func TestConcurrentSettlesCommitOnce(t *testing.T) {
+	st, a, app, endpoint, _, _, d, key := applyFixture(t)
+	if st.driver != "postgres" {
+		t.Skip("concurrent settles need real row locks")
+	}
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
+	// A success must name every planned service, so it carries the identity; the failure none.
+	results := []protocol.DeploymentResult{settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64)), settledResult(d, protocol.OutcomeFailed, "")}
+	// Hold the row so both settles are in flight and queued on it before either can commit;
+	// otherwise the first usually finishes before the second starts and the race never runs.
+	holder, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	var held string
+	if err := holder.QueryRowContext(ctx, st.rebind(`SELECT id FROM deployments WHERE id=? FOR UPDATE`), d.ID).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 2)
+	for _, res := range results {
+		go func() { errs <- ts.SettleDeployment(ctx, endpoint, res) }()
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		var waiting int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("settles never queued on the row: %d waiting", waiting)
+		}
+		runtime.Gosched()
+	}
+	if err := holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var ok, notFound int
+	for range results {
+		switch err := <-errs; {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrNotFound):
+			notFound++
+		default:
+			t.Fatalf("settle: %v", err)
+		}
+	}
+	if ok != 1 || notFound != 1 {
+		t.Fatalf("settles: %d committed, %d refused", ok, notFound)
+	}
+	var audits int
+	if err := st.db.QueryRow(st.rebind(`SELECT COUNT(*) FROM audit_records WHERE user_id=? AND resource=?`), "agent:"+endpoint, app.ID+"/deployments/"+d.ID).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("audit rows: %d %v", audits, err)
+	}
+	got, _ := ts.ReadDeployment(ctx, a, app.ID, d.ID)
+	instances, _ := ts.ListApplicationInstances(ctx, a, endpoint)
+	want := 0
+	if got.State == "succeeded" {
+		want = 2
+	}
+	if instances[0].CurrentRevision != want || instances[0].PreviousRevision != 0 {
+		t.Fatalf("state %s moved revisions: %+v", got.State, instances[0])
+	}
+}
+
 func TestSettleDeploymentRefusesOversizedResult(t *testing.T) {
 	st, a, app, endpoint, _, _, d, key := applyFixture(t)
 	ctx := context.Background()
@@ -320,7 +420,8 @@ func TestPlanAndReleaseNeverLeaveALivePlanForAReleasedInstance(t *testing.T) {
 	}
 	ctx := context.Background()
 	ts := st.Tenancy()
-	for round := 0; round < 20; round++ {
+	var planFirst, releaseFirst int
+	for round := 0; round < 40; round++ {
 		// Re-adopt if the previous round released.
 		if _, err := ts.ReadApplicationMapping(ctx, a, app.ID); errors.Is(err, ErrNotFound) {
 			p, err := ts.PreviewApplicationAdoption(ctx, a, app.ID, m.Preview.EndpointID, "shop")
@@ -336,14 +437,44 @@ func TestPlanAndReleaseNeverLeaveALivePlanForAReleasedInstance(t *testing.T) {
 			}
 			m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
 		}
-		done := make(chan error, 2)
-		go func() { _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m)); done <- err }()
-		go func() { done <- ts.ReleaseApplication(ctx, a, app.ID, m.InstanceID, "shop") }()
-		<-done
-		<-done
+		// Expire the previous round's plan so release can win this one.
+		if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET expires_at=? WHERE instance_id=? AND state='planned'`), time.Now().UTC().Add(-time.Minute), m.InstanceID); err != nil {
+			t.Fatal(err)
+		}
+		var planErr, releaseErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Duration(rand.IntN(2000)) * time.Microsecond)
+			_, planErr = ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+		}()
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Duration(rand.IntN(2000)) * time.Microsecond)
+			releaseErr = ts.ReleaseApplication(ctx, a, app.ID, m.InstanceID, "shop")
+		}()
+		wg.Wait()
+		for _, err := range []error{planErr, releaseErr} {
+			if err != nil && !errors.Is(err, ErrDeploymentPlanned) && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrAdoptionChanged) {
+				t.Fatalf("round %d: unexpected error: %v", round, err)
+			}
+		}
+		switch {
+		case planErr == nil && releaseErr != nil:
+			planFirst++
+		case releaseErr == nil && planErr != nil:
+			releaseFirst++
+		default:
+			t.Fatalf("round %d: plan %v, release %v", round, planErr, releaseErr)
+		}
 		var live int
 		if err := st.db.QueryRow(st.rebind(`SELECT COUNT(*) FROM deployments d WHERE d.state='planned' AND d.expires_at>? AND NOT EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id)`), time.Now().UTC()).Scan(&live); err != nil || live != 0 {
 			t.Fatalf("round %d: live plan for a released instance: %d %v", round, live, err)
 		}
+	}
+	t.Logf("plan first %d, release first %d", planFirst, releaseFirst)
+	if planFirst == 0 || releaseFirst == 0 {
+		t.Fatalf("one ordering never ran: plan first %d, release first %d", planFirst, releaseFirst)
 	}
 }
