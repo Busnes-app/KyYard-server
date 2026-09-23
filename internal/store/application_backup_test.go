@@ -66,6 +66,10 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, ts.SetApplicationMapping(ctx, a, app.ID, store.MappingRequest{InstanceID: instance.ID, Version: mapping.Version, Digest: mapping.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": strings.Repeat("a", 64)}}))
 	planned, err := ts.PlanDeployment(ctx, a, app.ID, store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: 2, Confirm: "shop"})
 	mustTenant(t, err)
+	registryCredential := "registry-backup-canary"
+	orgAccess := store.TenantAccess{ActorID: "actor", OrganizationID: "a"}
+	_, err = ts.PutRegistry(ctx, orgAccess, store.RegistryInput{Host: "ghcr.io", Name: "GitHub", Username: "bot", Credential: &registryCredential}, cfg.Security.EncryptionKey)
+	mustTenant(t, err)
 	payload, err := backup.Collect(ctx, cfg, "test")
 	mustTenant(t, err)
 	path := filepath.Join(t.TempDir(), "restored.db")
@@ -122,5 +126,10 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 		if values["database-password"] != want {
 			t.Fatal("backup lost encrypted values")
 		}
+	}
+	access, err := restored.Tenancy().ResolveRegistryAccess(ctx, orgAccess, "ghcr.io/org/app:v1", restoredKey)
+	mustTenant(t, err)
+	if access.Credential == nil || access.Credential.Username != "bot" || access.Credential.Secret != registryCredential {
+		t.Fatal("backup lost the registry credential")
 	}
 }

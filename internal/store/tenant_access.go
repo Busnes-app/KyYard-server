@@ -19,17 +19,17 @@ import (
 // lock before the read: a deferred read-then-write transaction would otherwise lose to a
 // concurrent revocation and fail with BUSY_SNAPSHOT instead of waiting behind it.
 func (t *tenancyStore) withTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, "", nil, true, op)
+	return t.run(ctx, a, action, nil, nil, true, op)
 }
 
 // withTenantTarget is withTenant auditing an explicit target (for example a member's user ID).
 func (t *tenancyStore) withTenantTarget(ctx context.Context, a TenantAccess, action permissions.Action, target string, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, target, nil, true, op)
+	return t.run(ctx, a, action, &target, nil, true, op)
 }
 
 // withTenantTargetDetails is withTenantTarget whose success row carries the details op sets.
 func (t *tenancyStore) withTenantTargetDetails(ctx context.Context, a TenantAccess, action permissions.Action, target string, details *string, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, target, details, true, op)
+	return t.run(ctx, a, action, &target, details, true, op)
 }
 
 // auditedReads are the low-volume, sensitive reads that keep a success row: who looked at the
@@ -48,10 +48,12 @@ var auditedReads = map[permissions.Action]bool{
 // list reads arrive every few seconds per endpoint and would be the audit-growth threat
 // themselves.
 func (t *tenancyStore) readTenant(ctx context.Context, a TenantAccess, action permissions.Action, op func(*sql.Tx) error) error {
-	return t.run(ctx, a, action, "", nil, false, op)
+	return t.run(ctx, a, action, nil, nil, false, op)
 }
 
-func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, target string, details *string, lock bool, op func(*sql.Tx) error) error {
+// run audits target as the resource when set; op may rewrite it, for an operation that learns
+// its row only inside the transaction.
+func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, target *string, details *string, lock bool, op func(*sql.Tx) error) error {
 	if a.ActorID == "" || a.OrganizationID == "" {
 		return ErrForbidden
 	}
@@ -62,10 +64,12 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 	if a.EnvironmentID != "" {
 		record.Resource = a.EnvironmentID
 	}
-	if target != "" {
-		record.Resource = target
+	resource := func() string {
+		if target != nil && *target != "" {
+			return protocol.CleanText(*target, 255)
+		}
+		return protocol.CleanText(record.Resource, 255)
 	}
-	record.Resource = protocol.CleanText(record.Resource, 255)
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -107,6 +111,7 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 			record.Result = "denied"
 		}
 		// Never put SQL errors, names, request bodies or credentials into audit details.
+		record.Resource = resource()
 		if auditErr := t.store.Audit().LogAudit(ctx, record); auditErr != nil {
 			return auditErr
 		}
@@ -119,6 +124,7 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 		return tx.Commit()
 	}
 	record.Result = "success"
+	record.Resource = resource()
 	if details != nil {
 		record.Details = protocol.CleanText(*details, 255)
 	}

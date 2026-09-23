@@ -45,6 +45,10 @@ const (
 	// ApplicationDeploy mints and, in a later slice, applies a deployment plan. The matrix gives
 	// it to developers because a plan is desired state made concrete, not host authority.
 	ApplicationDeploy Action = "application.deploy"
+	// RegistryRead lists registries and the anonymous-pull policy; rows never carry a secret.
+	RegistryRead Action = "registry.read"
+	// RegistryManage writes registries, their credentials and the anonymous-pull opt-in.
+	RegistryManage Action = "registry.manage"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -55,30 +59,30 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage:
 			return true
 		}
 	case "environment_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs:
+		case ApplicationAdopt, ApplicationRelease, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead:
 			return true
 		}
 	case "operator":
 		// Day-to-day operations, per docs/authorization-matrix.md: an operator restarts a
 		// container but does not destroy one.
 		switch action {
-		case ApplicationRead, OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate, ImagePull, ContainerLogs:
+		case ApplicationRead, OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate, ImagePull, ContainerLogs, RegistryRead:
 			return true
 		}
 	case "developer":
 		// A developer reads logs and edits saved desired state, but has no runtime
 		// operation, destruction or exec authority.
 		switch action {
-		case ApplicationRead, ApplicationEdit, ApplicationDeploy, OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs:
+		case ApplicationRead, ApplicationEdit, ApplicationDeploy, OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, RegistryRead:
 			return true
 		}
 	case "read_only":
-		return action == ApplicationRead || action == OrganizationRead || action == EnvironmentRead || action == EndpointRead
+		return action == ApplicationRead || action == OrganizationRead || action == EnvironmentRead || action == EndpointRead || action == RegistryRead
 	}
 	return false
 }

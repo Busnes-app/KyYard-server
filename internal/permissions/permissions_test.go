@@ -81,3 +81,17 @@ func TestApplicationDeployFollowsTheMatrix(t *testing.T) {
 		}
 	}
 }
+
+// Every member reads the registry list (it carries no secret); only the organization
+// administrator configures registries, credentials and the anonymous-pull opt-in.
+func TestRegistryRoleMatrix(t *testing.T) {
+	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer", "read_only", "admin", "unknown", ""} {
+		member := role == "organization_admin" || role == "environment_admin" || role == "operator" || role == "developer" || role == "read_only"
+		if Allows(role, RegistryRead) != member || PlatformAllows(role, RegistryRead) {
+			t.Errorf("%s registry.read", role)
+		}
+		if Allows(role, RegistryManage) != (role == "organization_admin") || PlatformAllows(role, RegistryManage) {
+			t.Errorf("%s registry.manage", role)
+		}
+	}
+}
