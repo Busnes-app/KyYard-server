@@ -18,10 +18,22 @@ const APPLY_CODES: Record<string, string> = {
   endpoint_offline: 'The host is not connected. Reconnect it before applying.',
   deployment_not_sent: 'The deployment was not sent. Refresh and try again.',
 };
-// Fixed adapter detail prefixes; anything else is server text and stays hidden.
-const FIXED_DETAIL_PREFIXES = ['the container', 'the pinned image', 'the runtime', 'the daemon', 'the deployment', 'not enough time', 'a container', 'service '];
+// Fixed adapter detail prefixes (internal/runtime/docker/deploy.go, internal/agent/client/deployments.go);
+// anything else is server text and stays hidden.
+const FIXED_DETAIL_PREFIXES = [
+  'the container', 'the pinned image', 'the runtime', 'the daemon', 'the deployment', 'this deployment',
+  'not enough time', 'a container', 'service ', 'the host reported', 'the run was cancelled',
+  'this agent', 'invalid deployment request',
+];
 function fixedDetail(detail: string): string {
   return FIXED_DETAIL_PREFIXES.some(p => detail.startsWith(p)) ? detail : '';
+}
+function isDeployment(x: unknown): x is Deployment {
+  if (!x || typeof x !== 'object') return false;
+  const d = x as Record<string, unknown>;
+  return typeof d.id === 'string' && typeof d.instance_id === 'string' && typeof d.state === 'string'
+    && typeof d.expires_at === 'string' && typeof d.expired === 'boolean'
+    && typeof d.plan === 'object' && d.plan !== null;
 }
 function explanationFor(result: Deployment['result']): string {
   const failing = result?.steps.find(s => s.outcome !== 'succeeded' && s.outcome !== 'skipped');
@@ -46,8 +58,10 @@ function isExpired(d: Deployment): boolean {
 function ResultSection({ current }: { current: Deployment }) {
   const steps = usePagination(current.result?.steps ?? [], `${current.id}-steps`);
   const explanation = explanationFor(current.result);
+  const detail = fixedDetail(current.detail);
   return <>
-    <p>State {current.state}{current.settled_at ? `, settled ${new Date(current.settled_at).toLocaleString()}` : ''}.</p>
+    <p>State: {current.state}{current.settled_at ? `, settled ${new Date(current.settled_at).toLocaleString()}` : ''}.</p>
+    {detail && <p>{detail}</p>}
     {explanation && <p role="alert">{explanation}</p>}
     {current.result && <>
       {steps.controls}
@@ -80,18 +94,41 @@ function PlanView({ base, instanceID }: Props) {
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyBlocked, setApplyBlocked] = useState(false);
   const [applyError, setApplyError] = useState('');
+  const [pollPaused, setPollPaused] = useState(false);
   useEffect(() => { setApplyConfirm(''); setApplyBusy(false); setApplyBlocked(false); setApplyError(''); }, [current?.id]);
+  // Polls the row directly (never through deployments.reload(), which resets that resource to
+  // 'loading'/null and would unmount this whole section every tick). A held row keeps the panel
+  // mounted; only the explicit "Refresh" buttons touch the shared deployments resource.
   useEffect(() => {
+    setPollPaused(false);
     if (!current || current.state !== 'applying') return;
+    const controller = new AbortController();
     let ticks = 0;
+    let failures = 0;
     const id = window.setInterval(() => {
       ticks += 1;
       if (ticks > 144) { window.clearInterval(id); return; }
-      deployments.reload();
+      fetch(`${base}/deployments`, { signal: controller.signal, cache: 'no-store' })
+        .then(async r => {
+          if (controller.signal.aborted) return;
+          if (!r.ok) throw new Error('poll status');
+          const body: unknown = await r.json();
+          if (controller.signal.aborted) return;
+          const row = Array.isArray(body) ? body.filter(isDeployment).find(d => d.instance_id === instanceID) : undefined;
+          if (!row) throw new Error('poll body');
+          failures = 0;
+          setPollPaused(false);
+          setPlanned(row);
+          if (row.state !== 'applying') window.clearInterval(id);
+        })
+        .catch(() => {
+          if (controller.signal.aborted) return;
+          failures += 1;
+          if (failures >= 3) { setPollPaused(true); window.clearInterval(id); }
+        });
     }, 5000);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.id, current?.state]);
+    return () => { controller.abort(); window.clearInterval(id); };
+  }, [base, instanceID, current?.id, current?.state]);
 
   const plan = async () => {
     if (!mapping.data) return;
@@ -101,7 +138,6 @@ function PlanView({ base, instanceID }: Props) {
       if (r.ok) {
         const body: unknown = await r.json().catch(() => null);
         if (body && typeof body === 'object' && 'instance_id' in body) setPlanned(body as Deployment);
-        else deployments.reload();
         setConfirm('');
         return;
       }
@@ -125,7 +161,6 @@ function PlanView({ base, instanceID }: Props) {
         const body: unknown = await r.json().catch(() => null);
         if (body && typeof body === 'object' && 'instance_id' in body) setPlanned(body as Deployment);
         setApplyConfirm('');
-        deployments.reload();
         return;
       }
       setApplyBlocked(true);
@@ -146,6 +181,7 @@ function PlanView({ base, instanceID }: Props) {
     <StateNotice state={deployments.state} onRetry={reload} />
     {deployments.state === 'ready' && <>
       {mismatched && <p role="alert">Adoption changed. Refresh applications before planning.</p>}
+      {pollPaused && <p role="status">Status updates paused; refresh to continue.</p>}
       {!mismatched && (current ? <>
         <p>Plan for revision {current.revision}, mapping version {current.mapping_version}, project <bdi>{current.plan.project}</bdi>. {isExpired(current) ? 'This plan has expired; plan again to continue.' : `Expires ${new Date(current.expires_at).toLocaleString()}.`} It remains inert on its own; only planning again replaces it.</p>
         {page.controls}

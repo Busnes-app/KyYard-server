@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ApplicationDeploymentPlan } from './ApplicationDeploymentPlan';
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const mapping = { instance_id: 'i', version: 3, mapped_revision: 2, services: [], bindings: {}, preview: { revision: 2, digest: 'd', project: 'shop', endpoint_name: 'Docker', containers: [] } };
 const plan = { id: 'd1', application_id: 'app', instance_id: 'i', endpoint_id: 'host', state: 'planned', revision: 2, spec_digest: 'x', mapping_version: 1, created_by: 'u', created_at: '2026-09-22T12:00:00Z', expires_at: '2999-01-01T00:00:00Z', expired: false, detail: '', result: null, plan: { project: 'shop', services: [{ name: 'web', reference: 'nginx:1', image_id: `sha256:${'a'.repeat(64)}`, image_digest: '', container_id: 'b'.repeat(64), replaces: { container_id: 'b'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1 }, restart: 'always', ports: [], secret_refs: ['TOKEN'] }] } };
 const props = { base: '/app', instanceID: 'i' };
@@ -88,7 +88,10 @@ it('applies on typed confirmation and polls until settled', async () => {
   const post = fetcher.mock.calls.find(c => String(c[0]).endsWith('/apply'));
   expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({ confirm: 'shop' });
   // vi.waitFor's own polling misbehaves under fake timers here; act() forces passive effects
-  // (the setInterval registration and its state updates) to flush on each advance.
+  // (the setInterval registration and its state updates) to flush on each advance. The interval
+  // is registered mid-flight of the first advance (after the apply POST resolves), so its first
+  // tick lands in the *second* advance; three advances cover two actual polls (reads 2 and 3).
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   expect(document.body.textContent).toMatch(/succeeded/i);
@@ -113,4 +116,69 @@ it('shows the plan even when the mapping read fails', async () => {
   await screen.findByText(`sha256:${'a'.repeat(64)}`);
   expect(document.body.textContent).not.toContain('secret-canary');
   expect(screen.queryByRole('button', { name: 'Plan deployment' })).toBeNull();
+});
+it('keeps the panel mounted across polls instead of flashing loading', async () => {
+  vi.useFakeTimers();
+  let reads = 0;
+  const fetcher = vi.fn(async (url: string) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (String(url).endsWith('/apply')) return new Response(JSON.stringify(applying), { status: 202 });
+    reads++;
+    return new Response(JSON.stringify([reads === 1 ? plan : applying]));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
+  fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(document.body.textContent).toMatch(/State: applying/);
+  expect(document.body.textContent).not.toMatch(/Loading/);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(document.body.textContent).toMatch(/State: applying/);
+  expect(document.body.textContent).not.toMatch(/Loading/);
+  vi.useRealTimers();
+});
+it('pauses status updates after three consecutive poll failures and stops polling', async () => {
+  vi.useFakeTimers();
+  let reads = 0;
+  const fetcher = vi.fn(async (url: string) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (String(url).endsWith('/apply')) return new Response(JSON.stringify(applying), { status: 202 });
+    reads++;
+    if (reads === 1) return new Response(JSON.stringify([plan]));
+    return new Response('server error', { status: 500 });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
+  fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
+  // The interval is registered mid-flight of the first advance, so its first tick lands in the
+  // second advance; four advances cover three actual failed polls.
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // registers the interval
+  expect(document.body.textContent).not.toContain('Status updates paused');
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 1
+  expect(document.body.textContent).not.toContain('Status updates paused');
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 2
+  expect(document.body.textContent).not.toContain('Status updates paused');
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 3: pause
+  expect(document.body.textContent).toContain('Status updates paused; refresh to continue.');
+  const before = fetcher.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
+  expect(fetcher.mock.calls.length).toBe(before); // no further polling once paused
+  vi.useRealTimers();
+});
+it('shows a step detail with a recognized adapter prefix and hides an unrecognized one', async () => {
+  const mixed = { ...plan, state: 'failed', detail: '', result: { steps: [
+    { service: 'web', step: 'precondition', outcome: 'denied', detail: 'this agent is already applying a deployment' },
+    { service: 'web', step: 'image', outcome: 'skipped', detail: 'unexpected raw server text' },
+  ], services: [] } };
+  vi.stubGlobal('fetch', stubFetch([mixed]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('this agent is already applying a deployment');
+  expect(document.body.textContent).not.toContain('unexpected raw server text');
 });
