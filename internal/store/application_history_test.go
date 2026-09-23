@@ -125,7 +125,7 @@ func TestRemoveApplicationBuildsARemovalAndSettles(t *testing.T) {
 	if err != nil || got.Kind != "remove" || got.EndpointName != "host" || got.Plan.Services == nil {
 		t.Fatalf("read: %+v %v", got, err)
 	}
-	if n := countRows(t, st, `SELECT COUNT(*) FROM audit_records WHERE action='application.destroy' AND user_id=? AND resource=? AND result='success'`, a.ActorID, app.ID+"/removal/"+d.ID); n != 1 {
+	if n := countRows(t, st, `SELECT COUNT(*) FROM audit_records WHERE action='application.destroy' AND user_id=? AND resource=? AND result='success'`, a.ActorID, app.ID+"/deployments/"+d.ID); n != 1 {
 		t.Fatalf("removal audit: %d", n)
 	}
 	res := removalResult(d, protocol.OutcomeSucceeded, removalSteps("web", protocol.OutcomeSucceeded, protocol.OutcomeSucceeded, protocol.OutcomeSucceeded))
@@ -287,9 +287,10 @@ func TestRemovalPartialSettle(t *testing.T) {
 	st, a, app, endpoint, instance, d := twoContainerRemoval(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
+	// The second target's remove "succeeded" after a denied precondition: never trusted.
 	res := removalResult(d, protocol.OutcomeDenied,
 		removalSteps("unmapped-aaaaaaaaaaaa", protocol.OutcomeSucceeded, protocol.OutcomeSucceeded, protocol.OutcomeSucceeded),
-		removalSteps("unmapped-cccccccccccc", protocol.OutcomeDenied, protocol.OutcomeSkipped, protocol.OutcomeSkipped))
+		removalSteps("unmapped-cccccccccccc", protocol.OutcomeDenied, protocol.OutcomeSkipped, protocol.OutcomeSucceeded))
 	res.Detail = "fixed text"
 	if err := ts.SettleDeployment(ctx, endpoint, res); err != nil {
 		t.Fatal(err)
@@ -300,6 +301,9 @@ func TestRemovalPartialSettle(t *testing.T) {
 	}
 	if countRows(t, st, `SELECT COUNT(*) FROM application_instances WHERE id=?`, instance) != 1 || countRows(t, st, `SELECT COUNT(*) FROM applications WHERE id=? AND removed_at IS NULL`, app.ID) != 1 {
 		t.Fatal("partial removal released the instance")
+	}
+	if got, err := ts.ReadDeployment(ctx, a, app.ID, d.ID); err != nil || got.State != "denied" || got.Result == nil || len(got.Result.Steps) != 6 {
+		t.Fatalf("partial result not recorded: %+v %v", got, err)
 	}
 	// Again: the remaining container is already gone, which counts as removed.
 	d, _, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: instance, Confirm: "shop"})
@@ -377,6 +381,8 @@ func TestPruneKeepsCurrentAndPreviousHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous := historyRow(t, st, d.ID, 1, "succeeded", old)
+	olderPrevious := historyRow(t, st, d.ID, 1, "succeeded", old.Add(-time.Hour))
+	failedCurrent := historyRow(t, st, d.ID, 2, "failed", old.Add(time.Hour))
 	stale := historyRow(t, st, d.ID, 3, "failed", old)
 	recent := historyRow(t, st, d.ID, 3, "failed", time.Now().UTC())
 	unsettled := historyRow(t, st, d.ID, 3, "unknown", old)
@@ -394,8 +400,9 @@ func TestPruneKeepsCurrentAndPreviousHistory(t *testing.T) {
 	for _, row := range list {
 		kept[row.ID] = true
 	}
-	if !kept[d.ID] || !kept[previous] || kept[stale] || !kept[recent] || !kept[unsettled] {
-		t.Fatalf("retention: %v (current %s previous %s stale %s recent %s unsettled %s)", kept, d.ID, previous, stale, recent, unsettled)
+	// Kept: the latest success at current and previous, anything recent or unsettled.
+	if !kept[d.ID] || !kept[previous] || kept[olderPrevious] || kept[failedCurrent] || kept[stale] || !kept[recent] || !kept[unsettled] {
+		t.Fatalf("retention: %v (current %s previous %s older previous %s failed current %s stale %s recent %s unsettled %s)", kept, d.ID, previous, olderPrevious, failedCurrent, stale, recent, unsettled)
 	}
 }
 
@@ -472,6 +479,72 @@ func TestAbandonSweepAndFailAreAudited(t *testing.T) {
 	}
 	if n := audits(t, st, app.ID, d.ID, "swept", "unknown"); n != 1 {
 		t.Fatalf("sweep audits: %d", n)
+	}
+
+	// A removal's transitions audit as application.destroy.
+	st, _, app, endpoint, _, d = twoContainerRemoval(t)
+	if _, err := st.Tenancy().AbandonDeployments(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tenancy().FailDeployment(ctx, d.ID, "never sent"); err != nil {
+		t.Fatal(err)
+	}
+	for _, outcome := range []string{"abandoned", "not_sent"} {
+		if n := countRows(t, st, `SELECT COUNT(*) FROM audit_records WHERE user_id='system' AND action='application.destroy' AND resource=? AND details=?`, app.ID+"/deployments/"+d.ID, "outcome="+outcome); n != 1 {
+			t.Fatalf("removal %s audits: %d", outcome, n)
+		}
+	}
+}
+
+func TestRemovedApplicationRevivedByAdoption(t *testing.T) {
+	st, a, app, endpoint, snapshot, m := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	d, _, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SettleDeployment(ctx, endpoint, removalResult(d, protocol.OutcomeSucceeded, removalSteps("web", protocol.OutcomeSucceeded, protocol.OutcomeSucceeded, protocol.OutcomeSucceeded))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(st.rebind(`UPDATE applications SET removed_at=? WHERE id=?`), time.Now().UTC().Add(-ApplicationRemovedRetention-time.Hour), app.ID); err != nil {
+		t.Fatal(err)
+	}
+	putAdoptionSnapshot(t, st, endpoint, snapshot)
+	p, err := ts.PreviewApplicationAdoption(ctx, a, app.ID, endpoint, "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := ts.AdoptApplication(ctx, a, app.ID, AdoptionRequest{EndpointID: endpoint, Project: "shop", Digest: p.Digest, Confirm: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apps, err := ts.ListApplications(ctx, a, 0, 10)
+	if err != nil || len(apps) != 1 || apps[0].RemovedAt != nil {
+		t.Fatalf("re-adopted still removed: %+v %v", apps, err)
+	}
+	if err := ts.ReleaseApplication(ctx, a, app.ID, instance.ID, "shop"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, st, `SELECT COUNT(*) FROM applications WHERE id=?`, app.ID) != 1 {
+		t.Fatal("a revived application was pruned")
+	}
+}
+
+func TestMigration25RefusesUnmappedApply(t *testing.T) {
+	st, _, app, endpoint, _, m := planFixture(t)
+	insert := func(kind string) error {
+		_, err := st.db.Exec(st.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,kind,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at) SELECT ?,organization_id,environment_id,id,?,?,'shop',?,'failed',1,'x',0,'{}','actor',created_at,created_at FROM applications WHERE id=?`), uuid.NewString(), m.InstanceID, endpoint, kind, app.ID)
+		return err
+	}
+	if err := insert("apply"); err == nil {
+		t.Fatal("apply row with mapping_version 0 accepted")
+	}
+	if err := insert("remove"); err != nil {
+		t.Fatalf("remove row with mapping_version 0: %v", err)
 	}
 }
 

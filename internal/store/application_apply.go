@@ -146,7 +146,7 @@ func (t *tenancyStore) FailDeployment(ctx context.Context, id, detail string) er
 }
 
 // systemTransition moves the deployments matching filter with set, one audited row each under
-// the system actor. It selects first and updates each row under the same filter, so a row a
+// the system actor (a removal's under application.destroy). It selects first and updates each row under the same filter, so a row a
 // concurrent settle took is neither changed nor audited.
 func (t *tenancyStore) systemTransition(ctx context.Context, filter string, arg any, set string, setArgs []any, outcome, result string) (int64, error) {
 	tx, err := t.store.db.BeginTx(ctx, nil)
@@ -154,15 +154,15 @@ func (t *tenancyStore) systemTransition(ctx context.Context, filter string, arg 
 		return 0, err
 	}
 	defer tx.Rollback()
-	type row struct{ id, org, env, app string }
+	type row struct{ id, org, env, app, kind string }
 	var affected []row
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,environment_id,application_id FROM deployments WHERE `+filter), arg)
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,environment_id,application_id,kind FROM deployments WHERE `+filter), arg)
 	if err != nil {
 		return 0, err
 	}
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.org, &r.env, &r.app); err != nil {
+		if err := rows.Scan(&r.id, &r.org, &r.env, &r.app, &r.kind); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -189,7 +189,11 @@ func (t *tenancyStore) systemTransition(ctx context.Context, filter string, arg 
 		if n != 1 {
 			continue
 		}
-		if err := t.auditDeployment(ctx, tx, "system", permissions.ApplicationDeploy, r.org, r.env, r.app, r.id, outcome, result, now); err != nil {
+		action := permissions.ApplicationDeploy
+		if r.kind == "remove" {
+			action = permissions.ApplicationDestroy
+		}
+		if err := t.auditDeployment(ctx, tx, "system", action, r.org, r.env, r.app, r.id, outcome, result, now); err != nil {
 			return 0, err
 		}
 		total++
@@ -334,8 +338,9 @@ func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, 
 	return nil
 }
 
-// settleRemoval forgets each target the steps show is off the host: its remove step
-// succeeded, or its precondition found it already gone (stop and remove skipped). Only a
+// settleRemoval forgets each target the steps show is off the host: its precondition matched
+// the pinned identity (or found it gone) and then its remove step succeeded, or stop and remove
+// were skipped because it was already gone. Only a
 // success that accounts for every target releases the instance and marks the application
 // removed; anything less keeps the rest adopted. Checked in full before any write.
 func (t *tenancyStore) settleRemoval(ctx context.Context, tx *sql.Tx, endpointID, appID, instance string, plan DeploymentPlan, res protocol.DeploymentResult) error {
@@ -362,7 +367,7 @@ func (t *tenancyStore) settleRemoval(ctx context.Context, tx *sql.Tx, endpointID
 	gone := []string{}
 	for service, container := range targets {
 		o := outcomes[service]
-		if o[protocol.StepRemove] == protocol.OutcomeSucceeded || (o[protocol.StepPrecondition] == protocol.OutcomeSucceeded && o[protocol.StepStop] == protocol.OutcomeSkipped && o[protocol.StepRemove] == protocol.OutcomeSkipped) {
+		if o[protocol.StepPrecondition] == protocol.OutcomeSucceeded && (o[protocol.StepRemove] == protocol.OutcomeSucceeded || (o[protocol.StepStop] == protocol.OutcomeSkipped && o[protocol.StepRemove] == protocol.OutcomeSkipped)) {
 			gone = append(gone, container)
 		}
 	}
@@ -462,7 +467,7 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 	id := uuid.NewString()
 	var out *Deployment
 	var req *protocol.RemovalRequest
-	err = t.withTenantTarget(ctx, a, permissions.ApplicationDestroy, appID.String()+"/removal/"+id, func(tx *sql.Tx) error {
+	err = t.withTenantTarget(ctx, a, permissions.ApplicationDestroy, appID.String()+"/deployments/"+id, func(tx *sql.Tx) error {
 		// Application row first, the lock order every deployment writer takes.
 		lock := ""
 		if t.store.driver == "postgres" {

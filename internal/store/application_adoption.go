@@ -163,6 +163,10 @@ func (t *tenancyStore) AdoptApplication(ctx context.Context, a TenantAccess, app
 		if err != nil {
 			return err
 		}
+		// Adopting again revives a removed application: it is managed, not awaiting retention.
+		if _, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE applications SET removed_at=NULL WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, app); err != nil {
+			return err
+		}
 		for _, c := range instance.Containers {
 			if _, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO application_resources(instance_id,endpoint_id,container_id,name,image_id,created_at) VALUES(?,?,?,?,?,?)`), instance.ID, instance.EndpointID, c.ID, c.Name, c.ImageID, c.CreatedAt); err != nil {
 				return err

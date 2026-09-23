@@ -28,8 +28,8 @@ const (
 	// pressure, so summaries give space back as the raw window does rather than being the one
 	// telemetry pruning cannot reclaim.
 	DegradedRollupRetention = 24 * time.Hour
-	// DeploymentHistoryRetention keeps settled deployments; the rows of an instance's current
-	// and previous revision stay past it.
+	// DeploymentHistoryRetention keeps settled deployments; the latest succeeded row of an
+	// instance's current and previous revision stays past it.
 	DeploymentHistoryRetention = 90 * 24 * time.Hour
 	// ApplicationRemovedRetention keeps a removed application's revisions and history.
 	ApplicationRemovedRetention = 90 * 24 * time.Hour
@@ -237,7 +237,7 @@ func (t *tenancyStore) Prune(ctx context.Context) (int64, error) {
 		// Settled commands only. One whose outcome nobody knows is the record an operator
 		// most needs, so it stays until they have dealt with it.
 		{`DELETE FROM endpoint_commands WHERE id IN (SELECT id FROM endpoint_commands WHERE settled_at IS NOT NULL AND settled_at<? LIMIT ?)`, now.Add(-CommandRetention)},
-		{`DELETE FROM deployments WHERE id IN (SELECT d.id FROM deployments d WHERE d.settled_at IS NOT NULL AND d.settled_at<? AND NOT EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id AND d.revision IN (i.current_revision,i.previous_revision)) LIMIT ?)`, now.Add(-DeploymentHistoryRetention)},
+		{`DELETE FROM deployments WHERE id IN (SELECT d.id FROM deployments d WHERE d.settled_at IS NOT NULL AND d.settled_at<? AND NOT (d.kind='apply' AND d.state='succeeded' AND EXISTS (SELECT 1 FROM application_instances i WHERE i.id=d.instance_id AND d.revision IN (i.current_revision,i.previous_revision)) AND NOT EXISTS (SELECT 1 FROM deployments n WHERE n.instance_id=d.instance_id AND n.revision=d.revision AND n.kind='apply' AND n.state='succeeded' AND (n.settled_at>d.settled_at OR (n.settled_at=d.settled_at AND n.id>d.id)))) LIMIT ?)`, now.Add(-DeploymentHistoryRetention)},
 	} {
 		result, err := t.store.db.ExecContext(ctx, t.store.rebind(q.sql), q.arg, PruneBatch)
 		if err != nil {

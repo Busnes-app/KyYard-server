@@ -750,7 +750,7 @@ ALTER TABLE deployments ADD COLUMN applied_by TEXT NOT NULL DEFAULT '', ADD COLU
 CREATE UNIQUE INDEX idx_deployments_live ON deployments(instance_id) WHERE state IN ('planned','applying');
 ALTER TABLE application_instances ADD COLUMN current_revision INTEGER NOT NULL DEFAULT 0 CHECK(current_revision BETWEEN 0 AND 100), ADD COLUMN previous_revision INTEGER NOT NULL DEFAULT 0 CHECK(previous_revision BETWEEN 0 AND 100);
 `},
-	// A removal may run on an instance never mapped (mapping_version 0), so the check widens.
+	// A removal may run on an instance never mapped (mapping_version 0); an apply row may not.
 	{Version: 25, Name: "deployment_history", SQLite: `CREATE TABLE deployments_new (
  id TEXT PRIMARY KEY,
  organization_id TEXT NOT NULL,
@@ -762,7 +762,7 @@ ALTER TABLE application_instances ADD COLUMN current_revision INTEGER NOT NULL D
  state TEXT NOT NULL CHECK(state IN ('planned','applying','succeeded','failed','denied','timed_out','unknown')),
  revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 100),
  spec_digest TEXT NOT NULL,
- mapping_version INTEGER NOT NULL CHECK(mapping_version BETWEEN 0 AND 1000000000),
+ mapping_version INTEGER NOT NULL CHECK(mapping_version BETWEEN 0 AND 1000000000 AND (kind='remove' OR mapping_version>=1)),
  plan TEXT NOT NULL CHECK(length(plan)<=65536),
  created_by TEXT NOT NULL,
  created_at DATETIME NOT NULL,
@@ -784,7 +784,7 @@ CREATE UNIQUE INDEX idx_deployments_live ON deployments(instance_id) WHERE state
 ALTER TABLE applications ADD COLUMN removed_at DATETIME;
 `, Postgres: `ALTER TABLE deployments ADD COLUMN kind TEXT NOT NULL DEFAULT 'apply' CHECK(kind IN ('apply','remove'));
 ALTER TABLE deployments DROP CONSTRAINT deployments_mapping_version_check;
-ALTER TABLE deployments ADD CONSTRAINT deployments_mapping_version_check CHECK(mapping_version BETWEEN 0 AND 1000000000);
+ALTER TABLE deployments ADD CONSTRAINT deployments_mapping_version_check CHECK(mapping_version BETWEEN 0 AND 1000000000 AND (kind='remove' OR mapping_version>=1));
 ALTER TABLE applications ADD COLUMN removed_at TIMESTAMPTZ;
 `},
 }
