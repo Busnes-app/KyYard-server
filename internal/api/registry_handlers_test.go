@@ -70,6 +70,25 @@ func TestRegistryRoutes(t *testing.T) {
 		t.Fatalf("put row: %+v", row)
 	}
 
+	// Absent or null credential keeps the stored secret; "" clears it.
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"host":"ghcr.io","name":"GitHub","username":"bot","allow_private":false}`, true},
+		{`{"host":"ghcr.io","name":"GitHub","username":"bot","credential":null,"allow_private":false}`, true},
+		{`{"host":"ghcr.io","name":"GitHub","username":"bot","credential":"","allow_private":false}`, false},
+		{put, true},
+	} {
+		w := check(admin, "PUT", list, tc.body, 200)
+		noSecret(w)
+		var got store.Registry
+		must(json.Unmarshal(w.Body.Bytes(), &got))
+		if got.ID != row.ID || got.HasCredential != tc.want {
+			t.Fatalf("%s: %+v, want has_credential=%t", tc.body, got, tc.want)
+		}
+	}
+
 	for _, c := range []*http.Cookie{admin, envadmin} {
 		w := check(c, "GET", list, "", 200)
 		noSecret(w)
@@ -107,6 +126,9 @@ func TestRegistryRoutes(t *testing.T) {
 	check(admin, "PUT", "/api/organizations/b/registry-policy", `{"anonymous_pull_enabled":true}`, 403)
 
 	check(envadmin, "DELETE", list+"/"+row.ID, "", 403)
+	if w := tenantRequest(s, admin, "DELETE", list+"/"+row.ID, "", false); w.Code != 403 {
+		t.Fatalf("registry delete bypassed CSRF: %d", w.Code)
+	}
 	check(admin, "DELETE", list+"/00000000-0000-4000-8000-000000000000", "", 404)
 	check(admin, "DELETE", list+"/"+row.ID, "", 204)
 	check(admin, "DELETE", list+"/"+row.ID, "", 404)
