@@ -62,12 +62,12 @@ The result is a `DeploymentResult` with steps `precondition`, `stop`, `remove` p
 Adapter (`internal/runtime/docker/remove.go`): `func (c *Client) Remove(ctx, req
 protocol.RemovalRequest) protocol.DeploymentResult`. Per target in order: precondition
 (`GET /containers/{id}/json`: Id, Image, Created second must match; 404 → the container is
-already gone, recorded `succeeded` with detail "the container was already gone" and the
-target's remaining steps `skipped`), stop (`?t=10`, 304 ok, `operationBudget`), remove
+already gone: `succeeded` with no detail, since a succeeded step carries none and the server
+treats removed and absent alike, and the target's stop and remove `skipped`), stop (`?t=10`, 304 ok, `operationBudget`), remove
 (`DELETE /containers/{id}` without `v=1`, 404 counts as succeeded). Any other non-success ends
 the run; later steps `skipped`. Networks and volumes are never touched; the project network
-(if any) stays. Same outcome classification as `Deploy`. A time guard refuses to start a target
-unless `operationBudget + 2*callBudget` remain.
+(if any) stays. Same outcome classification as `Deploy`. A time guard before each target's stop
+refuses to go on unless `operationBudget + 2*callBudget` remain.
 
 Agent: `Options.Remove`; capability `deployment.remove` advertised when set; the deployer
 handles `deployment.remove` exactly like `deployment.apply` (size cap, Validate, foreign
