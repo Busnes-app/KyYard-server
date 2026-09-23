@@ -125,6 +125,8 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	}
 	commands := openLedger(commandDir)
 	deployments := newDeployer(ctx, commandDir, &opts)
+	// A run outlives its session; Run returns only once the result is on disk.
+	defer deployments.wait()
 	running := newBudget()
 	execRunning := &execBudget{}
 	opts.inspectionSlots = make(chan struct{}, protocol.MaxInspectionsPerEndpoint)

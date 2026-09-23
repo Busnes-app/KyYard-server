@@ -127,6 +127,11 @@ func TestDeployerStaysSilentForTheRunningDeployment(t *testing.T) {
 	d.handle(ctx, "ep_1", raw, out)
 	<-started
 	d.handle(ctx, "ep_1", raw, out)
+	// Still silent once the frame's deadline has passed: the running ID is checked first.
+	late := req
+	late.Deadline = time.Now().Add(-time.Minute)
+	rawLate, _ := json.Marshal(late)
+	d.handle(ctx, "ep_1", rawLate, out)
 	other := testRequest("ep_1")
 	other.Deployment = "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c"
 	raw2, _ := json.Marshal(other)
@@ -143,6 +148,59 @@ func TestDeployerStaysSilentForTheRunningDeployment(t *testing.T) {
 	case f := <-out:
 		t.Fatalf("extra answer: %s", payloadText(f))
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// Cancelling the root lets the run finish; wait returns only once its result is on disk.
+func TestDeployerWaitsForTheRunToRecord(t *testing.T) {
+	dir := t.TempDir()
+	started := make(chan struct{})
+	root, cancel := context.WithCancel(context.Background())
+	d := newDeployer(root, dir, &Options{Deploy: func(ctx context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+		close(started)
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // a runtime winding down after the cancel
+		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeTimedOut, Detail: "cancelled", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	}})
+	req := testRequest("ep_1")
+	raw, _ := json.Marshal(req)
+	d.handle(context.Background(), "ep_1", raw, make(chan outFrame, 1))
+	<-started
+	cancel()
+	d.wait()
+	stored, err := os.ReadFile(filepath.Join(dir, "deployments.json"))
+	if err != nil || !strings.Contains(string(stored), req.Deployment) || !strings.Contains(string(stored), protocol.OutcomeTimedOut) {
+		t.Fatalf("ledger after wait: %v %s", err, stored)
+	}
+}
+
+// A result the server could not read is recorded and sent as unknown with a fixed detail.
+func TestDeployerReplacesAnUnreadableResult(t *testing.T) {
+	dir := t.TempDir()
+	d := newDeployer(context.Background(), dir, &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: "exploded", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	}})
+	out := make(chan outFrame, 1)
+	defer d.attach(context.Background(), out)()
+	req := testRequest("ep_1")
+	raw, _ := json.Marshal(req)
+	d.handle(context.Background(), "ep_1", raw, out)
+	var res protocol.DeploymentResult
+	select {
+	case f := <-out:
+		if decodeResult(f, &res) != nil {
+			t.Fatal(payloadText(f))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no result")
+	}
+	if res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Detail != "the runtime returned an unreadable result" || res.Validate() != nil {
+		t.Fatalf("result: %+v", res)
+	}
+	d.wait()
+	stored, err := os.ReadFile(filepath.Join(dir, "deployments.json"))
+	if err != nil || strings.Contains(string(stored), "exploded") || !strings.Contains(string(stored), "unreadable result") {
+		t.Fatalf("ledger: %v %s", err, stored)
 	}
 }
 

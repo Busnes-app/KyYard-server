@@ -33,6 +33,7 @@ type deployer struct {
 	done    map[string]deploymentEntry
 	running string       // ID of the deployment in the single slot, "" when idle
 	current *sessionLink // the connected session, nil between sessions
+	runs    sync.WaitGroup
 }
 
 type sessionLink struct {
@@ -107,6 +108,9 @@ func (d *deployer) finish(res protocol.DeploymentResult) *sessionLink {
 	return d.current
 }
 
+// wait returns once every started run has recorded its result.
+func (d *deployer) wait() { d.runs.Wait() }
+
 func resultFrame(res protocol.DeploymentResult) outFrame {
 	return outFrame{Type: protocol.TypeDeploymentResult, Payload: res}
 }
@@ -120,7 +124,19 @@ func denied(id, detail string) protocol.DeploymentResult {
 // which is out's only reader, so every send happens off it.
 func (d *deployer) handle(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
 	var req protocol.DeploymentRequest
-	if json.Unmarshal(payload, &req) != nil || req.Validate(time.Now()) != nil {
+	if json.Unmarshal(payload, &req) != nil {
+		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "invalid deployment request")))
+		return
+	}
+	// A re-sent frame for the live run: a refusal would settle the row it is still applying,
+	// so say nothing and let the real result answer, even once the frame's deadline has passed.
+	d.mu.Lock()
+	live := req.Deployment != "" && d.running == req.Deployment
+	d.mu.Unlock()
+	if live {
+		return
+	}
+	if req.Validate(time.Now()) != nil {
 		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "invalid deployment request")))
 		return
 	}
@@ -144,13 +160,12 @@ func (d *deployer) handle(sessionCtx context.Context, endpointID string, payload
 		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "this agent has no runtime to deploy")))
 		return
 	case running == req.Deployment:
-		// A re-sent frame for the live run: a refusal would settle the row it is still applying,
-		// so say nothing and let the real result answer.
 		return
 	case running != "":
 		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "this agent is already applying a deployment")))
 		return
 	}
+	d.runs.Add(1)
 	go func() {
 		res := deploy(d.root, req)
 		for i := range req.Services {
@@ -159,7 +174,13 @@ func (d *deployer) handle(sessionCtx context.Context, endpointID string, payload
 		if res.Deployment == "" {
 			res.Deployment = req.Deployment
 		}
-		if link := d.finish(res); link != nil {
+		// Never record or send what the server would refuse to read: the host may have acted.
+		if res.Deployment != req.Deployment || res.Validate() != nil {
+			res = protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeUnknown, Detail: "the runtime returned an unreadable result", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+		}
+		link := d.finish(res)
+		d.runs.Done()
+		if link != nil {
 			send(link.ctx, link.out, resultFrame(res))
 		}
 	}()
