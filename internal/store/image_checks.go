@@ -133,10 +133,10 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 		if err != nil {
 			return err
 		}
+		// preflight verified m against the latest revision and the live inventory: the rows
+		// describe exactly this state.
 		instance, version = m.InstanceID, m.Version
-		if state, err = t.imageCheckState(ctx, tx, a, id.String(), instance); err != nil {
-			return err
-		}
+		state = imageCheckStateOf(m.Version, m.Preview.Revision, m.Preview.Containers)
 		images := map[string]protocol.Image{}
 		for _, im := range snapshot.Images {
 			images[im.ID] = im
@@ -199,20 +199,40 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 	}
 	details := fmt.Sprintf("services=%d updates=%d errors=%d", len(work), updates, failures)
 	out := &UpdateCheck{InstanceID: instance, MappingVersion: version, Services: []ImageCheck{}}
-	err = t.withTenantTargetDetails(ctx, a, permissions.ApplicationDeploy, target, &details, func(tx *sql.Tx) error {
-		current, err := t.imageCheckState(ctx, tx, a, id.String(), instance)
+	// Uncancelled, so a check the client abandoned mid-registry still audits a failure. It
+	// writes no rows: a half-finished check must not replace good ones with unavailable.
+	wctx := context.WithoutCancel(ctx)
+	err = t.withTenantTargetDetails(wctx, a, permissions.ApplicationDeploy, target, &details, func(tx *sql.Tx) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Settle, remap and revision append write the application row; locking it first
+		// serializes them with the comparison. SQLite's single writer already does.
+		lock := ""
+		if t.store.driver == "postgres" {
+			lock = " FOR UPDATE"
+		}
+		var one int
+		err := tx.QueryRowContext(wctx, t.store.rebind(`SELECT 1 FROM applications WHERE id=? AND organization_id=? AND environment_id=?`+lock), id.String(), a.OrganizationID, a.EnvironmentID).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrAdoptionChanged
+		}
+		if err != nil {
+			return err
+		}
+		current, err := t.imageCheckState(wctx, tx, a, id.String(), instance)
 		if err != nil {
 			return err
 		}
 		if current != state {
 			return ErrAdoptionChanged
 		}
-		if err := t.clearImageChecks(ctx, tx, instance); err != nil {
+		if err := t.clearImageChecks(wctx, tx, instance); err != nil {
 			return err
 		}
 		for _, w := range work {
 			r := w.Row
-			if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO image_checks(instance_id,service_name,reference,local_digest,remote_digest,verdict,detail,checked_at) VALUES(?,?,?,?,?,?,?,?)`), instance, r.Service, r.Reference, r.LocalDigest, r.RemoteDigest, r.Verdict, r.Detail, now); err != nil {
+			if _, err := tx.ExecContext(wctx, t.store.rebind(`INSERT INTO image_checks(instance_id,service_name,reference,local_digest,remote_digest,verdict,detail,checked_at) VALUES(?,?,?,?,?,?,?,?)`), instance, r.Service, r.Reference, r.LocalDigest, r.RemoteDigest, r.Verdict, r.Detail, now); err != nil {
 				return err
 			}
 			out.Services = append(out.Services, r)
@@ -237,20 +257,29 @@ func (t *tenancyStore) imageCheckState(ctx context.Context, tx *sql.Tx, a Tenant
 	if err != nil {
 		return "", err
 	}
-	state := fmt.Sprintf("%d %d", version, revision)
 	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,image_id FROM application_resources WHERE instance_id=? ORDER BY container_id`), instance)
 	if err != nil {
 		return "", err
 	}
 	defer rows.Close()
+	var containers []AdoptedContainer
 	for rows.Next() {
-		var container, image string
-		if err := rows.Scan(&container, &image); err != nil {
+		var c AdoptedContainer
+		if err := rows.Scan(&c.ID, &c.ImageID); err != nil {
 			return "", err
 		}
-		state += " " + container + "=" + image
+		containers = append(containers, c)
 	}
-	return state, rows.Err()
+	return imageCheckStateOf(version, revision, containers), rows.Err()
+}
+
+// imageCheckStateOf formats the state; containers are in container ID order.
+func imageCheckStateOf(version, revision int, containers []AdoptedContainer) string {
+	state := fmt.Sprintf("%d %d", version, revision)
+	for _, c := range containers {
+		state += " " + c.ID + "=" + c.ImageID
+	}
+	return state
 }
 
 // localRepoDigest returns the host image's digest for exactly the reference's repository, or ""

@@ -631,3 +631,78 @@ func TestCheckImageUpdateAccess(t *testing.T) {
 		}
 	}
 }
+
+// A client that leaves mid-registry still gets its check audited, as a failure, and the cached
+// rows stay as they were.
+func TestCheckImageUpdatesCancelledAuditsAFailure(t *testing.T) {
+	st, a, app := nginxCheckFixture(t)
+	ts := st.Tenancy()
+	m, err := ts.ReadApplicationMapping(context.Background(), a, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Second)
+	insertImageCheck(t, st, m.InstanceID, at)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &fakeResolver{reply: map[string]fakeReply{"docker.io/library/nginx:1": {digest: digestOf("f")}}, during: cancel}
+	if _, err := ts.CheckImageUpdates(ctx, a, app.ID, f, imageCheckKey, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled check: %v", err)
+	}
+	if len(f.called()) != 1 {
+		t.Fatalf("calls: %+v", f.called())
+	}
+	var failures, successes int
+	if err := st.db.QueryRow(st.rebind(`SELECT COUNT(CASE WHEN result='failure' THEN 1 END),COUNT(CASE WHEN result='success' THEN 1 END) FROM audit_records WHERE action='application.deploy' AND resource=?`), app.ID+"/updates").Scan(&failures, &successes); err != nil {
+		t.Fatal(err)
+	}
+	if failures != 1 || successes != 0 {
+		t.Fatalf("audit: failures=%d successes=%d", failures, successes)
+	}
+	stored, err := ts.ReadImageChecks(context.Background(), a, app.ID)
+	if err != nil || len(stored.Services) != 1 {
+		t.Fatalf("stored: %+v %v", stored, err)
+	}
+	if c := stored.Services[0]; c.Verdict != "update_available" || c.RemoteDigest != digestOf("2") || !c.CheckedAt.Equal(at) {
+		t.Fatalf("cached row changed: %+v", c)
+	}
+}
+
+// Only the reference's own repository counts, however the host image spells it.
+func TestLocalRepoDigestRepositoryFilter(t *testing.T) {
+	nginx, err := registry.ParseReference("nginx:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		digests []string
+		want    string
+	}{
+		{"foreign beside own", []string{"ghcr.io/other/nginx@" + digestOf("a"), "nginx@" + digestOf("b")}, digestOf("b")},
+		{"own beside foreign", []string{"nginx@" + digestOf("b"), "docker.io/other/nginx@" + digestOf("a")}, digestOf("b")},
+		{"foreign alone", []string{"ghcr.io/library/nginx@" + digestOf("a")}, ""},
+		{"docker.io spelling", []string{"docker.io/library/nginx@" + digestOf("c")}, digestOf("c")},
+		{"index.docker.io spelling", []string{"index.docker.io/library/nginx@" + digestOf("c")}, digestOf("c")},
+		{"bare spelling", []string{"nginx@" + digestOf("c")}, digestOf("c")},
+	} {
+		if got := localRepoDigest(protocol.Image{Digests: tc.digests}, nginx); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A host image carrying only another repository's digest is unknown_local, with no call.
+func TestCheckImageUpdatesForeignLocalDigest(t *testing.T) {
+	st, a, app, _, _ := imageCheckFixture(t, []ApplicationService{{Name: "web", Image: "nginx:1"}}, map[string][]string{"web": {"ghcr.io/org/nginx@" + digestOf("e")}})
+	org := a
+	org.EnvironmentID = ""
+	if err := st.Tenancy().SetAnonymousPull(context.Background(), org, true); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeResolver{reply: map[string]fakeReply{"docker.io/library/nginx:1": {digest: digestOf("e")}}}
+	out, err := st.Tenancy().CheckImageUpdates(context.Background(), a, app.ID, f, imageCheckKey, false)
+	if err != nil || len(out.Services) != 1 || out.Services[0].Verdict != "unknown_local" || len(f.called()) != 0 {
+		t.Fatalf("%+v %v %+v", out, err, f.called())
+	}
+}

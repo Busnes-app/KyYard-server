@@ -45,7 +45,7 @@ network call runs inside a transaction:
    repository digest, and the registry access for the reference's host (`registryFor` and the
    anonymous-pull setting, with `allow_private = stored && privateAllowed`). It also records the
    state the rows will describe: `mapping_version`, the application's `latest_revision` and the
-   instance's `(container_id, image_id)` pairs from `application_resources`.
+   instance's `(container_id, image_id)` pairs, built from the mapping and preflight just checked.
    - The local digest is the one entry of the mapped container's image `RepoDigests` whose
      repository (`host/repository` after `registry.CanonicalHost` and the `library/` default)
      equals the reference's and whose digest is `sha256:` and 64 lowercase hex; zero or several
@@ -60,7 +60,9 @@ network call runs inside a transaction:
    `ErrUnauthorized`→`unauthorized`, `ErrNotFound`→`not_found`, `ErrRateLimited`→`rate_limited`,
    `ErrPrivateDestination`→`private_destination`, anything else→`unavailable`. Error strings
    are never stored.
-3. **Write** (own transaction, the audited one): if the instance was released or its recorded
+3. **Write** (own transaction, the audited one, on `context.WithoutCancel`): if the request
+   was cancelled during phase 2, return the context error, audited as a failure, cached rows
+   untouched. Lock the application row (`FOR UPDATE` on PostgreSQL). Then, if the instance was released or its recorded
    state changed since phase 1 (a remap, a new revision, or a settled apply rebinding the
    containers), `ErrAdoptionChanged` (nothing written). Otherwise delete the instance's rows and insert the
    new ones. Audit details `services=N updates=N errors=N`.
