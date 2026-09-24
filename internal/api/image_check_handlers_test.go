@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,8 +15,10 @@ import (
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/registry"
 	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/google/uuid"
 )
 
 // fakeDigests answers every Head with digest. With gate set, it reports entry on entered and
@@ -60,6 +63,9 @@ func TestImageCheckRoutes(t *testing.T) {
 		must(ts.CreateEnvironment(ctx, &store.Environment{ID: "env-" + org, OrganizationID: org, Name: "prod"}))
 	}
 	user := loginAs(t, s, st, "checker", "user")
+	outsider := loginAs(t, s, st, "outsider", "user")
+	watcher := loginAs(t, s, st, "watcher", "user")
+	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_watcher", Role: store.RoleOperator, Status: "active"}))
 	setRole := func(role store.TenantRole) {
 		t.Helper()
 		must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_checker", Role: role, Status: "active"}))
@@ -154,7 +160,7 @@ func TestImageCheckRoutes(t *testing.T) {
 	}
 
 	setRole(store.RoleDeveloper)
-	if w := send(user, "POST", check, "", false); w.Code != 403 {
+	if w := send(user, "POST", check, "", false); w.Code != 403 || !strings.Contains(w.Body.String(), `"error":"Invalid CSRF token"`) {
 		t.Fatalf("check without CSRF: %d %s", w.Code, w.Body.String())
 	}
 	must(json.Unmarshal([]byte(request(user, "POST", check, "", 200)), &got))
@@ -178,17 +184,66 @@ func TestImageCheckRoutes(t *testing.T) {
 
 	// A second check while one runs is refused; the first still completes.
 	gated := &fakeDigests{digest: local, gate: make(chan struct{}), entered: make(chan struct{}, 1)}
+	var release sync.Once
+	open := func() { release.Do(func() { close(gated.gate) }) }
+	t.Cleanup(open)
 	api.SetDigestResolverForTest(s, gated)
 	first := make(chan *httptest.ResponseRecorder, 1)
 	go func() { first <- tenantRequest(s, user, "POST", check, "", true) }()
 	<-gated.entered
 	code(request(user, "POST", check, "", 409), "check_in_progress")
-	close(gated.gate)
+	// Any spelling uuid.Parse accepts names the same slot.
+	code(request(user, "POST", base+"/"+strings.ToUpper(app.ID)+"/updates/check", "", 409), "check_in_progress")
+	// Authorization answers before the slot: no 409 for callers who may not check.
+	code(request(outsider, "POST", check, "", 403), "tenant_access_denied")
+	code(request(watcher, "POST", check, "", 403), "tenant_access_denied")
+	request(user, "POST", base+"/"+uuid.NewString()+"/updates/check", "", 404)
+	request(user, "POST", base+"/not-a-uuid/updates/check", "", 400)
+	open()
 	if w := <-first; w.Code != 200 || !strings.Contains(w.Body.String(), `"verdict":"current"`) {
 		t.Fatalf("first check: %d %s", w.Code, w.Body.String())
 	}
 	// The slot is released: another check runs.
 	must(json.Unmarshal([]byte(request(user, "POST", check, "", 200)), &got))
+
+	setRole(store.RoleOrganizationAdmin)
+	records, err := ts.ReadAudit(ctx, store.TenantAccess{ActorID: "usr_checker", OrganizationID: "a"}, 0, 200)
+	must(err)
+	denied := 0
+	for _, rec := range records {
+		if rec.UserID == "usr_watcher" && rec.Action == "application.deploy" && rec.Result == "denied" && rec.Resource == app.ID+"/updates" {
+			denied++
+		}
+	}
+	if denied != 1 {
+		t.Fatalf("operator denial audit rows on %s/updates: %d", app.ID, denied)
+	}
+
+	// A check outliving the listener's WriteTimeout still delivers its answer.
+	slow := &fakeDigests{digest: remote, gate: make(chan struct{}), entered: make(chan struct{}, 1)}
+	api.SetDigestResolverForTest(s, slow)
+	live := httptest.NewUnstartedServer(s)
+	live.Config.WriteTimeout = 300 * time.Millisecond
+	live.Start()
+	t.Cleanup(live.Close)
+	go func() {
+		<-slow.entered
+		time.Sleep(3 * live.Config.WriteTimeout)
+		close(slow.gate)
+	}()
+	req, _ := http.NewRequest("POST", live.URL+check, nil)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(user)
+	req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "token"})
+	req.Header.Set(auth.HeaderCSRF, "token")
+	resp, err := live.Client().Do(req)
+	must(err)
+	slowBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	must(err)
+	if resp.StatusCode != 200 || !strings.Contains(string(slowBody), `"verdict":"update_available"`) {
+		t.Fatalf("slow check: %d %s", resp.StatusCode, slowBody)
+	}
 
 	other := "/api/organizations/b/environments/env-b/applications/" + app.ID + "/updates"
 	code(request(user, "GET", other, "", 403), "tenant_access_denied")

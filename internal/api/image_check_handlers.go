@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/registry"
 	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/google/uuid"
 )
 
 var errCheckInProgress = errors.New("image update check in progress")
@@ -33,13 +35,25 @@ func (s *Server) handleImageChecks(w http.ResponseWriter, r *http.Request, a sto
 }
 
 func (s *Server) handleCheckImageUpdates(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
-	app := r.PathValue("application")
+	id, err := uuid.Parse(r.PathValue("application"))
+	if err != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	app := id.String()
+	// Authorize before the slot, so a caller who may not check can neither see nor hold it.
+	if err := s.store.Tenancy().CheckImageUpdateAccess(r.Context(), a, app); err != nil {
+		s.tenantError(w, err)
+		return
+	}
 	key := a.OrganizationID + "/" + a.EnvironmentID + "/" + app
 	if _, busy := s.imageChecks.LoadOrStore(key, struct{}{}); busy {
 		s.tenantError(w, errCheckInProgress)
 		return
 	}
 	defer s.imageChecks.Delete(key)
+	// The server's WriteTimeout is shorter than a check may run.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(store.ImageCheckDeadline + 5*time.Second))
 	resolver := s.digestResolver
 	if resolver == nil {
 		resolver = registryResolver{}

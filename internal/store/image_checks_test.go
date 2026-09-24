@@ -501,9 +501,9 @@ func TestCheckImageUpdatesDeadline(t *testing.T) {
 	if err := st.Tenancy().SetAnonymousPull(ctx, org, true); err != nil {
 		t.Fatal(err)
 	}
-	old := imageCheckDeadline
-	imageCheckDeadline = 200 * time.Millisecond
-	t.Cleanup(func() { imageCheckDeadline = old })
+	old := ImageCheckDeadline
+	ImageCheckDeadline = 200 * time.Millisecond
+	t.Cleanup(func() { ImageCheckDeadline = old })
 	f := &fakeResolver{block: make(chan struct{})}
 	t.Cleanup(func() { close(f.block) })
 	start := time.Now()
@@ -588,6 +588,46 @@ func TestCheckImageUpdatesPrivateFlag(t *testing.T) {
 		}
 		if calls := f.called(); len(calls) != 1 || calls[0].AllowPrivate != allowed || calls[0].Cred != nil {
 			t.Fatalf("allowed=%t: %+v", allowed, calls)
+		}
+	}
+}
+
+func TestCheckImageUpdateAccess(t *testing.T) {
+	st, a, app := nginxCheckFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	noEnv := a
+	noEnv.EnvironmentID = ""
+	for _, tc := range []struct {
+		a   TenantAccess
+		app string
+		err error
+	}{
+		{a, "not-a-uuid", ErrInvalid},
+		{noEnv, app.ID, ErrInvalid},
+		{a, uuid.NewString(), ErrNotFound},
+		{TenantAccess{ActorID: "usr_nobody", OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID}, app.ID, ErrForbidden},
+	} {
+		if err := ts.CheckImageUpdateAccess(ctx, tc.a, tc.app); !errors.Is(err, tc.err) {
+			t.Fatalf("%+v %s: %v, want %v", tc.a, tc.app, err, tc.err)
+		}
+	}
+	for _, role := range []TenantRole{RoleDeveloper, RoleOperator, RoleReadOnly} {
+		if err := ts.SetMembership(ctx, &OrganizationMembership{OrganizationID: a.OrganizationID, UserID: a.ActorID, Role: role, Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+		denied, allowed := targetDenials(t, st, app.ID+"/updates"), auditCount(t, st, "application.deploy", "success")
+		err := ts.CheckImageUpdateAccess(ctx, a, strings.ToUpper(app.ID))
+		if role == RoleDeveloper {
+			// Admission only: the check itself writes the success row.
+			if err != nil || auditCount(t, st, "application.deploy", "success") != allowed {
+				t.Fatalf("developer: %v", err)
+			}
+			continue
+		}
+		// The target is the canonical ID whatever spelling was asked for.
+		if !errors.Is(err, ErrForbidden) || targetDenials(t, st, app.ID+"/updates") != denied+1 {
+			t.Fatalf("%s: %v", role, err)
 		}
 	}
 }

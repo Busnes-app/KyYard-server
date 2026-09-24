@@ -21,8 +21,9 @@ type DigestResolver interface {
 	Head(ctx context.Context, ref registry.Reference, cred *registry.Credential, allowPrivate bool) (string, error)
 }
 
-// imageCheckDeadline bounds every registry call of one check; a var so a test can shorten it.
-var imageCheckDeadline = 60 * time.Second
+// ImageCheckDeadline bounds every registry call of one check; the API sizes its write deadline
+// from it. A var so a test can shorten it.
+var ImageCheckDeadline = 60 * time.Second
 
 const imageCheckConcurrency = 4
 
@@ -81,6 +82,24 @@ func (t *tenancyStore) ReadImageChecks(ctx context.Context, a TenantAccess, app 
 func (t *tenancyStore) clearImageChecks(ctx context.Context, tx *sql.Tx, instance string) error {
 	_, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM image_checks WHERE instance_id=?`), instance)
 	return err
+}
+
+// CheckImageUpdateAccess admits a check before the API takes its per-application slot, so a
+// caller without application.deploy can neither see nor hold it. CheckImageUpdates re-authorizes.
+func (t *tenancyStore) CheckImageUpdateAccess(ctx context.Context, a TenantAccess, app string) error {
+	id, err := uuid.Parse(app)
+	if err != nil || a.EnvironmentID == "" {
+		return ErrInvalid
+	}
+	target := id.String() + "/updates"
+	return t.run(ctx, a, permissions.ApplicationDeploy, &target, nil, false, func(tx *sql.Tx) error {
+		var one int
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM applications WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, id.String()).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
 }
 
 type imageCheckWork struct {
@@ -256,9 +275,9 @@ func localRepoDigest(im protocol.Image, ref registry.Reference) string {
 }
 
 // resolveImageChecks asks the registry for every unskipped service, at most imageCheckConcurrency
-// at once, and gives up on whatever is left at imageCheckDeadline.
+// at once, and gives up on whatever is left at ImageCheckDeadline.
 func resolveImageChecks(ctx context.Context, resolver DigestResolver, work []imageCheckWork) {
-	ctx, cancel := context.WithTimeout(ctx, imageCheckDeadline)
+	ctx, cancel := context.WithTimeout(ctx, ImageCheckDeadline)
 	defer cancel()
 	sem := make(chan struct{}, imageCheckConcurrency)
 	var wg sync.WaitGroup
