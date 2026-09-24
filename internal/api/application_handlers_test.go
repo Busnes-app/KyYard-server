@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
@@ -39,6 +40,7 @@ func expireDeployments(t *testing.T, cfg *config.Config) {
 
 func TestApplicationImportRoutes(t *testing.T) {
 	s, st, cfg := setupTestServer(t)
+	api.SetPlanInspectorForTest(s, verifiedInspector)
 	ctx := context.Background()
 	ts := st.Tenancy()
 	must := func(err error) {
@@ -80,6 +82,7 @@ func TestApplicationImportRoutes(t *testing.T) {
 	ep, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
 	must(err)
 	must(ts.ApproveEndpoint(ctx, a, ep.ID, ep.Fingerprint))
+	must(ts.SetEndpointCapabilities(ctx, ep.ID, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict}))
 	created := time.Now().UTC()
 	snapshot, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created, Mounts: []protocol.Mount{}}}})
 	_, err = ts.AcceptInventory(ctx, ep.ID, uint64(time.Now().Unix()), time.Now(), snapshot)
@@ -190,6 +193,7 @@ func TestApplicationImportRoutes(t *testing.T) {
 
 func TestApplicationRevisionReplacementRoutes(t *testing.T) {
 	s, st, _ := setupTestServer(t)
+	api.SetPlanInspectorForTest(s, verifiedInspector)
 	ctx := context.Background()
 	ts := st.Tenancy()
 	must := func(err error) {

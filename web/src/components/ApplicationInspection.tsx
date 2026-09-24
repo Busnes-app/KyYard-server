@@ -3,24 +3,60 @@ import { ContainerPorts } from './ContainerPorts';
 import type { Port } from '../tenant';
 
 export type InspectionTarget = { container_id: string; image_id: string; created_unix: number };
+// Human names of the agent's unsupported-configuration codes (protocol.UnsupportedCodes).
+// A code missing here is refused, never shown raw.
+export const unsupportedNames: Record<string, string> = {
+  mount_type: 'has mounts other than volumes and binds',
+  anonymous_volume: 'uses anonymous volumes',
+  volumes_from: 'mounts volumes from another container',
+  volume_driver: 'uses a volume driver',
+  mount_options: 'sets mount options',
+  tmpfs: 'mounts tmpfs',
+  auto_remove: 'removes itself when stopped',
+  read_only_rootfs: 'has a read-only root filesystem',
+  privileged: 'runs privileged',
+  capabilities: 'adds or drops capabilities',
+  security_opt: 'sets security options',
+  devices: 'maps host devices',
+  pid_mode: 'shares a PID namespace',
+  ipc_mode: 'shares an IPC namespace',
+  user: 'runs as a set user',
+  runtime: 'uses a non-default runtime',
+  resource_limits: 'has memory, CPU or process limits',
+  ulimits: 'sets ulimits',
+  sysctls: 'sets sysctls',
+  device_requests: 'requests GPUs or other devices',
+  init: 'runs an init process',
+  userns_mode: 'sets a user namespace mode',
+  cgroup_parent: 'sets a cgroup parent',
+  group_add: 'adds supplementary groups',
+  extra_hosts: 'adds host entries',
+  dns: 'sets DNS options',
+  links: 'uses container links',
+  network: 'is on a network other than its project network',
+  image_config: "overrides its image's command, entrypoint, healthcheck, working directory or stop signal",
+};
 type Inspection = {
   observed_at: string; state: string; image_platform: { os: string; architecture: string; variant?: string };
   restart_policy: string; restart_retries: number; ports: Port[];
   mounts: { bind: number; volume: number; tmpfs: number; other: number; read_only: number };
   network_mode: string; network_count: number; privileged: boolean; read_only_rootfs: boolean; auto_remove: boolean;
+  configuration_verified: boolean; unsupported: string[];
 };
 type Result = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: Inspection };
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 64;
 const token = (value: unknown): value is string => typeof value === 'string' && /^[a-z0-9][a-z0-9_.-]{0,63}$/.test(value);
 function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function parseInspection(value: unknown, target: InspectionTarget): Inspection | null {
-  if (!object(value) || !object(value.target) || value.target.container_id !== target.container_id || value.target.image_id !== target.image_id || value.target.created_unix !== target.created_unix || value.configuration_verified !== false) return null;
-  const { observed_at, state, image_platform, restart_policy, restart_retries, ports, mounts, network_mode, network_count, privileged, read_only_rootfs, auto_remove } = value;
+  if (!object(value) || !object(value.target) || value.target.container_id !== target.container_id || value.target.image_id !== target.image_id || value.target.created_unix !== target.created_unix) return null;
+  const { observed_at, state, image_platform, restart_policy, restart_retries, ports, mounts, network_mode, network_count, privileged, read_only_rootfs, auto_remove, configuration_verified, unsupported } = value;
   if (typeof observed_at !== 'string' || !Number.isFinite(Date.parse(observed_at)) || typeof state !== 'string' || !['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'].includes(state)) return null;
   if (!object(image_platform) || !token(image_platform.os) || !token(image_platform.architecture) || (image_platform.variant !== undefined && !token(image_platform.variant))) return null;
   if (typeof restart_policy !== 'string' || !['no', 'always', 'unless-stopped', 'on-failure'].includes(restart_policy) || typeof restart_retries !== 'number' || !Number.isInteger(restart_retries) || restart_retries < 0 || restart_retries > 2147483647) return null;
   if (typeof network_mode !== 'string' || !['default', 'bridge', 'host', 'none', 'container', 'custom'].includes(network_mode) || !count(network_count)) return null;
   if (typeof privileged !== 'boolean' || typeof read_only_rootfs !== 'boolean' || typeof auto_remove !== 'boolean') return null;
+  if (typeof configuration_verified !== 'boolean' || !Array.isArray(unsupported) || unsupported.length > 32 || new Set(unsupported).size !== unsupported.length
+    || !unsupported.every((c): c is string => typeof c === 'string' && Object.hasOwn(unsupportedNames, c)) || configuration_verified !== (unsupported.length === 0)) return null;
   if (!object(mounts) || !count(mounts.bind) || !count(mounts.volume) || !count(mounts.tmpfs) || !count(mounts.other) || !count(mounts.read_only)) return null;
   const total = mounts.bind + mounts.volume + mounts.tmpfs + mounts.other;
   if (total > 64 || mounts.read_only > total || !Array.isArray(ports) || ports.length > 64) return null;
@@ -31,7 +67,7 @@ function parseInspection(value: unknown, target: InspectionTarget): Inspection |
     if (port.host_ip !== undefined && (typeof port.host_ip !== 'string' || !/^[a-fA-F0-9:.]{0,45}$/.test(port.host_ip))) return null;
     safePorts.push({ container: port.container, protocol: port.protocol, host: port.host, host_ip: port.host_ip });
   }
-  return { observed_at, state, image_platform: { os: image_platform.os, architecture: image_platform.architecture, variant: image_platform.variant }, restart_policy, restart_retries, ports: safePorts, mounts: { bind: mounts.bind, volume: mounts.volume, tmpfs: mounts.tmpfs, other: mounts.other, read_only: mounts.read_only }, network_mode, network_count, privileged, read_only_rootfs, auto_remove };
+  return { observed_at, state, image_platform: { os: image_platform.os, architecture: image_platform.architecture, variant: image_platform.variant }, restart_policy, restart_retries, ports: safePorts, mounts: { bind: mounts.bind, volume: mounts.volume, tmpfs: mounts.tmpfs, other: mounts.other, read_only: mounts.read_only }, network_mode, network_count, privileged, read_only_rootfs, auto_remove, configuration_verified, unsupported: [...unsupported] };
 }
 function failure(status: number): string {
   if (status === 401 || status === 403) return 'Inspection access was denied. Check your sign-in and host access.';
@@ -69,7 +105,7 @@ export function ApplicationInspection({ org, endpoint, service, target, onClose 
     <div className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
       <h3>Live inspection: {service}</h3>
       <button type="button" className="btn-secondary" onClick={onClose} autoFocus>Close inspection</button>
-      <p>Read-only observation of the mapped container. Configuration parity and deployment safety remain unverified. This is not a replacement specification.</p>
+      <p>Read-only observation of the mapped container. It says whether a recreate from the definition could keep the container's configuration; it is not a replacement specification and approves nothing.</p>
       <p>Container: <code>{target.container_id}</code><br />Container image: <code>{target.image_id}</code></p>
       {result.kind === 'loading' && <p role="status">Inspecting container…</p>}
       {result.kind === 'error' && <p role="alert">{result.message}</p>}
@@ -80,6 +116,9 @@ export function ApplicationInspection({ org, endpoint, service, target, onClose 
 function InspectionFacts({ data }: { data: Inspection }) {
   return <>
     <p>Observed {new Date(data.observed_at).toLocaleString()}. Snapshot only; close and reopen to inspect again.</p>
+    {data.configuration_verified
+      ? <p>Configuration: fully expressible</p>
+      : <><p>Configuration the definition cannot express, which a recreate would drop:</p><ul className="ky-list">{data.unsupported.map(c => <li key={c}>{unsupportedNames[c]}</li>)}</ul></>}
     <dl>
       <dt>State</dt><dd>{data.state}</dd>
       <dt>Container image platform</dt><dd>{[data.image_platform.os, data.image_platform.architecture, data.image_platform.variant].filter(Boolean).join('/')}</dd>

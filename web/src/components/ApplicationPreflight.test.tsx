@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { ApplicationPreflight } from './ApplicationPreflight';
+import { ApplicationPreflight, messages } from './ApplicationPreflight';
+import { unsupportedNames } from './ApplicationInspection';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 const data = { instance_id: 'i', endpoint_name: 'Docker', revision: 2, mapping_version: 1, received_at: '2026-09-18T12:00:00Z', executable: false, blockers: ['mapping_requires_review'], services: Array.from({ length: 26 }, (_, i) => ({ name: `service-${i}`, reference: 'nginx:1', image_id: '', container_id: 'a'.repeat(64), blockers: ['image_not_reported'] })) };
 it('loads on demand, pages results and never offers execution', async () => {
@@ -54,7 +55,7 @@ it('hides observations after adoption replacement and redacts error bodies', asy
 });
 
 const target = { container_id: 'a'.repeat(64), image_id: `sha256:${'b'.repeat(64)}`, created_unix: 1789732000 };
-const inspection = { target, observed_at: '2026-09-18T12:00:00Z', state: 'running', image_platform: { os: 'linux', architecture: 'amd64' }, restart_policy: 'on-failure', restart_retries: 3, ports: [{ host: 8080, container: 80, protocol: 'tcp', host_ip: '127.0.0.1' }], mounts: { bind: 1, volume: 2, tmpfs: 0, other: 0, read_only: 1 }, network_mode: 'bridge', network_count: 1, privileged: false, read_only_rootfs: true, auto_remove: false, configuration_verified: false };
+const inspection = { target, observed_at: '2026-09-18T12:00:00Z', state: 'running', image_platform: { os: 'linux', architecture: 'amd64' }, restart_policy: 'on-failure', restart_retries: 3, ports: [{ host: 8080, container: 80, protocol: 'tcp', host_ip: '127.0.0.1' }], mounts: { bind: 1, volume: 2, tmpfs: 0, other: 0, read_only: 1 }, network_mode: 'bridge', network_count: 1, privileged: false, read_only_rootfs: true, auto_remove: false, configuration_verified: true, unsupported: [] };
 const inspectable = { ...data, endpoint_id: 'host', services: [{ ...data.services[0], inspection_target: target }] };
 function modal() { Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } }); }
 async function openInspection() {
@@ -82,7 +83,9 @@ it.each([
   { ...inspection, target: { ...target, image_id: `sha256:${'c'.repeat(64)}` } },
   { ...inspection, target: { ...target, container_id: 'd'.repeat(64) } },
   { ...inspection, target: { ...target, created_unix: target.created_unix + 1 } },
-  { ...inspection, configuration_verified: true },
+  { ...inspection, configuration_verified: false },
+  { ...inspection, configuration_verified: false, unsupported: ['secret-canary'] },
+  { ...inspection, unsupported: undefined },
   { ...inspection, mounts: null },
   { ...inspection, state: 'secret-canary' },
 ])('refuses mismatched or malformed observations', async (response) => {
@@ -145,4 +148,23 @@ it('shows unsupported mounts and the missing-volume text', async () => {
   expect(screen.getByText('An external volume this revision names does not exist on the host. Create it there first.')).toBeTruthy();
   expect(screen.getByText('Cannot be recreated:')).toBeTruthy();
   expect(screen.getByText('→ /scratch').parentElement?.textContent).toContain('other');
+});
+it('explains clock skew in fixed text', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...data, blockers: ['clock_skew'] }))));
+  render(<ApplicationPreflight org="org" base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  expect(await screen.findByText(messages.clock_skew)).toBeTruthy();
+});
+it('shows the configuration verdict by name, never by code', async () => {
+  modal();
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/preflight') ? inspectable : inspection))));
+  await openInspection();
+  expect(await screen.findByText('Configuration: fully expressible')).toBeTruthy();
+  cleanup();
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/preflight') ? inspectable : { ...inspection, configuration_verified: false, unsupported: ['privileged', 'image_config'] }))));
+  await openInspection();
+  expect(await screen.findByText('runs privileged')).toBeTruthy();
+  expect(screen.getByText(unsupportedNames.image_config!)).toBeTruthy();
+  expect(screen.queryByText('Configuration: fully expressible')).toBeNull();
+  expect(document.body.textContent).not.toContain('image_config');
 });

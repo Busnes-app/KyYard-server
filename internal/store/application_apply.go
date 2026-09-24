@@ -69,95 +69,17 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 		if endpointState != "active" {
 			return ErrEndpointOffline
 		}
-		spec, values, digest, err := t.resolveApplicationValues(ctx, tx, a, appID.String(), d.Revision, key)
-		if err != nil {
-			return err
-		}
-		if digest != d.SpecDigest || len(spec.Services) != len(d.Plan.Services) {
-			return ErrAdoptionChanged
-		}
-		names := map[string]string{}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name FROM application_resources WHERE instance_id=? AND endpoint_id=?`), d.InstanceID, d.EndpointID)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var cid, name string
-			if err := rows.Scan(&cid, &name); err != nil {
-				rows.Close()
-				return err
-			}
-			names[cid] = name
-		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
 		now := time.Now().UTC()
-		req = &protocol.DeploymentRequest{Deployment: d.ID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}, Volumes: d.Plan.Volumes}
-		hosts := map[string]bool{}
-		for i, ps := range d.Plan.Services {
-			name, ok := names[ps.ContainerID]
-			if !ok || spec.Services[i].Name != ps.Name {
-				return ErrAdoptionChanged
-			}
-			svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: append([]protocol.Mount{}, ps.Mounts...)}
-			if ps.PullDigest != "" {
-				svc.ImageID, svc.Pull = "", &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}
-				// The agent moves the service's tag to the pulled image, so the next plan (and
-				// Compose on the host) resolves the tag to the update rather than reverting it.
-				ref, err := registry.ParseReference(ps.Reference)
-				if err != nil {
-					return ErrAdoptionChanged
-				}
-				if ref.Digest == "" {
-					svc.Pull.Tag = ref.Host + "/" + ref.Repository + ":" + ref.Tag
-				}
-				hosts[svc.Pull.Host()] = true
-			}
-			for _, p := range ps.Ports {
-				svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol, HostIP: p.HostIP})
-			}
-			for envName, ref := range spec.Services[i].Environment {
-				svc.Env[envName] = values[ref.SecretRef]
-			}
-			req.Services = append(req.Services, svc)
-		}
-		// A credential travels once per host, decrypted here and never stored. A host whose
-		// row is gone pulls anonymously only while the organization still allows it.
-		for host := range hosts {
-			_, cred, err := t.registryFor(ctx, tx, a.OrganizationID, host, key)
-			if errors.Is(err, ErrNotFound) {
-				anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
-				if err != nil {
-					return err
-				}
-				if !anonymous {
-					return ErrAdoptionChanged
-				}
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			if cred != nil {
-				if req.Registries == nil {
-					req.Registries = map[string]protocol.RegistryAuth{}
-				}
-				req.Registries[host] = protocol.RegistryAuth{Username: cred.Username, Secret: cred.Secret}
-			}
-		}
-		if err := req.Validate(now); err != nil {
-			return ErrInvalid
+		frame, err := t.buildDeploymentFrame(ctx, tx, a, d, key, now)
+		if err != nil {
+			return err
 		}
 		// The agent closes the session on a frame past its bound, so refuse it while the row
 		// is still planned rather than send one that can only end unknown.
-		if raw, err := json.Marshal(req); err != nil || len(raw) > min(maxFrameBytes, protocol.MaxDeploymentRequestBytes) {
+		if frameBlocker(frame, now, maxFrameBytes) != "" {
 			return ErrInvalid
 		}
-		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=? WHERE id=? AND state='planned'`), a.ActorID, now, req.Deadline, d.ID)
+		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=? WHERE id=? AND state='planned'`), a.ActorID, now, frame.Deadline, d.ID)
 		if err != nil {
 			return err
 		}
@@ -168,14 +90,131 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 		if n != 1 {
 			return ErrAdoptionChanged
 		}
-		d.State, d.AppliedBy, d.AppliedAt, d.Deadline = "applying", a.ActorID, &now, &req.Deadline
-		out = d
+		d.State, d.AppliedBy, d.AppliedAt, d.Deadline = "applying", a.ActorID, &now, &frame.Deadline
+		out, req = d, &frame
 		return nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	return out, req, nil
+}
+
+// buildDeploymentFrame resolves plan d into the frame an agent executes, issued at now: the
+// revision's environment values and each pulled host's registry credential, decrypted with key
+// and held only in the returned request. PlanDeployment measures it and drops it;
+// ApplyDeployment sends it. A plan that no longer matches its revision, its adopted resources or
+// the registry rows is ErrAdoptionChanged.
+func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a TenantAccess, d *Deployment, key []byte, now time.Time) (protocol.DeploymentRequest, error) {
+	spec, values, digest, err := t.resolveApplicationValues(ctx, tx, a, d.ApplicationID, d.Revision, key)
+	if err != nil {
+		return protocol.DeploymentRequest{}, err
+	}
+	if digest != d.SpecDigest || len(spec.Services) != len(d.Plan.Services) {
+		return protocol.DeploymentRequest{}, ErrAdoptionChanged
+	}
+	names := map[string]string{}
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name FROM application_resources WHERE instance_id=? AND endpoint_id=?`), d.InstanceID, d.EndpointID)
+	if err != nil {
+		return protocol.DeploymentRequest{}, err
+	}
+	for rows.Next() {
+		var cid, name string
+		if err := rows.Scan(&cid, &name); err != nil {
+			rows.Close()
+			return protocol.DeploymentRequest{}, err
+		}
+		names[cid] = name
+	}
+	if err := rows.Close(); err != nil {
+		return protocol.DeploymentRequest{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return protocol.DeploymentRequest{}, err
+	}
+	req := protocol.DeploymentRequest{Deployment: d.ID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}, Volumes: d.Plan.Volumes}
+	hosts := map[string]bool{}
+	for i, ps := range d.Plan.Services {
+		name, ok := names[ps.ContainerID]
+		if !ok || spec.Services[i].Name != ps.Name {
+			return protocol.DeploymentRequest{}, ErrAdoptionChanged
+		}
+		svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: append([]protocol.Mount{}, ps.Mounts...)}
+		if ps.PullDigest != "" {
+			svc.ImageID, svc.Pull = "", &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}
+			// The agent moves the service's tag to the pulled image, so the next plan (and
+			// Compose on the host) resolves the tag to the update rather than reverting it.
+			ref, err := registry.ParseReference(ps.Reference)
+			if err != nil {
+				return protocol.DeploymentRequest{}, ErrAdoptionChanged
+			}
+			if ref.Digest == "" {
+				svc.Pull.Tag = ref.Host + "/" + ref.Repository + ":" + ref.Tag
+			}
+			hosts[svc.Pull.Host()] = true
+		}
+		for _, p := range ps.Ports {
+			svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol, HostIP: p.HostIP})
+		}
+		for envName, ref := range spec.Services[i].Environment {
+			svc.Env[envName] = values[ref.SecretRef]
+		}
+		req.Services = append(req.Services, svc)
+	}
+	// A credential travels once per host, decrypted here and never stored. A host whose row is
+	// gone pulls anonymously only while the organization still allows it.
+	for host := range hosts {
+		_, cred, err := t.registryFor(ctx, tx, a.OrganizationID, host, key)
+		if errors.Is(err, ErrNotFound) {
+			anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
+			if err != nil {
+				return protocol.DeploymentRequest{}, err
+			}
+			if !anonymous {
+				return protocol.DeploymentRequest{}, ErrAdoptionChanged
+			}
+			continue
+		}
+		if err != nil {
+			return protocol.DeploymentRequest{}, err
+		}
+		if cred != nil {
+			if req.Registries == nil {
+				req.Registries = map[string]protocol.RegistryAuth{}
+			}
+			req.Registries[host] = protocol.RegistryAuth{Username: cred.Username, Secret: cred.Secret}
+		}
+	}
+	return req, nil
+}
+
+// frameBlocker names what stops req reaching an agent that accepts maxFrameBytes, or "" when
+// nothing does. Plan and apply both run it: capabilities can change between them.
+func frameBlocker(req protocol.DeploymentRequest, now time.Time, maxFrameBytes int) string {
+	if len(req.Registries) > protocol.MaxRegistryAuthHosts {
+		return "too_many_registry_hosts"
+	}
+	if req.Validate(now) != nil {
+		return "frame_invalid"
+	}
+	if raw, err := json.Marshal(req); err != nil || len(raw) > min(maxFrameBytes, protocol.MaxDeploymentRequestBytes) {
+		return "frame_too_large"
+	}
+	return ""
+}
+
+// checkFrame builds the frame apply would send for d and refuses the plan when the endpoint's
+// agent could not accept it. The frame, values and credentials included, is dropped.
+func (t *tenancyStore) checkFrame(ctx context.Context, tx *sql.Tx, a TenantAccess, d *Deployment, key []byte, maxFrameBytes int) error {
+	now := time.Now().UTC()
+	req, err := t.buildDeploymentFrame(ctx, tx, a, d, key, now)
+	if err != nil {
+		return err
+	}
+	if b := frameBlocker(req, now, maxFrameBytes); b != "" {
+		return blocked([]string{b})
+	}
+	return nil
 }
 
 // FailDeployment records that the frame never left the server. An unknown row qualifies too:
@@ -576,7 +615,7 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		}
 		now := time.Now().UTC()
 		plan := DeploymentPlan{Project: project, Services: []PlannedService{}, Containers: []RemovalPlanTarget{}}
-		req = &protocol.RemovalRequest{Deployment: id, Endpoint: endpoint, Project: project, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
+		req = &protocol.RemovalRequest{Deployment: id, Endpoint: endpoint, Project: project, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
 		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name,image_id,created_at,service_name FROM application_resources WHERE instance_id=? AND endpoint_id=? ORDER BY container_id`), instanceID.String(), endpoint)
 		if err != nil {
 			return err

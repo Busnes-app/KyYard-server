@@ -205,6 +205,15 @@ func (s *Server) handleApplicationPreflight(w http.ResponseWriter, r *http.Reque
 	}
 	s.writeJSON(w, http.StatusOK, result)
 }
+
+// maxFrameBytes is the largest deployment frame an agent with capabilities accepts.
+func maxFrameBytes(capabilities []string) int {
+	if slices.Contains(capabilities, protocol.CapabilityDeploymentPull) {
+		return protocol.MaxDeploymentRequestBytes
+	}
+	return protocol.MaxDeploymentRequestBytesLegacy
+}
+
 func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	var input store.PlanRequest
 	if strictJSON(r, &input) != nil {
@@ -217,6 +226,22 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 			s.tenantError(w, err)
 			return
 		}
+	}
+	// The plan measures its frame against what this endpoint's agent accepts.
+	pre, err := s.store.Tenancy().PreflightApplication(r.Context(), a, r.PathValue("application"))
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, pre.EndpointID)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	input.MaxFrameBytes = maxFrameBytes(ep.Capabilities)
+	// Inspect before taking a registry slot, so slow agents cannot hold the organization's slots.
+	input.Inspections = s.planInspections(w, r, a, ep, pre)
+	if len(input.Update) > 0 {
 		release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
 		if !ok {
 			return
@@ -282,10 +307,7 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, store.ErrEndpointOffline)
 		return
 	}
-	maxFrame := protocol.MaxDeploymentRequestBytesLegacy
-	if slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentPull) {
-		maxFrame = protocol.MaxDeploymentRequestBytes
-	}
+	maxFrame := maxFrameBytes(ep.Capabilities)
 	applied, req, err := s.store.Tenancy().ApplyDeployment(r.Context(), a, app, id, input.Confirm, s.config.Security.EncryptionKey, maxFrame)
 	if err != nil {
 		s.tenantError(w, err)

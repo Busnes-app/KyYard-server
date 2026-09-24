@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
@@ -54,6 +55,9 @@ type Server struct {
 	imageChecks sync.Map
 	// digestResolver answers update checks and update plans; nil means the real registry client.
 	digestResolver store.DigestResolver
+	// planInspector replaces the agent round trip of one plan-time inspection; nil means the
+	// connected agent. Tests only.
+	planInspector func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error)
 	// registrySlots bounds update checks and update plans in flight across the server;
 	// registryHeld counts each organization's share of them, under registryMu.
 	registrySlots chan struct{}

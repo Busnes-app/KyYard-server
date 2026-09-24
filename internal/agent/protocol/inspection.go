@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -29,6 +30,8 @@ const MaxInspectionEntries = 64
 // ContainerInspection is an allowlisted observation, not a recreation spec.
 // Counts omit mount paths/network names. Environment, labels, argv, healthcheck
 // commands, raw configuration and hashes of those values never enter this type.
+// Unsupported names, as codes from UnsupportedCodes, configuration a recreate from the
+// definition would drop; ConfigurationVerified is true exactly when it is empty.
 type ContainerInspection struct {
 	Target                InspectionTarget `json:"target"`
 	ObservedAt            time.Time        `json:"observed_at"`
@@ -43,7 +46,8 @@ type ContainerInspection struct {
 	Privileged            bool             `json:"privileged"`
 	ReadOnlyRootFS        bool             `json:"read_only_rootfs"`
 	AutoRemove            bool             `json:"auto_remove"`
-	ConfigurationVerified bool             `json:"configuration_verified"` // Always false in this foundation.
+	Unsupported           []string         `json:"unsupported"`
+	ConfigurationVerified bool             `json:"configuration_verified"`
 }
 type ImagePlatform struct {
 	OS           string `json:"os"`
@@ -58,13 +62,37 @@ type MountCounts struct {
 	ReadOnly int `json:"read_only"`
 }
 
+// UnsupportedCodes is the closed vocabulary of ContainerInspection.Unsupported, in the order the
+// Docker adapter reports them. Each is configuration the definition cannot express.
+var UnsupportedCodes = []string{"mount_type", "anonymous_volume", "volumes_from", "volume_driver", "mount_options", "tmpfs", "auto_remove", "read_only_rootfs", "privileged", "capabilities", "security_opt", "devices", "pid_mode", "ipc_mode", "user", "runtime", "resource_limits", "ulimits", "sysctls", "device_requests", "init", "userns_mode", "cgroup_parent", "group_add", "extra_hosts", "dns", "links", "network", "image_config"}
+
+// knownCodes accepts at most MaxUnsupported distinct codes from UnsupportedCodes.
+func knownCodes(codes []string) bool {
+	if len(codes) > MaxUnsupported {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, c := range codes {
+		if seen[c] || !slices.Contains(UnsupportedCodes, c) {
+			return false
+		}
+		seen[c] = true
+	}
+	return true
+}
+
 const (
-	TypeInspectionOpen        = "inspection.open"
-	TypeInspectionResult      = "inspection.result"
-	TypeInspectionCancel      = "inspection.cancel"
-	InspectionLifetime        = 25 * time.Second
-	MaxInspectionFrameBytes   = 32 << 10
-	MaxInspectionsPerEndpoint = 2
+	TypeInspectionOpen         = "inspection.open"
+	TypeInspectionResult       = "inspection.result"
+	TypeInspectionCancel       = "inspection.cancel"
+	InspectionLifetime         = 25 * time.Second
+	MaxInspectionFrameBytes    = 32 << 10
+	MaxInspectionsPerEndpoint  = 2
+	CapabilityContainerInspect = "container.inspect"
+	// CapabilityContainerInspectVerdict marks an agent whose inspections carry the unsupported
+	// codes and configuration_verified; plans need it, the inspection dialog does not.
+	CapabilityContainerInspectVerdict = "container.inspect.verdict"
+	MaxUnsupported                    = 32
 )
 
 type InspectionOpen struct {
@@ -97,7 +125,7 @@ var inspectionPlatform = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 // Validate bounds an untrusted agent result before it reaches an HTTP response.
 func (r ContainerInspection) Validate(target InspectionTarget, now time.Time) error {
 	invalid := errors.New("invalid inspection result")
-	if r.Target != target || target.Validate() != nil || r.ConfigurationVerified || r.ObservedAt.Before(now.Add(-InspectionLifetime)) || r.ObservedAt.After(now.Add(5*time.Second)) {
+	if r.Target != target || target.Validate() != nil || r.ConfigurationVerified != (len(r.Unsupported) == 0) || !knownCodes(r.Unsupported) || r.ObservedAt.Before(now.Add(-InspectionLifetime)) || r.ObservedAt.After(now.Add(5*time.Second)) {
 		return invalid
 	}
 	switch r.State {

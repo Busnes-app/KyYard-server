@@ -42,6 +42,8 @@ type PreflightService struct {
 	DroppedBinds      []protocol.Mount `json:"dropped_binds"`
 	DroppedMounts     []protocol.Mount `json:"dropped_mounts"`
 	UnsupportedMounts []protocol.Mount `json:"unsupported_mounts"`
+	// Unsupported are the codes a plan-time live inspection reported (configuration_unsupported).
+	Unsupported []string `json:"unsupported,omitempty"`
 }
 
 // anonymousVolume is the name Docker gives a volume nobody named.
@@ -115,6 +117,11 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 	}
 	out := buildDeploymentPreflight(m, spec, snapshot, number == head)
 	out.Revision, out.ReceivedAt = number, received
+	// observed_at is the agent's clock, received_at the server's.
+	if d := observed.Sub(received); d > protocol.MaxClockSkew || d < -protocol.MaxClockSkew {
+		out.Blockers = append(out.Blockers, "clock_skew")
+		out.Executable = false
+	}
 	return out, m, spec, snapshot, digest, nil
 }
 

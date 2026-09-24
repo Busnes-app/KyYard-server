@@ -42,10 +42,17 @@ const (
 	StepCreate                      = "create"
 	StepStart                       = "start"
 	StepRemove                      = "remove"
+	StepRecheck                     = "recheck" // re-inspects the old container at the start of its replacement
 	OutcomeSkipped                  = "skipped"
 	TypeDeploymentRemove            = "deployment.remove"
 	CapabilityDeploymentRemove      = "deployment.remove"
-	MaxRemovalTargets               = 100 // three steps each fit a result's 8*MaxDeploymentServices
+	MaxRemovalTargets               = 100 // three steps each fit a result's MaxDeploymentResultSteps
+	// MaxClockSkew bounds the difference between the server's clock when it built a frame and
+	// the agent's when it reads one, and between an inventory's observed and received times.
+	MaxClockSkew = 5 * time.Minute
+	// MaxDeploymentResultSteps is eight steps per service (precondition, image or pull,
+	// recheck, rename, create, stop, start, remove) plus one per volume.
+	MaxDeploymentResultSteps = 8*MaxDeploymentServices + MaxDeploymentVolumes
 )
 
 var (
@@ -55,18 +62,39 @@ var (
 	deploymentEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 	// Docker's volume name characters, long enough for a resolved "<project>_<name>" (64+1+64).
 	deploymentVolume  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,128}$`)
-	deploymentSteps   = map[string]bool{StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true}
+	deploymentSteps   = map[string]bool{StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true, StepRecheck: true}
 	deploymentRestart = map[string]bool{"": true, "no": true, "always": true, "unless-stopped": true, "on-failure": true}
 	resultOutcomes    = map[string]bool{OutcomeSucceeded: true, OutcomeFailed: true, OutcomeDenied: true, OutcomeTimedOut: true, OutcomeUnknown: true}
 )
 
+// ErrClockSkew is a frame whose issue time is more than MaxClockSkew from the reader's clock.
+// Its text is the detail an agent answers with.
+var ErrClockSkew = errors.New("clock skew exceeds 5 minutes")
+
+// issued refuses a frame with no issue time, one issued more than MaxClockSkew from now (the
+// two clocks disagree), or a deadline outside (issued, issued+DeploymentLifetime].
+func issued(at, deadline, now time.Time) error {
+	if at.IsZero() {
+		return errors.New("missing issue time")
+	}
+	if d := now.Sub(at); d > MaxClockSkew || d < -MaxClockSkew {
+		return ErrClockSkew
+	}
+	if !deadline.After(at) || deadline.After(at.Add(DeploymentLifetime)) {
+		return errors.New("invalid deadline for the issue time")
+	}
+	return nil
+}
+
 type DeploymentRequest struct {
-	Deployment string              `json:"deployment"`
-	Endpoint   string              `json:"endpoint"`
-	Project    string              `json:"project"`
-	Revision   int                 `json:"revision"`
-	Deadline   time.Time           `json:"deadline"`
-	Services   []DeploymentService `json:"services"`
+	Deployment string `json:"deployment"`
+	Endpoint   string `json:"endpoint"`
+	Project    string `json:"project"`
+	Revision   int    `json:"revision"`
+	// IssuedAt is the server's clock when it built the frame; Deadline is measured from it too.
+	IssuedAt time.Time           `json:"issued_at"`
+	Deadline time.Time           `json:"deadline"`
+	Services []DeploymentService `json:"services"`
 	// Registries holds a credential per registry host some service pulls from; never logged.
 	Registries map[string]RegistryAuth `json:"registries,omitempty"`
 	// Volumes are the named volumes the agent ensures before any replacement, each one some
@@ -161,6 +189,9 @@ func fullImageID(id string) bool {
 func (r DeploymentRequest) Validate(now time.Time) error {
 	if !deploymentUUID.MatchString(r.Deployment) || !execStreamID.MatchString(r.Endpoint) || !deploymentProject.MatchString(r.Project) || r.Revision < 1 || r.Revision > 100 {
 		return errors.New("invalid deployment identity")
+	}
+	if err := issued(r.IssuedAt, r.Deadline, now); err != nil {
+		return err
 	}
 	if !r.Deadline.After(now) || r.Deadline.After(now.Add(DeploymentLifetime)) {
 		return errors.New("invalid deployment deadline")
@@ -272,7 +303,7 @@ type DeploymentIdentity struct {
 }
 
 func (r DeploymentResult) Validate() error {
-	if !deploymentUUID.MatchString(r.Deployment) || !resultOutcomes[r.Outcome] || len(r.Detail) > MaxResultDetailBytes || len(r.Steps) > 8*MaxDeploymentServices || len(r.Services) > MaxDeploymentServices {
+	if !deploymentUUID.MatchString(r.Deployment) || !resultOutcomes[r.Outcome] || len(r.Detail) > MaxResultDetailBytes || len(r.Steps) > MaxDeploymentResultSteps || len(r.Services) > MaxDeploymentServices {
 		return errors.New("invalid deployment result")
 	}
 	for _, s := range r.Steps {
@@ -296,6 +327,7 @@ type RemovalRequest struct {
 	Deployment string          `json:"deployment"`
 	Endpoint   string          `json:"endpoint"`
 	Project    string          `json:"project"`
+	IssuedAt   time.Time       `json:"issued_at"`
 	Deadline   time.Time       `json:"deadline"`
 	Containers []RemovalTarget `json:"containers"`
 }
@@ -307,6 +339,9 @@ type RemovalTarget struct {
 func (r RemovalRequest) Validate(now time.Time) error {
 	if !deploymentUUID.MatchString(r.Deployment) || !execStreamID.MatchString(r.Endpoint) || !deploymentProject.MatchString(r.Project) {
 		return errors.New("invalid removal identity")
+	}
+	if err := issued(r.IssuedAt, r.Deadline, now); err != nil {
+		return err
 	}
 	if !r.Deadline.After(now) || r.Deadline.After(now.Add(DeploymentLifetime)) {
 		return errors.New("invalid removal deadline")

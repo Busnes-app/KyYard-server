@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"maps"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,11 +35,11 @@ func decodeResult(f outFrame, res *protocol.DeploymentResult) error {
 }
 
 func testRequest(endpoint string) protocol.DeploymentRequest {
-	return protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: endpoint, Project: "shop", Revision: 1, Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64), Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}, Env: map[string]string{"TOKEN": "agent-secret-canary"}}}}
+	return protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: endpoint, Project: "shop", Revision: 1, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64), Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}, Env: map[string]string{"TOKEN": "agent-secret-canary"}}}}
 }
 
 func testRemoval(endpoint string) protocol.RemovalRequest {
-	return protocol.RemovalRequest{Deployment: "6c5e4f3a-1b0d-4e9f-8a7b-4f5a6b7c8d9e", Endpoint: endpoint, Project: "shop", Deadline: time.Now().Add(5 * time.Minute), Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}}}}
+	return protocol.RemovalRequest{Deployment: "6c5e4f3a-1b0d-4e9f-8a7b-4f5a6b7c8d9e", Endpoint: endpoint, Project: "shop", IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}}}}
 }
 
 func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
@@ -46,7 +48,7 @@ func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
 	finish := make(chan struct{})
 	var seen protocol.DeploymentRequest
 	var mu sync.Mutex
-	opts := &Options{Deploy: func(ctx context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+	opts := &Options{Deploy: func(ctx context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 		mu.Lock()
 		seen = req
 		mu.Unlock()
@@ -102,7 +104,7 @@ func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
 	mu.Unlock()
 	// Replay: the same ID answers from the ledger without running again.
 	ran := false
-	opts.Deploy = func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult {
+	opts.Deploy = func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
 		ran = true
 		return protocol.DeploymentResult{}
 	}
@@ -118,7 +120,7 @@ func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
 func TestDeployerStaysSilentForTheRunningDeployment(t *testing.T) {
 	finish := make(chan struct{})
 	started := make(chan struct{})
-	d := newDeployer(context.Background(), t.TempDir(), &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+	d := newDeployer(context.Background(), t.TempDir(), &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 		close(started)
 		<-finish
 		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
@@ -161,7 +163,7 @@ func TestDeployerWaitsForTheRunToRecord(t *testing.T) {
 	dir := t.TempDir()
 	started := make(chan struct{})
 	root, cancel := context.WithCancel(context.Background())
-	d := newDeployer(root, dir, &Options{Deploy: func(ctx context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+	d := newDeployer(root, dir, &Options{Deploy: func(ctx context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 		close(started)
 		<-ctx.Done()
 		time.Sleep(50 * time.Millisecond) // a runtime winding down after the cancel
@@ -182,7 +184,7 @@ func TestDeployerWaitsForTheRunToRecord(t *testing.T) {
 // A result the server could not read is recorded and sent as unknown with a fixed detail.
 func TestDeployerReplacesAnUnreadableResult(t *testing.T) {
 	dir := t.TempDir()
-	d := newDeployer(context.Background(), dir, &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+	d := newDeployer(context.Background(), dir, &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: "exploded", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	}})
 	out := make(chan outFrame, 1)
@@ -212,7 +214,7 @@ func TestDeployerReplacesAnUnreadableResult(t *testing.T) {
 func TestDeployerRefusals(t *testing.T) {
 	dir := t.TempDir()
 	calls := 0
-	opts := &Options{Deploy: func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult {
+	opts := &Options{Deploy: func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
 		calls++
 		time.Sleep(200 * time.Millisecond)
 		return protocol.DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
@@ -291,14 +293,14 @@ func TestDeployerResendsPersistedResults(t *testing.T) {
 // The session advertises each capability only with its runtime, re-sends the ledger after hello,
 // answers an apply (and a removal when it can), and closes on an oversized frame.
 func TestSessionCarriesDeployments(t *testing.T) {
-	remove := func(_ context.Context, req protocol.RemovalRequest) protocol.DeploymentResult {
+	remove := func(_ context.Context, req protocol.RemovalRequest, _ func()) protocol.DeploymentResult {
 		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	}
 	t.Run("apply only", func(t *testing.T) { sessionCarriesDeployments(t, nil) })
 	t.Run("apply and remove", func(t *testing.T) { sessionCarriesDeployments(t, remove) })
 }
 
-func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult) {
+func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	dir := t.TempDir()
@@ -407,7 +409,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 	defer stub.Close()
 	_, key, _ := ed25519.GenerateKey(nil)
 	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
-	opts := Options{HTTPClient: stub.Client(), IdentityDir: dir, Log: log.New(io.Discard, "", 0), Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+	opts := Options{HTTPClient: stub.Client(), IdentityDir: dir, Log: log.New(io.Discard, "", 0), Deploy: func(_ context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 		return protocol.DeploymentResult{Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	}, Remove: remove}
 	done := make(chan error, 1)
@@ -473,7 +475,7 @@ func TestDeployerRunsARemoval(t *testing.T) {
 	dir := t.TempDir()
 	started, finish := make(chan struct{}), make(chan struct{})
 	var ranCtx context.Context
-	opts := &Options{Remove: func(ctx context.Context, req protocol.RemovalRequest) protocol.DeploymentResult {
+	opts := &Options{Remove: func(ctx context.Context, req protocol.RemovalRequest, _ func()) protocol.DeploymentResult {
 		ranCtx = ctx
 		close(started)
 		<-finish
@@ -508,7 +510,7 @@ func TestDeployerRunsARemoval(t *testing.T) {
 	if err != nil || !strings.Contains(string(stored), req.Deployment) {
 		t.Fatalf("ledger: %v %s", err, stored)
 	}
-	opts.Remove = func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult {
+	opts.Remove = func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult {
 		t.Error("replay ran the removal again")
 		return protocol.DeploymentResult{}
 	}
@@ -526,7 +528,7 @@ func TestDeployerReplaysAPersistedRemoval(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), ledger, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := newDeployer(context.Background(), dir, &Options{Remove: func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult {
+	d := newDeployer(context.Background(), dir, &Options{Remove: func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult {
 		t.Error("replay ran the removal")
 		return protocol.DeploymentResult{}
 	}})
@@ -544,12 +546,12 @@ func TestDeployerSharesTheSlotWithRemoval(t *testing.T) {
 	applyStarted, applyFinish := make(chan struct{}), make(chan struct{})
 	removeStarted, removeFinish := make(chan struct{}), make(chan struct{})
 	d := newDeployer(context.Background(), t.TempDir(), &Options{
-		Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+		Deploy: func(_ context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 			close(applyStarted)
 			<-applyFinish
 			return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 		},
-		Remove: func(_ context.Context, req protocol.RemovalRequest) protocol.DeploymentResult {
+		Remove: func(_ context.Context, req protocol.RemovalRequest, _ func()) protocol.DeploymentResult {
 			close(removeStarted)
 			<-removeFinish
 			return removed(req)
@@ -608,7 +610,7 @@ func TestDeployerRemovalRefusals(t *testing.T) {
 	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Detail != "this agent has no runtime to remove" {
 		t.Fatalf("no runtime: %+v", res)
 	}
-	d = newDeployer(context.Background(), t.TempDir(), &Options{Remove: func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult {
+	d = newDeployer(context.Background(), t.TempDir(), &Options{Remove: func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult {
 		t.Error("refused removal ran")
 		return protocol.DeploymentResult{}
 	}})
@@ -637,7 +639,7 @@ func TestDeployerNeverKeepsTheRegistryCredential(t *testing.T) {
 	dir := t.TempDir()
 	var held map[string]protocol.RegistryAuth
 	digest := "sha256:" + strings.Repeat("d", 64)
-	d := newDeployer(context.Background(), dir, &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+	d := newDeployer(context.Background(), dir, &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 		held = req.Registries
 		s := req.Services[0]
 		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded,
@@ -684,5 +686,133 @@ func TestDeployerNeverKeepsTheRegistryCredential(t *testing.T) {
 	// held is the frame's own map, not a copy: empty proves the runner let go of the credential.
 	if held == nil || len(held) != 0 {
 		t.Fatalf("the runner kept the credential map: %v", held)
+	}
+}
+
+// A skewed frame is answered failed with the fixed detail, runs nothing and is not recorded.
+func TestDeployerReportsClockSkewAsFailed(t *testing.T) {
+	ran := false
+	d := newDeployer(context.Background(), t.TempDir(), &Options{Deploy: func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
+		ran = true
+		return protocol.DeploymentResult{}
+	}})
+	out := make(chan outFrame, 1)
+	req := testRequest("ep_1")
+	req.IssuedAt = time.Now().Add(protocol.MaxClockSkew + time.Minute)
+	req.Deadline = req.IssuedAt.Add(time.Minute)
+	raw, _ := json.Marshal(req)
+	d.handleApply(context.Background(), "ep_1", raw, out)
+	var res protocol.DeploymentResult
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeFailed || res.Detail != "clock skew exceeds 5 minutes" || res.Validate() != nil {
+		t.Fatalf("skewed frame: %+v", res)
+	}
+	d.mu.Lock()
+	_, recorded := d.done[req.Deployment]
+	d.mu.Unlock()
+	if ran || recorded {
+		t.Fatalf("ran=%v recorded=%v", ran, recorded)
+	}
+}
+
+// A run that began changing the host and never recorded a result (the agent restarted) is
+// reported unknown after the restart, re-sent, and answered from the ledger, never run again.
+func TestDeployerStartedMarkerSurvivesARestart(t *testing.T) {
+	dir := t.TempDir()
+	marked := make(chan struct{})
+	release := make(chan struct{})
+	first := newDeployer(context.Background(), dir, &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
+		started()
+		close(marked)
+		<-release
+		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	}})
+	req := testRequest("ep_1")
+	raw, _ := json.Marshal(req)
+	first.handleApply(context.Background(), "ep_1", raw, make(chan outFrame, 1))
+	<-marked
+	stored, err := os.ReadFile(filepath.Join(dir, "deployments.json"))
+	if err != nil || !strings.Contains(string(stored), req.Deployment) || !strings.Contains(string(stored), `"started"`) || strings.Contains(string(stored), "agent-secret-canary") {
+		t.Fatalf("started entry: %v %s", err, stored)
+	}
+	// The agent restarts here: a new deployer reads the ledger the first one left.
+	var ran atomic.Bool
+	second := newDeployer(context.Background(), dir, &Options{Deploy: func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
+		ran.Store(true)
+		return protocol.DeploymentResult{}
+	}})
+	out := make(chan outFrame, 4)
+	second.resend(context.Background(), out)
+	var res protocol.DeploymentResult
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Detail != "the agent restarted after replacement began; inspect the host" || res.Validate() != nil {
+		t.Fatalf("re-sent: %+v", res)
+	}
+	second.handleApply(context.Background(), "ep_1", raw, out)
+	if decodeResult(<-out, &res) != nil || res.Outcome != protocol.OutcomeUnknown {
+		t.Fatalf("replayed: %+v", res)
+	}
+	if ran.Load() {
+		t.Fatal("a re-sent frame ran again after a restart")
+	}
+	close(release)
+	first.wait()
+}
+
+// Pruning never drops a run that began and has no result, however old or full the ledger, and
+// re-sending skips it: it has nothing to send yet.
+func TestDeployerPruneKeepsAStartedRun(t *testing.T) {
+	d := newDeployer(context.Background(), t.TempDir(), &Options{})
+	for i := range deploymentLedgerMax + 5 {
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
+		d.done[id] = deploymentEntry{Result: protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}
+	}
+	running := "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b"
+	d.begin(running)
+	e := d.done[running]
+	e.Started = time.Now().UTC().Add(-2 * deploymentLedgerLife)
+	d.done[running] = e
+	d.prune()
+	if e, ok := d.done[running]; !ok || !e.pending() {
+		t.Fatal("pruning dropped a started run")
+	}
+	if len(d.done) != deploymentLedgerMax+1 {
+		t.Fatalf("ledger holds %d entries", len(d.done))
+	}
+	out := make(chan outFrame, 2*deploymentLedgerMax)
+	d.resend(context.Background(), out)
+	if len(out) != deploymentLedgerMax {
+		t.Fatalf("re-sent %d results", len(out))
+	}
+	for range deploymentLedgerMax {
+		var res protocol.DeploymentResult
+		if decodeResult(<-out, &res) != nil || res.Deployment == running {
+			t.Fatalf("re-sent the started run: %+v", res)
+		}
+	}
+}
+
+// A remembered result is replayed whatever the frame carrying its ID: a re-sent frame for a
+// run settled unknown after a restart is answered from the ledger even past its deadline.
+func TestDeployerReplaysTheLedgerPastTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	req := testRequest("ep_1")
+	newDeployer(context.Background(), dir, &Options{}).begin(req.Deployment)
+	var ran atomic.Bool
+	d := newDeployer(context.Background(), dir, &Options{Deploy: func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
+		ran.Store(true)
+		return protocol.DeploymentResult{}
+	}})
+	req.IssuedAt, req.Deadline = time.Now().Add(-4*time.Minute), time.Now().Add(-time.Minute)
+	if req.Validate(time.Now()) == nil {
+		t.Fatal("the frame must be past its deadline")
+	}
+	raw, _ := json.Marshal(req)
+	out := make(chan outFrame, 1)
+	d.handleApply(context.Background(), "ep_1", raw, out)
+	var res protocol.DeploymentResult
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Detail != "the agent restarted after replacement began; inspect the host" {
+		t.Fatalf("expired re-sent frame: %+v", res)
+	}
+	if ran.Load() {
+		t.Fatal("a remembered deployment ran again")
 	}
 }

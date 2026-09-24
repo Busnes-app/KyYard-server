@@ -47,13 +47,13 @@ func TestDeployEnsuresVolumesAndMountsThem(t *testing.T) {
 	withBind(f)
 	req := request(mountedWeb(), mountedDB())
 	req.Volumes = []string{"shop_data", "shop_ext"}
-	res := f.client().Deploy(context.Background(), req)
+	res := f.client().Deploy(context.Background(), req, func() {})
 	if res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("outcome: %+v", res)
 	}
 	want := "web precondition succeeded,web volume succeeded,web volume succeeded,web image succeeded,db precondition succeeded,db image succeeded," +
-		"web rename succeeded,web create succeeded,web stop succeeded,web start succeeded,web remove succeeded," +
-		"db rename succeeded,db create succeeded,db stop succeeded,db start succeeded,db remove succeeded"
+		"web recheck succeeded,web rename succeeded,web create succeeded,web stop succeeded,web start succeeded,web remove succeeded," +
+		"db recheck succeeded,db rename succeeded,db create succeeded,db stop succeeded,db start succeeded,db remove succeeded"
 	if got := stepList(res); got != want {
 		t.Fatalf("steps:\n got %v\nwant %v", got, want)
 	}
@@ -110,7 +110,7 @@ func TestDeployEnsuresVolumesAndMountsThem(t *testing.T) {
 	}
 	// A service without mounts sends none.
 	f = newFakeDeployEngine(t)
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("plain: %+v", res)
 	}
 	for _, c := range f.calls {
@@ -131,13 +131,13 @@ func TestDeployVolumeFailureTouchesNoContainer(t *testing.T) {
 		f.volumeStatus = status
 		req := request(mountedWeb(), mountedDB())
 		req.Volumes = []string{"shop_data", "shop_ext"}
-		res := f.client().Deploy(context.Background(), req)
+		res := f.client().Deploy(context.Background(), req, func() {})
 		if res.Outcome != protocol.OutcomeFailed || res.Steps[1].Step != protocol.StepVolume || res.Steps[1].Detail != "volume create failed" || res.Detail != "service web, step volume: volume create failed" {
 			t.Fatalf("%d: outcome: %+v", status, res)
 		}
 		want := "web precondition succeeded,web volume failed,web volume skipped,web image skipped,db precondition skipped,db image skipped," +
-			"web rename skipped,web create skipped,web stop skipped,web start skipped,web remove skipped," +
-			"db rename skipped,db create skipped,db stop skipped,db start skipped,db remove skipped"
+			"web recheck skipped,web rename skipped,web create skipped,web stop skipped,web start skipped,web remove skipped," +
+			"db recheck skipped,db rename skipped,db create skipped,db stop skipped,db start skipped,db remove skipped"
 		if got := stepList(res); got != want {
 			t.Fatalf("%d steps:\n got %v\nwant %v", status, got, want)
 		}
@@ -203,7 +203,7 @@ func TestDeployVolumeOwnership(t *testing.T) {
 			req := request(s)
 			req.Volumes = []string{tc.volume}
 			f.createdInstead = tc.created // free when inspected, taken by the time the create lands
-			res := f.client().Deploy(context.Background(), req)
+			res := f.client().Deploy(context.Background(), req, func() {})
 			if res.Steps[1].Step != protocol.StepVolume || res.Steps[1].Outcome != tc.outcome || res.Steps[1].Detail != tc.detail || res.Outcome != tc.outcome {
 				t.Fatalf("%+v", res)
 			}
@@ -225,21 +225,21 @@ func TestDeployVolumeOwnership(t *testing.T) {
 // The refusals that protect data the definition cannot express carry fixed details.
 func TestDeployVolumeRefusalDetails(t *testing.T) {
 	for detail, mutate := range map[string]func(*fakeDeployEngine){
-		"anonymous volumes": func(f *fakeDeployEngine) {
+		"anonymous_volume": func(f *fakeDeployEngine) {
 			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume", "Name": strings.Repeat("ab", 32), "Destination": "/data", "RW": true}}
 		},
-		"volumes-from": func(f *fakeDeployEngine) {
+		"volumes_from": func(f *fakeDeployEngine) {
 			f.oldContainer["HostConfig"].(map[string]any)["VolumesFrom"] = []string{"other"}
 		},
-		"volume driver": func(f *fakeDeployEngine) { f.oldContainer["HostConfig"].(map[string]any)["VolumeDriver"] = "nfs" },
-		"mount options": func(f *fakeDeployEngine) {
+		"volume_driver": func(f *fakeDeployEngine) { f.oldContainer["HostConfig"].(map[string]any)["VolumeDriver"] = "nfs" },
+		"mount_options": func(f *fakeDeployEngine) {
 			f.oldContainer["HostConfig"].(map[string]any)["Mounts"] = []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"Subpath": "app"}}}
 		},
 	} {
 		f := newFakeDeployEngine(t)
 		mutate(f)
-		res := f.client().Deploy(context.Background(), request(webService()))
-		if res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "the container has configuration the definition cannot express: "+detail {
+		res := f.client().Deploy(context.Background(), request(webService()), func() {})
+		if res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "unsupported: "+detail {
 			t.Fatalf("%s: %+v", detail, res.Steps[0])
 		}
 	}
@@ -250,7 +250,7 @@ func TestDeployVolumeRefusalDetails(t *testing.T) {
 	f.oldContainer["HostConfig"].(map[string]any)["Mounts"] = []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{}}, map[string]any{"Type": "bind", "Source": "/srv", "Target": "/srv", "BindOptions": map[string]any{"Propagation": "rprivate", "CreateMountpoint": true}}}
 	s := webService()
 	s.Mounts = []protocol.Mount{} // the definition drops both
-	if res := f.client().Deploy(context.Background(), request(s)); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(s), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("defaults refused: %+v", res.Steps[0])
 	}
 }
@@ -279,7 +279,7 @@ func TestDeployBindPrecondition(t *testing.T) {
 		}, protocol.OutcomeDenied, "bind mount not present on the container"},
 		"tmpfs beside them": {func(f *fakeDeployEngine, _ *protocol.DeploymentService) {
 			f.oldContainer["Mounts"] = append(f.oldContainer["Mounts"].([]any), map[string]any{"Type": "tmpfs", "Destination": "/run", "RW": true})
-		}, protocol.OutcomeDenied, "the container has configuration the definition cannot express: mounts"},
+		}, protocol.OutcomeDenied, "unsupported: mount_type"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -288,7 +288,7 @@ func TestDeployBindPrecondition(t *testing.T) {
 			tc.mutate(f, &s)
 			req := request(s)
 			req.Volumes = []string{"shop_data", "shop_ext"}
-			res := f.client().Deploy(context.Background(), req)
+			res := f.client().Deploy(context.Background(), req, func() {})
 			if res.Outcome != tc.outcome || res.Steps[0].Detail != tc.detail {
 				t.Fatalf("%+v", res)
 			}
@@ -309,7 +309,7 @@ func TestDeployRefusesAnUnlistedVolumeMount(t *testing.T) {
 	withBind(f)
 	req := request(mountedWeb())
 	req.Volumes = []string{"shop_data"} // mountedWeb also mounts shop_ext
-	res := f.client().Deploy(context.Background(), req)
+	res := f.client().Deploy(context.Background(), req, func() {})
 	if res.Outcome != protocol.OutcomeDenied || len(res.Steps) != 0 || len(f.calls) != 0 {
 		t.Fatalf("%+v calls=%v", res, f.steps())
 	}
@@ -354,7 +354,7 @@ func TestDeployKeepOnlyVolumePerService(t *testing.T) {
 			}
 			req := request(web, db)
 			req.Volumes = []string{"shared_ext"}
-			res := f.client().Deploy(context.Background(), req)
+			res := f.client().Deploy(context.Background(), req, func() {})
 			if res.Outcome != tc.outcome {
 				t.Fatalf("%+v", res)
 			}
@@ -417,7 +417,7 @@ func TestDeployFrameWithoutMountsKey(t *testing.T) {
 			if (s.Mounts == nil) != tc.absent {
 				t.Fatalf("decoded mounts %#v", s.Mounts)
 			}
-			res := f.client().Deploy(context.Background(), request(s))
+			res := f.client().Deploy(context.Background(), request(s), func() {})
 			if res.Outcome != tc.outcome || res.Steps[0].Detail != tc.detail {
 				t.Fatalf("%+v", res)
 			}
@@ -427,5 +427,23 @@ func TestDeployFrameWithoutMountsKey(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The Engine lists Mounts from a map, unsorted: the same mounts in another order at the
+// recheck are not drift.
+func TestRecheckIgnoresMountOrder(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	withBind(f)
+	f.drift = func(_ string, read int, body map[string]any) {
+		if read > 1 {
+			m := body["Mounts"].([]any)
+			body["Mounts"] = []any{m[1], m[0]}
+		}
+	}
+	req := request(mountedWeb())
+	req.Volumes = []string{"shop_data", "shop_ext"}
+	if res := f.client().Deploy(context.Background(), req, func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("reordered mounts denied the replacement: %+v", res)
 	}
 }

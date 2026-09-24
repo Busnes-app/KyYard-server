@@ -44,7 +44,14 @@ the production suite key.
 them you would miss. Their agents must run the same release as the control plane: an older
 agent reports no container mounts, and every deployment plan on its host is blocked with
 "The agent has not reported this container's mounts, or reported only part of them. Upgrade
-the host agent to this release, then check again." until it is upgraded.
+the host agent to this release, then check again." until it is upgraded. Planning inspects each
+mapped container live through its host's agent, so the agent must be online when you plan: an
+offline agent gives "The live container could not be inspected before planning…", and an agent
+without live inspection, or built before this release's inspection verdict, "Upgrade the host
+agent to enable live inspection, which planning requires." In the other direction, an agent
+newer than the control plane makes the inspection dialog show 502 for a container with nothing
+a recreate would drop until the control plane is upgraded. Keep each host's clock within five minutes of the control plane's (NTP); otherwise
+preflight shows the clock blocker and no plan is made.
 
 **Sample application on host A**, one Compose project, `acc-app`:
 

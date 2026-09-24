@@ -28,6 +28,10 @@ type Client struct {
 	base    string
 	cpuMu   sync.Mutex
 	cpuPrev map[string]cpuPoint
+	// The daemon's default runtime for inspections, read at most once a minute.
+	runtimeMu   sync.Mutex
+	runtimeName string
+	runtimeRead time.Time
 }
 
 // callBudget bounds a call whose caller set no deadline of its own.

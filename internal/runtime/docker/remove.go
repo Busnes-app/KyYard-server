@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,15 +14,18 @@ import (
 // Remove stops and deletes each target container in order: precondition, stop, remove. A
 // container already gone counts as removed. Volumes (no v=1) and networks are never touched.
 // The first step that is not a success ends the run and every later step is skipped.
-func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest) protocol.DeploymentResult {
+func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
 		res.Outcome, res.Detail = protocol.OutcomeDenied, "the removal request is invalid"
+		if errors.Is(err, protocol.ErrClockSkew) {
+			res.Outcome, res.Detail = protocol.OutcomeFailed, protocol.ErrClockSkew.Error()
+		}
 		return res
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
-	r := &deployRun{c: c, parent: parent, res: res}
+	r := &deployRun{c: c, parent: parent, res: res, started: started}
 	for _, t := range req.Containers {
 		r.removeTarget(ctx, t, req.Deadline)
 	}
@@ -64,6 +68,7 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		if time.Until(deadline) < operationBudget+2*callBudget {
 			return protocol.OutcomeTimedOut, "not enough time left before the deadline to remove this container safely"
 		}
+		r.begin()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
 		defer cancel()
 		status, err := r.c.post(cctx, "/containers/"+id+"/stop?t="+strconv.Itoa(stopGrace))

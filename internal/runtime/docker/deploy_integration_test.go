@@ -113,7 +113,7 @@ func TestDeployRealDocker(t *testing.T) {
 	if err = json.Unmarshal([]byte(raw), &identity); err != nil {
 		t.Fatal(err)
 	}
-	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, Revision: 3, Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
+	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, Revision: 3, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
 		Name: "web", ContainerName: name, ImageID: identity.Image,
 		Replaces: protocol.InspectionTarget{ContainerID: oldID, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()},
 		Restart:  "unless-stopped", Env: map[string]string{"TOKEN": "deploy-secret-canary"},
@@ -136,7 +136,7 @@ func TestDeployRealDocker(t *testing.T) {
 			Replaces: protocol.InspectionTarget{ContainerID: workerID, ImageID: identity.Image, CreatedUnix: worker.Created.Unix()},
 		})
 	}
-	res := New("/var/run/docker.sock").Deploy(ctx, req)
+	res := New("/var/run/docker.sock").Deploy(ctx, req, func() {})
 	serialized, _ := json.Marshal(res)
 	if strings.Contains(string(serialized), "deploy-secret-canary") {
 		t.Fatal("environment value reached the result")
@@ -288,9 +288,9 @@ func TestRemoveRealDocker(t *testing.T) {
 	if anonymous == "" {
 		t.Fatalf("fixture has no anonymous volume: %s", raw)
 	}
-	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, Deadline: time.Now().Add(5 * time.Minute),
+	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute),
 		Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: id, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}}}}
-	res := New("/var/run/docker.sock").Remove(ctx, req)
+	res := New("/var/run/docker.sock").Remove(ctx, req, func() {})
 	if serialized, _ := json.Marshal(res); res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
 		t.Fatalf("remove: %s", serialized)
 	}
@@ -326,5 +326,83 @@ func TestDeployAnswerAfterCancelIsFailed(t *testing.T) {
 		if outcome, _ := r.outcomeFor(parent, tc.err, tc.status); outcome != tc.outcome {
 			t.Fatalf("%s: %s, want %s", name, outcome, tc.outcome)
 		}
+	}
+}
+
+// Opt-in, already-present image only, like TestDeployRealDocker. The started hook runs at the
+// last moment before phase two; a memory limit set there must be denied at recheck and the old
+// container left running under its name.
+func TestRecheckRealDocker(t *testing.T) {
+	image := os.Getenv("KY_TEST_DOCKER_DEPLOY_IMAGE")
+	if image == "" {
+		t.Skip("set KY_TEST_DOCKER_DEPLOY_IMAGE to an existing shell image")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	project := "kyyardrecheckfixture"
+	name := project + "-web-1"
+	network := project + "_default"
+	fixtureImage := project + ":local"
+	builder := project + "-build"
+	docker := func(args ...string) (string, error) {
+		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	cleanup := func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer ccancel()
+		ids, _ := exec.CommandContext(cctx, "docker", "ps", "-aq", "--filter", "label=com.docker.compose.project="+project).Output()
+		for _, id := range strings.Fields(string(ids)) {
+			_ = exec.CommandContext(cctx, "docker", "rm", "-fv", id).Run()
+		}
+		_ = exec.CommandContext(cctx, "docker", "rm", "-fv", builder).Run()
+		_ = exec.CommandContext(cctx, "docker", "rmi", "-f", fixtureImage).Run()
+		_ = exec.CommandContext(cctx, "docker", "network", "rm", network).Run()
+	}
+	cleanup() // a prior aborted run may have left any of it behind
+	t.Cleanup(cleanup)
+	if out, err := docker("create", "--pull", "never", "--name", builder, image); err != nil {
+		t.Fatalf("fixture image source: %v: %s", err, out)
+	}
+	if out, err := docker("commit", "--change", `CMD ["sleep","300"]`, builder, fixtureImage); err != nil {
+		t.Fatalf("fixture image: %v: %s", err, out)
+	}
+	if out, err := docker("rm", "-fv", builder); err != nil {
+		t.Fatalf("fixture image source removal: %v: %s", err, out)
+	}
+	if out, err := docker("network", "create", network); err != nil {
+		t.Fatalf("fixture network: %v: %s", err, out)
+	}
+	oldID, err := docker("run", "-d", "--pull", "never", "--name", name, "--network", network, "--network-alias", "web",
+		"--label", "com.docker.compose.project="+project, "--label", "com.docker.compose.service=web", fixtureImage)
+	if err != nil {
+		t.Fatalf("fixture: %v: %s", err, oldID)
+	}
+	raw, err := docker("inspect", "--format", "{{json .}}", oldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity struct {
+		Image   string
+		Created time.Time
+	}
+	if err = json.Unmarshal([]byte(raw), &identity); err != nil {
+		t.Fatal(err)
+	}
+	req := protocol.DeploymentRequest{Deployment: "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c", Endpoint: "ep_1", Project: project, Revision: 2, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
+		Name: "web", ContainerName: name, ImageID: identity.Image, Restart: "no", Mounts: []protocol.Mount{},
+		Replaces: protocol.InspectionTarget{ContainerID: oldID, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()},
+	}}}
+	res := New("/var/run/docker.sock").Deploy(ctx, req, func() {
+		if out, err := docker("update", "--memory", "64m", "--memory-swap", "128m", oldID); err != nil {
+			t.Errorf("docker update: %v: %s", err, out)
+		}
+	})
+	serialized, _ := json.Marshal(res)
+	if res.Outcome != protocol.OutcomeDenied || len(res.Steps) < 3 || res.Steps[2].Step != protocol.StepRecheck || res.Steps[2].Detail != "the container changed after the precondition" {
+		t.Fatalf("recheck: %s", serialized)
+	}
+	if out, err := docker("inspect", "--format", "{{.Id}} {{.State.Running}}", name); err != nil || out != oldID+" true" {
+		t.Fatalf("the old container was touched: %v %s", err, out)
 	}
 }

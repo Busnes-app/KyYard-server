@@ -20,7 +20,7 @@ func applyFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, string, 
 	st, a, app, endpoint, snapshot, _ := planFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	key := make([]byte, 32)
+	key := imageCheckKey
 	// A revision with a secret so apply has something to resolve.
 	spec := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Restart: "always", Ports: []ApplicationPort{{Target: 80, Published: 8080, Protocol: "tcp"}}, Environment: map[string]ApplicationSecretRef{"TOKEN": {SecretRef: "web-token"}}}}}
 	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, spec, map[string]string{"web-token": "apply-secret-canary"}, key); err != nil {
@@ -31,7 +31,7 @@ func applyFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, string, 
 		t.Fatal(err)
 	}
 	m2, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m2), nil, nil, false)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m2), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,20 +172,18 @@ func TestApplyDeploymentPreconditions(t *testing.T) {
 }
 
 // One stored value may feed several variables, and JSON escapes '<' as six bytes, so a
-// revision inside every value and per-service cap still marshals past the frame bound. Apply
-// refuses before the row leaves planned.
-func TestApplyDeploymentRefusesAnOversizedFrame(t *testing.T) {
+// revision inside every value and per-service cap still marshals past the frame bound. The
+// plan refuses it before any row exists.
+func TestPlanDeploymentRefusesAnOversizedFrame(t *testing.T) {
 	st, a, app, _, _, _ := planFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	key := make([]byte, 32)
 	env := map[string]ApplicationSecretRef{}
 	for _, n := range []string{"A", "B", "C", "D", "E", "F"} {
 		env["V"+n] = ApplicationSecretRef{SecretRef: "web-a"}
 	}
-	values := map[string]string{"web-a": strings.Repeat("<", 10000)}
 	spec := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Environment: env}}}
-	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, spec, values, key); err != nil {
+	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, spec, map[string]string{"web-a": strings.Repeat("<", 10000)}, imageCheckKey); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := ts.ReadApplicationMapping(ctx, a, app.ID)
@@ -193,16 +191,11 @@ func TestApplyDeploymentRefusesAnOversizedFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrInvalid) {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); !isBlocked(err, "frame_too_large") {
 		t.Fatalf("oversized frame: %v", err)
 	}
-	var state string
-	if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "planned" {
-		t.Fatalf("refused apply left state %s (%v)", state, err)
+	if n := deploymentRows(t, st, app.ID); n != 0 {
+		t.Fatalf("a refused plan left %d rows", n)
 	}
 }
 
@@ -213,7 +206,7 @@ func TestApplyDeploymentHonoursTheEndpointFrameCap(t *testing.T) {
 	st, a, app, _, _, _ := planFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	key := make([]byte, 32)
+	key := imageCheckKey
 	env := map[string]ApplicationSecretRef{}
 	for _, n := range []string{"A", "B", "C", "D"} {
 		env["V"+n] = ApplicationSecretRef{SecretRef: "web-a"}
@@ -227,7 +220,7 @@ func TestApplyDeploymentHonoursTheEndpointFrameCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +385,7 @@ func TestLateResultSettlesPastANewerPlan(t *testing.T) {
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
-	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +422,7 @@ func TestLateResultAfterNewerApplyIsIgnored(t *testing.T) {
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
-	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +493,7 @@ func TestRefuseSupersededDeploymentResult(t *testing.T) {
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
-	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,7 +694,7 @@ func TestPlanAndReleaseNeverLeaveALivePlanForAReleasedInstance(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(time.Duration(rand.IntN(2000)) * time.Microsecond)
-			_, planErr = ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+			_, planErr = ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 		}()
 		go func() {
 			defer wg.Done()
@@ -917,7 +910,7 @@ func TestApplyDeploymentCarriesMountsAndVolumes(t *testing.T) {
 	st, a, app, m := volumesFixture(t, volumesSpec(), map[string][]protocol.Mount{"web": {webBind}})
 	ctx := context.Background()
 	ts := st.Tenancy()
-	key := make([]byte, 32)
+	key := imageCheckKey
 	d := planWithValues(t, st, a, app, m, volumesSpec(), key)
 	_, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes)
 	if err != nil {
@@ -945,7 +938,7 @@ func TestApplyDeploymentRefusesAFrameOfLongBinds(t *testing.T) {
 	st, a, app, m := volumesFixture(t, spec, map[string][]protocol.Mount{"web": mounts})
 	ctx := context.Background()
 	ts := st.Tenancy()
-	key := make([]byte, 32)
+	key := imageCheckKey
 	d := planWithValues(t, st, a, app, m, spec, key)
 	const limit = 12 << 10
 	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, limit); !errors.Is(err, ErrInvalid) {
@@ -985,7 +978,7 @@ func planWithValues(t *testing.T, st *SQLStore, a TenantAccess, app *Application
 	if next, err = ts.ReadApplicationMapping(ctx, a, app.ID); err != nil {
 		t.Fatal(err)
 	}
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(next), nil, nil, false)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(next), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}

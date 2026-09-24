@@ -39,7 +39,11 @@ func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.Te
 func (s *Server) tenantError(w http.ResponseWriter, err error) {
 	var blocked *store.PreflightBlockedError
 	if errors.As(err, &blocked) {
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "Deployment preflight reported blockers", "code": "preflight_blocked", "blockers": blocked.Blockers})
+		body := map[string]any{"error": "Deployment preflight reported blockers", "code": "preflight_blocked", "blockers": blocked.Blockers}
+		if len(blocked.Services) > 0 {
+			body["services"] = blocked.Services
+		}
+		s.writeJSON(w, http.StatusConflict, body)
 		return
 	}
 	switch {

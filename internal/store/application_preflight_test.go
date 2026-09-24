@@ -370,7 +370,7 @@ func TestPlanDeploymentCarriesMountsAndVolumes(t *testing.T) {
 	if len(p.Services[0].DroppedBinds) != 1 || p.Services[0].DroppedBinds[0].Source != "/old" {
 		t.Fatalf("dropped bind: %+v", p.Services[0])
 	}
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestPlanDeploymentCarriesMountsAndVolumes(t *testing.T) {
 
 func TestPlanDeploymentRefusesANewBindMount(t *testing.T) {
 	st, a, app, m := volumesFixture(t, volumesSpec(), map[string][]protocol.Mount{"web": {{Kind: protocol.MountBind, Source: "/srv/web/", Target: "/srv", ReadOnly: true}}})
-	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, planRequest(m), nil, nil, false)
+	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	var blocked *PreflightBlockedError
 	if !errors.As(err, &blocked) || !reflect.DeepEqual(blocked.Blockers, []string{"bind_mount_new"}) {
 		t.Fatalf("new bind: %v", err)
@@ -404,7 +404,10 @@ func TestPlanDeploymentRefusesUnreportedMounts(t *testing.T) {
 	if previewMounts(m, "shop-worker") != nil || previewMounts(m, "shop-web") == nil {
 		t.Fatalf("reported and unreported mounts confused: %+v", m.Preview.Containers)
 	}
-	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, planRequest(m), nil, nil, false)
+	// The API does not inspect a blocked preflight, and the store adds no inspection blocker.
+	r := planRequest(m)
+	r.Inspections = nil
+	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, r, nil, imageCheckKey, false)
 	var blocked *PreflightBlockedError
 	if !errors.As(err, &blocked) || !reflect.DeepEqual(blocked.Blockers, []string{"mounts_unreported"}) {
 		t.Fatalf("unreported: %v", err)
@@ -421,5 +424,32 @@ func TestApplicationSpecDigestCoversVolumes(t *testing.T) {
 	_, after, err := encodeApplicationSpec(spec)
 	if err != nil || after == before {
 		t.Fatalf("digest ignores a volume change: %v", err)
+	}
+}
+
+// An inventory whose agent clock disagrees with the server's by more than MaxClockSkew blocks
+// preflight and plan; inside the bound it does not.
+func TestPreflightBlocksClockSkew(t *testing.T) {
+	st, a, app, endpoint, _, m := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	skew := func(received, observed time.Duration) {
+		t.Helper()
+		now := time.Now().UTC()
+		if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE endpoint_inventory SET received_at=?, observed_at=? WHERE endpoint_id=?`), now.Add(received), now.Add(observed), endpoint); err != nil {
+			t.Fatal(err)
+		}
+	}
+	skew(-2*time.Minute, 4*time.Minute) // six minutes apart, each inside freshInventory's windows
+	p, err := ts.PreflightApplication(ctx, a, app.ID)
+	if err != nil || p.Executable || !slices.Contains(p.Blockers, "clock_skew") {
+		t.Fatalf("skewed preflight: %+v %v", p, err)
+	}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); !isBlocked(err, "clock_skew") {
+		t.Fatalf("skewed plan: %v", err)
+	}
+	skew(-time.Minute, 3*time.Minute)
+	if p, err = ts.PreflightApplication(ctx, a, app.ID); err != nil || slices.Contains(p.Blockers, "clock_skew") {
+		t.Fatalf("four minutes apart: %+v %v", p, err)
 	}
 }

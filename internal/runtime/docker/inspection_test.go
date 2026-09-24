@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,9 +30,37 @@ func inspectionFixture() (protocol.InspectionTarget, map[string]any, map[string]
 }
 func fakeInspection(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *Client {
 	t.Helper()
-	s := httptest.NewServer(http.HandlerFunc(handler))
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1.41/info" {
+			json.NewEncoder(w).Encode(map[string]string{"DefaultRuntime": "runc"})
+			return
+		}
+		handler(w, r)
+	}))
 	t.Cleanup(s.Close)
 	return NewHTTP(s.Client(), s.URL)
+}
+
+// expressibleFixture is inspectionFixture on its Compose project network, with a writable root
+// and the image's own command, so nothing a recreate would drop remains.
+func expressibleFixture() (protocol.InspectionTarget, map[string]any, map[string]any) {
+	target, container, image := inspectionFixture()
+	container["Config"] = map[string]any{"Env": []string{"TOKEN=secret-canary"}, "Cmd": []string{"nginx"}, "Labels": map[string]string{"com.docker.compose.project": "shop", "token": "secret-canary"}}
+	h := container["HostConfig"].(map[string]any)
+	h["NetworkMode"], h["ReadonlyRootfs"] = "shop_default", false
+	container["NetworkSettings"].(map[string]any)["Networks"] = map[string]any{"shop_default": map[string]string{"EndpointID": "secret-canary"}}
+	image["Config"] = map[string]any{"Env": []string{"TOKEN=secret-canary"}, "Cmd": []string{"nginx"}}
+	return target, container, image
+}
+
+func serve(container, image map[string]any) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/images/") {
+			json.NewEncoder(w).Encode(image)
+		} else {
+			json.NewEncoder(w).Encode(container)
+		}
+	}
 }
 func TestInspectionRedactsAndPins(t *testing.T) {
 	target, container, image := inspectionFixture()
@@ -129,7 +158,7 @@ func TestInspectionRefusesChangesAndInvalidFacts(t *testing.T) {
 			}
 		})
 	}
-	for _, field := range []string{"identity", "ports", "restart", "mounts", "state"} {
+	for _, field := range []string{"identity", "ports", "restart", "mounts", "state", "config"} {
 		t.Run("changed during read/"+field, func(t *testing.T) {
 			target, container, image := inspectionFixture()
 			c := fakeInspection(t, func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +174,8 @@ func TestInspectionRefusesChangesAndInvalidFacts(t *testing.T) {
 						container["Mounts"] = []any{}
 					case "state":
 						container["State"] = map[string]any{"Status": "exited"}
+					case "config":
+						container["HostConfig"].(map[string]any)["Memory"] = 1 << 30
 					}
 					json.NewEncoder(w).Encode(image)
 				} else {
@@ -226,5 +257,103 @@ func TestInspectionCapsLongDeadlinesAndRedactsTransportErrors(t *testing.T) {
 	defer cancel()
 	if out, err := c.InspectContainer(ctx, target); out != nil || err != ErrInspectionUnavailable {
 		t.Fatalf("transport error escaped: %v %v", out, err)
+	}
+}
+
+// The verdict is codes only: the canary fixture has a read-only root, a network off the project
+// network (no Compose label) and a command its image does not set; no value leaks.
+func TestInspectionReportsWhatARecreateWouldDrop(t *testing.T) {
+	target, container, image := inspectionFixture()
+	out, err := fakeInspection(t, serve(container, image)).InspectContainer(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ConfigurationVerified || fmt.Sprint(out.Unsupported) != "[read_only_rootfs network image_config]" || out.Validate(target, time.Now()) != nil {
+		t.Fatalf("verdict: %v %v", out.ConfigurationVerified, out.Unsupported)
+	}
+	raw, _ := json.Marshal(out)
+	if strings.Contains(string(raw), "secret-canary") {
+		t.Fatal("inspection leaked configuration")
+	}
+	target, container, image = expressibleFixture()
+	out, err = fakeInspection(t, serve(container, image)).InspectContainer(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.ConfigurationVerified || out.Unsupported == nil || len(out.Unsupported) != 0 || out.Validate(target, time.Now()) != nil {
+		t.Fatalf("expressible: %v %v", out.ConfigurationVerified, out.Unsupported)
+	}
+	raw, _ = json.Marshal(out)
+	if strings.Contains(string(raw), "secret-canary") || strings.Contains(string(raw), "shop") {
+		t.Fatal("inspection leaked a label or network name")
+	}
+}
+
+// The daemon's default runtime is read once a minute per client, and a container on it is fine.
+func TestInspectionCachesTheDefaultRuntime(t *testing.T) {
+	target, container, image := expressibleFixture()
+	container["HostConfig"].(map[string]any)["Runtime"] = "nvidia"
+	var infos atomic.Int32
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1.41/info" {
+			infos.Add(1)
+			json.NewEncoder(w).Encode(map[string]string{"DefaultRuntime": "nvidia"})
+			return
+		}
+		serve(container, image)(w, r)
+	}))
+	t.Cleanup(s.Close)
+	c := NewHTTP(s.Client(), s.URL)
+	for range 2 {
+		out, err := c.InspectContainer(context.Background(), target)
+		if err != nil || !out.ConfigurationVerified {
+			t.Fatalf("%+v %v", out, err)
+		}
+	}
+	if n := infos.Load(); n != 1 {
+		t.Fatalf("GET /info %d times", n)
+	}
+}
+
+// An unreadable default runtime makes the inspection unavailable rather than reporting every
+// container's runtime as unsupported.
+func TestInspectionRefusesAnUnreadableRuntime(t *testing.T) {
+	target, container, image := expressibleFixture()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1.41/info" {
+			w.WriteHeader(500)
+			return
+		}
+		serve(container, image)(w, r)
+	}))
+	t.Cleanup(s.Close)
+	if out, err := NewHTTP(s.Client(), s.URL).InspectContainer(context.Background(), target); out != nil || !errors.Is(err, ErrInspectionUnavailable) {
+		t.Fatalf("got %v %v", out, err)
+	}
+}
+
+// The Engine lists Mounts from a map, unsorted: the same mounts in another order on the second
+// read are not a change.
+func TestInspectionIgnoresMountOrder(t *testing.T) {
+	target, container, image := expressibleFixture()
+	container["Mounts"] = []any{
+		map[string]any{"Type": "volume", "RW": true, "Name": "shop_data", "Source": "/var/lib/docker/volumes/shop_data/_data", "Destination": "/data"},
+		map[string]any{"Type": "bind", "RW": false, "Source": "/srv/cfg", "Destination": "/cfg"},
+	}
+	reads := 0
+	c := fakeInspection(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/images/") {
+			json.NewEncoder(w).Encode(image)
+			return
+		}
+		if reads++; reads > 1 {
+			m := container["Mounts"].([]any)
+			container["Mounts"] = []any{m[1], m[0]}
+		}
+		json.NewEncoder(w).Encode(container)
+	})
+	out, err := c.InspectContainer(context.Background(), target)
+	if err != nil || out.Mounts.Bind != 1 || out.Mounts.Volume != 1 {
+		t.Fatalf("reordered mounts: %+v %v", out, err)
 	}
 }

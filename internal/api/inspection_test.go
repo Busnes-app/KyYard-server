@@ -37,7 +37,7 @@ func inspectionGrant(t *testing.T, f terminalFixture) protocol.InspectionOpen {
 	return req
 }
 func inspectionReply(req protocol.InspectionOpen) protocol.InspectionResult {
-	return protocol.InspectionResult{Request: req.Request, Status: "ok", Result: &protocol.ContainerInspection{Target: req.Target, ObservedAt: time.Now(), State: "running", RestartPolicy: "no", NetworkMode: "bridge", ImagePlatform: protocol.ImagePlatform{OS: "linux", Architecture: "amd64"}, Ports: []protocol.Port{}}}
+	return protocol.InspectionResult{Request: req.Request, Status: "ok", Result: &protocol.ContainerInspection{Target: req.Target, ObservedAt: time.Now(), State: "running", RestartPolicy: "no", NetworkMode: "bridge", ImagePlatform: protocol.ImagePlatform{OS: "linux", Architecture: "amd64"}, Ports: []protocol.Port{}, Unsupported: []string{}, ConfigurationVerified: true}}
 }
 func TestInspectionAPIReadOnlyAndScoped(t *testing.T) {
 	f := inspectionFixture(t)
@@ -71,7 +71,7 @@ func TestInspectionAPIReadOnlyAndScoped(t *testing.T) {
 		t.Fatalf("response: %d %s", w.Code, w.Body.String())
 	}
 	var got protocol.ContainerInspection
-	if json.Unmarshal(w.Body.Bytes(), &got) != nil || got.ConfigurationVerified || got.Target != req.Target {
+	if json.Unmarshal(w.Body.Bytes(), &got) != nil || !got.ConfigurationVerified || got.Target != req.Target {
 		t.Fatal("bad result")
 	}
 }
@@ -112,7 +112,7 @@ func TestInspectionAPIRefusesUntrustedResult(t *testing.T) {
 			case "identity":
 				reply.Result.Target.ImageID = "sha256:" + strings.Repeat("c", 64)
 			case "verified":
-				reply.Result.ConfigurationVerified = true
+				reply.Result.ConfigurationVerified = false
 			case "state":
 				reply.Result.State = "secret-canary"
 			}

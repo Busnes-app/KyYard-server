@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -43,3 +45,14 @@ func RegisterDetachedForTest(s *Server) func() {
 
 // SetDigestResolverForTest replaces the registry resolver behind update checks. Test-only.
 func SetDigestResolverForTest(s *Server, r store.DigestResolver) { s.digestResolver = r }
+
+// SetPlanInspectorForTest replaces the agent round trip of each plan-time inspection. Test-only.
+func SetPlanInspectorForTest(s *Server, f func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error)) {
+	s.planInspector = f
+}
+
+// PlanInspectionBudgetForTest is the plan's inspection budget.
+const PlanInspectionBudgetForTest = planInspectionBudget
+
+// RegistrySlotsHeldForTest counts the registry slots in use server-wide. Test-only.
+func RegistrySlotsHeldForTest(s *Server) int { return len(s.registrySlots) }

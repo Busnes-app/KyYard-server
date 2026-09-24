@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,14 @@ func TestInspectionRealDocker(t *testing.T) {
 	}
 	if out.Target != target || out.State != "running" || out.NetworkMode != "none" || out.Mounts.Tmpfs != 1 || out.Mounts.ReadOnly != 1 || !out.ReadOnlyRootFS || out.Privileged || out.ConfigurationVerified || out.ImagePlatform.OS != "linux" {
 		t.Fatalf("unexpected inspection: %+v", out)
+	}
+	for _, code := range []string{"tmpfs", "read_only_rootfs", "capabilities", "security_opt", "network"} {
+		if !slices.Contains(out.Unsupported, code) {
+			t.Fatalf("unsupported %v lacks %s", out.Unsupported, code)
+		}
+	}
+	if out.Validate(target, time.Now()) != nil {
+		t.Fatalf("real inspection invalid: %+v", out)
 	}
 	serialized, _ := json.Marshal(out)
 	if strings.Contains(string(serialized), "inspection-secret-canary") || strings.Contains(string(serialized), "/scratch") || strings.Contains(string(serialized), "sleep 120") {

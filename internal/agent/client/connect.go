@@ -61,11 +61,13 @@ type Options struct {
 	// Deploy applies one deployment plan and reports its result. It runs on the agent's root
 	// context, not the session's, so a dropped socket never stops it; the request bounds it by
 	// its deadline. Nil means this agent has no runtime, and every apply is refused.
-	Deploy func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult
+	// The runtime calls the third argument once, immediately before its first phase-two
+	// mutation; it returns once the deployer has recorded durably that the host may change.
+	Deploy func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult
 	// Remove tears down the containers a removal names and reports its result. It shares
 	// Deploy's single slot and root context and is bounded by the request's deadline. Nil
 	// means this agent has no runtime, and every removal is refused.
-	Remove func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult
+	Remove func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult
 	// OnState is called with the state the server reported at connect (tests).
 	OnState func(state string)
 }
@@ -261,7 +263,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	}
 	capabilities := []string{}
 	if opts.Inspect != nil {
-		capabilities = append(capabilities, "container.inspect")
+		capabilities = append(capabilities, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict)
 	}
 	if opts.Exec != nil {
 		capabilities = append(capabilities, "container.exec")
