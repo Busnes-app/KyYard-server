@@ -45,8 +45,10 @@ it('lists organizations with member counts and users with their status and provi
   render(<Administration />);
   const orgRow = (await screen.findByText('Acme')).closest('tr') as HTMLElement;
   expect(within(orgRow).getByText('3')).toBeTruthy();
+  expect(within(orgRow).getByText('org_1').tagName).toBe('CODE');
   const bobRow = (await screen.findByText('bob')).closest('tr') as HTMLElement;
   expect(within(bobRow).getByText('Bob B')).toBeTruthy();
+  expect(within(bobRow).getByText('usr_b').tagName).toBe('CODE');
   expect(within(bobRow).getByText('suspended')).toBeTruthy();
   expect(within(bobRow).getByText('oidc')).toBeTruthy();
 });

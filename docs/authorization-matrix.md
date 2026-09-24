@@ -123,7 +123,7 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Organization creation | platform administrators; a first organization administrator is seeded in the same transaction; the creator gets no membership unless named | implemented |
 | Unmanaged containers | lifecycle by permission, configuration edit needs adoption | proposed (plan default) |
 | Developer scope | deploy plus logs, no exec, no destructive | proposed |
-| Exec | organization administrators only in 0.1 | proposed |
+| Exec | organization administrators only in 0.1; the UI offers Terminal only to them | implemented |
 | Per-environment grants | not in 0.1 | proposed |
 
 Application persistence implements `application.read`, `application.import`, `application.edit` and `application.destroy` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. `application.destroy` covers two operations: discarding an undeployed draft (and a removed application's history) at the expected head, which releases quota, and `RemoveApplication`, which stops and removes an adopted application's containers through `deployment.remove` and keeps its data. HTTP import/list/read/discard/removal routes are implemented; explicit adoption/release are implemented. Internal `secret.reveal` permits organization administrators only, commits audit before returning values and has no HTTP endpoint. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.

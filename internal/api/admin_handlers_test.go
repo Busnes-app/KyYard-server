@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -366,5 +367,32 @@ func TestAdminCreateUserRefusesCaseVariant(t *testing.T) {
 	}
 	if after := userCount(t, st); after != before {
 		t.Fatal("a case variant of an existing username was created")
+	}
+}
+
+// usernameLookupFails answers every username lookup with a store error that is not ErrNotFound.
+type usernameLookupFails struct{ store.UserStore }
+
+func (usernameLookupFails) GetUserByUsername(context.Context, string) (*store.User, error) {
+	return nil, errors.New("read timeout")
+}
+
+type usernameLookupFailsStore struct{ store.Store }
+
+func (s usernameLookupFailsStore) Users() store.UserStore {
+	return usernameLookupFails{s.Store.Users()}
+}
+
+func TestAdminCreateUserFailsClosedOnLookupError(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	admin := loginAs(t, srv, st, "alice", "admin")
+	broken := api.NewServer(cfg, usernameLookupFailsStore{st})
+	before := userCount(t, st)
+	w := adminDo(t, broken, admin, "POST", "/api/admin/users", map[string]any{"username": "erin", "display_name": "Erin", "role": "user"})
+	if w.Code != http.StatusInternalServerError || strings.Contains(w.Body.String(), "read timeout") {
+		t.Fatalf("lookup error: %d %s", w.Code, w.Body)
+	}
+	if after := userCount(t, st); after != before {
+		t.Fatal("a user was created although the case-insensitive check could not run")
 	}
 }

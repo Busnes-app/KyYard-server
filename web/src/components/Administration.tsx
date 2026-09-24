@@ -62,8 +62,8 @@ export const Administration: React.FC = () => {
       {orgs.state === 'ready' && orgs.data && (orgs.data.length === 0 ? <EmptyNotice>No organizations yet.</EmptyNotice> : (
         <div style={{ overflowX: 'auto' }}>
           <table className="ky-table ky-responsive-table">
-            <thead><tr><th>Name</th><th>Members</th><th>Created</th></tr></thead>
-            <tbody>{orgs.data.map((o) => <tr key={o.id}><td data-label="Name">{o.name}</td><td data-label="Members">{o.members}</td><td data-label="Created">{date(o.created_at)}</td></tr>)}</tbody>
+            <thead><tr><th>Name</th><th>ID</th><th>Members</th><th>Created</th></tr></thead>
+            <tbody>{orgs.data.map((o) => <tr key={o.id}><td data-label="Name">{o.name}</td><td data-label="ID"><code>{o.id}</code></td><td data-label="Members">{o.members}</td><td data-label="Created">{date(o.created_at)}</td></tr>)}</tbody>
           </table>
         </div>
       ))}
@@ -87,8 +87,8 @@ export const Administration: React.FC = () => {
       {users.state === 'ready' && users.data && (
         <div style={{ overflowX: 'auto' }}>
           <table className="ky-table ky-responsive-table">
-            <thead><tr><th>Username</th><th>Display name</th><th>Role</th><th>Status</th><th>Provider</th></tr></thead>
-            <tbody>{users.data.map((u) => <tr key={u.id}><td data-label="Username" className="font-mono">{u.username}</td><td data-label="Display name">{u.display_name}</td><td data-label="Role">{u.role}</td><td data-label="Status">{u.status}</td><td data-label="Provider">{u.sso_provider}</td></tr>)}</tbody>
+            <thead><tr><th>Username</th><th>ID</th><th>Display name</th><th>Role</th><th>Status</th><th>Provider</th></tr></thead>
+            <tbody>{users.data.map((u) => <tr key={u.id}><td data-label="Username" className="font-mono">{u.username}</td><td data-label="ID"><code>{u.id}</code></td><td data-label="Display name">{u.display_name}</td><td data-label="Role">{u.role}</td><td data-label="Status">{u.status}</td><td data-label="Provider">{u.sso_provider}</td></tr>)}</tbody>
           </table>
         </div>
       )}

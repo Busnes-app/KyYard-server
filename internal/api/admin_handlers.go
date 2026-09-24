@@ -151,6 +151,9 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.store.Users().GetUserByUsername(r.Context(), req.Username); err == nil {
 		refuseExisting()
 		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.writeError(w, http.StatusInternalServerError, "Failed to create user")
+		return
 	}
 	temp := randomPassword(24)
 	hash, err := password.Hash(temp)

@@ -179,9 +179,8 @@ after that is in the UI: **Settings → Administration**, shown to platform admi
   organization and that administrator's membership are created together; the creator is not
   made a member unless named.
 - The organization's administrator adds everyone else on the organization's **Members** page,
-  by user ID (`usr_…`), with an organization role. Administration does not show IDs: a signed-in
-  account reads its own at `/api/auth/me`, and a platform administrator can read every one at
-  `/api/admin/users`. A platform role grants no organization access.
+  by user ID (`usr_…`), with an organization role. Settings → Administration shows every user's
+  and organization's ID. A platform role grants no organization access.
 
 Both creations are recorded in platform audit (`organization.create`, `user.create`), which has
 no screen yet. Accounts and organizations cannot be disabled or deleted from the UI yet.

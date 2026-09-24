@@ -17,9 +17,6 @@ Copied from the plan, section 7:
 Found while writing this runbook against the current UI. Each one the operator runs into goes
 in the results table.
 
-- Settings → Administration shows no user or organization IDs, and Members adds a member by
-  user ID. The preparer reads IDs from `/api/admin/users` and `/api/admin/organizations`
-  (below).
 - Deployment replaces only containers whose configuration a definition can express (image,
   environment, restart, ports, project network). A container with any mount, anonymous
   volumes from an image's `VOLUME` included, is refused at the precondition step with `the
@@ -73,8 +70,8 @@ them you would miss.
 1. Settings, Administration, Users: Create user `reader`, then `outsider`, both with role
    User. Each shows its temporary password once; copy it before creating the next.
 2. Organizations: Create organization "Acceptance B" with First administrator `outsider`.
-3. Open `/api/admin/users` and `/api/admin/organizations` in the same browser and note each
-   account's `id` and the new organization's `id`.
+3. Note each account's ID and Acceptance B's ID from the ID columns in Settings →
+   Administration.
 4. In `org_initial`, Environments, Members: Add member by user ID, reader's ID, role "read
    only", Add.
 5. Sign in as reader and as outsider in turn and replace each temporary password. Outsider
