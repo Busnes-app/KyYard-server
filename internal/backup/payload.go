@@ -13,6 +13,7 @@ import (
 
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 	_ "modernc.org/sqlite"
 )
 
@@ -88,6 +89,7 @@ func Collect(ctx context.Context, cfg *config.Config, appVersion string) (recove
 			"required_files":         requiredFiles(files),
 			"expected_env":           []string{"KY_PORT", "KY_DB_DRIVER"},
 			"expected_ports":         []int{cfg.Server.Port},
+			"schema_version":         migrations.Latest(),
 		},
 	}
 	return payload, nil

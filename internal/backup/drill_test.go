@@ -2,6 +2,8 @@ package backup_test
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
 func TestChecksFailsOnAScratchDirMissingTheDatabase(t *testing.T) {
@@ -147,7 +150,7 @@ func TestDrillChecksDecodedManifest(t *testing.T) {
 	if !result.Passed {
 		t.Fatalf("drill failed: %+v", result)
 	}
-	for _, name := range []string{"Required Files", "SQLite Integrity: data/ky_server.db", "Environment: KY_PORT", "Environment: KY_DB_DRIVER"} {
+	for _, name := range []string{"Required Files", "SQLite Integrity: data/ky_server.db", "Schema Version: data/ky_server.db", "Environment: KY_PORT", "Environment: KY_DB_DRIVER"} {
 		found := false
 		for _, c := range result.Checks {
 			if c.Name == name && c.Passed {
@@ -192,6 +195,11 @@ func TestDrillRejectsMalformedRecipes(t *testing.T) {
 		"wrong env":            func(r map[string]any) { r["expected_env"] = true },
 		"mixed env":            func(r map[string]any) { r["expected_env"] = []any{"KY_PORT", 1} },
 		"omitted env":          func(r map[string]any) { r["expected_env"] = []string{"KY_PORT"} },
+		"missing schema":       func(r map[string]any) { delete(r, "schema_version") },
+		"string schema":        func(r map[string]any) { r["schema_version"] = fmt.Sprint(migrations.Latest()) },
+		"fractional schema":    func(r map[string]any) { r["schema_version"] = float64(migrations.Latest()) + 0.5 },
+		"zero schema":          func(r map[string]any) { r["schema_version"] = float64(0) },
+		"negative schema":      func(r map[string]any) { r["schema_version"] = float64(-1) },
 	}
 	for _, path := range []string{"", ".", "../outside", "/etc/passwd", "data/../data/ky_server.db", "data//ky_server.db", "data\\ky_server.db", "data/not-in-manifest", "data/\x00db"} {
 		cases["unsafe path "+path] = func(r map[string]any) {
@@ -217,6 +225,9 @@ func TestDrillRejectsMalformedRecipes(t *testing.T) {
 				}
 				if c.Name == "Verification Recipe" && !c.Passed {
 					failed = true
+					if strings.HasSuffix(name, "schema") && c.Message != "schema_version must be the latest migration number" {
+						t.Fatalf("schema message: %q", c.Message)
+					}
 				}
 			}
 			if !opened || !failed {
@@ -300,5 +311,72 @@ func TestChecksSQLiteFilenameIsNotADSN(t *testing.T) {
 	}
 	if !result.Passed {
 		t.Fatalf("escaped filename failed: %+v", result)
+	}
+}
+
+// A capsule from another schema must fail the drill, not migrate silently on first start.
+func TestDrillChecksSchemaVersion(t *testing.T) {
+	t.Setenv("KY_PORT", "8080")
+	t.Setenv("KY_DB_DRIVER", "sqlite")
+	cfg, _ := payloadConfig(t)
+	payload, err := backup.Collect(context.Background(), cfg, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+	for _, f := range payload.Files {
+		full := filepath.Join(scratch, f.Path)
+		if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, f.Data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dbPath := filepath.Join(scratch, "data/ky_server.db")
+	exec := func(query string, args ...any) {
+		t.Helper()
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	schemaCheck := func() (int, recoveryclient.Check) {
+		t.Helper()
+		checks := backup.Checks(scratch, manifestFor(payload))
+		for i, c := range checks {
+			if c.Name == "Schema Version: data/ky_server.db" {
+				if i == 0 || checks[i-1].Name != "SQLite Integrity: data/ky_server.db" {
+					t.Fatalf("schema check does not follow the database integrity check: %+v", checks)
+				}
+				return i, c
+			}
+		}
+		t.Fatalf("no schema version check: %+v", checks)
+		return 0, recoveryclient.Check{}
+	}
+	latest := migrations.Latest()
+
+	if _, c := schemaCheck(); !c.Passed {
+		t.Fatalf("current schema failed: %s", c.Message)
+	}
+
+	exec("DELETE FROM schema_migrations WHERE version = ?", latest)
+	if _, c := schemaCheck(); c.Passed || c.Message != fmt.Sprintf("database schema is version %d, capsule expects %d", latest-1, latest) {
+		t.Fatalf("behind schema: %+v", c)
+	}
+
+	exec("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, 'x', CURRENT_TIMESTAMP), (?, 'future', CURRENT_TIMESTAMP)", latest, latest+1)
+	if _, c := schemaCheck(); c.Passed || c.Message != fmt.Sprintf("database schema is version %d, capsule expects %d", latest+1, latest) {
+		t.Fatalf("ahead schema: %+v", c)
+	}
+
+	exec("DROP TABLE schema_migrations")
+	if _, c := schemaCheck(); c.Passed || !strings.Contains(c.Message, "schema_migrations") {
+		t.Fatalf("missing table: %+v", c)
 	}
 }

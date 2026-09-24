@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/api"
@@ -23,6 +24,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
 // appVersion is what the capsule manifest records for this build.
@@ -124,8 +126,8 @@ func runServer() {
 		}
 	}
 
-	if err := st.Tenancy().Initialize(ctx); err != nil {
-		log.Fatalf("Failed to initialize tenancy: %v", err)
+	if err := startStore(ctx, st); err != nil {
+		log.Fatal(err)
 	}
 
 	srv := api.NewServer(cfg, st)
@@ -169,6 +171,22 @@ func runServer() {
 	defer waitCancel()
 	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; srv.WaitDetached() })
 	log.Println("[KYYARD] Server stopped")
+}
+
+// startStore initialises tenancy and settles every command left in flight by the previous
+// process. runServer calls it before anything serves.
+func startStore(ctx context.Context, st store.Store) error {
+	if err := st.Tenancy().Initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize tenancy: %w", err)
+	}
+	n, err := st.Tenancy().ReconcileAfterStart(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to reconcile in-flight commands: %w", err)
+	}
+	if n > 0 {
+		log.Printf("[RECOVERY] %d in-flight command(s) settled as unknown after restart", n)
+	}
+	return nil
 }
 
 // localDockerLoop retries startup and connection failures, rechecking the persisted
@@ -453,9 +471,27 @@ func runExportCapsule(args []string) {
 
 // restore is the product-side half of the ceremony, owned by the lib: k custodian shares
 // combined, used once, dropped; a capsule from another service refused before the key is
-// touched; the authenticated manifest printed for comparison with KyRecovery's record.
+// touched; the authenticated manifest printed for comparison with KyRecovery's record. The
+// schema line tells the operator whether this binary matches the capsule or will migrate it.
 func restore(capsulePath, targetDir, expectService string, shares []string, stdout io.Writer) error {
-	return recoveryclient.Restore(capsulePath, targetDir, expectService, shares, stdout)
+	raw, err := os.ReadFile(capsulePath)
+	if err != nil {
+		return err
+	}
+	if err := recoveryclient.Restore(capsulePath, targetDir, expectService, shares, stdout); err != nil {
+		return err
+	}
+	m, err := capsule.ReadUnverifiedManifest(raw)
+	if err != nil {
+		fmt.Fprintf(stdout, "  capsule schema version unknown: %v\n", err)
+		return nil
+	}
+	if recipe, ok := m.VerificationRecipe.(map[string]any); ok {
+		if v, ok := recipe["schema_version"].(float64); ok {
+			fmt.Fprintf(stdout, "  capsule schema version %d; this binary migrates to %d\n", int(v), migrations.Latest())
+		}
+	}
+	return nil
 }
 
 // stdinIsTerminal reports whether a human is typing, so a pipeline gets no stray prompt.

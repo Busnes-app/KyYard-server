@@ -15,6 +15,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/backup"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
 // payloadConfig is a real SQLite store in a temp data dir: the collectors snapshot the live
@@ -223,5 +224,17 @@ func TestRestorePreservesKeysAndRevokesOnlySnapshotGrants(t *testing.T) {
 	}
 	if _, err := st.Devices().GetPairingBySecret(ctx, "pair"); err != nil {
 		t.Fatal("live pairing was revoked", err)
+	}
+}
+
+// The drill compares the restored database against the schema the capsule was taken from.
+func TestCollectPinsTheSchemaVersion(t *testing.T) {
+	cfg, _ := payloadConfig(t)
+	payload, err := backup.Collect(context.Background(), cfg, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := payload.VerificationRecipe["schema_version"]; got != migrations.Latest() {
+		t.Fatalf("schema_version = %v, want %d", got, migrations.Latest())
 	}
 }

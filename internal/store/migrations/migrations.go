@@ -841,6 +841,15 @@ ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled BOOLEAN NOT NULL DEF
 `},
 }
 
+// Latest returns the highest registered migration version: the schema this binary runs.
+func Latest() int {
+	latest := 0
+	for _, m := range registry {
+		latest = max(latest, m.Version)
+	}
+	return latest
+}
+
 // Run executes all pending migrations for the specified database driver.
 func Run(ctx context.Context, db *sql.DB, driver string) error {
 	driver = strings.ToLower(driver)
@@ -866,6 +875,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 	if _, err := db.ExecContext(ctx, initTableQuery); err != nil {
 		return fmt.Errorf("failed to init schema_migrations: %w", err)
+	}
+
+	// An older binary must not serve a schema it has never read (a downgrade, or a restore
+	// onto an older build); migrating forward is the only direction Run knows.
+	var applied int
+	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
+		return fmt.Errorf("failed to read schema version: %w", err)
+	}
+	if applied > Latest() {
+		return fmt.Errorf("database schema version %d is newer than this binary (%d)", applied, Latest())
 	}
 
 	for _, m := range registry {

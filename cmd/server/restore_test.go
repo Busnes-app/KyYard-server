@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
 func sealFixture(t *testing.T, service string) (string, []string) {
@@ -25,7 +27,8 @@ func sealFixture(t *testing.T, service string) (string, []string) {
 	}
 	key := recoveryclient.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}
 	payload := recoveryclient.Payload{ServiceName: service, AppVersion: "1.0.0",
-		Files: []recoveryclient.File{{Path: "data/x.db", Data: []byte("payload"), Mode: 0600}}}
+		Files:              []recoveryclient.File{{Path: "data/x.db", Data: []byte("payload"), Mode: 0600}},
+		VerificationRecipe: map[string]any{"schema_version": 7}}
 	raw, _, err := recoveryclient.Seal(payload, key)
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +54,10 @@ func TestRestoreExtractsWithTwoShares(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "busnes_app") {
 		t.Fatalf("manifest not printed: %s", out.String())
+	}
+	want := fmt.Sprintf("capsule schema version 7; this binary migrates to %d", migrations.Latest())
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("schema line missing: %s", out.String())
 	}
 }
 

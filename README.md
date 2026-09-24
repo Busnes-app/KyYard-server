@@ -136,6 +136,9 @@ bind and DNS overlays already in use:
   Existing database volumes need the same TLS setup before enabling this overlay. Capsule
   backups support SQLite only. A separately managed PostgreSQL server with a stable address
   and verified TLS is also supported by setting the server's database environment directly.
+  Run exactly one server per database: every start settles all in-flight commands as
+  `unknown`, including another live server's, so a second server (a rolling deploy or a
+  stray compose project) corrupts the first one's command results.
 - SSO: configure providers in **Settings → Single sign-on**. OIDC discovery supports KyIdentity;
   OAuth 2 providers can supply explicit endpoints and JSON profile field mappings. Register the
   displayed callback URL with the provider. New identities require an organization membership
@@ -335,8 +338,8 @@ private data directory.
 as hex or base64. They take precedence without overwriting files. Empty values use the files.
 Older arbitrary-text session-secret overrides must be replaced with this encoded form;
 changing it invalidates pending proof-of-work challenges, not database sessions.
-`instance.key` is the persistent Ed25519 seed reserved for control-plane identity.
-It has no environment override. Never run a restored copy alongside the original instance.
+`instance.key` is the persistent Ed25519 seed of the control-plane identity: agents pin its
+fingerprint at enrollment, so replacing it disconnects every agent. It has no environment override. Never run a restored copy alongside the original instance.
 
 The bootstrap password is printed only after the administrator is saved and only when it
 was generated. An ordinary restart preserves both the account and active sessions.
@@ -351,6 +354,8 @@ The mechanics are `github.com/Busnes-app/ky-primitives/recoveryclient`; this rep
 supplies what it seals and how it checks a drill. New snapshots exclude sessions, pending
 MFA challenges and device pairings so restore requires fresh sign-in; live sessions remain
 untouched. The capsule preserves the instance identity and the active keys, including overrides.
+It is the control plane only: no workload volumes, images, container data or anything from a
+remote host, which stay the hosts' own backup problem ([docs/RESTORE.md](docs/RESTORE.md)).
 
 **Capsules are SQLite-only today.** The snapshot is `VACUUM INTO` against the local database
 file; on `KY_DB_DRIVER=postgres` there is no snapshot and every backup refuses with "no
