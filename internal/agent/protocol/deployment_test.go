@@ -11,11 +11,11 @@ import (
 
 func goodDeployment(now time.Time) DeploymentRequest {
 	return DeploymentRequest{
-		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", Revision: 2, IssuedAt: now, Deadline: now.Add(5 * time.Minute),
+		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: "shop", Revision: 2, IssuedAt: now, Deadline: now.Add(5 * time.Minute),
 		Services: []DeploymentService{{
 			Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64),
 			Replaces: InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000},
-			Restart:  "always", Ports: []Port{{Container: 80, Host: 8080, Protocol: "tcp", HostIP: "127.0.0.1"}}, Env: map[string]string{"TOKEN": "x"},
+			Restart:  "always", Ports: []Port{{Container: 80, Host: 8080, Protocol: "tcp", HostIP: "127.0.0.1"}}, Env: map[string]string{"TOKEN": "x"}, Mounts: []Mount{},
 		}},
 	}
 }
@@ -26,24 +26,28 @@ func TestDeploymentRequestValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*DeploymentRequest){
-		"bad uuid":         func(r *DeploymentRequest) { r.Deployment = "nope" },
-		"bad endpoint":     func(r *DeploymentRequest) { r.Endpoint = "a b" },
-		"bad project":      func(r *DeploymentRequest) { r.Project = "-shop" },
-		"revision zero":    func(r *DeploymentRequest) { r.Revision = 0 },
-		"revision 101":     func(r *DeploymentRequest) { r.Revision = 101 },
-		"deadline past":    func(r *DeploymentRequest) { r.Deadline = now.Add(-time.Second) },
-		"deadline far":     func(r *DeploymentRequest) { r.Deadline = now.Add(DeploymentLifetime + time.Second) },
-		"no services":      func(r *DeploymentRequest) { r.Services = nil },
-		"bad service name": func(r *DeploymentRequest) { r.Services[0].Name = "Web" },
-		"bad container":    func(r *DeploymentRequest) { r.Services[0].ContainerName = "a/b" },
-		"bad image":        func(r *DeploymentRequest) { r.Services[0].ImageID = strings.Repeat("a", 64) },
-		"bad replaces":     func(r *DeploymentRequest) { r.Services[0].Replaces.CreatedUnix = 0 },
-		"bad restart":      func(r *DeploymentRequest) { r.Services[0].Restart = "forever" },
-		"port zero":        func(r *DeploymentRequest) { r.Services[0].Ports[0].Host = 0 },
-		"port proto":       func(r *DeploymentRequest) { r.Services[0].Ports[0].Protocol = "sctp" },
-		"port ip":          func(r *DeploymentRequest) { r.Services[0].Ports[0].HostIP = "lo" },
-		"env name":         func(r *DeploymentRequest) { r.Services[0].Env = map[string]string{"1X": "v"} },
-		"env nul":          func(r *DeploymentRequest) { r.Services[0].Env = map[string]string{"X": "a\x00b"} },
+		"bad uuid":          func(r *DeploymentRequest) { r.Deployment = "nope" },
+		"bad endpoint":      func(r *DeploymentRequest) { r.Endpoint = "a b" },
+		"bad project":       func(r *DeploymentRequest) { r.Project = "-shop" },
+		"revision zero":     func(r *DeploymentRequest) { r.Revision = 0 },
+		"revision 101":      func(r *DeploymentRequest) { r.Revision = 101 },
+		"deadline past":     func(r *DeploymentRequest) { r.Deadline = now.Add(-time.Second) },
+		"deadline far":      func(r *DeploymentRequest) { r.Deadline = now.Add(DeploymentLifetime + time.Second) },
+		"no services":       func(r *DeploymentRequest) { r.Services = nil },
+		"bad service name":  func(r *DeploymentRequest) { r.Services[0].Name = "Web" },
+		"bad container":     func(r *DeploymentRequest) { r.Services[0].ContainerName = "a/b" },
+		"bad image":         func(r *DeploymentRequest) { r.Services[0].ImageID = strings.Repeat("a", 64) },
+		"bad replaces":      func(r *DeploymentRequest) { r.Services[0].Replaces.CreatedUnix = 0 },
+		"no request id":     func(r *DeploymentRequest) { r.RequestID = "" },
+		"bad request id":    func(r *DeploymentRequest) { r.RequestID = "a b" },
+		"long request id":   func(r *DeploymentRequest) { r.RequestID = strings.Repeat("a", 65) },
+		"mounts key absent": func(r *DeploymentRequest) { r.Services[0].Mounts = nil },
+		"bad restart":       func(r *DeploymentRequest) { r.Services[0].Restart = "forever" },
+		"port zero":         func(r *DeploymentRequest) { r.Services[0].Ports[0].Host = 0 },
+		"port proto":        func(r *DeploymentRequest) { r.Services[0].Ports[0].Protocol = "sctp" },
+		"port ip":           func(r *DeploymentRequest) { r.Services[0].Ports[0].HostIP = "lo" },
+		"env name":          func(r *DeploymentRequest) { r.Services[0].Env = map[string]string{"1X": "v"} },
+		"env nul":           func(r *DeploymentRequest) { r.Services[0].Env = map[string]string{"X": "a\x00b"} },
 		"env value size": func(r *DeploymentRequest) {
 			r.Services[0].Env = map[string]string{"X": strings.Repeat("v", MaxDeploymentEnvValueBytes+1)}
 		},
@@ -275,7 +279,7 @@ func TestDeploymentCaps(t *testing.T) {
 
 func goodRemoval(now time.Time) RemovalRequest {
 	return RemovalRequest{
-		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", IssuedAt: now, Deadline: now.Add(5 * time.Minute),
+		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: "shop", IssuedAt: now, Deadline: now.Add(5 * time.Minute),
 		Containers: []RemovalTarget{
 			{Service: "web", Target: InspectionTarget{ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}},
 			{Service: "unmapped-0123456789ab", Target: InspectionTarget{ContainerID: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64), CreatedUnix: 1700000000}},
@@ -297,6 +301,7 @@ func TestRemovalRequestValidation(t *testing.T) {
 		"no containers": func(r *RemovalRequest) { r.Containers = nil },
 		"bad service":   func(r *RemovalRequest) { r.Containers[0].Service = "Web" },
 		"bad target":    func(r *RemovalRequest) { r.Containers[0].Target.CreatedUnix = 0 },
+		"no request id": func(r *RemovalRequest) { r.RequestID = "" },
 		"duplicate service": func(r *RemovalRequest) {
 			r.Containers[1].Service = r.Containers[0].Service
 		},
@@ -329,10 +334,19 @@ func TestRemovalRequestValidation(t *testing.T) {
 	}
 }
 
+func goodResult() DeploymentResult {
+	return DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Outcome: OutcomeSucceeded, Steps: []DeploymentStep{{Service: "web", Step: StepCreate, Outcome: OutcomeSucceeded}}, Services: []DeploymentIdentity{{Service: "web", ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}}}
+}
+
 func TestDeploymentResultValidation(t *testing.T) {
-	good := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: OutcomeSucceeded, Steps: []DeploymentStep{{Service: "web", Step: StepCreate, Outcome: OutcomeSucceeded}}, Services: []DeploymentIdentity{{Service: "web", ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}}}
+	good := goodResult()
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	failing := func(r *DeploymentResult, outcome string) {
+		r.Outcome, r.Code = outcome, ResultStepFailed
+		r.Steps[0].Outcome = outcome
+		r.Services = []DeploymentIdentity{}
 	}
 	for name, mutate := range map[string]func(*DeploymentResult){
 		"outcome":          func(r *DeploymentResult) { r.Outcome = "done" },
@@ -340,14 +354,29 @@ func TestDeploymentResultValidation(t *testing.T) {
 		"image digest":     func(r *DeploymentResult) { r.Services[0].ImageDigest = "sha256:" + strings.Repeat("B", 64) },
 		"image digest tag": func(r *DeploymentResult) { r.Services[0].ImageDigest = "latest" },
 		"step outcome":     func(r *DeploymentResult) { r.Steps[0].Outcome = "ok" },
-		"step detail": func(r *DeploymentResult) {
-			r.Steps[0].Outcome, r.Steps[0].Detail = OutcomeFailed, strings.Repeat("d", MaxDeploymentStepDetailBytes+1)
+		"step detail over the bound": func(r *DeploymentResult) {
+			failing(r, OutcomeFailed)
+			r.Steps[0].Code, r.Steps[0].Detail = "unsupported", strings.Repeat("d", MaxDeploymentStepDetailBytes+1)
 		},
-		"detail on succeeded step": func(r *DeploymentResult) { r.Steps[0].Detail = "done" },
-		"step service":             func(r *DeploymentResult) { r.Steps[0].Service = "Web" },
-		"identity":                 func(r *DeploymentResult) { r.Services[0].ImageID = "latest" },
-		"detail":                   func(r *DeploymentResult) { r.Detail = strings.Repeat("d", MaxResultDetailBytes+1) },
-		"too many steps":           func(r *DeploymentResult) { r.Steps = make([]DeploymentStep, MaxDeploymentResultSteps+1) },
+		"detail on succeeded step":   func(r *DeploymentResult) { r.Steps[0].Detail = "done" },
+		"code on succeeded step":     func(r *DeploymentResult) { r.Steps[0].Code = "runtime_error" },
+		"code on skipped step":       func(r *DeploymentResult) { r.Steps[0].Outcome, r.Steps[0].Code = OutcomeSkipped, "runtime_error" },
+		"code on succeeded result":   func(r *DeploymentResult) { r.Code = ResultStepFailed },
+		"failed result without code": func(r *DeploymentResult) { r.Outcome = OutcomeFailed },
+		"unknown result code":        func(r *DeploymentResult) { r.Outcome, r.Code = OutcomeFailed, "exploded" },
+		"denied step without code":   func(r *DeploymentResult) { failing(r, OutcomeDenied) },
+		"failed step without code":   func(r *DeploymentResult) { failing(r, OutcomeFailed) },
+		"sentence as a step code": func(r *DeploymentResult) {
+			failing(r, OutcomeDenied)
+			r.Steps[0].Code = "the container no longer exists"
+		},
+		"free result detail": func(r *DeploymentResult) {
+			r.Outcome, r.Code, r.Detail = OutcomeFailed, ResultStepFailed, "service web, step create: failed"
+		},
+		"bad request id": func(r *DeploymentResult) { r.RequestID = "a b" },
+		"step service":   func(r *DeploymentResult) { r.Steps[0].Service = "Web" },
+		"identity":       func(r *DeploymentResult) { r.Services[0].ImageID = "latest" },
+		"too many steps": func(r *DeploymentResult) { r.Steps = make([]DeploymentStep, MaxDeploymentResultSteps+1) },
 	} {
 		r := good
 		r.Steps = append([]DeploymentStep{}, good.Steps...)
@@ -367,8 +396,8 @@ func TestDeploymentResultValidation(t *testing.T) {
 		}
 	}
 	recheck := good
-	recheck.Outcome, recheck.Detail = OutcomeDenied, "service web, step recheck: the container changed after the precondition"
-	recheck.Steps = []DeploymentStep{{Service: "web", Step: StepRecheck, Outcome: OutcomeDenied, Detail: "the container changed after the precondition"}}
+	recheck.Outcome, recheck.Code = OutcomeDenied, ResultStepFailed
+	recheck.Steps = []DeploymentStep{{Service: "web", Step: StepRecheck, Outcome: OutcomeDenied, Code: "configuration_drift"}}
 	recheck.Services = []DeploymentIdentity{}
 	if err := recheck.Validate(); err != nil {
 		t.Fatalf("recheck step refused: %v", err)
@@ -378,32 +407,161 @@ func TestDeploymentResultValidation(t *testing.T) {
 	if err := skipped.Validate(); err != nil {
 		t.Fatalf("skipped step refused: %v", err)
 	}
+	// An older agent sends no request_id; a succeeded result needs nothing else.
+	older := good
+	older.RequestID = ""
+	if err := older.Validate(); err != nil {
+		t.Fatalf("a result without request_id refused: %v", err)
+	}
+}
+
+// Every step code takes exactly the parameter its row names; anything else is refused and never
+// stored (Review Focus 1).
+func TestDeploymentStepCodeDetails(t *testing.T) {
+	id := strings.Repeat("c", 64)
+	for _, tc := range []struct {
+		code, detail string
+		ok           bool
+	}{
+		{"runtime_unreadable", "", true},
+		{"container_missing", "", true},
+		{"identity_mismatch", "", true},
+		{"image_identity_mismatch", "", true},
+		{"configuration_unreported", "", true},
+		{"unsupported", "privileged", true},
+		{"bind_missing", "", true},
+		{"volume_mount_missing", "", true},
+		{"volume_not_owned", "", true},
+		{"volume_missing", "", true},
+		{"volume_create_failed", "", true},
+		{"image_missing", "", true},
+		{"pinned_image_missing", "", true},
+		{"configuration_drift", "", true},
+		{"name_reserved", "", true},
+		{"name_taken", "", true},
+		{"identity_unusable", "", true},
+		{"identity_unreadable", id, true},
+		{"identity_unverified", id, true},
+		{"dependents", "", true},
+		{"deadline", "", true},
+		{"pull_failed", "", true},
+		{"pull_unauthorized", "", true},
+		{"pull_not_found", "", true},
+		{"pull_digest_mismatch", "", true},
+		{"cancelled", "", true},
+		{"runtime_timeout", "", true},
+		{"runtime_error", "", true},
+		{"runtime_status", "500", true},
+		{CodeLegacy, "", true},
+		{"unsupported", "privileged,devices", true},
+		{"runtime_status", "404", true},
+		{"container_missing", "the container no longer exists", false},
+		{"runtime_error", "the runtime call failed", false},
+		{"legacy", "old text", false},
+		{"unsupported", "", false},
+		{"unsupported", "privileged,privileged", false},
+		{"unsupported", "privileged, devices", false},
+		{"unsupported", "made_up", false},
+		{"unsupported", "privileged,", false},
+		{"unsupported", strings.Join(UnsupportedCodes, ","), false}, // 311 bytes: past the step bound
+		{"identity_unreadable", "", false},
+		{"identity_unverified", strings.Repeat("C", 64), false},
+		{"identity_unverified", id[:63], false},
+		{"runtime_status", "abc", false},
+		{"runtime_status", "600", false},
+		{"runtime_status", "50", false},
+		{"runtime_status", "", false},
+		{"", "", false},
+	} {
+		r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Outcome: OutcomeDenied, Code: ResultStepFailed,
+			Steps: []DeploymentStep{{Service: "web", Step: StepPrecondition, Outcome: OutcomeDenied, Code: tc.code, Detail: tc.detail}}, Services: []DeploymentIdentity{}}
+		if err := r.Validate(); (err == nil) != tc.ok {
+			t.Errorf("code %q detail %q: %v", tc.code, tc.detail, err)
+		}
+	}
+	if len(stepCodes) != 30 || len(resultCodes) != 8 {
+		t.Fatalf("closed sets: %d step codes, %d result codes", len(stepCodes), len(resultCodes))
+	}
+}
+
+// A result that did not succeed names one closed code. legacy is in the set, but reading a result
+// as an older agent's is the server's job: the protocol never fills a missing code, with or
+// without a request_id (Review Focus 5).
+func TestDeploymentResultCodes(t *testing.T) {
+	for _, code := range []string{ResultStepFailed, ResultClockSkew, ResultInvalidRequest, ResultWrongEndpoint, ResultBusy, ResultRestarted, ResultUnreadable, CodeLegacy} {
+		r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: OutcomeDenied, Code: code, Steps: []DeploymentStep{}, Services: []DeploymentIdentity{}}
+		if err := r.Validate(); err != nil {
+			t.Fatalf("%s: %v", code, err)
+		}
+	}
+	if ResultStepFailed != "step_failed" || ResultClockSkew != "clock_skew" || ResultInvalidRequest != "invalid_request" || ResultWrongEndpoint != "wrong_endpoint" || ResultBusy != "busy" || ResultRestarted != "restarted" || ResultUnreadable != "unreadable" || CodeLegacy != "legacy" {
+		t.Fatal("a result code's spelling changed")
+	}
+	for _, requestID := range []string{"", "0123456789abcdef0123456789abcdef"} {
+		r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: requestID, Outcome: OutcomeDenied, Code: ResultStepFailed,
+			Steps: []DeploymentStep{{Service: "web", Step: StepPrecondition, Outcome: OutcomeDenied}}, Services: []DeploymentIdentity{}}
+		if r.Validate() == nil {
+			t.Fatalf("request_id %q: a denied step without a code validated", requestID)
+		}
+	}
+}
+
+func TestRequestIDs(t *testing.T) {
+	for id, ok := range map[string]bool{
+		"0123456789abcdef0123456789abcdef":     true,
+		"3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b": true,
+		"test-request":                         true,
+		strings.Repeat("a", 64):                true,
+		strings.Repeat("a", 65):                false,
+		"":                                     false,
+		"a b":                                  false,
+		"a\nb":                                 false,
+	} {
+		if ValidRequestID(id) != ok {
+			t.Errorf("%q: want %v", id, ok)
+		}
+	}
+	now := time.Now()
+	for _, v := range []any{goodDeployment(now), goodRemoval(now), goodResult()} {
+		raw, _ := json.Marshal(v)
+		if !strings.Contains(string(raw), `"request_id":"0123456789abcdef0123456789abcdef"`) {
+			t.Fatalf("request_id missing on the wire: %s", raw)
+		}
+	}
 }
 
 // The largest result Deploy can produce must fit the frame, or an honest agent could not report.
-// Validate allows a detail only on the step that ended the run; succeeded and skipped steps carry
-// none. The run's own detail is at its maximum in every case, and the frame's every volume adds a step.
+// Only the step that ended the run carries a parameter, and the longest is as many whole
+// unsupported codes as the step bound holds; the frame's every volume adds a step.
 func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
 	steps := []string{StepPrecondition, StepPull, StepRecheck, StepRename, StepCreate, StepStop, StepStart, StepRemove}
-	detail := strings.Repeat("d", MaxDeploymentStepDetailBytes)
+	detail := UnsupportedCodes[0]
+	for _, c := range UnsupportedCodes[1:] {
+		if len(detail)+1+len(c) > MaxDeploymentStepDetailBytes {
+			break
+		}
+		detail += "," + c
+	}
 	build := func(outcome string, stepOutcome func(service, step int) string, identities int) DeploymentResult {
-		r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: outcome, Detail: strings.Repeat("r", MaxResultDetailBytes)}
+		r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: strings.Repeat("r", 64), Outcome: outcome}
+		if outcome != OutcomeSucceeded {
+			r.Code = ResultStepFailed
+		}
+		step := func(name, kind, outcome string) DeploymentStep {
+			s := DeploymentStep{Service: name, Step: kind, Outcome: outcome}
+			if outcome != OutcomeSucceeded && outcome != OutcomeSkipped {
+				s.Code, s.Detail = "unsupported", detail
+			}
+			return s
+		}
 		for i := 0; i < MaxDeploymentServices; i++ {
 			name := fmt.Sprintf("s%02d", i) + strings.Repeat("x", 60)
-			for j, step := range steps {
-				s := DeploymentStep{Service: name, Step: step, Outcome: stepOutcome(i, j)}
-				if s.Outcome != OutcomeSucceeded && s.Outcome != OutcomeSkipped {
-					s.Detail = detail
-				}
-				r.Steps = append(r.Steps, s)
+			for j, kind := range steps {
+				r.Steps = append(r.Steps, step(name, kind, stepOutcome(i, j)))
 			}
 			if i == 0 {
 				for v := 0; v < MaxDeploymentVolumes; v++ {
-					s := DeploymentStep{Service: name, Step: StepVolume, Outcome: stepOutcome(0, 1)}
-					if s.Outcome != OutcomeSucceeded && s.Outcome != OutcomeSkipped {
-						s.Detail = detail
-					}
-					r.Steps = append(r.Steps, s)
+					r.Steps = append(r.Steps, step(name, StepVolume, stepOutcome(0, 1)))
 				}
 			}
 			if i < identities {
@@ -543,7 +701,7 @@ func TestDeploymentRequestMounts(t *testing.T) {
 }
 
 func TestDeploymentResultVolumeStep(t *testing.T) {
-	r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: OutcomeFailed, Detail: "service web, step volume: volume create failed", Steps: []DeploymentStep{{Service: "web", Step: StepVolume, Outcome: OutcomeFailed, Detail: "volume create failed"}}}
+	r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: OutcomeFailed, Code: ResultStepFailed, Steps: []DeploymentStep{{Service: "web", Step: StepVolume, Outcome: OutcomeFailed, Code: "volume_create_failed"}}}
 	if err := r.Validate(); err != nil {
 		t.Fatalf("volume step refused: %v", err)
 	}
