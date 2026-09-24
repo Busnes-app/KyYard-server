@@ -28,6 +28,7 @@ type planHost struct {
 	deployments string
 	planBody    string
 	targets     []protocol.InspectionTarget // per service, in the order given
+	snapshot    protocol.Snapshot           // the inventory the host was adopted from
 }
 
 func newPlanHost(t *testing.T, capabilities []string, services ...string) planHost {
@@ -58,6 +59,7 @@ func newPlanHost(t *testing.T, capabilities []string, services ...string) planHo
 		bindings[name] = id
 		h.targets = append(h.targets, protocol.InspectionTarget{ContainerID: id, ImageID: image, CreatedUnix: created.Unix()})
 	}
+	h.snapshot = snapshot
 	raw, _ := json.Marshal(snapshot)
 	_, err := ts.AcceptInventory(ctx, h.ag.id, uint64(time.Now().Unix()), time.Now(), raw)
 	must(err)
@@ -444,6 +446,28 @@ func TestPlanRefusesWhenTheAgentNeverAnswers(t *testing.T) {
 	var stopped protocol.InspectionCancel
 	if frame.Type != protocol.TypeInspectionCancel || json.Unmarshal(frame.Payload, &stopped) != nil || stopped.Request != g.Request {
 		t.Fatalf("expected the grant's cancel, got %s", frame.Type)
+	}
+}
+
+// A preflight with blockers of its own is refused on them: nothing is inspected and no attempt
+// is spent.
+func TestPlanSkipsInspectionForABlockedPreflight(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web")
+	api.SetPlanInspectorForTest(h.s, func(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+		t.Error("inspected a blocked preflight")
+		return verifiedObservation(target), nil
+	})
+	h.snapshot.Containers[0].Mounts = nil // an agent that did not report mounts
+	raw, _ := json.Marshal(h.snapshot)
+	if _, err := h.st.Tenancy().AcceptInventory(context.Background(), h.ag.id, uint64(time.Now().Unix())+1, time.Now(), raw); err != nil {
+		t.Fatal(err)
+	}
+	body := h.do(t, "POST", h.deployments, h.planBody, 409)
+	if !strings.Contains(body, "mounts_unreported") || strings.Contains(body, "inspection_unavailable") {
+		t.Fatalf("blockers: %s", body)
+	}
+	if slices.Contains(api.AttemptKeysForTest(h.s), "inspection:usr_planner") {
+		t.Fatal("an inspection attempt was spent")
 	}
 }
 

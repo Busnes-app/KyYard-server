@@ -404,7 +404,10 @@ func TestPlanDeploymentRefusesUnreportedMounts(t *testing.T) {
 	if previewMounts(m, "shop-worker") != nil || previewMounts(m, "shop-web") == nil {
 		t.Fatalf("reported and unreported mounts confused: %+v", m.Preview.Containers)
 	}
-	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, planRequest(m), nil, imageCheckKey, false)
+	// The API does not inspect a blocked preflight, and the store adds no inspection blocker.
+	r := planRequest(m)
+	r.Inspections = nil
+	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, r, nil, imageCheckKey, false)
 	var blocked *PreflightBlockedError
 	if !errors.As(err, &blocked) || !reflect.DeepEqual(blocked.Blockers, []string{"mounts_unreported"}) {
 		t.Fatalf("unreported: %v", err)

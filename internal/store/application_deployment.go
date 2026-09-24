@@ -357,8 +357,9 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 	var refused []BlockedService
 	for i, s := range spec.Services {
 		row := p.Services[i]
-		// Without both inspect capabilities there was nothing to ask; agent_inspect_unsupported says why.
-		if inspected && row.InspectionTarget != nil {
+		// Without both inspect capabilities there was nothing to ask; agent_inspect_unsupported
+		// says why. A blocked preflight is not inspected either: its own blockers refuse the plan.
+		if inspected && p.Executable && row.InspectionTarget != nil {
 			row.Blockers = append(row.Blockers, inspectionBlockers(&row, r.Inspections)...)
 		}
 		blockers = append(blockers, row.Blockers...)
