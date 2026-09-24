@@ -320,6 +320,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/backup/schedule", s.requireAdmin(s.handleSetSchedule))
 	s.mux.HandleFunc("GET /api/backup/status", s.requireAdmin(s.handleBackupStatus))
 
+	// Platform administration: organizations and local accounts.
+	s.mux.HandleFunc("GET /api/admin/organizations", s.requireAdmin(s.handleAdminListOrganizations))
+	s.mux.HandleFunc("POST /api/admin/organizations", s.requireAdmin(s.handleAdminCreateOrganization))
+	s.mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.handleAdminListUsers))
+	s.mux.HandleFunc("POST /api/admin/users", s.requireAdmin(s.handleAdminCreateUser))
+
 	s.mux.HandleFunc("GET /api/settings/sso", s.requireAdmin(s.handleProviders))
 	s.mux.HandleFunc("POST /api/settings/sso", s.requireAdmin(s.handleSaveProvider))
 	s.mux.HandleFunc("PUT /api/settings/sso/{provider}", s.requireAdmin(s.handleUpdateProvider))
