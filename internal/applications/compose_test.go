@@ -2,6 +2,8 @@ package applications
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -85,6 +87,102 @@ func TestComposeStructureBounds(t *testing.T) {
 	} {
 		if _, err := ParseCompose(source); err == nil {
 			t.Fatal("unbounded or aliased document accepted")
+		}
+	}
+}
+
+// volumeDoc puts mounts at line 5 onward (entries at column 7) and top-level volumes after them.
+func volumeDoc(mounts, top string) string {
+	return "services:\n  app:\n    image: nginx:1\n    volumes:\n" + mounts + top
+}
+
+func TestComposeVolumes(t *testing.T) {
+	declared := "volumes:\n  db:\n"
+	cases := []struct {
+		name, source, mounts, declared string
+	}{
+		{"named", volumeDoc("      - db:/var/lib/postgresql/data\n", declared),
+			`[{"kind":"named","source":"db","target":"/var/lib/postgresql/data"}]`, `[{"name":"db"}]`},
+		{"read only", volumeDoc("      - db:/x:ro\n      - db:/y:rw\n", "volumes:\n  db: {}\n"),
+			`[{"kind":"named","source":"db","target":"/x","read_only":true},{"kind":"named","source":"db","target":"/y"}]`, `[{"name":"db"}]`},
+		{"bind", volumeDoc("      - /srv/cfg:/etc/app:ro\n", ""),
+			`[{"kind":"bind","source":"/srv/cfg","target":"/etc/app","read_only":true}]`, `null`},
+		{"long", volumeDoc("      - type: volume\n        source: db\n        target: /x\n      - type: bind\n        source: /srv\n        target: /y\n        read_only: true\n", declared),
+			`[{"kind":"named","source":"db","target":"/x"},{"kind":"bind","source":"/srv","target":"/y","read_only":true}]`, `[{"name":"db"}]`},
+		{"drive-letter name", volumeDoc("      - c:/x\n", "volumes:\n  c:\n"),
+			`[{"kind":"named","source":"c","target":"/x"}]`, `[{"name":"c"}]`},
+		{"external", volumeDoc("      - shared:/x\n      - db:/y\n", "volumes:\n  shared:\n    external: true\n  db:\n    external: false\n"),
+			`[{"kind":"named","source":"shared","target":"/x"},{"kind":"named","source":"db","target":"/y"}]`, `[{"name":"db"},{"name":"shared","external":true}]`},
+	}
+	for _, c := range cases {
+		imported, err := ParseCompose(c.source)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		mounts, _ := json.Marshal(imported.Spec.Services[0].Volumes)
+		declared, _ := json.Marshal(imported.Spec.Volumes)
+		if string(mounts) != c.mounts || string(declared) != c.declared {
+			t.Errorf("%s: got %s %s", c.name, mounts, declared)
+		}
+	}
+}
+
+func TestComposeVolumeRefusals(t *testing.T) {
+	const (
+		relative   = "Relative and home-relative bind mounts are unsupported; write the absolute path"
+		anonymous  = "Anonymous volumes are unsupported; declare a named volume"
+		undeclared = "Named volumes must be declared under top-level volumes"
+		mode       = "Volume mode must be ro or rw"
+		kind       = "Volume type must be volume or bind"
+		boolean    = "An explicit true or false is required"
+		list       = "volumes must be a list of at most 32 entries"
+		unsupport  = "Unsupported field; see the supported import fields"
+	)
+	declared := "volumes:\n  db:\n"
+	var many strings.Builder
+	for i := 0; i < 33; i++ {
+		fmt.Fprintf(&many, "      - db:/v%d\n", i)
+	}
+	var manyDeclared strings.Builder
+	manyDeclared.WriteString("volumes:\n")
+	for i := 0; i < 65; i++ {
+		fmt.Fprintf(&manyDeclared, "  v%d:\n", i)
+	}
+	cases := []struct {
+		name, source string
+		line, column int
+		reason       string
+	}{
+		{"dot bind", volumeDoc("      - ./data:/x\n", ""), 5, 9, relative},
+		{"home bind", volumeDoc("      - ~/data:/x\n", ""), 5, 9, relative},
+		{"windows bind", volumeDoc("      - C:\\data:/x\n", ""), 5, 9, relative},
+		{"anonymous", volumeDoc("      - /x\n", ""), 5, 9, anonymous},
+		{"undeclared", volumeDoc("      - cache:/x\n", declared), 5, 9, undeclared},
+		{"mode", volumeDoc("      - db:/x:z\n", declared), 5, 9, mode},
+		{"four parts", volumeDoc("      - db:/x:ro:z\n", declared), 5, 9, mode},
+		{"not a list", volumeDoc("", "")[:len(volumeDoc("", ""))-1] + " db:/x\n" + declared, 4, 14, list},
+		{"too many", volumeDoc(many.String(), declared), 5, 7, list},
+		{"long tmpfs", volumeDoc("      - type: tmpfs\n        target: /x\n", ""), 5, 15, kind},
+		{"long consistency", volumeDoc("      - type: volume\n        source: db\n        target: /x\n        consistency: cached\n", declared), 8, 22, unsupport},
+		{"long anonymous", volumeDoc("      - type: volume\n        target: /x\n", ""), 5, 9, anonymous},
+		{"long relative", volumeDoc("      - type: bind\n        source: ./data\n        target: /x\n", ""), 6, 17, relative},
+		{"long undeclared", volumeDoc("      - type: volume\n        source: cache\n        target: /x\n", declared), 6, 17, undeclared},
+		{"long read_only string", volumeDoc("      - type: volume\n        source: db\n        target: /x\n        read_only: \"true\"\n", declared), 8, 20, boolean},
+		{"top driver", volumeDoc("      - db:/x\n", "volumes:\n  db:\n    driver: local\n"), 8, 13, unsupport},
+		{"top name", volumeDoc("      - db:/x\n", "volumes:\n  db:\n    name: other\n"), 8, 11, unsupport},
+		{"top external string", volumeDoc("      - db:/x\n", "volumes:\n  db:\n    external: \"yes\"\n"), 8, 15, boolean},
+		{"top list", volumeDoc("      - db:/x\n", "volumes: [db]\n"), 6, 10, "Expected a mapping"},
+		{"top too many", volumeDoc("      - v0:/x\n", manyDeclared.String()), 7, 3, "At most 64 volumes may be declared"},
+	}
+	for _, c := range cases {
+		result, err := ParseCompose(c.source)
+		var d *Diagnostic
+		if result != nil || !errors.As(err, &d) {
+			t.Errorf("%s: accepted or untyped: %v", c.name, err)
+			continue
+		}
+		if d.Line != c.line || d.Column != c.column || d.Reason != c.reason {
+			t.Errorf("%s: got %d:%d %q", c.name, d.Line, d.Column, d.Reason)
 		}
 	}
 }

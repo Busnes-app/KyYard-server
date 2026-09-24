@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/netip"
+	"path"
 	"regexp"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -16,6 +17,7 @@ import (
 type ApplicationSpec struct {
 	Kind     string               `json:"kind"`
 	Services []ApplicationService `json:"services"`
+	Volumes  []DeclaredVolume     `json:"volumes,omitempty"`
 }
 type ApplicationService struct {
 	Ports       []ApplicationPort               `json:"ports,omitempty"`
@@ -23,12 +25,34 @@ type ApplicationService struct {
 	Name        string                          `json:"name"`
 	Image       string                          `json:"image"`
 	Environment map[string]ApplicationSecretRef `json:"environment,omitempty"`
+	Volumes     []ApplicationVolume             `json:"volumes,omitempty"`
 }
 type ApplicationPort struct {
 	Target    int    `json:"target"`
 	Published int    `json:"published"`
 	HostIP    string `json:"host_ip,omitempty"`
 	Protocol  string `json:"protocol"`
+}
+
+// ApplicationVolume mounts a declared volume (Kind "named", Source its name) or an
+// absolute host path (Kind "bind") at Target.
+type ApplicationVolume struct {
+	Kind     string `json:"kind"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
+type DeclaredVolume struct {
+	Name     string `json:"name"`
+	External bool   `json:"external,omitempty"`
+}
+
+// VolumeHostName is the runtime volume name, as docker compose derives it.
+func VolumeHostName(project string, v DeclaredVolume) string {
+	if v.External {
+		return v.Name
+	}
+	return project + "_" + v.Name
 }
 
 func ValidateApplicationSpec(spec ApplicationSpec) error {
@@ -48,11 +72,22 @@ const (
 
 var applicationServiceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 var applicationEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+var applicationVolumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
 var applicationSecretName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 	if spec.Kind != "compose.v1" || len(spec.Services) == 0 || len(spec.Services) > 100 {
 		return nil, "", ErrInvalid
+	}
+	if len(spec.Volumes) > 64 {
+		return nil, "", ErrInvalid
+	}
+	declared := make(map[string]bool, len(spec.Volumes))
+	for _, v := range spec.Volumes {
+		if !applicationVolumeName.MatchString(v.Name) || declared[v.Name] {
+			return nil, "", ErrInvalid
+		}
+		declared[v.Name] = true
 	}
 	names := make(map[string]bool, len(spec.Services))
 	for _, service := range spec.Services {
@@ -79,6 +114,17 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 				}
 			}
 		}
+		if len(service.Volumes) > 32 {
+			return nil, "", ErrInvalid
+		}
+		targets := make(map[string]bool, len(service.Volumes))
+		for _, v := range service.Volumes {
+			source := (v.Kind == "named" && declared[v.Source]) || (v.Kind == "bind" && cleanAbsolutePath(v.Source))
+			if !source || !cleanAbsolutePath(v.Target) || v.Target == "/" || targets[v.Target] {
+				return nil, "", ErrInvalid
+			}
+			targets[v.Target] = true
+		}
 		for name, ref := range service.Environment {
 			if !applicationEnvName.MatchString(name) || !applicationSecretName.MatchString(ref.SecretRef) {
 				return nil, "", ErrInvalid
@@ -90,6 +136,10 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 		return nil, "", ErrInvalid
 	}
 	return raw, applicationSpecDigest(raw), nil
+}
+
+func cleanAbsolutePath(p string) bool {
+	return path.IsAbs(p) && path.Clean(p) == p && displaySafe(p)
 }
 
 func applicationSpecDigest(raw []byte) string {
