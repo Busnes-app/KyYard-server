@@ -95,7 +95,7 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 		return sock
 	}
 
-	sock := online([]string{protocol.CapabilityDeploymentApply})
+	sock := online([]string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect})
 	inventory(sock, oldID, oldImage, created)
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 	sync(sock)
@@ -251,12 +251,15 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	sock.conn.CloseNow()
 	waitFor(t, func() bool { return state(second.ID).State == protocol.OutcomeUnknown })
 
-	// An agent that does not advertise the capability is never sent a plan.
-	sock = online(nil)
-	inventory(sock, newID, newImage, replacedAt)
-	sync(sock)
-	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+	// An agent that does not advertise deployments is never planned for, and a plan made before
+	// its capabilities changed is refused at apply with nothing sent.
+	sock = reconnect(legacy)
 	third := plan()
+	sock.conn.CloseNow()
+	sock = reconnect(nil)
+	if body := request(admin, "POST", deployments, string(planBody), 409); !strings.Contains(body, "agent_deploy_unsupported") || !strings.Contains(body, "agent_inspect_unsupported") {
+		t.Fatalf("a plan for an agent without deployments: %s", body)
+	}
 	request(admin, "POST", deployments+"/"+third.ID+"/apply", `{"confirm":"shop"}`, 501)
 	if got := state(third.ID); got.State != "planned" {
 		t.Fatalf("a refused apply moved the row: %+v", got)

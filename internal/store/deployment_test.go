@@ -623,3 +623,49 @@ func TestFrameBlocker(t *testing.T) {
 		t.Fatalf("17 hosts: %s", b)
 	}
 }
+
+// A plan the endpoint's agent could not run is refused at plan time, not at apply.
+func TestPlanDeploymentRequiresAgentCapabilities(t *testing.T) {
+	st, a, app, endpoint, _, m := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	for name, tc := range map[string]struct {
+		capabilities []string
+		want         []string
+	}{
+		"none":       {nil, []string{"agent_deploy_unsupported", "agent_inspect_unsupported"}},
+		"no deploy":  {[]string{protocol.CapabilityContainerInspect}, []string{"agent_deploy_unsupported"}},
+		"no inspect": {[]string{protocol.CapabilityDeploymentApply}, []string{"agent_inspect_unsupported"}},
+	} {
+		if err := ts.SetEndpointCapabilities(ctx, endpoint, tc.capabilities); err != nil {
+			t.Fatal(err)
+		}
+		var blocked *PreflightBlockedError
+		if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, tc.want) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An update that pulls needs deployment.pull; a plan with no pull does not.
+func TestPlanDeploymentRefusesAPullTheAgentCannotRun(t *testing.T) {
+	st, a, app, endpoint, _ := pullFixture(t, []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1.2"}}, map[string][]string{"web": {"ghcr.io/org/web@" + digestOf("a")}})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1.2": {digest: digestOf("f")}}}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, "web"), f, imageCheckKey, false); !isBlocked(err, "agent_pull_unsupported") {
+		t.Fatalf("pull without deployment.pull: %v", err)
+	}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app), nil, imageCheckKey, false); err != nil {
+		t.Fatalf("a plan without a pull: %v", err)
+	}
+}

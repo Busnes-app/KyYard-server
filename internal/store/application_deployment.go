@@ -128,19 +128,18 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	var out *Deployment
 	if len(r.Update) == 0 {
 		err = t.withTenantTarget(ctx, a, permissions.ApplicationDeploy, target, func(tx *sql.Tx) error {
-			var m *ApplicationMapping
-			var blockers []string
-			out, m, blockers, err = t.draftPlan(ctx, tx, a, id.String(), planID, r, true)
+			dr, err := t.draftPlan(ctx, tx, a, id.String(), planID, r, true)
 			if err != nil {
 				return err
 			}
-			if err := blocked(blockers); err != nil {
+			if err := blocked(dr.blockers); err != nil {
 				return err
 			}
-			if err := t.checkFrame(ctx, tx, a, out, key, r.MaxFrameBytes); err != nil {
+			if err := t.checkFrame(ctx, tx, a, dr.d, key, r.MaxFrameBytes); err != nil {
 				return err
 			}
-			return t.insertPlan(ctx, tx, a, out, m.InstanceID)
+			out = dr.d
+			return t.insertPlan(ctx, tx, a, out, dr.m.InstanceID)
 		})
 		if err != nil {
 			return nil, err
@@ -150,12 +149,15 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	var work []imageCheckWork
 	var pulled []int // plan service index per work item
 	var state string
+	var capabilities map[string]bool
 	// A read: no lock and no success row, but a denial or failure audits the plan's target.
 	err = t.run(ctx, a, permissions.ApplicationDeploy, &target, nil, false, func(tx *sql.Tx) error {
-		d, m, blockers, err := t.draftPlan(ctx, tx, a, id.String(), planID, r, false)
+		dr, err := t.draftPlan(ctx, tx, a, id.String(), planID, r, false)
 		if err != nil {
 			return err
 		}
+		d, m, blockers := dr.d, dr.m, dr.blockers
+		capabilities = dr.capabilities
 		anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
 		if err != nil {
 			return err
@@ -214,6 +216,8 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 			pinPull(&out.Plan.Services[pulled[n]], w.Ref, w.Row.RemoteDigest)
 		}
 	}
+	// Only now is it known which services pull.
+	blockers = append(blockers, capabilityBlockers(capabilities, out.Plan)...)
 	pulls := 0
 	for _, ps := range out.Plan.Services {
 		if ps.PullDigest != "" {
@@ -283,15 +287,28 @@ func (t *tenancyStore) lockApplication(ctx context.Context, tx *sql.Tx, a Tenant
 	return err
 }
 
+// draft is a plan built in memory from one preflight, with every blocker found for it and the
+// endpoint's capabilities, which the update path checks again once its pulls are pinned.
+type draft struct {
+	d            *Deployment
+	m            *ApplicationMapping
+	blockers     []string
+	capabilities map[string]bool
+}
+
 // draftPlan runs the preflight (locking when the plan is written in the same transaction) and
 // builds the plan in memory, returning its blockers unrefused so an update can add its own.
-func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess, app, planID string, r PlanRequest, lock bool) (*Deployment, *ApplicationMapping, []string, error) {
+func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess, app, planID string, r PlanRequest, lock bool) (*draft, error) {
 	p, m, spec, snapshot, digest, err := t.preflight(ctx, tx, a, app, lock, r.Revision)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	if r.InstanceID != m.InstanceID || r.MappingVersion != m.Version || (r.Revision != 0 && r.Revision != p.Revision) || r.Confirm != m.Preview.Project {
-		return nil, nil, nil, ErrAdoptionChanged
+		return nil, ErrAdoptionChanged
+	}
+	capabilities, err := t.endpointCapabilities(ctx, tx, m.Preview.EndpointID)
+	if err != nil {
+		return nil, err
 	}
 	blockers := slices.Clone(p.Blockers)
 	plan := DeploymentPlan{Project: m.Preview.Project, Services: []PlannedService{}}
@@ -329,9 +346,44 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 		}
 		plan.Services = append(plan.Services, ps)
 	}
+	blockers = append(blockers, capabilityBlockers(capabilities, plan)...)
 	now := time.Now().UTC()
 	d := &Deployment{ID: planID, ApplicationID: app, InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Kind: "apply", State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
-	return d, m, blockers, nil
+	return &draft{d: d, m: m, blockers: blockers, capabilities: capabilities}, nil
+}
+
+// endpointCapabilities is what the endpoint's agent advertised at its last connect.
+func (t *tenancyStore) endpointCapabilities(ctx context.Context, tx *sql.Tx, endpoint string) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT capability FROM endpoint_capabilities WHERE endpoint_id=?`), endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out[c] = true
+	}
+	return out, rows.Err()
+}
+
+// capabilityBlockers refuses a plan the endpoint's agent could not run: no deployments, no live
+// inspection for the plan to check, or a pull without deployment.pull. Apply checks again.
+func capabilityBlockers(capabilities map[string]bool, plan DeploymentPlan) []string {
+	var out []string
+	if !capabilities[protocol.CapabilityDeploymentApply] {
+		out = append(out, "agent_deploy_unsupported")
+	}
+	if !capabilities[protocol.CapabilityContainerInspect] {
+		out = append(out, "agent_inspect_unsupported")
+	}
+	if !capabilities[protocol.CapabilityDeploymentPull] && slices.ContainsFunc(plan.Services, func(ps PlannedService) bool { return ps.PullDigest != "" }) {
+		out = append(out, "agent_pull_unsupported")
+	}
+	return out
 }
 
 // insertPlan replaces the instance's planned row with d, refusing while one is applying.

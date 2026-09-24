@@ -80,6 +80,7 @@ func TestApplicationImportRoutes(t *testing.T) {
 	ep, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
 	must(err)
 	must(ts.ApproveEndpoint(ctx, a, ep.ID, ep.Fingerprint))
+	must(ts.SetEndpointCapabilities(ctx, ep.ID, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect}))
 	created := time.Now().UTC()
 	snapshot, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created, Mounts: []protocol.Mount{}}}})
 	_, err = ts.AcceptInventory(ctx, ep.ID, uint64(time.Now().Unix()), time.Now(), snapshot)
