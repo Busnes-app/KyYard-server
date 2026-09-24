@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 
 func goodDeployment(now time.Time) DeploymentRequest {
 	return DeploymentRequest{
-		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", Revision: 2, Deadline: now.Add(5 * time.Minute),
+		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", Revision: 2, IssuedAt: now, Deadline: now.Add(5 * time.Minute),
 		Services: []DeploymentService{{
 			Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64),
 			Replaces: InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000},
@@ -274,7 +275,7 @@ func TestDeploymentCaps(t *testing.T) {
 
 func goodRemoval(now time.Time) RemovalRequest {
 	return RemovalRequest{
-		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", Deadline: now.Add(5 * time.Minute),
+		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", IssuedAt: now, Deadline: now.Add(5 * time.Minute),
 		Containers: []RemovalTarget{
 			{Service: "web", Target: InspectionTarget{ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000}},
 			{Service: "unmapped-0123456789ab", Target: InspectionTarget{ContainerID: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64), CreatedUnix: 1700000000}},
@@ -346,7 +347,7 @@ func TestDeploymentResultValidation(t *testing.T) {
 		"step service":             func(r *DeploymentResult) { r.Steps[0].Service = "Web" },
 		"identity":                 func(r *DeploymentResult) { r.Services[0].ImageID = "latest" },
 		"detail":                   func(r *DeploymentResult) { r.Detail = strings.Repeat("d", MaxResultDetailBytes+1) },
-		"too many steps":           func(r *DeploymentResult) { r.Steps = make([]DeploymentStep, 8*MaxDeploymentServices+1) },
+		"too many steps":           func(r *DeploymentResult) { r.Steps = make([]DeploymentStep, MaxDeploymentResultSteps+1) },
 	} {
 		r := good
 		r.Steps = append([]DeploymentStep{}, good.Steps...)
@@ -365,6 +366,13 @@ func TestDeploymentResultValidation(t *testing.T) {
 			t.Fatalf("%s step with a pulled identity refused: %v", step, err)
 		}
 	}
+	recheck := good
+	recheck.Outcome, recheck.Detail = OutcomeDenied, "service web, step recheck: the container changed after the precondition"
+	recheck.Steps = []DeploymentStep{{Service: "web", Step: StepRecheck, Outcome: OutcomeDenied, Detail: "the container changed after the precondition"}}
+	recheck.Services = []DeploymentIdentity{}
+	if err := recheck.Validate(); err != nil {
+		t.Fatalf("recheck step refused: %v", err)
+	}
 	skipped := good
 	skipped.Steps = []DeploymentStep{{Service: "web", Step: StepStop, Outcome: OutcomeSkipped}}
 	if err := skipped.Validate(); err != nil {
@@ -376,7 +384,7 @@ func TestDeploymentResultValidation(t *testing.T) {
 // Validate allows a detail only on the step that ended the run; succeeded and skipped steps carry
 // none. The run's own detail is at its maximum in every case, and the frame's every volume adds a step.
 func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
-	steps := []string{StepPrecondition, StepPull, StepRename, StepCreate, StepStop, StepStart, StepRemove}
+	steps := []string{StepPrecondition, StepPull, StepRecheck, StepRename, StepCreate, StepStop, StepStart, StepRemove}
 	detail := strings.Repeat("d", MaxDeploymentStepDetailBytes)
 	build := func(outcome string, stepOutcome func(service, step int) string, identities int) DeploymentResult {
 		r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: outcome, Detail: strings.Repeat("r", MaxResultDetailBytes)}
@@ -538,5 +546,60 @@ func TestDeploymentResultVolumeStep(t *testing.T) {
 	r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: OutcomeFailed, Detail: "service web, step volume: volume create failed", Steps: []DeploymentStep{{Service: "web", Step: StepVolume, Outcome: OutcomeFailed, Detail: "volume create failed"}}}
 	if err := r.Validate(); err != nil {
 		t.Fatalf("volume step refused: %v", err)
+	}
+}
+
+// The issue time bounds skew between the server's clock and the agent's, and the deadline is
+// measured from it as well as from the agent's now.
+func TestDeploymentRequestIssuedAt(t *testing.T) {
+	now := time.Now()
+	for name, tc := range map[string]struct {
+		mutate func(*DeploymentRequest)
+		skew   bool
+	}{
+		"missing": {func(r *DeploymentRequest) { r.IssuedAt = time.Time{} }, false},
+		"issued behind": {func(r *DeploymentRequest) {
+			r.IssuedAt = now.Add(-MaxClockSkew - time.Second)
+			r.Deadline = now.Add(time.Minute)
+		}, true},
+		"issued ahead": {func(r *DeploymentRequest) {
+			r.IssuedAt = now.Add(MaxClockSkew + time.Second)
+			r.Deadline = r.IssuedAt.Add(time.Minute)
+		}, true},
+		"deadline at issue": {func(r *DeploymentRequest) { r.Deadline = r.IssuedAt }, false},
+		"deadline past lifetime from issue": {func(r *DeploymentRequest) {
+			r.IssuedAt = now.Add(-time.Minute)
+			r.Deadline = r.IssuedAt.Add(DeploymentLifetime + time.Second)
+		}, false},
+	} {
+		r := goodDeployment(now)
+		tc.mutate(&r)
+		err := r.Validate(now)
+		if err == nil || errors.Is(err, ErrClockSkew) != tc.skew {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	r := goodDeployment(now)
+	r.IssuedAt = now.Add(-MaxClockSkew + time.Second)
+	if err := r.Validate(now); err != nil {
+		t.Fatalf("skew inside the bound refused: %v", err)
+	}
+	if ErrClockSkew.Error() != "clock skew exceeds 5 minutes" {
+		t.Fatalf("detail: %q", ErrClockSkew.Error())
+	}
+}
+
+func TestRemovalRequestIssuedAt(t *testing.T) {
+	now := time.Now()
+	r := goodRemoval(now)
+	r.IssuedAt = time.Time{}
+	if r.Validate(now) == nil {
+		t.Fatal("missing issue time accepted")
+	}
+	r = goodRemoval(now)
+	r.IssuedAt = now.Add(-MaxClockSkew - time.Second)
+	r.Deadline = now.Add(time.Minute)
+	if err := r.Validate(now); !errors.Is(err, ErrClockSkew) {
+		t.Fatalf("skewed removal: %v", err)
 	}
 }

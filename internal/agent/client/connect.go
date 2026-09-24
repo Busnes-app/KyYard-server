@@ -261,7 +261,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	}
 	capabilities := []string{}
 	if opts.Inspect != nil {
-		capabilities = append(capabilities, "container.inspect")
+		capabilities = append(capabilities, protocol.CapabilityContainerInspect)
 	}
 	if opts.Exec != nil {
 		capabilities = append(capabilities, "container.exec")

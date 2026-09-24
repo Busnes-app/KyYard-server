@@ -171,7 +171,7 @@ func (f *fakeDeployEngine) steps() []string {
 	return out
 }
 func request(services ...protocol.DeploymentService) protocol.DeploymentRequest {
-	return protocol.DeploymentRequest{Deployment: deploymentID, Endpoint: "ep_1", Project: "shop", Revision: 2, Deadline: time.Now().Add(5 * time.Minute), Services: services}
+	return protocol.DeploymentRequest{Deployment: deploymentID, Endpoint: "ep_1", Project: "shop", Revision: 2, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: services}
 }
 func webService() protocol.DeploymentService {
 	return protocol.DeploymentService{Name: "web", ContainerName: "shop-web-1", ImageID: newImage, Replaces: protocol.InspectionTarget{ContainerID: oldID, ImageID: oldImage, CreatedUnix: 1700000000}, Restart: "on-failure", Ports: []protocol.Port{{Container: 80, Host: 8080, Protocol: "tcp", HostIP: "127.0.0.1"}}, Env: map[string]string{"TOKEN": "a=b\ncanary-secret", "A": "1"}}
@@ -613,5 +613,19 @@ func TestDeployTwoServicesSecondRefusedTouchesNothing(t *testing.T) {
 	}
 	if infos != 1 || f.steps()[0] != "GET /info" {
 		t.Fatalf("the default runtime is read once per run, first: %v", f.steps())
+	}
+}
+
+// A frame whose issue time is far from the host clock is failed with the skew detail and no call.
+func TestDeployReportsClockSkewWithoutCalling(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	req := request(webService())
+	req.IssuedAt = time.Now().Add(-protocol.MaxClockSkew - time.Minute)
+	res := f.client().Deploy(context.Background(), req)
+	if res.Outcome != protocol.OutcomeFailed || res.Detail != "clock skew exceeds 5 minutes" || len(res.Steps) != 0 || len(f.calls) != 0 {
+		t.Fatalf("skewed frame: %+v calls=%v", res, f.steps())
+	}
+	if err := res.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

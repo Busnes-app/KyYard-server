@@ -96,7 +96,7 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 			return err
 		}
 		now := time.Now().UTC()
-		req = &protocol.DeploymentRequest{Deployment: d.ID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}, Volumes: d.Plan.Volumes}
+		req = &protocol.DeploymentRequest{Deployment: d.ID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}, Volumes: d.Plan.Volumes}
 		hosts := map[string]bool{}
 		for i, ps := range d.Plan.Services {
 			name, ok := names[ps.ContainerID]
@@ -576,7 +576,7 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		}
 		now := time.Now().UTC()
 		plan := DeploymentPlan{Project: project, Services: []PlannedService{}, Containers: []RemovalPlanTarget{}}
-		req = &protocol.RemovalRequest{Deployment: id, Endpoint: endpoint, Project: project, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
+		req = &protocol.RemovalRequest{Deployment: id, Endpoint: endpoint, Project: project, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
 		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name,image_id,created_at,service_name FROM application_resources WHERE instance_id=? AND endpoint_id=? ORDER BY container_id`), instanceID.String(), endpoint)
 		if err != nil {
 			return err

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -166,8 +167,12 @@ func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, endp
 	if live {
 		return
 	}
-	if validate(time.Now()) != nil {
-		go send(sessionCtx, out, resultFrame(denied(id, "invalid deployment request")))
+	if err := validate(time.Now()); err != nil {
+		res := denied(id, "invalid deployment request")
+		if errors.Is(err, protocol.ErrClockSkew) {
+			res.Outcome, res.Detail = protocol.OutcomeFailed, err.Error()
+		}
+		go send(sessionCtx, out, resultFrame(res))
 		return
 	}
 	if endpoint != endpointID {

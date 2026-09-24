@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,6 +18,9 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest) pro
 	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
 		res.Outcome, res.Detail = protocol.OutcomeDenied, "the removal request is invalid"
+		if errors.Is(err, protocol.ErrClockSkew) {
+			res.Outcome, res.Detail = protocol.OutcomeFailed, protocol.ErrClockSkew.Error()
+		}
 		return res
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)

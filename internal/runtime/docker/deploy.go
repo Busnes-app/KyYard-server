@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,6 +42,9 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) 
 	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
 		res.Outcome, res.Detail = protocol.OutcomeDenied, "the deployment request is invalid"
+		if errors.Is(err, protocol.ErrClockSkew) {
+			res.Outcome, res.Detail = protocol.OutcomeFailed, protocol.ErrClockSkew.Error()
+		}
 		return res
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)

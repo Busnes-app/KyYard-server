@@ -120,7 +120,7 @@ func (s *Server) handleContainerInspection(w http.ResponseWriter, r *http.Reques
 		s.tenantError(w, err)
 		return
 	}
-	if !slices.Contains(ep.Capabilities, "container.inspect") {
+	if !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspect) {
 		s.writeError(w, 501, "Upgrade the agent to enable container inspection")
 		return
 	}

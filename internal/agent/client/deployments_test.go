@@ -33,11 +33,11 @@ func decodeResult(f outFrame, res *protocol.DeploymentResult) error {
 }
 
 func testRequest(endpoint string) protocol.DeploymentRequest {
-	return protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: endpoint, Project: "shop", Revision: 1, Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64), Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}, Env: map[string]string{"TOKEN": "agent-secret-canary"}}}}
+	return protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: endpoint, Project: "shop", Revision: 1, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64), Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}, Env: map[string]string{"TOKEN": "agent-secret-canary"}}}}
 }
 
 func testRemoval(endpoint string) protocol.RemovalRequest {
-	return protocol.RemovalRequest{Deployment: "6c5e4f3a-1b0d-4e9f-8a7b-4f5a6b7c8d9e", Endpoint: endpoint, Project: "shop", Deadline: time.Now().Add(5 * time.Minute), Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}}}}
+	return protocol.RemovalRequest{Deployment: "6c5e4f3a-1b0d-4e9f-8a7b-4f5a6b7c8d9e", Endpoint: endpoint, Project: "shop", IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}}}}
 }
 
 func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
@@ -684,5 +684,30 @@ func TestDeployerNeverKeepsTheRegistryCredential(t *testing.T) {
 	// held is the frame's own map, not a copy: empty proves the runner let go of the credential.
 	if held == nil || len(held) != 0 {
 		t.Fatalf("the runner kept the credential map: %v", held)
+	}
+}
+
+// A skewed frame is answered failed with the fixed detail, runs nothing and is not recorded.
+func TestDeployerReportsClockSkewAsFailed(t *testing.T) {
+	ran := false
+	d := newDeployer(context.Background(), t.TempDir(), &Options{Deploy: func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult {
+		ran = true
+		return protocol.DeploymentResult{}
+	}})
+	out := make(chan outFrame, 1)
+	req := testRequest("ep_1")
+	req.IssuedAt = time.Now().Add(protocol.MaxClockSkew + time.Minute)
+	req.Deadline = req.IssuedAt.Add(time.Minute)
+	raw, _ := json.Marshal(req)
+	d.handleApply(context.Background(), "ep_1", raw, out)
+	var res protocol.DeploymentResult
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeFailed || res.Detail != "clock skew exceeds 5 minutes" || res.Validate() != nil {
+		t.Fatalf("skewed frame: %+v", res)
+	}
+	d.mu.Lock()
+	_, recorded := d.done[req.Deployment]
+	d.mu.Unlock()
+	if ran || recorded {
+		t.Fatalf("ran=%v recorded=%v", ran, recorded)
 	}
 }

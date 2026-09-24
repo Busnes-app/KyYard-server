@@ -113,7 +113,7 @@ func TestDeployRealDocker(t *testing.T) {
 	if err = json.Unmarshal([]byte(raw), &identity); err != nil {
 		t.Fatal(err)
 	}
-	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, Revision: 3, Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
+	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, Revision: 3, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
 		Name: "web", ContainerName: name, ImageID: identity.Image,
 		Replaces: protocol.InspectionTarget{ContainerID: oldID, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()},
 		Restart:  "unless-stopped", Env: map[string]string{"TOKEN": "deploy-secret-canary"},
@@ -288,7 +288,7 @@ func TestRemoveRealDocker(t *testing.T) {
 	if anonymous == "" {
 		t.Fatalf("fixture has no anonymous volume: %s", raw)
 	}
-	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, Deadline: time.Now().Add(5 * time.Minute),
+	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute),
 		Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: id, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}}}}
 	res := New("/var/run/docker.sock").Remove(ctx, req)
 	if serialized, _ := json.Marshal(res); res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {

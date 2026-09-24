@@ -68,7 +68,7 @@ func (f *fakeRemoveEngine) steps() []string {
 	return out
 }
 func removal(ids ...string) protocol.RemovalRequest {
-	req := protocol.RemovalRequest{Deployment: deploymentID, Endpoint: "ep_1", Project: "shop", Deadline: time.Now().Add(5 * time.Minute)}
+	req := protocol.RemovalRequest{Deployment: deploymentID, Endpoint: "ep_1", Project: "shop", IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute)}
 	for i, id := range ids {
 		req.Containers = append(req.Containers, protocol.RemovalTarget{Service: []string{"web", "db"}[i], Target: protocol.InspectionTarget{ContainerID: id, ImageID: oldImage, CreatedUnix: 1700000000}})
 	}
@@ -208,5 +208,16 @@ func TestRemoveTwoTargetsSecondMismatched(t *testing.T) {
 	}
 	if got := f.steps(); len(got) != 4 || got[2] != "DELETE /containers/"+oldID {
 		t.Fatalf("calls: %v", got)
+	}
+}
+
+func TestRemoveReportsClockSkewWithoutCalling(t *testing.T) {
+	f := newFakeRemoveEngine(t)
+	req := removal(oldID)
+	req.IssuedAt = time.Now().Add(protocol.MaxClockSkew + time.Minute)
+	req.Deadline = req.IssuedAt.Add(time.Minute)
+	res := f.client().Remove(context.Background(), req)
+	if res.Outcome != protocol.OutcomeFailed || res.Detail != "clock skew exceeds 5 minutes" || len(f.calls) != 0 {
+		t.Fatalf("skewed removal: %+v", res)
 	}
 }
