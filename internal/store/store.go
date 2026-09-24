@@ -186,6 +186,9 @@ type TenancyStore interface {
 	ListDeployments(ctx context.Context, access TenantAccess, applicationID string) ([]Deployment, error)
 	ReadApplicationMapping(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMapping, error)
 	ReadImageChecks(ctx context.Context, access TenantAccess, applicationID string) (*UpdateCheck, error)
+	// CheckImageUpdates resolves each mapped service's reference through resolver and replaces
+	// the instance's cached checks, audited as application.deploy on <app>/updates.
+	CheckImageUpdates(ctx context.Context, access TenantAccess, applicationID string, resolver DigestResolver, key []byte, privateAllowed bool) (*UpdateCheck, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)
 	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)

@@ -13,13 +13,27 @@ import (
 
 func adoptionFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, string, protocol.Snapshot) {
 	t.Helper()
+	return adoptionFixtureWith(t, []ApplicationService{{Name: "web", Image: "nginx:1"}}, nil)
+}
+
+// adoptionFixtureWith runs one container per service, the i-th on its own image; digests, when
+// set, puts those images in the inventory with their repository digests.
+func adoptionFixtureWith(t *testing.T, services []ApplicationService, digests map[string][]string) (*SQLStore, TenantAccess, *Application, string, protocol.Snapshot) {
+	t.Helper()
 	st, a := tenantAtomicStore(t)
 	ctx := context.Background()
-	app, err := st.Tenancy().CreateApplication(ctx, a, "shop", ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}})
+	app, err := st.Tenancy().CreateApplication(ctx, a, "shop", ApplicationSpec{Kind: "compose.v1", Services: services})
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), CreatedAt: time.Now().UTC().Add(-time.Hour), ComposeProject: "shop"}}}
+	snapshot := protocol.Snapshot{Engine: protocol.Engine{Version: "1"}}
+	for i, s := range services {
+		c := protocol.Container{ID: strings.Repeat("a", 63) + string("a0123456789"[i]), Name: "shop-" + s.Name, ImageID: "sha256:" + strings.Repeat("b", 63) + string("b0123456789"[i]), CreatedAt: time.Now().UTC().Add(-time.Hour), ComposeProject: "shop"}
+		snapshot.Containers = append(snapshot.Containers, c)
+		if digests != nil {
+			snapshot.Images = append(snapshot.Images, protocol.Image{ID: c.ImageID, Digests: digests[s.Name]})
+		}
+	}
 	endpoint := activeEndpointWith(t, st.Tenancy(), a, snapshot.Containers, nil)
 	putAdoptionSnapshot(t, st, endpoint, snapshot)
 	return st, a, app, endpoint, snapshot
