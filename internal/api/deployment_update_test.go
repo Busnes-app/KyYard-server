@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,7 +36,9 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 	must(ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"}))
 	must(ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"}))
 	admin := loginAs(t, s, st, "updater", "user")
+	viewer := loginAs(t, s, st, "viewer", "user")
 	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_updater", Role: store.RoleOrganizationAdmin, Status: "active"}))
+	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_viewer", Role: store.RoleReadOnly, Status: "active"}))
 	httpSrv := httptest.NewServer(s)
 	defer httpSrv.Close()
 	const secret = "plan-update-registry-canary"
@@ -148,19 +151,45 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 	gated := &fakeDigests{digest: remote, gate: make(chan struct{}), entered: make(chan struct{}, 4)}
 	api.SetDigestResolverForTest(s, gated)
 	results := make(chan *httptest.ResponseRecorder, 4)
-	go func() { results <- send("POST", check, "") }()
+	var release sync.Once
+	open := func() { release.Do(func() { close(gated.gate) }) }
+	t.Cleanup(open)
+	// The goroutines only request; every check runs here, where t.Fatal is allowed.
+	go func() { results <- tenantRequest(s, admin, "POST", check, "", true) }()
 	<-gated.entered
 	for range 3 {
-		go func() { results <- send("POST", deployments, string(planBody)) }()
+		go func() { results <- tenantRequest(s, admin, "POST", deployments, string(planBody), true) }()
 		<-gated.entered
 	}
-	code(request("POST", deployments, string(planBody), 429), "too_many_checks")
+	w := send("POST", deployments, string(planBody))
+	if w.Code != 429 || w.Header().Get("Retry-After") != "5" {
+		t.Fatalf("over the cap: %d %v %s", w.Code, w.Header(), w.Body.String())
+	}
+	code(w.Body.String(), "too_many_checks")
+	// Authorization answers before the cap: a member who may not deploy is 403, audited, not 429.
+	w = tenantRequest(s, viewer, "POST", deployments, string(planBody), true)
+	if w.Code != 403 {
+		t.Fatalf("read-only update plan with the cap full: %d %s", w.Code, w.Body.String())
+	}
+	code(w.Body.String(), "tenant_access_denied")
 	request("POST", deployments, string(plainBody), 201)
-	close(gated.gate)
+	open()
 	for range 4 {
-		if w := <-results; w.Code != 200 && w.Code != 201 {
+		w := <-results
+		if (w.Code != 200 && w.Code != 201) || strings.Contains(w.Body.String(), secret) {
 			t.Fatalf("a request under the cap: %d %s", w.Code, w.Body.String())
 		}
+	}
+	records, err := ts.ReadAudit(ctx, store.TenantAccess{ActorID: "usr_updater", OrganizationID: "a"}, 0, 200)
+	must(err)
+	denied := 0
+	for _, rec := range records {
+		if rec.UserID == "usr_viewer" && rec.Action == "application.deploy" && rec.Result == "denied" && rec.Resource == app.ID+"/updates" {
+			denied++
+		}
+	}
+	if denied != 1 {
+		t.Fatalf("read-only denial audit rows: %d", denied)
 	}
 	api.SetDigestResolverForTest(s, fake)
 	plan() // every slot came back

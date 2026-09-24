@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -663,12 +664,24 @@ func TestDeployerNeverKeepsTheRegistryCredential(t *testing.T) {
 	if err != nil || strings.Contains(string(stored), secret) || strings.Contains(string(stored), "registries") {
 		t.Fatalf("ledger: %v %s", err, stored)
 	}
+	// Results only: an entry holding the request would pass the scans above once cleared.
+	var entries map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &entries); err != nil || len(entries) != 1 {
+		t.Fatalf("ledger shape: %v %s", err, stored)
+	}
+	for id, e := range entries {
+		keys := slices.Sorted(maps.Keys(e))
+		if !slices.Equal(keys, []string{"finished", "result"}) {
+			t.Fatalf("ledger entry %s has keys %v", id, keys)
+		}
+	}
 	d.mu.Lock()
 	memory, _ := json.Marshal(d.done)
 	d.mu.Unlock()
 	if strings.Contains(string(memory), secret) || strings.Contains(string(memory), "registries") {
 		t.Fatalf("in-memory ledger: %s", memory)
 	}
+	// held is the frame's own map, not a copy: empty proves the runner let go of the credential.
 	if held == nil || len(held) != 0 {
 		t.Fatalf("the runner kept the credential map: %v", held)
 	}

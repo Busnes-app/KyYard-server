@@ -22,6 +22,7 @@ func (s *Server) acquireRegistrySlot(w http.ResponseWriter) (release func(), ok 
 	case s.registrySlots <- struct{}{}:
 		return func() { <-s.registrySlots }, true
 	default:
+		w.Header().Set("Retry-After", "5")
 		s.tenantError(w, errTooManyChecks)
 		return nil, false
 	}
