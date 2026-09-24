@@ -839,6 +839,7 @@ ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled BOOLEAN NOT NULL DEF
  PRIMARY KEY (instance_id, service_name)
 );
 `},
+	{Version: 28, Name: "organizations_name_unique", SQLite: `CREATE UNIQUE INDEX idx_organizations_name ON organizations(name);`, Postgres: `CREATE UNIQUE INDEX idx_organizations_name ON organizations(name);`},
 }
 
 // Latest returns the highest registered migration version: the schema this binary runs.

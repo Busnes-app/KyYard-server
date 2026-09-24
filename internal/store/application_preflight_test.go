@@ -37,8 +37,8 @@ func TestDeploymentPreflightImages(t *testing.T) {
 				snapshot.Truncated = []string{"images"}
 			}
 			p := buildDeploymentPreflight(m, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: tc.ref}}}, snapshot, true)
-			if p.Executable || !slices.Contains(p.Blockers, "runtime_verification_required") {
-				t.Fatal("diagnostic enabled deployment")
+			if p.Executable != (tc.blocker == "") {
+				t.Fatalf("executable must mean no blocker remains: %+v", p)
 			}
 			row := p.Services[0]
 			if tc.blocker == "" {
@@ -127,7 +127,7 @@ func TestApplicationPreflightScopeAndFreshness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Executable || len(p.Blockers) != 1 || len(p.Services[0].Blockers) != 0 || p.Services[0].ImageID != snapshot.Images[0].ID {
+	if !p.Executable || len(p.Blockers) != 0 || len(p.Services[0].Blockers) != 0 || p.Services[0].ImageID != snapshot.Images[0].ID {
 		t.Fatalf("preflight: %+v", p)
 	}
 	container := snapshot.Containers[0]
@@ -144,7 +144,7 @@ func TestApplicationPreflightScopeAndFreshness(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, err = ts.PreflightApplication(ctx, a, app.ID)
-	if err != nil || !slices.Contains(p.Blockers, "mapping_requires_review") {
+	if err != nil || p.Executable || !slices.Contains(p.Blockers, "mapping_requires_review") {
 		t.Fatalf("stale mapping: %+v %v", p, err)
 	}
 	original := snapshot.Containers[0]

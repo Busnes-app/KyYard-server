@@ -13,6 +13,8 @@
 | Developer | organization | deploy applications and read logs; no host-level or destructive actions, no exec |
 | Read Only | organization | read everything non-secret |
 
+The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing account's password; neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
+
 Per-environment grants (`role_bindings`) are not introduced; the handoff allows them only if fixed organization roles prove insufficient.
 
 ## Matrix
@@ -24,7 +26,8 @@ Columns: OA organization admin, EA environment admin, Op operator, Dev developer
 | Action | Notes | Secret | Audit |
 |---|---|---|---|
 | `platform.admin` | backup, recovery pairing, theme, SCIM/SSO configuration, user administration | backup pairing shows a one-time token | backup actions audited today; a generic `platform.admin` denial row is *planned* |
-| `platform.organization.create` / `rename` (*planned*) | creating and renaming organizations; the creator receives no membership | no | success |
+| `platform.admin` — create an organization (*implemented*, `POST /api/admin/organizations`, Settings → Administration) | name plus a first administrator chosen from active users; the organization and that user's active `organization_admin` membership commit in one transaction, so no organization exists without an administrator. The creator gets a membership only by naming themself. Renaming is *planned* | no | platform scope `organization.create`: success with `admin=<user id>`; a refused create (name taken, user missing or inactive) is `failure` with `refused=<code>` |
+| `platform.admin` — create a local account (*implemented*, `POST /api/admin/users`, Settings → Administration) | platform role `user` or `admin`; the server generates a 24-character temporary password, returns it once in the create response and never again; the account must change it at first sign-in. Organization access comes only from membership, which an organization administrator grants on the Members page | the temporary password, once | platform scope `user.create` with `role=<role>`, never the password; a taken username is `failure` |
 | `platform.tenant.assume` | **proposed:** creates a time-boxed (*proposed* 1 hour) organization-administrator membership with `granted_by=platform` and `expires_at`, visible to that organization's administrators in the members list, audited in both platform and organization scope. The time box is enforced at authorization time: the membership lookup inside `withTenant`/`readTenant` and every other `TenantAccess` resolution treats a row whose `expires_at` has passed as absent, and the members list renders it as expired from the same predicate; the cleanup delete is housekeeping only. Platform-granted rows never count toward the active-administrator quorum (the quorum query filters `granted_by`), so the last lasting administrator cannot be demoted or removed behind a temporary grant, and expiry cleanup re-checks the quorum and warns the platform administrator instead of leaving zero lasting administrators. This is the repair route for an organization with no active administrator. It is never implicit and never silent. | no | `platform.tenant.assumed`, `platform.tenant.released` |
 
 ### Organization and membership (*implemented*)
@@ -117,10 +120,10 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Repair of an organization with no active administrator | `platform.tenant.assume` | proposed, blocker from PR #10 |
 | Successful reads audited | stopped with the inventory API (M4) except `organization.audit.read` and `organization.members.manage`, which keep a success row; denials always audited | implemented |
 | Platform grant expiry | enforced in the membership lookup, not by cleanup; excluded from the administrator quorum | proposed |
-| Organization creation | platform administrators, no membership for the creator | proposed |
+| Organization creation | platform administrators; a first organization administrator is seeded in the same transaction; the creator gets no membership unless named | implemented |
 | Unmanaged containers | lifecycle by permission, configuration edit needs adoption | proposed (plan default) |
 | Developer scope | deploy plus logs, no exec, no destructive | proposed |
-| Exec | organization administrators only in 0.1 | proposed |
+| Exec | organization administrators only in 0.1; the UI offers Terminal only to them | implemented |
 | Per-environment grants | not in 0.1 | proposed |
 
 Application persistence implements `application.read`, `application.import`, `application.edit` and `application.destroy` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. `application.destroy` covers two operations: discarding an undeployed draft (and a removed application's history) at the expected head, which releases quota, and `RemoveApplication`, which stops and removes an adopted application's containers through `deployment.remove` and keeps its data. HTTP import/list/read/discard/removal routes are implemented; explicit adoption/release are implemented. Internal `secret.reveal` permits organization administrators only, commits audit before returning values and has no HTTP endpoint. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.

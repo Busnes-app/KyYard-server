@@ -17,25 +17,18 @@ Copied from the plan, section 7:
 Found while writing this runbook against the current UI. Each one the operator runs into goes
 in the results table.
 
-- No UI or API creates an organization. The preparer creates the second one in the database.
-- No UI creates a local non-administrator account. Accounts come from SSO, or from
-  `init-admin`, which makes a platform administrator.
 - Deployment replaces only containers whose configuration a definition can express (image,
   environment, restart, ports, project network). A container with any mount, anonymous
   volumes from an image's `VOLUME` included, is refused at the precondition step with `the
   container has configuration the definition cannot express: mounts`. The sample application
   is built around this limit (below).
-- Deployment preflight always shows the heading "Deployment is not enabled" and the note
-  "Deployment execution is not available yet…", even though Deployment plan applies.
 - Registry access (needed for update checks) is set on the Members page, not near Updates.
 - Live container configuration is shown only through Deployment preflight's "Inspect live
   container", so only for adopted, mapped containers.
-- Platform audit (sign-in, password change, backup) has no screen; only tenant audit does.
-- Terminal is offered to every member, read-only included, on any running container of an
-  active host. The server refuses a non-administrator, and the UI reports it as a generic
-  connection failure, not a permission message.
-- The audit Actor column shows user IDs (`usr_…`), not names. Keep a list of which ID is which
-  account before step 8.
+- Platform audit (sign-in, password change, backup, `organization.create`, `user.create`) has
+  no screen; only tenant audit does.
+- The audit Actor column shows user IDs (`usr_…`), not names. Keep the list of which ID is
+  which account from the prerequisites for step 8.
 - Container command results (restart, start, stop, remove) are not audited as results; the
   audit row is the request, under its permission.
 
@@ -71,31 +64,24 @@ them you would miss.
   date" or "Unknown on host", the setup did not take; fix it and rerun step 6.
 - Write a marker into the `acc-data` volume (a row, a file) and note it.
 
-**Two organizations.** Startup creates the initial one (`org_initial`). The second has no UI,
-so create the outsider account first (below), then with the server stopped insert the
-organization and its administrator. This SQL path is unproven: confirm afterwards that
-outsider can open `/organizations/org_acceptance_b` and its Environments page loads.
+**Accounts and two organizations**, all through the UI, signed in as the bootstrap `admin`
+(a platform administrator and the administrator of the initial organization, `org_initial`):
 
-```bash
-docker compose stop kyyard
-db="$(docker inspect kyyard --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}')/ky_server.db"
-sudo sqlite3 "$db" "INSERT INTO organizations (id,name,created_at) VALUES ('org_acceptance_b','Acceptance B',datetime('now')); INSERT INTO organization_memberships (organization_id,user_id,role,status) VALUES ('org_acceptance_b','<outsider user id>','organization_admin','active');"
-docker compose start kyyard
-```
+1. Settings, Administration, Users: Create user `reader`, then `outsider`, both with role
+   User. Each shows its temporary password once; copy it before creating the next.
+2. Organizations: Create organization "Acceptance B" with First administrator `outsider`.
+3. Note each account's ID and Acceptance B's ID from the ID columns in Settings →
+   Administration.
+4. In `org_initial`, Environments, Members: Add member by user ID, reader's ID, role "read
+   only", Add.
+5. Sign in as reader and as outsider in turn and replace each temporary password. Outsider
+   lands in Acceptance B, its only organization, and its Environments page loads.
 
-**Accounts.** Three, each with its user ID (Members lists IDs; a new account reads its own at
-`/api/auth/me`):
-
-| Account | Membership | Used in |
-|---|---|---|
-| admin | organization administrator of `org_initial` | every step |
-| reader | read only in `org_initial` (Members, Add member by user ID, role "read only") | step 4 |
-| outsider | organization administrator of `org_acceptance_b` only | step 4 |
-
-Prefer SSO identities for reader and outsider (Settings, Sign-in). Without an identity provider,
-`init-admin -username <name>` creates a platform administrator; demote it with the server
-stopped (`UPDATE users SET role='user' WHERE username='<name>'`, unproven) so its reach is only
-its membership.
+| Account | Platform role | Membership | Used in |
+|---|---|---|---|
+| admin | administrator | organization administrator of `org_initial` | every step |
+| reader | user | read only in `org_initial` | step 4 |
+| outsider | user | organization administrator of Acceptance B only | step 4 |
 
 ## Operator card
 
@@ -151,8 +137,9 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   the operator may find Deployment preflight's Inspect live container after step 5.
 - Actions, Logs: Search log text, Load logs, Follow / Stop following, Download.
 - Actions, Restart: confirm; the row reports `container.restart: succeeded`.
-- Actions, Terminal: Container user, Shell executable, Confirm container name (type it), then
-  "Open terminal as …". Expect "Connected. Terminal contents are not recorded." Type `exit`.
+- Actions, Terminal (offered only to organization administrators, so admin sees it): Container
+  user, Shell executable, Confirm container name (type it), then "Open terminal as …". Expect
+  "Connected. Terminal contents are not recorded." Type `exit`.
 - Pass: logs load, follow and download; the restart succeeds; the terminal opens and closes
   with "Process exited with code 0." Activity tab lists the restart.
 - Record: anything the operator expected and did not find.
@@ -160,10 +147,10 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 ### 4. Read-only and cross-tenant
 
 - As reader: Restart answers "You do not have permission for this action."; Logs answers "You
-  do not have permission to read logs."; Terminal is offered and opens its dialog, but the
-  open fails with "Terminal connection failed. Check permissions and the configured site
-  address." or "Terminal ended or was refused. …" (see Known gaps). Pass for Terminal: no
-  shell appears, and step 8 shows a `container.exec` row with result `denied` for the reader.
+  do not have permission to read logs."; Actions has no Terminal button, because Terminal is
+  offered only to organization administrators. Pass for Terminal: no Terminal button on any
+  container. No exec request is made, so step 8 has no `container.exec` row for reader; that
+  absence is expected, not a gap.
   Applications shows environment variable names only ("Encrypted environment keys");
   Registries shows "credential set", never the value.
 - As outsider: open `/organizations/org_initial/endpoints/<host A id>` and
@@ -227,9 +214,9 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   Time, Actor, Action, Target, Result, Request.
 - Expect rows such as `environment.create`, `endpoint.enroll`, `endpoint.revoke`,
   `container.operate` (restart, start, stop), `container.destroy` (remove), `container.logs`,
-  `container.exec.open`, `application.deploy`, `registry.manage`, and reader's refusals with
-  result `denied`. There is no `container.restart` row: that name appears only in the
-  container row's status. Enrollment, connection, key rotation and deployment results carry
+  `container.exec.open`, `application.deploy`, `registry.manage`, and reader's Restart and
+  Logs refusals with result `denied`. There is no `container.restart` row: that name appears
+  only in the container row's status. Enrollment, connection, key rotation and deployment results carry
   actor `agent:<endpoint id>`; reconciled commands carry `system`. Container command results
   are not audited.
 - Pass: every privileged action from steps 2 to 7 and every refusal from step 4 is there, and

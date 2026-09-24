@@ -62,6 +62,62 @@ func (t *tenancyStore) CreateOrganization(ctx context.Context, o *Organization) 
 	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO organizations (id,name,created_at) VALUES (?,?,?)`), o.ID, o.Name, o.CreatedAt)
 	return err
 }
+
+// CreateOrganizationWithAdmin creates o and its first organization_admin in one transaction,
+// so no organization exists without an administrator.
+func (t *tenancyStore) CreateOrganizationWithAdmin(ctx context.Context, o *Organization, adminUserID string) error {
+	tx, err := t.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var status string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT status FROM users WHERE id=?`), adminUserID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status != "active" {
+		return ErrInvalid
+	}
+	o.CreatedAt = time.Now().UTC()
+	// idx_organizations_name enforces exact-name uniqueness; a conflict inserts nothing.
+	result, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO organizations (id,name,created_at) VALUES (?,?,?) ON CONFLICT (name) DO NOTHING`), o.ID, o.Name, o.CreatedAt)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrAlreadyExists
+	}
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO organization_memberships (organization_id,user_id,role,status) VALUES (?,?,'organization_admin','active')`), o.ID, adminUserID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ListOrganizations returns every organization with its active member count, ordered by name.
+func (t *tenancyStore) ListOrganizations(ctx context.Context) ([]OrganizationSummary, error) {
+	rows, err := t.store.db.QueryContext(ctx, `SELECT o.id,o.name,o.created_at,(SELECT COUNT(*) FROM organization_memberships m WHERE m.organization_id=o.id AND m.status='active') FROM organizations o ORDER BY o.name,o.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []OrganizationSummary{}
+	for rows.Next() {
+		var o OrganizationSummary
+		if err := rows.Scan(&o.ID, &o.Name, &o.CreatedAt, &o.Members); err != nil {
+			return nil, err
+		}
+		result = append(result, o)
+	}
+	return result, rows.Err()
+}
 func (t *tenancyStore) GetOrganization(ctx context.Context, id string) (*Organization, error) {
 	var o Organization
 	err := t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT id,name,created_at FROM organizations WHERE id=?`), id).Scan(&o.ID, &o.Name, &o.CreatedAt)

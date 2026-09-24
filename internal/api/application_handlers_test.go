@@ -106,7 +106,9 @@ func TestApplicationImportRoutes(t *testing.T) {
 	request(admin, "PUT", mapping, string(mappingBody), 409)
 	preflight := base + "/" + app.ID + "/preflight"
 	request(nil, "GET", preflight, "", 401)
-	request(admin, "GET", preflight, "", 200)
+	if got := request(admin, "GET", preflight, "", 200); !strings.Contains(got, `"executable":false`) {
+		t.Fatalf("preflight without the image: %s", got)
+	}
 	request(admin, "GET", "/api/organizations/b/environments/env-b/applications/"+app.ID+"/preflight", "", 403)
 	releaseBody, _ := json.Marshal(map[string]string{"instance_id": instance.ID, "confirm": "shop"})
 	deployments := base + "/" + app.ID + "/deployments"
@@ -123,6 +125,9 @@ func TestApplicationImportRoutes(t *testing.T) {
 	withImage, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:1"}}}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created}}})
 	_, err = ts.AcceptInventory(ctx, ep.ID, uint64(time.Now().Unix())+1, time.Now(), withImage)
 	must(err)
+	if got := request(admin, "GET", preflight, "", 200); !strings.Contains(got, `"executable":true`) || !strings.Contains(got, `"blockers":[]`) {
+		t.Fatalf("ready preflight: %s", got)
+	}
 	var planned store.Deployment
 	must(json.Unmarshal([]byte(request(admin, "POST", deployments, string(planBody), 201)), &planned))
 	request(admin, "GET", deployments, "", 200)

@@ -105,12 +105,12 @@ export const App: React.FC = () => {
   );
 };
 
-const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, settings }) => {
+const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, settings, user }) => {
   switch (route.name) {
     case 'dashboard': return <Dashboard />;
     case 'endpoints': return <Dashboard mode="endpoints" />;
     case 'backup': return <Backup />;
-    case 'settings': return <Settings settings={settings} />;
+    case 'settings': return <Settings settings={settings} role={user?.role} />;
     case 'organization': return <Organization org={route.org} />;
     case 'members': return <Members org={route.org} />;
     case 'environment': return <Environment key={`${route.org}/${route.env}`} org={route.org} env={route.env} />;

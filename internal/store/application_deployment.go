@@ -276,12 +276,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 	if r.InstanceID != m.InstanceID || r.MappingVersion != m.Version || (r.Revision != 0 && r.Revision != p.Revision) || r.Confirm != m.Preview.Project {
 		return nil, nil, nil, ErrAdoptionChanged
 	}
-	blockers := []string{}
-	for _, b := range p.Blockers {
-		if b != "runtime_verification_required" {
-			blockers = append(blockers, b)
-		}
-	}
+	blockers := slices.Clone(p.Blockers)
 	plan := DeploymentPlan{Project: m.Preview.Project, Services: []PlannedService{}}
 	// The preflight resolved each reference to one full image ID, which is the pin. Record
 	// the repository digest beside it only when inventory reported exactly one; it is

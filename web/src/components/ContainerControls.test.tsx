@@ -9,7 +9,7 @@ it('dispatches the observed ID and state with CSRF and never automatically retri
   vi.spyOn(window, 'confirm').mockReturnValue(true);
   const fetcher = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ id: 'cmd', action: 'container.restart', outcome: 'unknown' }), { status: 202 }));
   vi.stubGlobal('fetch', fetcher);
-  render(<ContainerControls base="/api/org/endpoint" container={container} active scope="Team / Production / Host" onRefresh={() => {}} />);
+  render(<ContainerControls base="/api/org/endpoint" container={container} active scope="Team / Production / Host" onRefresh={() => {}} canExec={false} />);
   fireEvent.click(screen.getByText('Actions'));
   fireEvent.click(screen.getByRole('button', { name: 'Restart' }));
   expect(await screen.findByText('container.restart: unknown')).toBeTruthy();
@@ -32,7 +32,7 @@ it('bounds the browser log display and aborts its request on unmount', async () 
 it('opens logs in a modal and closes the reader on Escape', () => {
  const show = vi.fn(function (this: HTMLDialogElement) { this.open = true; });
  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show });
- render(<ContainerControls base="/api/org/endpoint" container={container} active scope="Team / Production / Host" onRefresh={() => {}} />);
+ render(<ContainerControls base="/api/org/endpoint" container={container} active scope="Team / Production / Host" onRefresh={() => {}} canExec={false} />);
  fireEvent.click(screen.getByText('Actions'));
  fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
  const dialog = screen.getByRole('dialog', { name: 'Logs for web' });
@@ -40,4 +40,10 @@ it('opens logs in a modal and closes the reader on Escape', () => {
  fireEvent(dialog, new Event('cancel', { cancelable: true }));
  expect(screen.queryByRole('dialog')).toBeNull();
  Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+});
+it.each([false, true])('offers Terminal only when the role may exec (%s)', (canExec) => {
+  render(<ContainerControls base="/api/org/endpoint" container={container} active scope="Host" onRefresh={() => {}} canExec={canExec} />);
+  fireEvent.click(screen.getByText('Actions'));
+  expect(screen.queryByRole('button', { name: 'Terminal' }) !== null).toBe(canExec);
+  expect(screen.getByRole('button', { name: 'Logs' })).toBeTruthy();
 });

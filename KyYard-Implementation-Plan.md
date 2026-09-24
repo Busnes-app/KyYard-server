@@ -225,7 +225,7 @@ Implemented M6 revision editing: full-definition Compose replacements, revision-
 
 Implemented M6 service mapping: explicit service-to-adopted-ID assignments, version/revision/inventory preconditions, audit and restore coverage. No runtime mutations; labels remain advisory.
 
-Implemented M6 deployment preflight: read-only local image identity resolution and mapping/published-port findings, gated on fresh complete container observations. Always non-executable; no secrets, persisted image pins or runtime commands.
+Implemented M6 deployment preflight: read-only local image identity resolution and mapping/published-port findings, gated on fresh complete container observations. `executable` is true exactly when no blocker remains, which is what a plan requires; no secrets, persisted image pins or runtime commands.
 
 Implemented M6 runtime inspection foundation: bounded redacted Docker container/image reads, immutable identity checks, selected-fact recheck and real Docker secret/tmpfs coverage. The transport below exposes its bounded redacted observation without deployment authority.
 
@@ -251,7 +251,9 @@ M7a's manual update path (section 4 PR 16) is complete: PR A #58, PR B #59, PR C
 
 Implemented PR 17 engineering (`feat/recovery-acceptance`): startup reconciliation settles every in-flight command as `unknown` (`the server restarted before a result arrived`, one `endpoint.commands.reconciled` audit row per endpoint) before anything serves, so a restored command never executes; `applying` deployments stay with the sweep and the agent's re-sent result. Capsules pin `schema_version`, the drill checks it (`Schema Version: data/ky_server.db`) and `restore` prints it; startup refuses a database newer than the binary. `TestRestoreCarriesControlPlaneState` proves registries, applications with revisions and values, instances with resources and mappings, image checks, deployments, endpoints with keys and capabilities, enrollment tokens, commands and revoked identities survive a sealed restore with their secrets usable; events, samples, organization groups and tenancy bootstrap are not asserted. `docs/RESTORE.md` states the capsule is the control plane only and adds the endpoint re-check; `docs/ACCEPTANCE.md` is the section 7 script as a runbook. Spec `docs/superpowers/specs/2026-09-24-recovery-acceptance-design.md`. **The M7a gate waits on the recorded acceptance run** (the run is Yoshi's); its results table decides whether 0.1 is ready for internal use.
 
-Next, M7a PR D (hardening), carried from M6 and PR C review:
+Implemented acceptance readiness (`feat/acceptance-readiness`), so the runbook needs no SQL: platform administrators create organizations (with a first `organization_admin` in the same transaction; migration 28 makes names unique) and local accounts (a 24-character temporary password shown once, `must_change_password`) under `/api/admin/*` and Settings → Administration, audited in platform scope. Preflight no longer carries the always-on `runtime_verification_required` blocker and says "Ready to plan" or "Not ready to plan."; Terminal is offered only to organization administrators. `init-admin` still creates the first administrator; disabling, deleting and admin password resets are out of scope. Spec `docs/superpowers/specs/2026-09-24-acceptance-readiness-design.md`.
+
+Next: volumes in the application definition, so deployment can replace containers with mounts (today it refuses them and the acceptance sample is built around that). Then M7a PR D (hardening), carried from M6 and PR C review:
 - Closed step-detail vocabulary (details are fixed text today, not a closed set).
 - A started-marker in the agent's deployment ledger.
 - Refusing a request whose deadline implies host/server clock skew.
