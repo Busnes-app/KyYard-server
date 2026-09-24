@@ -225,21 +225,21 @@ func TestDeployVolumeOwnership(t *testing.T) {
 // The refusals that protect data the definition cannot express carry fixed details.
 func TestDeployVolumeRefusalDetails(t *testing.T) {
 	for detail, mutate := range map[string]func(*fakeDeployEngine){
-		"anonymous volumes": func(f *fakeDeployEngine) {
+		"anonymous_volume": func(f *fakeDeployEngine) {
 			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume", "Name": strings.Repeat("ab", 32), "Destination": "/data", "RW": true}}
 		},
-		"volumes-from": func(f *fakeDeployEngine) {
+		"volumes_from": func(f *fakeDeployEngine) {
 			f.oldContainer["HostConfig"].(map[string]any)["VolumesFrom"] = []string{"other"}
 		},
-		"volume driver": func(f *fakeDeployEngine) { f.oldContainer["HostConfig"].(map[string]any)["VolumeDriver"] = "nfs" },
-		"mount options": func(f *fakeDeployEngine) {
+		"volume_driver": func(f *fakeDeployEngine) { f.oldContainer["HostConfig"].(map[string]any)["VolumeDriver"] = "nfs" },
+		"mount_options": func(f *fakeDeployEngine) {
 			f.oldContainer["HostConfig"].(map[string]any)["Mounts"] = []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"Subpath": "app"}}}
 		},
 	} {
 		f := newFakeDeployEngine(t)
 		mutate(f)
 		res := f.client().Deploy(context.Background(), request(webService()))
-		if res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "the container has configuration the definition cannot express: "+detail {
+		if res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "unsupported: "+detail {
 			t.Fatalf("%s: %+v", detail, res.Steps[0])
 		}
 	}
@@ -279,7 +279,7 @@ func TestDeployBindPrecondition(t *testing.T) {
 		}, protocol.OutcomeDenied, "bind mount not present on the container"},
 		"tmpfs beside them": {func(f *fakeDeployEngine, _ *protocol.DeploymentService) {
 			f.oldContainer["Mounts"] = append(f.oldContainer["Mounts"].([]any), map[string]any{"Type": "tmpfs", "Destination": "/run", "RW": true})
-		}, protocol.OutcomeDenied, "the container has configuration the definition cannot express: mounts"},
+		}, protocol.OutcomeDenied, "unsupported: mount_type"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)

@@ -345,93 +345,103 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 			f.oldContainer["NetworkSettings"] = map[string]any{"Networks": n}
 		}
 	}
+	const (
+		notTheOne  = "the container is not the one this plan was decided about"
+		unreported = "the runtime did not report the container's full configuration"
+		imageGone  = "the container's image is no longer present"
+	)
 	for name, tc := range map[string]struct {
 		mutate func(*fakeDeployEngine)
 		calls  int // after GET /info: 1 when decided from the container alone, 2 when the old image was read
+		detail string
 	}{
-		"image":                  {func(f *fakeDeployEngine) { f.oldContainer["Image"] = newImage }, 1},
-		"created":                {func(f *fakeDeployEngine) { f.oldContainer["Created"] = "2023-11-14T22:13:21Z" }, 1},
-		"absent HostConfig":      {unset("HostConfig"), 1},
-		"absent Config":          {unset("Config"), 1},
-		"absent NetworkSettings": {unset("NetworkSettings"), 1},
-		"absent Mounts":          {unset("Mounts"), 1},
+		"image":                  {func(f *fakeDeployEngine) { f.oldContainer["Image"] = newImage }, 1, notTheOne},
+		"created":                {func(f *fakeDeployEngine) { f.oldContainer["Created"] = "2023-11-14T22:13:21Z" }, 1, notTheOne},
+		"absent HostConfig":      {unset("HostConfig"), 1, unreported},
+		"absent Config":          {unset("Config"), 1, unreported},
+		"absent NetworkSettings": {unset("NetworkSettings"), 1, unreported},
+		"absent Mounts":          {unset("Mounts"), 1, unreported},
 		"absent Privileged": {func(f *fakeDeployEngine) {
 			delete(f.oldContainer["HostConfig"].(map[string]any), "Privileged")
-		}, 1},
+		}, 1, unreported},
 		"tmpfs mount": {func(f *fakeDeployEngine) {
 			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "tmpfs", "Destination": "/run"}}
-		}, 1},
-		"npipe mount": {func(f *fakeDeployEngine) { f.oldContainer["Mounts"] = []any{map[string]any{"Type": "npipe"}} }, 1},
+		}, 1, "unsupported: mount_type"},
+		"npipe mount": {func(f *fakeDeployEngine) { f.oldContainer["Mounts"] = []any{map[string]any{"Type": "npipe"}} }, 1, "unsupported: mount_type"},
 		"anonymous volume": {func(f *fakeDeployEngine) {
 			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume", "Name": strings.Repeat("9f", 32), "Destination": "/var/lib/postgresql/data", "RW": true}}
-		}, 1},
-		"volumes from":  {host("VolumesFrom", []string{"shop-data-1"}), 1},
-		"volume driver": {host("VolumeDriver", "nfs"), 1},
+		}, 1, "unsupported: anonymous_volume"},
+		"volumes from":  {host("VolumesFrom", []string{"shop-data-1"}), 1, "unsupported: volumes_from"},
+		"volume driver": {host("VolumeDriver", "nfs"), 1, "unsupported: volume_driver"},
 		"bind propagation": {func(f *fakeDeployEngine) {
 			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "bind", "Source": "/srv", "Destination": "/srv", "RW": true, "Propagation": "rshared"}}
-		}, 1},
+		}, 1, "unsupported: mount_options"},
 		"volume nocopy mode": {func(f *fakeDeployEngine) {
 			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume", "Name": "shop_data", "Destination": "/data", "RW": true, "Mode": "nocopy"}}
-		}, 1},
-		"volume subpath":       {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"Subpath": "app"}}}), 1},
-		"volume nocopy":        {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"NoCopy": true}}}), 1},
-		"volume driver config": {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"DriverConfig": map[string]any{"Name": "nfs"}}}}), 1},
-		"bind non-recursive":   {host("Mounts", []any{map[string]any{"Type": "bind", "Source": "/srv", "Target": "/srv", "BindOptions": map[string]any{"NonRecursive": true}}}), 1},
-		"bind api propagation": {host("Mounts", []any{map[string]any{"Type": "bind", "Source": "/srv", "Target": "/srv", "BindOptions": map[string]any{"Propagation": "rslave"}}}), 1},
-		"tmpfs":                {host("Tmpfs", map[string]string{"/run": "rw"}), 1},
-		"auto-remove":          {host("AutoRemove", true), 1},
-		"read-only root":       {host("ReadonlyRootfs", true), 1},
-		"privileged":           {host("Privileged", true), 1},
-		"cap add":              {host("CapAdd", []string{"NET_ADMIN"}), 1},
-		"cap drop":             {host("CapDrop", []string{"ALL"}), 1},
-		"security opt":         {host("SecurityOpt", []string{"no-new-privileges"}), 1},
-		"devices":              {host("Devices", []any{map[string]any{"PathOnHost": "/dev/fuse"}}), 1},
-		"pid mode":             {host("PidMode", "host"), 1},
-		"ipc mode host":        {host("IpcMode", "host"), 1},
-		"ipc container":        {host("IpcMode", "container:"+oldID), 1},
-		"user":                 {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["User"] = "1000" }, 1},
-		"network mode":         {host("NetworkMode", "host"), 1},
-		"two networks":         {networks("bridge", "shop_default"), 1},
-		"other network":        {networks("shop_default"), 1},
-		"cmd":                  {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["Cmd"] = []string{"sleep", "300"} }, 2},
+		}, 1, "unsupported: mount_options"},
+		"volume subpath":       {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"Subpath": "app"}}}), 1, "unsupported: mount_options"},
+		"volume nocopy":        {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"NoCopy": true}}}), 1, "unsupported: mount_options"},
+		"volume driver config": {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"DriverConfig": map[string]any{"Name": "nfs"}}}}), 1, "unsupported: mount_options"},
+		"bind non-recursive":   {host("Mounts", []any{map[string]any{"Type": "bind", "Source": "/srv", "Target": "/srv", "BindOptions": map[string]any{"NonRecursive": true}}}), 1, "unsupported: mount_options"},
+		"bind api propagation": {host("Mounts", []any{map[string]any{"Type": "bind", "Source": "/srv", "Target": "/srv", "BindOptions": map[string]any{"Propagation": "rslave"}}}), 1, "unsupported: mount_options"},
+		"tmpfs":                {host("Tmpfs", map[string]string{"/run": "rw"}), 1, "unsupported: tmpfs"},
+		"auto-remove":          {host("AutoRemove", true), 1, "unsupported: auto_remove"},
+		"read-only root":       {host("ReadonlyRootfs", true), 1, "unsupported: read_only_rootfs"},
+		"privileged":           {host("Privileged", true), 1, "unsupported: privileged"},
+		"cap add":              {host("CapAdd", []string{"NET_ADMIN"}), 1, "unsupported: capabilities"},
+		"cap drop":             {host("CapDrop", []string{"ALL"}), 1, "unsupported: capabilities"},
+		"security opt":         {host("SecurityOpt", []string{"no-new-privileges"}), 1, "unsupported: security_opt"},
+		"devices":              {host("Devices", []any{map[string]any{"PathOnHost": "/dev/fuse"}}), 1, "unsupported: devices"},
+		"pid mode":             {host("PidMode", "host"), 1, "unsupported: pid_mode"},
+		"ipc mode host":        {host("IpcMode", "host"), 1, "unsupported: ipc_mode"},
+		"ipc container":        {host("IpcMode", "container:"+oldID), 1, "unsupported: ipc_mode"},
+		"user":                 {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["User"] = "1000" }, 1, "unsupported: user"},
+		"network mode":         {host("NetworkMode", "host"), 1, "unsupported: network"},
+		"two networks":         {networks("bridge", "shop_default"), 1, "unsupported: network"},
+		"other network":        {networks("shop_default"), 1, "unsupported: network"},
+		"cmd":                  {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["Cmd"] = []string{"sleep", "300"} }, 2, "unsupported: image_config"},
 		"entrypoint": {func(f *fakeDeployEngine) {
 			f.oldContainer["Config"].(map[string]any)["Entrypoint"] = []string{"/bin/sh", "-c"}
-		}, 2},
-		"old image gone":     {func(f *fakeDeployEngine) { f.oldImageStatus = 404 }, 2},
-		"runtime":            {host("Runtime", "runsc"), 1},
-		"memory":             {host("Memory", 1<<30), 1},
-		"memory swap":        {host("MemorySwap", 1<<30), 1},
-		"memory reservation": {host("MemoryReservation", 1<<30), 1},
-		"nano cpus":          {host("NanoCpus", 500000000), 1},
-		"cpu shares":         {host("CpuShares", 512), 1},
-		"cpu quota":          {host("CpuQuota", 50000), 1},
-		"cpuset":             {host("CpusetCpus", "0"), 1},
-		"pids":               {host("PidsLimit", 100), 1},
-		"ulimits":            {host("Ulimits", []any{map[string]any{"Name": "nofile", "Soft": 1024, "Hard": 1024}}), 1},
-		"sysctls":            {host("Sysctls", map[string]string{"net.ipv4.ip_forward": "1"}), 1},
-		"device requests":    {host("DeviceRequests", []any{map[string]any{"Driver": "nvidia", "Count": -1}}), 1},
-		"init":               {host("Init", true), 1},
-		"userns":             {host("UsernsMode", "host"), 1},
-		"cgroup parent":      {host("CgroupParent", "/custom"), 1},
-		"group add":          {host("GroupAdd", []string{"audio"}), 1},
-		"extra hosts":        {host("ExtraHosts", []string{"db:10.0.0.2"}), 1},
-		"dns":                {host("Dns", []string{"1.1.1.1"}), 1},
-		"dns options":        {host("DnsOptions", []string{"ndots:1"}), 1},
-		"dns search":         {host("DnsSearch", []string{"lan"}), 1},
-		"links":              {host("Links", []string{"/shop-db-1:/shop-web-1/db"}), 1},
+		}, 2, "unsupported: image_config"},
+		"old image gone":     {func(f *fakeDeployEngine) { f.oldImageStatus = 404 }, 2, imageGone},
+		"runtime":            {host("Runtime", "runsc"), 1, "unsupported: runtime"},
+		"memory":             {host("Memory", 1<<30), 1, "unsupported: resource_limits"},
+		"memory swap":        {host("MemorySwap", 1<<30), 1, "unsupported: resource_limits"},
+		"memory reservation": {host("MemoryReservation", 1<<30), 1, "unsupported: resource_limits"},
+		"nano cpus":          {host("NanoCpus", 500000000), 1, "unsupported: resource_limits"},
+		"cpu shares":         {host("CpuShares", 512), 1, "unsupported: resource_limits"},
+		"cpu quota":          {host("CpuQuota", 50000), 1, "unsupported: resource_limits"},
+		"cpuset":             {host("CpusetCpus", "0"), 1, "unsupported: resource_limits"},
+		"pids":               {host("PidsLimit", 100), 1, "unsupported: resource_limits"},
+		"ulimits":            {host("Ulimits", []any{map[string]any{"Name": "nofile", "Soft": 1024, "Hard": 1024}}), 1, "unsupported: ulimits"},
+		"sysctls":            {host("Sysctls", map[string]string{"net.ipv4.ip_forward": "1"}), 1, "unsupported: sysctls"},
+		"device requests":    {host("DeviceRequests", []any{map[string]any{"Driver": "nvidia", "Count": -1}}), 1, "unsupported: device_requests"},
+		"init":               {host("Init", true), 1, "unsupported: init"},
+		"userns":             {host("UsernsMode", "host"), 1, "unsupported: userns_mode"},
+		"cgroup parent":      {host("CgroupParent", "/custom"), 1, "unsupported: cgroup_parent"},
+		"group add":          {host("GroupAdd", []string{"audio"}), 1, "unsupported: group_add"},
+		"extra hosts":        {host("ExtraHosts", []string{"db:10.0.0.2"}), 1, "unsupported: extra_hosts"},
+		"dns":                {host("Dns", []string{"1.1.1.1"}), 1, "unsupported: dns"},
+		"dns options":        {host("DnsOptions", []string{"ndots:1"}), 1, "unsupported: dns"},
+		"dns search":         {host("DnsSearch", []string{"lan"}), 1, "unsupported: dns"},
+		"links":              {host("Links", []string{"/shop-db-1:/shop-web-1/db"}), 1, "unsupported: links"},
 		"healthcheck differs": {func(f *fakeDeployEngine) {
 			f.oldContainer["Config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}}
-		}, 2},
-		"working dir differs": {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["WorkingDir"] = "/srv" }, 2},
+		}, 2, "unsupported: image_config"},
+		"working dir differs": {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["WorkingDir"] = "/srv" }, 2, "unsupported: image_config"},
 		"healthcheck interval differs": {func(f *fakeDeployEngine) {
 			f.oldImageConfig["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}, "Interval": 30000000000}
 			f.oldContainer["Config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"CMD", "true"}, "Interval": 5000000000}
-		}, 2},
+		}, 2, "unsupported: image_config"},
 		"runtime not the daemon default": {func(f *fakeDeployEngine) {
 			f.defaultRuntime = "nvidia"
 			f.oldContainer["HostConfig"].(map[string]any)["Runtime"] = "runsc"
-		}, 1},
-		"stop signal differs": {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["StopSignal"] = "SIGINT" }, 2},
+		}, 1, "unsupported: runtime"},
+		"stop signal differs": {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["StopSignal"] = "SIGINT" }, 2, "unsupported: image_config"},
+		"privileged with devices": {func(f *fakeDeployEngine) {
+			host("Privileged", true)(f)
+			host("Devices", []any{map[string]any{"PathOnHost": "/dev/fuse"}})(f)
+		}, 1, "unsupported: privileged, devices"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -439,7 +449,7 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 			db := webService()
 			db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", strings.Repeat("f", 64), nil
 			res := f.client().Deploy(context.Background(), request(webService(), db))
-			if res.Outcome != protocol.OutcomeDenied || len(f.calls) != 1+tc.calls {
+			if res.Outcome != protocol.OutcomeDenied || len(f.calls) != 1+tc.calls || res.Steps[0].Detail != tc.detail {
 				t.Fatalf("%s: %+v calls=%v", name, res, f.steps())
 			}
 			for _, c := range f.calls {
@@ -464,6 +474,25 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 	delete(f.oldContainer, "HostConfig")
 	if res := f.client().Deploy(context.Background(), request(webService())); res.Steps[0].Detail != "the runtime did not report the container's full configuration" {
 		t.Fatalf("absent HostConfig detail: %+v", res.Steps[0])
+	}
+}
+
+// Every setting at once still yields a step detail within the wire bound and a valid result:
+// an oversized detail would make the agent replace the result with "unreadable".
+func TestDeployUnsupportedDetailStaysWithinTheStepBound(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	h := f.oldContainer["HostConfig"].(map[string]any)
+	for k, v := range map[string]any{"Privileged": true, "AutoRemove": true, "ReadonlyRootfs": true, "Tmpfs": map[string]string{"/run": "rw"}, "CapAdd": []string{"ALL"}, "SecurityOpt": []string{"x"}, "Devices": []any{map[string]any{}}, "PidMode": "host", "IpcMode": "host", "Runtime": "runsc", "Memory": 1, "Ulimits": []any{map[string]any{}}, "Sysctls": map[string]string{"a": "b"}, "DeviceRequests": []any{map[string]any{}}, "Init": true, "UsernsMode": "host", "CgroupParent": "/x", "GroupAdd": []string{"a"}, "ExtraHosts": []string{"a:1.1.1.1"}, "Dns": []string{"1.1.1.1"}, "Links": []string{"a:b"}, "NetworkMode": "host", "VolumesFrom": []string{"x"}, "VolumeDriver": "nfs"} {
+		h[k] = v
+	}
+	f.oldContainer["Config"].(map[string]any)["User"] = "1000"
+	f.oldContainer["Mounts"] = []any{map[string]any{"Type": "tmpfs", "Destination": "/run"}, map[string]any{"Type": "volume", "Name": strings.Repeat("ab", 32), "Destination": "/d", "Mode": "nocopy"}}
+	res := f.client().Deploy(context.Background(), request(webService()))
+	if res.Outcome != protocol.OutcomeDenied || !strings.HasPrefix(res.Steps[0].Detail, "unsupported: mount_type, anonymous_volume") || len(res.Steps[0].Detail) > protocol.MaxDeploymentStepDetailBytes {
+		t.Fatalf("detail %d bytes: %q", len(res.Steps[0].Detail), res.Steps[0].Detail)
+	}
+	if err := res.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 
