@@ -3,6 +3,7 @@ package docker
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -135,7 +136,7 @@ type inspectedForDeploy struct {
 	Image   string
 	Name    string
 	Created time.Time
-	Mounts  *[]inspectedMount
+	Mounts  *mountList
 	Config  *struct {
 		imageDefaults
 		User string
@@ -174,6 +175,22 @@ type inspectedForDeploy struct {
 type inspectedMount struct {
 	Type, Name, Source, Destination, Mode, Propagation string
 	RW                                                 bool
+}
+
+// mountList decodes sorted: the Engine builds Mounts from a map, so two reads of one
+// container may list them in different orders.
+type mountList []inspectedMount
+
+func (l *mountList) UnmarshalJSON(b []byte) error {
+	var m []inspectedMount
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	slices.SortFunc(m, func(a, b inspectedMount) int {
+		return cmp.Or(strings.Compare(a.Destination, b.Destination), strings.Compare(a.Source, b.Source))
+	})
+	*l = m
+	return nil
 }
 
 // anonymousVolume is the name Docker generates for a volume nobody named.

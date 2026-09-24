@@ -429,3 +429,21 @@ func TestDeployFrameWithoutMountsKey(t *testing.T) {
 		})
 	}
 }
+
+// The Engine lists Mounts from a map, unsorted: the same mounts in another order at the
+// recheck are not drift.
+func TestRecheckIgnoresMountOrder(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	withBind(f)
+	f.drift = func(_ string, read int, body map[string]any) {
+		if read > 1 {
+			m := body["Mounts"].([]any)
+			body["Mounts"] = []any{m[1], m[0]}
+		}
+	}
+	req := request(mountedWeb())
+	req.Volumes = []string{"shop_data", "shop_ext"}
+	if res := f.client().Deploy(context.Background(), req, func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("reordered mounts denied the replacement: %+v", res)
+	}
+}

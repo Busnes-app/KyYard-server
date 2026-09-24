@@ -331,3 +331,29 @@ func TestInspectionRefusesAnUnreadableRuntime(t *testing.T) {
 		t.Fatalf("got %v %v", out, err)
 	}
 }
+
+// The Engine lists Mounts from a map, unsorted: the same mounts in another order on the second
+// read are not a change.
+func TestInspectionIgnoresMountOrder(t *testing.T) {
+	target, container, image := expressibleFixture()
+	container["Mounts"] = []any{
+		map[string]any{"Type": "volume", "RW": true, "Name": "shop_data", "Source": "/var/lib/docker/volumes/shop_data/_data", "Destination": "/data"},
+		map[string]any{"Type": "bind", "RW": false, "Source": "/srv/cfg", "Destination": "/cfg"},
+	}
+	reads := 0
+	c := fakeInspection(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/images/") {
+			json.NewEncoder(w).Encode(image)
+			return
+		}
+		if reads++; reads > 1 {
+			m := container["Mounts"].([]any)
+			container["Mounts"] = []any{m[1], m[0]}
+		}
+		json.NewEncoder(w).Encode(container)
+	})
+	out, err := c.InspectContainer(context.Background(), target)
+	if err != nil || out.Mounts.Bind != 1 || out.Mounts.Volume != 1 {
+		t.Fatalf("reordered mounts: %+v %v", out, err)
+	}
+}

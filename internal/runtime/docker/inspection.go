@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,15 +43,32 @@ type inspectedContainer struct {
 		}
 		Privileged, ReadonlyRootfs, AutoRemove *bool
 	}
-	Mounts []struct {
-		Type        string
-		Destination string
-		RW          *bool
-	}
+	Mounts          mountFacts
 	NetworkSettings *struct {
 		Networks map[string]struct{}
 		Ports    map[string][]struct{ HostIP, HostPort string }
 	}
+}
+
+type mountFact struct {
+	Type        string
+	Destination string
+	RW          *bool
+}
+
+// mountFacts decodes sorted, as mountList does, so the before/after compare ignores order.
+type mountFacts []mountFact
+
+func (l *mountFacts) UnmarshalJSON(b []byte) error {
+	var m []mountFact
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	slices.SortFunc(m, func(a, b mountFact) int {
+		return cmp.Or(strings.Compare(a.Destination, b.Destination), strings.Compare(a.Type, b.Type))
+	})
+	*l = m
+	return nil
 }
 
 // InspectContainer reads a bounded, redacted observation through Engine v1.41.
