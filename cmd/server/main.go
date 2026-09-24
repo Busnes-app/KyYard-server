@@ -173,10 +173,8 @@ func runServer() {
 	log.Println("[KYYARD] Server stopped")
 }
 
-// localDockerLoop retries startup and connection failures, rechecking the persisted
-// authority on every attempt. A revoked/deleted endpoint is never recreated.
-// startStore runs before anything serves or schedules: a restarted (or restored) server must
-// not show commands in flight that no live process dispatched.
+// startStore initialises tenancy and settles every command left in flight by the previous
+// process. runServer calls it before anything serves.
 func startStore(ctx context.Context, st store.Store) error {
 	if err := st.Tenancy().Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize tenancy: %w", err)
@@ -191,6 +189,8 @@ func startStore(ctx context.Context, st store.Store) error {
 	return nil
 }
 
+// localDockerLoop retries startup and connection failures, rechecking the persisted
+// authority on every attempt. A revoked/deleted endpoint is never recreated.
 func localDockerLoop(ctx context.Context, run func(context.Context) error, done chan<- struct{}) {
 	defer close(done)
 	delay := time.Second
@@ -483,7 +483,8 @@ func restore(capsulePath, targetDir, expectService string, shares []string, stdo
 	}
 	m, err := capsule.ReadUnverifiedManifest(raw)
 	if err != nil {
-		return err
+		fmt.Fprintf(stdout, "  capsule schema version unknown: %v\n", err)
+		return nil
 	}
 	if recipe, ok := m.VerificationRecipe.(map[string]any); ok {
 		if v, ok := recipe["schema_version"].(float64); ok {
