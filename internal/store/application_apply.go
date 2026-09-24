@@ -336,6 +336,10 @@ func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, 
 			return err
 		}
 	}
+	// The check described the images this apply replaced.
+	if res.Outcome == protocol.OutcomeSucceeded {
+		return t.clearImageChecks(ctx, tx, instance)
+	}
 	return nil
 }
 

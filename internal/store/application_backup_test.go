@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -67,6 +68,12 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, ts.SetApplicationMapping(ctx, a, app.ID, store.MappingRequest{InstanceID: instance.ID, Version: mapping.Version, Digest: mapping.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": strings.Repeat("a", 64)}}))
 	planned, err := ts.PlanDeployment(ctx, a, app.ID, store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: 2, Confirm: "shop"})
 	mustTenant(t, err)
+	checkedAt := time.Now().UTC().Truncate(time.Second)
+	rawDB, err := sql.Open("sqlite", db.DSN)
+	mustTenant(t, err)
+	_, err = rawDB.ExecContext(ctx, `INSERT INTO image_checks(instance_id,service_name,reference,verdict,checked_at) VALUES(?,?,?,?,?)`, instance.ID, "web", "nginx:2", "update_available", checkedAt)
+	mustTenant(t, err)
+	mustTenant(t, rawDB.Close())
 	registryCredential := "registry-backup-canary"
 	orgAccess := store.TenantAccess{ActorID: "actor", OrganizationID: "a"}
 	_, err = ts.PutRegistry(ctx, orgAccess, store.RegistryInput{Host: "ghcr.io", Name: "GitHub", Username: "bot", Credential: &registryCredential}, cfg.Security.EncryptionKey, false)
@@ -120,6 +127,11 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, err)
 	if restoredPlan.Plan.Services[0].ImageID != "sha256:"+strings.Repeat("c", 64) || restoredPlan.MappingVersion != 1 {
 		t.Fatalf("plan did not survive restore: %+v", restoredPlan)
+	}
+	checks, err := restored.Tenancy().ReadImageChecks(ctx, a, app.ID)
+	mustTenant(t, err)
+	if checks.InstanceID != instance.ID || len(checks.Services) != 1 || checks.Services[0].Verdict != "update_available" || !checks.Services[0].CheckedAt.Equal(checkedAt) {
+		t.Fatalf("backup lost the image check: %+v", checks)
 	}
 	for number, want := range map[int]string{1: "backup-secret-canary", 2: "second-backup-canary"} {
 		values, err := restored.Tenancy().ResolveApplicationSecrets(ctx, a, secretApp.ID, number, restoredKey)
