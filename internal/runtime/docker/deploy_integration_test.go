@@ -18,11 +18,16 @@ import (
 // or name and is removed by label/name/tag in cleanup; no other container, network or image is
 // touched. The fixture image is the given image committed with a long-lived default command, so
 // the old container runs without a command override and passes the command precondition.
+// With KY_TEST_DOCKER_PULL_DIGEST (alpine's repository digest) a second service is replaced
+// from docker.io/library/alpine pulled anonymously by that digest. The local image is not
+// removed first: on the containerd image store removing the digest reference also drops every
+// tag on it (alpine:3.24, which the other regressions run with --pull never).
 func TestDeployRealDocker(t *testing.T) {
 	image := os.Getenv("KY_TEST_DOCKER_DEPLOY_IMAGE")
 	if image == "" {
 		t.Skip("set KY_TEST_DOCKER_DEPLOY_IMAGE to an existing shell image")
 	}
+	pullDigest := os.Getenv("KY_TEST_DOCKER_PULL_DIGEST")
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	project := "kyyarddeployfixture"
@@ -95,13 +100,44 @@ func TestDeployRealDocker(t *testing.T) {
 		Replaces: protocol.InspectionTarget{ContainerID: oldID, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()},
 		Restart:  "unless-stopped", Env: map[string]string{"TOKEN": "deploy-secret-canary"},
 	}}}
+	pulledRef := "docker.io/library/alpine@" + pullDigest
+	if pullDigest != "" {
+		workerName := project + "-worker-1"
+		workerID, err := docker("run", "-d", "--pull", "never", "--name", workerName, "--network", network,
+			"--label", "com.docker.compose.project="+project, "--label", "com.docker.compose.service=worker", fixtureImage)
+		if err != nil {
+			t.Fatalf("worker fixture: %v: %s", err, workerID)
+		}
+		var worker struct{ Created time.Time }
+		if raw, err = docker("inspect", "--format", "{{json .}}", workerID); err != nil || json.Unmarshal([]byte(raw), &worker) != nil {
+			t.Fatalf("worker identity: %v: %s", err, raw)
+		}
+		req.Services = append(req.Services, protocol.DeploymentService{
+			Name: "worker", ContainerName: workerName, Pull: &protocol.ImagePull{Reference: pulledRef, Digest: pullDigest},
+			Replaces: protocol.InspectionTarget{ContainerID: workerID, ImageID: identity.Image, CreatedUnix: worker.Created.Unix()},
+		})
+	}
 	res := New("/var/run/docker.sock").Deploy(ctx, req)
 	serialized, _ := json.Marshal(res)
 	if strings.Contains(string(serialized), "deploy-secret-canary") {
 		t.Fatal("environment value reached the result")
 	}
-	if res.Outcome != protocol.OutcomeSucceeded || len(res.Services) != 1 {
+	if res.Outcome != protocol.OutcomeSucceeded || len(res.Services) != len(req.Services) {
 		t.Fatalf("deploy: %s", serialized)
+	}
+	if pullDigest != "" {
+		pulled := res.Services[1]
+		if pulled.ImageDigest != pullDigest {
+			t.Fatalf("pulled identity: %+v", pulled)
+		}
+		out, err := docker("image", "inspect", "--format", "{{json .RepoDigests}}", pulled.ImageID)
+		var digests []string
+		if err != nil || json.Unmarshal([]byte(out), &digests) != nil || !slices.ContainsFunc(digests, func(d string) bool { return strings.HasSuffix(d, "@"+pullDigest) }) {
+			t.Fatalf("pulled image %s repo digests: %v %s", pulled.ImageID, err, out)
+		}
+		if out, err = docker("inspect", "--format", "{{.Image}}", pulled.ContainerID); err != nil || out != pulled.ImageID {
+			t.Fatalf("worker container image: %v %s", err, out)
+		}
 	}
 	raw, err = docker("inspect", "--format", "{{json .}}", res.Services[0].ContainerID)
 	if err != nil {

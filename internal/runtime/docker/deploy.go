@@ -28,11 +28,12 @@ const stopGrace = 10
 const replaceBudget = 2*operationBudget + 3*callBudget
 
 // Deploy replaces each service's mapped container with one created from the pinned image ID,
-// in plan order: precondition, image, rename, create, stop, start, remove. Renaming and creating
-// while the old container still runs means a name conflict or a refused create costs no
-// downtime. The first step that is not a success ends the run and every later step is recorded
-// as skipped. Nothing is rolled back: the steps say where the old container was left. No image
-// is pulled and no volume is touched. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md.
+// in plan order: precondition, image (pull, for a service naming a digest), rename, create,
+// stop, start, remove. Renaming and creating while the old container still runs means a name
+// conflict or a refused create costs no downtime. The first step that is not a success ends the run and every later step is recorded
+// as skipped. Nothing is rolled back: the steps say where the old container was left. No volume
+// is touched. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md and
+// 2026-09-23-pull-step-design.md.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
@@ -273,23 +274,31 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		networkMode = before.HostConfig.NetworkMode
 		return protocol.OutcomeSucceeded, ""
 	})
-	r.step(s.Name, protocol.StepImage, func() (string, string) {
-		cctx, cancel := context.WithTimeout(ctx, callBudget)
-		defer cancel()
-		var im struct {
-			ID string `json:"Id"`
-		}
-		if err := r.c.get(cctx, "/images/"+url.PathEscape(s.ImageID)+"/json", &im); err != nil {
-			if statusOf(err) == http.StatusNotFound {
-				return protocol.OutcomeFailed, "the pinned image is not present on this host"
+	if s.Pull != nil {
+		r.step(s.Name, protocol.StepPull, func() (string, string) {
+			outcome, detail, id := r.pull(ctx, s)
+			s.ImageID = id // the replacement is created from, and verified against, the pulled ID
+			return outcome, detail
+		})
+	} else {
+		r.step(s.Name, protocol.StepImage, func() (string, string) {
+			cctx, cancel := context.WithTimeout(ctx, callBudget)
+			defer cancel()
+			var im struct {
+				ID string `json:"Id"`
 			}
-			return r.outcomeFor(cctx, err, statusOf(err))
-		}
-		if im.ID != s.ImageID {
-			return protocol.OutcomeFailed, "the host reported a different image identity"
-		}
-		return protocol.OutcomeSucceeded, ""
-	})
+			if err := r.c.get(cctx, "/images/"+url.PathEscape(s.ImageID)+"/json", &im); err != nil {
+				if statusOf(err) == http.StatusNotFound {
+					return protocol.OutcomeFailed, "the pinned image is not present on this host"
+				}
+				return r.outcomeFor(cctx, err, statusOf(err))
+			}
+			if im.ID != s.ImageID {
+				return protocol.OutcomeFailed, "the host reported a different image identity"
+			}
+			return protocol.OutcomeSucceeded, ""
+		})
+	}
 	r.step(s.Name, protocol.StepRename, func() (string, string) {
 		if time.Until(r.req.Deadline) < replaceBudget {
 			return protocol.OutcomeTimedOut, "not enough time left before the deadline to replace this service safely"
@@ -352,6 +361,9 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 			return outcome, fmt.Sprintf("the container started but its identity could not be read: %s (container %s)", detail, created)
 		}
 		id := protocol.DeploymentIdentity{Service: s.Name, ContainerID: after.ID, ImageID: after.Image, CreatedUnix: after.Created.Unix()}
+		if s.Pull != nil {
+			id.ImageDigest = s.Pull.Digest
+		}
 		if after.ID != created || after.Image != s.ImageID || (protocol.InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil {
 			return protocol.OutcomeFailed, fmt.Sprintf("the container started but its identity could not be verified (container %s)", created)
 		}

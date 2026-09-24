@@ -13,7 +13,7 @@ import (
 )
 
 // A pull reports some failures inside a 200, and a registry that wants a credential must say
-// so plainly: registry credentials are not built yet, and an operator should learn that from
+// so plainly: this pull sends none (a deployment does), and an operator should learn that from
 // the outcome rather than guess at a generic failure.
 func TestPullReportsWhatActuallyHappened(t *testing.T) {
 	var status int

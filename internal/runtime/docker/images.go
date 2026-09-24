@@ -21,9 +21,9 @@ const pullBudget = 10 * time.Minute
 // pullImage fetches a reference onto this host. The reference travels as a query parameter, so
 // it is escaped rather than concatenated, exactly as a container identifier is.
 //
-// No credential is sent. Registry credentials are M7a, and until they exist a private registry
-// answers with an authorization failure, which is reported as a refusal naming the reason
-// rather than as a generic failure an operator would have to guess at.
+// No credential is sent: credentials travel only with a deployment, which pulls by digest. A
+// private registry's authorization failure is reported as a refusal naming that route rather
+// than as a generic failure an operator would have to guess at.
 func (c *Client) pullImage(ctx context.Context, reference string) (outcome, detail string) {
 	if !protocol.ValidImageReference(reference) {
 		return protocol.OutcomeDenied, "that is not an image reference"
@@ -59,9 +59,8 @@ func (c *Client) pullImage(ctx context.Context, reference string) (outcome, deta
 }
 
 // credentialsMissing is the same sentence wherever the registry asks for one, because an
-// operator should not have to work out that two different messages mean the same missing
-// feature.
-const credentialsMissing = "this registry needs a credential, and registry credentials are not implemented yet"
+// operator should not have to work out that two different messages mean the same thing.
+const credentialsMissing = "this registry needs a credential; pull it through a deployment, which carries the organization's registry credential"
 
 // readPullStream decides what a pull did from the progress the Engine streams under a 200. It
 // reads to the end rather than buffering a slice of it: a stream cut short at a byte ceiling

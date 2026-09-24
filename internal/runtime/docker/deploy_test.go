@@ -21,6 +21,7 @@ const (
 	oldImage     = "sha256:d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
 	newImage     = "sha256:e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
 	deploymentID = "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b"
+	pullDigest   = "sha256:a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
 )
 
 type engineCall struct{ Method, Path, Query, Body string }
@@ -43,12 +44,19 @@ type fakeDeployEngine struct {
 	createStatus     int // 201 default
 	startStatus      int
 	removeStatus     int
+	pullStatus       int            // POST /images/create; 200 default
+	pullBody         string         // its progress stream
+	pullAuth         []string       // X-Registry-Auth of each pull, "" when absent
+	pulledStatus     int            // GET /images/{host%2Frepo@digest}/json; 200 default
+	pulled           map[string]any // its body
 	srv              *httptest.Server
 }
 
 func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
-	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204}
+	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200,
+		pullBody: `{"status":"Pulling from org/app"}` + "\n" + `{"status":"Digest: ` + pullDigest + `"}` + "\n",
+		pulled:   map[string]any{"Id": newImage, "RepoDigests": []string{"ghcr.io/org/app@" + pullDigest}}}
 	f.oldContainer = map[string]any{"Id": oldID, "Image": oldImage, "Name": "/shop-web-1", "Created": "2023-11-14T22:13:20Z", "Mounts": []any{},
 		"Config": map[string]any{"Cmd": []string{"nginx", "-g", "daemon off;"}, "Entrypoint": nil, "User": "", "Healthcheck": nil, "WorkingDir": "", "StopSignal": ""},
 		"HostConfig": map[string]any{"NetworkMode": "default", "Privileged": false, "AutoRemove": false, "ReadonlyRootfs": false, "Tmpfs": nil, "CapAdd": nil, "CapDrop": nil, "SecurityOpt": nil, "Devices": []any{}, "PidMode": "", "IpcMode": "private",
@@ -75,6 +83,15 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "GET" && strings.HasSuffix(p, "/images/"+newImage+"/json"):
 			w.WriteHeader(f.imageStatus)
 			_, _ = w.Write([]byte(`{"Id":"` + newImage + `"}`))
+		case r.Method == "POST" && strings.HasSuffix(p, "/images/create"):
+			f.mu.Lock()
+			f.pullAuth = append(f.pullAuth, r.Header.Get("X-Registry-Auth"))
+			f.mu.Unlock()
+			w.WriteHeader(f.pullStatus)
+			_, _ = w.Write([]byte(f.pullBody))
+		case r.Method == "GET" && strings.Contains(p, "%2F") && strings.HasSuffix(p, "@"+pullDigest+"/json"):
+			w.WriteHeader(f.pulledStatus)
+			_ = json.NewEncoder(w).Encode(f.pulled)
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/stop"):
 			time.Sleep(f.stopDelay)
 			w.WriteHeader(f.stopStatus)
