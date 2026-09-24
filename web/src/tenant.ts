@@ -65,24 +65,36 @@ export function useTenantResource<T>(url: string, refreshKey = ''): { state: Loa
   return { state, data, reload: useCallback(() => setTick((n) => n + 1), []) };
 }
 
-// Writes return a message for the form instead of throwing; 409 codes are user-facing.
-// `texts` lets a screen name its own 403 and 400 refusals and its own 409 codes.
-export async function tenantWrite(url: string, method: string, body?: unknown, texts: { forbidden?: string; invalid?: string; conflict?: Record<string, string> } = {}): Promise<string> {
+// Platform administration (`/api/admin/*`), platform admin role only.
+export interface AdminOrganization { id: string; name: string; created_at: string; members: number }
+export interface AdminUser { id: string; username: string; display_name: string; role: string; status: string; sso_provider: string; created_at: string }
+export interface CreatedUser { id: string; username: string; display_name: string; role: string; temporary_password: string }
+
+// `texts` lets a screen name its own 403, 400 and 404 refusals and its own 409 codes.
+export type WriteTexts = { forbidden?: string; invalid?: string; notFound?: string; conflict?: Record<string, string> };
+
+// Maps a refused response to a fixed message; server text is never shown.
+export async function refusal(resp: Response, texts: WriteTexts = {}): Promise<string> {
+  const payload = await resp.json().catch(() => ({}));
+  if (payload.code === 'last_administrator') return 'At least one active administrator is required.';
+  if (payload.code === 'private_registries_disabled') return privateDisabled;
+  if (resp.status === 409 && texts.conflict && typeof payload.code === 'string' && Object.hasOwn(texts.conflict, payload.code)) return texts.conflict[payload.code];
+  if (resp.status === 403) return texts.forbidden ?? 'You do not have permission to do that.';
+  if (resp.status === 400 && texts.invalid) return texts.invalid;
+  if (resp.status === 404) return texts.notFound ?? 'Not found in this access scope.';
+  if (payload.code === 'environment_in_use') return 'Discard draft applications and revoke every endpoint in this environment before deleting it.';
+  if (resp.status === 409) return 'That already exists.';
+  return `Request failed (${resp.status}).`;
+}
+
+export const offlineWrite = 'Offline: the server could not be reached.';
+
+// Writes return a message for the form instead of throwing; '' means success.
+export async function tenantWrite(url: string, method: string, body?: unknown, texts: WriteTexts = {}): Promise<string> {
   try {
     const resp = await secureFetch(url, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
-    if (resp.ok) return '';
-    const payload = await resp.json().catch(() => ({}));
-    if (payload.code === 'last_administrator') return 'At least one active administrator is required.';
-    if (payload.code === 'private_registries_disabled') return privateDisabled;
-    if (resp.status === 409 && texts.conflict && typeof payload.code === 'string' && Object.hasOwn(texts.conflict, payload.code)) return texts.conflict[payload.code];
-    if (resp.status === 403) return texts.forbidden ?? 'You do not have permission to do that.';
-    if (resp.status === 400 && texts.invalid) return texts.invalid;
-    if (resp.status === 404) return 'Not found in this access scope.';
-    if (payload.code === 'environment_in_use') return 'Discard draft applications and revoke every endpoint in this environment before deleting it.';
-
-    if (resp.status === 409) return 'That already exists.';
-    return `Request failed (${resp.status}).`;
+    return resp.ok ? '' : await refusal(resp, texts);
   } catch {
-    return 'Offline: the server could not be reached.';
+    return offlineWrite;
   }
 }
