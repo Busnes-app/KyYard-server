@@ -5,11 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -83,7 +80,8 @@ func TestRestoreCarriesEveryControlPlaneTable(t *testing.T) {
 	enroll := func(name string) (*store.Endpoint, ed25519.PublicKey) {
 		tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
 		mustTenant(t, err)
-		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		mustTenant(t, err)
 		e, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: name})
 		mustTenant(t, err)
 		mustTenant(t, ts.ApproveEndpoint(ctx, a, e.ID, e.Fingerprint))
@@ -96,18 +94,25 @@ func TestRestoreCarriesEveryControlPlaneTable(t *testing.T) {
 	mustTenant(t, ts.SetEndpointCapabilities(ctx, host.ID, capabilities))
 	shopContainer, blogContainer := strings.Repeat("a", 64), strings.Repeat("f", 64)
 	now := time.Now().UTC()
-	raw, err := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"},
-		Containers: []protocol.Container{
-			{ID: shopContainer, Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: now},
-			{ID: blogContainer, Name: "blog-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "blog", CreatedAt: now},
-		},
-		Images: []protocol.Image{
-			{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:2"}},
-			{ID: "sha256:" + strings.Repeat("d", 64), Tags: []string{"nginx:1"}},
-		}})
-	mustTenant(t, err)
-	_, err = ts.AcceptInventory(ctx, host.ID, uint64(now.Unix()), now, raw)
-	mustTenant(t, err)
+	// report sends the host's inventory with shop's web container as given.
+	report := func(generation int64, shopWeb protocol.Container) {
+		raw, err := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"},
+			Containers: []protocol.Container{
+				shopWeb,
+				{ID: blogContainer, Name: "blog-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "blog", CreatedAt: now},
+			},
+			Images: []protocol.Image{
+				{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:2"}},
+				{ID: "sha256:" + strings.Repeat("d", 64), Tags: []string{"nginx:1"}},
+			}})
+		mustTenant(t, err)
+		accepted, err := ts.AcceptInventory(ctx, host.ID, uint64(generation), time.Now().UTC(), raw)
+		mustTenant(t, err)
+		if !accepted {
+			t.Fatal("inventory refused")
+		}
+	}
+	report(now.Unix(), protocol.Container{ID: shopContainer, Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: now})
 	// Issued and never used, so it must still enroll after restore.
 	spareToken, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
 	mustTenant(t, err)
@@ -120,6 +125,8 @@ func TestRestoreCarriesEveryControlPlaneTable(t *testing.T) {
 	mustTenant(t, ts.SettleDeployment(ctx, host.ID, protocol.DeploymentResult{Deployment: succeeded.ID, Outcome: protocol.OutcomeSucceeded,
 		Steps:    []protocol.DeploymentStep{{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}},
 		Services: []protocol.DeploymentIdentity{{Service: "web", ContainerID: newContainer, ImageID: succeeded.Plan.Services[0].ImageID, CreatedUnix: 1800000000}}}))
+	// The host reports the container the apply created, as a live agent would.
+	report(now.Unix()+1, protocol.Container{ID: newContainer, Name: "shop-web", ImageID: succeeded.Plan.Services[0].ImageID, ComposeProject: "shop", CreatedAt: time.Unix(1800000000, 0).UTC()})
 	applying := planAdopted(t, ts, a, blog.ID, host.ID, "blog", blogContainer, 1)
 	_, _, err = ts.ApplyDeployment(ctx, a, blog.ID, applying.ID, "blog", key, protocol.MaxDeploymentRequestBytes)
 	mustTenant(t, err)
@@ -149,22 +156,7 @@ func TestRestoreCarriesEveryControlPlaneTable(t *testing.T) {
 
 	payload, err := backup.Collect(ctx, cfg, "test")
 	mustTenant(t, err)
-	path := filepath.Join(t.TempDir(), "ky_server.db")
-	var restoredKey []byte
-	found := false
-	for _, file := range payload.Files {
-		switch file.Path {
-		case "data/encryption.key":
-			restoredKey, err = hex.DecodeString(strings.TrimSpace(string(file.Data)))
-			mustTenant(t, err)
-		case "data/ky_server.db":
-			mustTenant(t, os.WriteFile(path, file.Data, 0600))
-			found = true
-		}
-	}
-	if !found || len(restoredKey) != 32 {
-		t.Fatal("capsule missing the snapshot or the key")
-	}
+	path, restoredKey := restoreThroughCapsule(t, payload)
 	restored, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path})
 	mustTenant(t, err)
 	defer restored.Close()
@@ -200,8 +192,19 @@ func TestRestoreCarriesEveryControlPlaneTable(t *testing.T) {
 	mustTenant(t, err)
 	resources := map[string]string{}
 	for _, i := range instances {
-		for _, c := range i.Containers {
-			resources[i.ApplicationID] = c.ID
+		if len(i.Containers) != 1 {
+			t.Fatalf("instance %s has %d containers after restore", i.ID, len(i.Containers))
+		}
+		resources[i.ApplicationID] = i.Containers[0].ID
+	}
+	for _, m := range []struct {
+		app, container string
+		revision       int
+	}{{shop.ID, newContainer, 2}, {blog.ID, blogContainer, 1}} {
+		mapping, err := rs.ReadApplicationMapping(ctx, a, m.app)
+		mustTenant(t, err)
+		if mapping.Version != 1 || mapping.MappedRevision != m.revision || len(mapping.Bindings) != 1 || mapping.Bindings["web"] != m.container {
+			t.Fatalf("restore lost the mapping of %s: %+v", m.app, mapping)
 		}
 	}
 	if len(instances) != 2 || resources[shop.ID] != newContainer || resources[blog.ID] != blogContainer {
@@ -267,7 +270,8 @@ func TestRestoreCarriesEveryControlPlaneTable(t *testing.T) {
 		t.Fatalf("second reconcile changed state: %d settled", n)
 	}
 
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	mustTenant(t, err)
 	if _, err := rs.Enroll(ctx, store.EnrollmentRequest{Token: spareToken.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, spareToken.Secret)), Name: "late-host"}); err != nil {
 		t.Fatalf("restore lost the unused enrollment token: %v", err)
 	}

@@ -5,11 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -80,22 +77,7 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mustTenant(t, err)
 	payload, err := backup.Collect(ctx, cfg, "test")
 	mustTenant(t, err)
-	path := filepath.Join(t.TempDir(), "restored.db")
-	found := false
-	var restoredKey []byte
-	for _, file := range payload.Files {
-		if file.Path == "data/encryption.key" {
-			restoredKey, err = hex.DecodeString(strings.TrimSpace(string(file.Data)))
-			mustTenant(t, err)
-		}
-		if file.Path == "data/ky_server.db" {
-			mustTenant(t, os.WriteFile(path, file.Data, 0600))
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("missing snapshot")
-	}
+	path, restoredKey := restoreThroughCapsule(t, payload)
 	restored, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path})
 	mustTenant(t, err)
 	defer restored.Close()
