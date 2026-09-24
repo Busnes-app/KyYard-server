@@ -109,6 +109,12 @@ type Organization struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 }
+type OrganizationSummary struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	Members   int       `json:"members"` // active memberships
+}
 type OrganizationMembership struct {
 	OrganizationID string     `json:"organization_id"`
 	UserID         string     `json:"user_id"`

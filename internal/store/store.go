@@ -216,6 +216,11 @@ type TenancyStore interface {
 	ResolveRegistryAccess(ctx context.Context, access TenantAccess, action permissions.Action, ref string, key []byte, privateAllowed bool) (*RegistryAccess, error)
 	// ListMemberOrganizations returns the caller's own active memberships; it is not tenant-scoped.
 	ListMemberOrganizations(ctx context.Context, userID string) ([]MemberOrganization, error)
+	// Platform administration: trusted, not tenant-scoped; callers enforce the platform admin role.
+	// CreateOrganizationWithAdmin returns ErrNotFound (no user), ErrInvalid (user not active)
+	// or ErrAlreadyExists (exact name taken).
+	CreateOrganizationWithAdmin(ctx context.Context, o *Organization, adminUserID string) error
+	ListOrganizations(ctx context.Context) ([]OrganizationSummary, error)
 
 	CheckEnrollmentAccess(ctx context.Context, access TenantAccess) error
 	CreateEnrollmentToken(ctx context.Context, access TenantAccess, runtime, agentImage string) (*EnrollmentToken, error)
