@@ -108,7 +108,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	}
 	if len(r.Update) > 0 {
 		sorted := slices.Sorted(slices.Values(r.Update))
-		if len(slices.Compact(sorted)) != len(r.Update) || len(key) != 32 || resolver == nil {
+		if len(r.Update) > protocol.MaxDeploymentServices || len(slices.Compact(sorted)) != len(r.Update) || len(key) != 32 || resolver == nil {
 			return nil, ErrInvalid
 		}
 	}

@@ -775,3 +775,23 @@ func TestSettleDeploymentVerifiesThePull(t *testing.T) {
 		t.Fatalf("resource image: %s %v", image, err)
 	}
 }
+
+// Turning anonymous pull off between plan and apply stops a pull from an unconfigured host.
+func TestApplyDeploymentRechecksTheAnonymousPullPolicy(t *testing.T) {
+	st, a, app, _, _ := pullFixture(t, []ApplicationService{{Name: "db", Image: "postgres:16"}}, map[string][]string{"db": {"postgres@" + digestOf("c")}})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	setAnonymousPull(t, st, a, true)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, "db"), &fakeResolver{reply: map[string]fakeReply{"docker.io/library/postgres:16": {digest: digestOf("3")}}}, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setAnonymousPull(t, st, a, false)
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey); !errors.Is(err, ErrAdoptionChanged) {
+		t.Fatalf("apply with anonymous pull off: %v", err)
+	}
+	var state string
+	if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "planned" {
+		t.Fatalf("state %s %v", state, err)
+	}
+}

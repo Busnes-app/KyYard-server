@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -455,6 +456,13 @@ func TestPlanDeploymentUpdateNames(t *testing.T) {
 	if _, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, "web"), nil, imageCheckKey, false); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("no resolver: %v", err)
 	}
+	many := make([]string, protocol.MaxDeploymentServices+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("s%d", i)
+	}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, many...), f, imageCheckKey, false); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("too many names: %v", err)
+	}
 	// db loses its binding: naming it is update_not_mapped.
 	m, err := ts.ReadApplicationMapping(ctx, a, app.ID)
 	if err != nil {
@@ -473,8 +481,8 @@ func TestPlanDeploymentUpdateNames(t *testing.T) {
 }
 
 func TestPlanDeploymentPinnedReferenceSkipsTheRegistry(t *testing.T) {
-	pinned := "ghcr.io/org/x@" + digestOf("c")
-	st, a, app, _, _ := pullFixture(t, []ApplicationService{{Name: "pinned", Image: pinned}}, map[string][]string{"pinned": {pinned}})
+	pinned, db := "ghcr.io/org/x@"+digestOf("c"), "postgres@"+digestOf("d")
+	st, a, app, _, _ := pullFixture(t, []ApplicationService{{Name: "pinned", Image: pinned}, {Name: "db", Image: db}}, map[string][]string{"pinned": {pinned}, "db": {db}})
 	ctx := context.Background()
 	ts := st.Tenancy()
 	f := &fakeResolver{}
@@ -482,8 +490,23 @@ func TestPlanDeploymentPinnedReferenceSkipsTheRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := d.Plan.Services[0]; s.PullReference != pinned || s.PullDigest != digestOf("c") || len(f.called()) != 0 {
-		t.Fatalf("pinned: %+v %+v", s, f.called())
+	if s := d.Plan.Services[0]; s.PullReference != pinned || s.PullDigest != digestOf("c") {
+		t.Fatalf("pinned: %+v", s)
+	}
+	// Pinning is no way around the policy: an unconfigured host still needs anonymous pull.
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, "db"), f, imageCheckKey, false); !isBlocked(err, "registry_not_configured") {
+		t.Fatalf("pinned on an unconfigured host: %v", err)
+	}
+	setAnonymousPull(t, st, a, true)
+	d, err = ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, "db"), f, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := d.Plan.Services[1]; s.PullReference != "docker.io/library/postgres@"+digestOf("d") || s.PullDigest != digestOf("d") {
+		t.Fatalf("db: %+v", s)
+	}
+	if len(f.called()) != 0 {
+		t.Fatalf("a pinned reference asked the registry: %+v", f.called())
 	}
 }
 

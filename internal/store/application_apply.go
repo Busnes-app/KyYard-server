@@ -115,10 +115,18 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 			}
 			req.Services = append(req.Services, svc)
 		}
-		// A credential travels once per host, decrypted here and never stored.
+		// A credential travels once per host, decrypted here and never stored. A host whose
+		// row is gone pulls anonymously only while the organization still allows it.
 		for host := range hosts {
 			_, cred, err := t.registryFor(ctx, tx, a.OrganizationID, host, key)
 			if errors.Is(err, ErrNotFound) {
+				anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
+				if err != nil {
+					return err
+				}
+				if !anonymous {
+					return ErrAdoptionChanged
+				}
 				continue
 			}
 			if err != nil {
@@ -338,7 +346,8 @@ func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, 
 			return ErrInvalid
 		}
 		if ps.PullDigest != "" {
-			if idn.ImageDigest != ps.PullDigest || !validSHA256(idn.ImageID) {
+			// res.Validate already required a full ImageID.
+			if idn.ImageDigest != ps.PullDigest {
 				return ErrInvalid
 			}
 		} else if idn.ImageID != ps.ImageID {
