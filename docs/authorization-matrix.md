@@ -9,7 +9,7 @@
 | Platform Administrator | instance | recovery, global settings, identity provider configuration, and explicit audited assumption of a tenant context; no implicit tenant access |
 | Organization Administrator | organization | everything inside the organization, including members, secrets and destructive actions |
 | Environment Administrator | organization (all environments) | environments, endpoints, applications and their lifecycle; no members, no audit, no secrets management |
-| Operator | organization | day-to-day operations: restart, logs, stats, manual updates; no deploy, no exec, no secrets |
+| Operator | organization | day-to-day operations: restart, logs, stats, host image pulls without credentials; no deploy (so no application updates), no exec, no secrets |
 | Developer | organization | deploy applications and read logs; no host-level or destructive actions, no exec |
 | Read Only | organization | read everything non-secret |
 
@@ -69,7 +69,7 @@ Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.e
 | `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |
 | `container.exec` (implemented) | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |
 | `image.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
-| `image.pull` | ✓ | ✓ | ✓ | – | – | uses a registry credential without revealing it, and only when the reference's registry host exactly equals the credential's configured host, or the HTTPS token realm that host advertises, never on a redirect (`application-schema.md`, Registry) | success/failure |
+| `image.pull` (endpoint image controls; operators keep it for host-level pulls) | ✓ | ✓ | ✓ | – | – | sends no registry credential: a registry that needs one is refused (`credentialsMissing`); credentialed pulls go only through a deployment under `application.deploy` | success/failure |
 | `image.destroy` | ✓ | ✓ | – | – | – | no | success/failure |
 | `volume.read`, `network.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
 | `volume.destroy` | ✓ | – | – | – | – | no | success/failure, separate explicit confirmation naming data loss |
@@ -86,7 +86,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `application.edit` (create a new revision from desired configuration) | ✓ | ✓ | – | ✓ | – | secret references only | success, target = revision |
 | `application.deploy` (preview, plan and apply an approved revision; implemented) | ✓ | ✓ | – | ✓ | – | no | audited by `SettleDeployment` in the settle transaction, result mapped to success/denied/failure/unknown |
 | `application.deploy` — checks image updates (`CheckImageUpdateAccess`/`CheckImageUpdates`, target `<app>/updates`; implemented) | ✓ | ✓ | – | ✓ | – | registry credential used internally, never returned | denials and failures on `<app>/updates`; one success row per completed check, details `services=N updates=N errors=N` |
-| `application.update` (manual image update, 0.1) | ✓ | ✓ | ✓ | – | – | no | success/failure |
+| `application.deploy` — manual image update (plan with `update`, then apply; implemented) | ✓ | ✓ | – | ✓ | – | registry credential decrypted at plan (`Head`) and at apply (frame assembly), never returned or stored | plan success row on `<app>/deployments/<id>` with `pulls=N`; apply audited by `SettleDeployment` |
 | `application.destroy` (remove application, keep data; implemented, `POST .../applications/{application}/removal`) | ✓ | ✓ | – | – | – | no | one row per removal (`withTenantTarget`); settle audits the same action for the agent's result, `outcome=abandoned/swept/not_sent` for a disconnect, sweep or undeliverable frame |
 | `secret.reveal` (internal imported-value resolution) | ✓ | – | – | – | – | plaintext, only after audit commits | success/failure |
 | `secret.manage` (create, rotate, delete secret values) | ✓ | – | – | – | – | write-only; values never returned | success, target = secret name |
