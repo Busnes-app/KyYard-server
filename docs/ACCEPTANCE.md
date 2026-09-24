@@ -17,11 +17,6 @@ Copied from the plan, section 7:
 Found while writing this runbook against the current UI. Each one the operator runs into goes
 in the results table.
 
-- Deployment replaces only containers whose configuration a definition can express (image,
-  environment, restart, ports, project network). A container with any mount, anonymous
-  volumes from an image's `VOLUME` included, is refused at the precondition step with `the
-  container has configuration the definition cannot express: mounts`. The sample application
-  is built around this limit (below).
 - Registry access (needed for update checks) is set on the Members page, not near Updates.
 - Live container configuration is shown only through Deployment preflight's "Inspect live
   container", so only for adopted, mapped containers.
@@ -46,23 +41,28 @@ paired KyRecovery, plus custodians with their cards for step 9. Use a scratch ce
 the production suite key.
 
 **Two disposable Docker hosts**, A and B, with outbound HTTPS to the control plane. Nothing on
-them you would miss.
+them you would miss. Their agents must run the same release as the control plane: an older
+agent reports no container mounts, and every deployment plan on its host is blocked with
+"The host has not reported this container's mounts" until it is upgraded.
 
-**Sample application on host A**, two Compose projects:
+**Sample application on host A**, one Compose project, `acc-app`:
 
-- `acc-data`: the service that holds data, with a named volume and a published port. KyYard
-  never adopts it; it is the persistent data the plan asks you to keep.
-- `acc-web`: one or two stateless services, no volumes, no `VOLUME` in the image, no
-  `command`, `entrypoint`, `user`, `networks` or other extra configuration. Use only the
-  fields the import accepts: `image`, `environment` (quoted string values), `restart`, and
-  long-syntax `ports` (`target`, `published`, optional `host_ip`, `protocol`). At least one
-  environment value stands in for a secret. It reaches `acc-data` through the published port.
-  Start it with `docker compose up -d` from the file you will hand the operator to import.
-- For step 6, one `acc-web` image must run at an older digest of a tag that has since moved.
+- A `data` service that keeps its data in a named volume `data`, declared under top-level
+  `volumes` (on the host it is `acc-app_data`), and a stateless `web` service with a
+  published port that reaches `data` by service name.
+- Use only what the import accepts: `image`, `environment` (quoted string values), `restart`,
+  long-syntax `ports` (`target`, `published`, optional `host_ip`, `protocol`) and `volumes`
+  (named volumes, or absolute bind paths the container already has). No `command`,
+  `entrypoint`, `user`, `networks`, `tmpfs` or other extra configuration. If an image declares
+  a `VOLUME`, mount the named volume at exactly that path: otherwise Docker adds an anonymous
+  volume, which KyYard refuses to recreate. At least one environment value stands in for a
+  secret. Start it with `docker compose up -d` from the file you will hand the operator to
+  import.
+- For step 6, one `acc-app` image must run at an older digest of a tag that has since moved.
   Pull the old digest and tag it before `up`: `docker pull <repo>@<old digest>` then
   `docker tag <repo>@<old digest> <repo>:<tag>` (unproven). If Check for updates later says "Up to
   date" or "Unknown on host", the setup did not take; fix it and rerun step 6.
-- Write a marker into the `acc-data` volume (a row, a file) and note it.
+- Write a marker into the `acc-app_data` volume (a row, a file) and note it.
 
 **Accounts and two organizations**, all through the UI, signed in as the bootstrap `admin`
 (a platform administrator and the administrator of the initial organization, `org_initial`):
@@ -93,7 +93,7 @@ Hand this over as is:
    logs, restart it, and open a terminal in it.
 4. Show that a read-only account cannot change anything, open a terminal or see secrets, and
    that another organization cannot reach these resources through direct URLs or API requests.
-5. Import the `acc-web` Compose project, preview a change, deploy it, read the deployment
+5. Import the `acc-app` Compose project, preview a change, deploy it, read the deployment
    result, and put back the earlier definition without losing data.
 6. Find an image update, confirm nothing changed on its own, then approve and apply it.
 7. Disconnect and reconnect host A and revoke host B; explain what the screens show and why
@@ -164,20 +164,26 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 - Environment, Applications tab. "Import Compose draft": Application name, Compose YAML, Import
   draft ("Draft imported. No containers were changed.").
 - View configuration for the application. Adopt: choose Docker host A and Compose project
-  `acc-web`, review the container list, type the project name, Adopt reviewed containers.
+  `acc-app`, review the container list, type the project name, Adopt reviewed containers.
 - Map services to containers: pick one container per service, type the project name, Save
   service mapping. Compare with host is a read-only check.
 - Preview a change: Save new revision, paste the whole definition with one environment value
   changed (every value must be supplied again), Save revision N. The mapping panel then asks
   for review: save the mapping again.
+- Deployment preflight: the Mounts column shows `volume acc-app_data → <target>` for `data`
+  and "No mounts." for `web`; a mount the running container has and the definition does not
+  appears under "Will be dropped by the recreate:".
 - Deployment plan: Revision to plan (latest), type the project name, Plan deployment. The plan
-  table shows Service, Pinned image, Replaces container, Secrets. Type the project name under
+  table shows Service, Pinned image, Replaces container, Mounts, Secrets, and "Volumes to
+  ensure: acc-app_data" above it. Show steps lists a `volume` step for `data` before its image
+  step. Type the project name under
   "Confirm apply project", Apply deployment. The state polls to `succeeded`; Deployment
   history, Show steps lists each step.
 - Put back: Deployment plan, Revision to plan = the earlier revision (the note says its own
   saved values are used and data written since is not reversed), plan, apply.
-- Pass: both applies `succeeded`; current revision returns to the earlier one; the `acc-data`
-  marker is intact; `acc-data` was never touched.
+- Pass: both applies `succeeded`; current revision returns to the earlier one; the marker
+  in `acc-app_data` is intact after each apply; `docker volume ls` on host A shows no new
+  volume for the project.
 - Record: every blocker message the operator saw and whether they understood it.
 
 ### 6. Update detection and approval
@@ -192,7 +198,7 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   in the deployment plan panel."). Deployment plan shows "pulls …" in Pinned image. Type the
   project name, Apply deployment.
 - Pass: the apply `succeeded`, its steps include the pull; a new Check for updates says "Up to
-  date".
+  date"; the marker in `acc-app_data` is intact.
 - Record: the digests before and after, and whether anything moved before the apply.
 
 ### 7. Disconnect, reconnect, revoke

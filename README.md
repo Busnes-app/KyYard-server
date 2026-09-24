@@ -59,6 +59,10 @@ docker compose pull && docker compose up -d
 A digest-pinned install (`KY_IMAGE` in `.env`) gets nothing from `pull`: re-run the pin recipe in
 `docker-compose.yml` with the commit sha you want first, or delete that line to follow `:latest` again.
 
+Upgrade every agent container (remote, or a legacy same-host one) with the server. An agent older than the server's volume support reports
+no container mounts, so every deployment plan on its host is blocked (`mounts_unreported`) until
+it runs the new image; the built-in local connection upgrades with the server.
+
 `AGENTS.md` is the contract for working in this repository.
 
 ## First sign-in
@@ -501,11 +505,14 @@ Choose **Import Compose draft**, enter a name and paste YAML. Import creates sav
 configuration only; it does not deploy, adopt or change existing containers.
 
 This initial importer accepts service `image`, explicit string `environment`,
-`restart`, and long-form `ports` (`target`, `published`, optional `host_ip` and
-`protocol`). Quote environment numbers and booleans. Supply resolved values;
+`restart`, long-form `ports` (`target`, `published`, optional `host_ip` and
+`protocol`) and `volumes`: named volumes declared under top-level `volumes`
+(optionally `external: true`) and absolute bind paths, short or long syntax, `ro` or
+`rw`. Quote environment numbers and booleans. Supply resolved values;
 interpolation and file lookups are unsupported, and literal dollars must use `$$`.
-Documents are limited to 64 KiB. Other fields, including volumes, networks, builds,
-commands, anchors and aliases, are rejected rather than silently dropped.
+Documents are limited to 64 KiB. Other fields, including networks, builds, commands,
+tmpfs, anonymous volumes, relative bind paths, volume drivers, anchors and aliases, are
+rejected rather than silently dropped.
 
 All environment values are encrypted. Saved configuration shows keys and references,
 not values. Administrators can import and discard drafts; discard deletes their
@@ -545,7 +552,11 @@ references from the host's image inventory and find reported published-port
 overlaps. Missing images/references require pulling or correcting the definition,
 then refreshing inventory. Preflight is read-only: runtime configuration, host
 processes and unreported port bindings are not checked, and reported image IDs are
-not saved deployment pins. With no findings left it says **Ready to plan**; otherwise
+not saved deployment pins. Each service lists the mounts a recreate will use. A deploy
+creates a missing project volume (`<project>_<name>`, as Compose names it) and never adds a
+host path: a bind the running container does not already have blocks the plan, so mount it
+by hand first or drop it. Mounts the definition drops are listed and do not block. With no
+findings left it says **Ready to plan**; otherwise
 it lists what to fix, or says **Not ready to plan.** when only per-service findings
 remain in the table. **Deployment plan** then pins the images and replaced containers,
 and **Apply deployment** runs it on the host.
