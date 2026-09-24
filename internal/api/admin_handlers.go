@@ -23,7 +23,10 @@ const (
 	passwordAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 )
 
-var usernameRE = regexp.MustCompile(`^[a-z0-9._-]{3,64}$`)
+var (
+	usernameRE = regexp.MustCompile(`^[a-z0-9._-]{3,64}$`)
+	userIDRE   = regexp.MustCompile(`^usr_[0-9a-f]{24}$`)
+)
 
 // cleanName reports whether s is 1..max characters and unchanged by protocol.CleanText.
 func cleanName(s string, max int) bool {
@@ -54,6 +57,7 @@ func (s *Server) auditPlatform(r *http.Request, actor, action, resource, details
 }
 
 func (s *Server) handleAdminListOrganizations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	orgs, err := s.store.Tenancy().ListOrganizations(r.Context())
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to list organizations")
@@ -66,19 +70,20 @@ func (s *Server) handleAdminListOrganizations(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleAdminCreateOrganization(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, adminBodyLimit)
 	var req struct {
 		Name        string `json:"name"`
 		AdminUserID string `json:"admin_user_id"`
 	}
-	if err := strictJSON(r, &req); err != nil || !cleanName(req.Name, 64) || req.AdminUserID == "" {
+	if err := strictJSON(r, &req); err != nil || !cleanName(req.Name, 64) || !userIDRE.MatchString(req.AdminUserID) {
 		s.writeError(w, http.StatusBadRequest, "Organization name must be 1 to 64 printable characters and an administrator is required")
 		return
 	}
 	actor := s.actorID(r)
 	org := &store.Organization{ID: "org_" + crypto.RandomHex(12), Name: req.Name}
 	err := s.store.Tenancy().CreateOrganizationWithAdmin(r.Context(), org, req.AdminUserID)
-	details := "admin=" + protocol.CleanText(req.AdminUserID, 128)
+	details := "admin=" + req.AdminUserID
 	refuse := func(status int, msg, code string) {
 		s.auditPlatform(r, actor, "organization.create", org.Name, details+" refused="+code, "failure")
 		s.writeJSON(w, status, map[string]string{"error": msg, "code": code})
@@ -109,6 +114,7 @@ type adminUser struct {
 }
 
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	users, _, err := s.store.Users().ListUsers(r.Context(), 0, adminUserListMax, "")
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to list users")
@@ -123,6 +129,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, adminBodyLimit)
 	var req struct {
 		Username    string `json:"username"`
@@ -136,15 +143,12 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := s.actorID(r)
 	details := "role=" + req.Role
-	exists := func() bool {
-		_, err := s.store.Users().GetUserByUsername(r.Context(), req.Username)
-		return err == nil
-	}
 	refuseExisting := func() {
 		s.auditPlatform(r, actor, "user.create", req.Username, details+" refused=username_exists", "failure")
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "That username is taken", "code": "username_exists"})
 	}
-	if exists() {
+	// The column is unique by exact case, but login matches LOWER(username): refuse "erin" beside "Erin".
+	if _, err := s.store.Users().GetUserByUsername(r.Context(), req.Username); err == nil {
 		refuseExisting()
 		return
 	}
@@ -159,7 +163,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		PasswordHash: hash, Role: req.Role, Status: "active", SSOProvider: "local", MustChangePassword: true,
 	}
 	if err := s.store.Users().CreateUser(r.Context(), user); err != nil {
-		if exists() { // lost a race to a concurrent create
+		if errors.Is(err, store.ErrAlreadyExists) {
 			refuseExisting()
 			return
 		}

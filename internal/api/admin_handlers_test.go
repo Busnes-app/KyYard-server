@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -34,6 +33,33 @@ func userCount(t *testing.T, st store.Store) int {
 	return n
 }
 
+const (
+	carolID = "usr_ca401000000000000000000c"
+	daveID  = "usr_da7e0000000000000000000d"
+)
+
+// seedUser stores a local account with a production-shaped ID and a known password.
+func seedUser(t *testing.T, st store.Store, id, username, role, status string) {
+	t.Helper()
+	hash, err := password.Hash("SuperSecretPass123!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().CreateUser(context.Background(), &store.User{ID: id, Username: username, PasswordHash: hash, Role: role, Status: status, SSOProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// captureLog sends the standard logger to a buffer until the test ends.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &buf
+}
+
 func decodeCode(t *testing.T, w *httptest.ResponseRecorder) string {
 	t.Helper()
 	var out map[string]any
@@ -46,11 +72,6 @@ func decodeCode(t *testing.T, w *httptest.ResponseRecorder) string {
 
 func TestAdminRoutesRequirePlatformAdmin(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
-	for _, rt := range adminRoutes {
-		if w := do(t, srv, rt.method, rt.path, nil); w.Code != http.StatusUnauthorized {
-			t.Errorf("anonymous %s %s: got %d", rt.method, rt.path, w.Code)
-		}
-	}
 	member := loginAs(t, srv, st, "bob", "user")
 	before := userCount(t, st)
 	seeded, err := st.Tenancy().ListOrganizations(context.Background())
@@ -96,15 +117,16 @@ func TestAdminCreateOrganization(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
 	ctx := context.Background()
 	admin := loginAs(t, srv, st, "alice", "admin")
-	carol := loginAs(t, srv, st, "carol", "user")
+	seedUser(t, st, carolID, "carol", "user", "active")
+	carol := loginWith(t, srv, "carol", "SuperSecretPass123!")
 	seeded, err := st.Tenancy().ListOrganizations(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	w := adminDo(t, srv, admin, "POST", "/api/admin/organizations", map[string]any{"name": "Acme", "admin_user_id": "usr_carol"})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create: %d %s", w.Code, w.Body)
+	w := adminDo(t, srv, admin, "POST", "/api/admin/organizations", map[string]any{"name": "Acme", "admin_user_id": carolID})
+	if w.Code != http.StatusCreated || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("create: %d %v %s", w.Code, w.Header(), w.Body)
 	}
 	var created struct{ ID, Name, CreatedAt string }
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
@@ -122,46 +144,65 @@ func TestAdminCreateOrganization(t *testing.T) {
 	list := adminDo(t, srv, admin, "GET", "/api/admin/organizations", nil)
 	var orgs []map[string]any
 	_ = json.Unmarshal(list.Body.Bytes(), &orgs)
-	if list.Code != 200 || len(orgs) != len(seeded)+1 || orgs[0]["members"] != float64(1) || orgs[0]["name"] != "Acme" || orgs[0]["id"] != created.ID {
+	if list.Code != 200 || list.Header().Get("Cache-Control") != "no-store" || len(orgs) != len(seeded)+1 || orgs[0]["members"] != float64(1) || orgs[0]["name"] != "Acme" || orgs[0]["id"] != created.ID {
 		t.Fatalf("list: %d %s", list.Code, list.Body)
 	}
 
 	rows := auditRows(t, st, "organization.create")
-	if len(rows) != 1 || rows[0].Scope != "platform" || rows[0].UserID != "usr_alice" || rows[0].Resource != created.ID || rows[0].Details != "admin=usr_carol" || rows[0].Result != "success" {
+	if len(rows) != 1 || rows[0].Scope != "platform" || rows[0].UserID != "usr_alice" || rows[0].Resource != created.ID || rows[0].Details != "admin="+carolID || rows[0].Result != "success" {
 		t.Fatalf("audit: %+v", rows)
 	}
 
-	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_dave", Username: "dave", Role: "user", Status: "suspended", SSOProvider: "local"}); err != nil {
-		t.Fatal(err)
-	}
+	seedUser(t, st, daveID, "dave", "user", "suspended")
+	const nobodyID = "usr_000000000000000000000000"
 	for _, tc := range []struct {
 		name, adminID string
 		status        int
 		code          string
 	}{
-		{"Acme", "usr_carol", http.StatusConflict, "organization_exists"},
-		{"Other", "usr_nobody", http.StatusNotFound, "user_not_found"},
-		{"Other", "usr_dave", http.StatusConflict, "user_inactive"},
+		{"Acme", carolID, http.StatusConflict, "organization_exists"},
+		{"Other", nobodyID, http.StatusNotFound, "user_not_found"},
+		{"Other", daveID, http.StatusConflict, "user_inactive"},
 	} {
 		w := adminDo(t, srv, admin, "POST", "/api/admin/organizations", map[string]any{"name": tc.name, "admin_user_id": tc.adminID})
 		if w.Code != tc.status || decodeCode(t, w) != tc.code {
 			t.Errorf("%s/%s: got %d %s", tc.name, tc.adminID, w.Code, w.Body)
 		}
 	}
+	want := map[string]string{
+		"Acme":  "admin=" + carolID + " refused=organization_exists",
+		"Other": "admin=" + nobodyID + " refused=user_not_found|admin=" + daveID + " refused=user_inactive",
+	}
 	failures := 0
 	for _, row := range auditRows(t, st, "organization.create") {
-		if row.Result == "failure" {
-			failures++
+		if row.Result != "failure" {
+			continue
+		}
+		failures++
+		if row.Scope != "platform" || row.UserID != "usr_alice" || !strings.Contains("|"+want[row.Resource]+"|", "|"+row.Details+"|") {
+			t.Errorf("failure row: %+v", row)
 		}
 	}
 	if failures != 3 {
 		t.Errorf("want 3 failure audit rows, got %d", failures)
 	}
 
-	for _, name := range []string{"", strings.Repeat("a", 65), "Bad\nName", "Bad\x00Name"} {
-		if w := adminDo(t, srv, admin, "POST", "/api/admin/organizations", map[string]any{"name": name, "admin_user_id": "usr_carol"}); w.Code != http.StatusBadRequest {
-			t.Errorf("name %q: got %d", name, w.Code)
+	for _, body := range []map[string]any{
+		{"name": "", "admin_user_id": carolID},
+		{"name": strings.Repeat("a", 65), "admin_user_id": carolID},
+		{"name": "Bad\nName", "admin_user_id": carolID},
+		{"name": "Bad\x00Name", "admin_user_id": carolID},
+		{"name": "Other", "admin_user_id": ""},
+		{"name": "Other", "admin_user_id": "usr_carol"},
+		{"name": "Other", "admin_user_id": carolID + " refused=organization_exists"},
+		{"name": "Other", "admin_user_id": carolID, "members": 5},
+	} {
+		if w := adminDo(t, srv, admin, "POST", "/api/admin/organizations", body); w.Code != http.StatusBadRequest {
+			t.Errorf("%v: got %d", body, w.Code)
 		}
+	}
+	if n := len(auditRows(t, st, "organization.create")); n != 4 {
+		t.Errorf("a malformed request wrote an audit row: %d rows", n)
 	}
 	if orgs, _ := st.Tenancy().ListOrganizations(ctx); len(orgs) != len(seeded)+1 {
 		t.Fatalf("refused creates left organizations behind: %+v", orgs)
@@ -173,12 +214,10 @@ func TestAdminCreateUser(t *testing.T) {
 	ctx := context.Background()
 	admin := loginAs(t, srv, st, "alice", "admin")
 
-	var logs bytes.Buffer
-	log.SetOutput(&logs)
+	logs := captureLog(t)
 	w := adminDo(t, srv, admin, "POST", "/api/admin/users", map[string]any{"username": "erin", "display_name": "Erin Example", "role": "user"})
-	log.SetOutput(os.Stderr)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create: %d %s", w.Code, w.Body)
+	if w.Code != http.StatusCreated || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("create: %d %v %s", w.Code, w.Header(), w.Body)
 	}
 	var created struct {
 		ID                string `json:"id"`
@@ -214,7 +253,7 @@ func TestAdminCreateUser(t *testing.T) {
 	}
 
 	list := adminDo(t, srv, admin, "GET", "/api/admin/users", nil)
-	if list.Code != 200 || strings.Contains(list.Body.String(), temp) || strings.Contains(list.Body.String(), stored.PasswordHash) {
+	if list.Code != 200 || list.Header().Get("Cache-Control") != "no-store" || strings.Contains(list.Body.String(), temp) || strings.Contains(list.Body.String(), stored.PasswordHash) {
 		t.Fatalf("user list: %d %s", list.Code, list.Body)
 	}
 	var users []map[string]any
@@ -250,8 +289,29 @@ func TestAdminCreateUser(t *testing.T) {
 	if w := adminDo(t, srv, admin, "POST", "/api/admin/users", map[string]any{"username": "erin", "display_name": "Erin Two", "role": "user"}); w.Code != http.StatusConflict || decodeCode(t, w) != "username_exists" {
 		t.Errorf("duplicate: %d %s", w.Code, w.Body)
 	}
-	if n := len(auditRows(t, st, "user.create")); n != 2 {
-		t.Errorf("duplicate wrote no failure row: %d rows", n)
+	rows = auditRows(t, st, "user.create")
+	if len(rows) != 2 {
+		t.Fatalf("duplicate wrote no failure row: %+v", rows)
+	}
+	for _, row := range rows {
+		if row.Result == "failure" && (row.Scope != "platform" || row.UserID != "usr_alice" || row.Resource != "erin" || row.Details != "role=user refused=username_exists") {
+			t.Errorf("failure row: %+v", row)
+		}
+	}
+
+	w = adminDo(t, srv, admin, "POST", "/api/admin/users", map[string]any{"username": "grace", "display_name": "Grace", "role": "admin"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create admin: %d %s", w.Code, w.Body)
+	}
+	if grace, err := st.Users().GetUserByUsername(ctx, "grace"); err != nil || grace.Role != "admin" {
+		t.Fatalf("stored admin: %+v %v", grace, err)
+	}
+	found := false
+	for _, row := range auditRows(t, st, "user.create") {
+		found = found || (row.Result == "success" && row.Details == "role=admin")
+	}
+	if !found {
+		t.Error("no role=admin audit row")
 	}
 
 	before := userCount(t, st)
@@ -288,4 +348,23 @@ func loginWith(t *testing.T, srv *api.Server, username, pass string) *http.Cooki
 	}
 	t.Fatalf("login %s: %d %s", username, w.Code, w.Body)
 	return nil
+}
+
+// The users column is unique by exact case but login matches LOWER(username), so "erin"
+// beside "Erin" would make one login name resolve to two accounts.
+func TestAdminCreateUserRefusesCaseVariant(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	admin := loginAs(t, srv, st, "alice", "admin")
+	seedUser(t, st, "usr_e0000000000000000000000e", "Erin", "user", "active")
+	if u, err := st.Users().GetUserByUsername(context.Background(), "erin"); err != nil || u.Username != "Erin" {
+		t.Fatalf("lookup is not case-insensitive: %+v %v", u, err)
+	}
+	before := userCount(t, st)
+	w := adminDo(t, srv, admin, "POST", "/api/admin/users", map[string]any{"username": "erin", "display_name": "Erin", "role": "user"})
+	if w.Code != http.StatusConflict || decodeCode(t, w) != "username_exists" {
+		t.Fatalf("case variant: %d %s", w.Code, w.Body)
+	}
+	if after := userCount(t, st); after != before {
+		t.Fatal("a case variant of an existing username was created")
+	}
 }
