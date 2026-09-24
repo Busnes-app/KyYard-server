@@ -42,6 +42,8 @@ type PlannedService struct {
 	// Set for a pulled service: apply sends the pull and no image ID.
 	PullReference string `json:"pull_reference,omitempty"`
 	PullDigest    string `json:"pull_digest,omitempty"`
+	// Mounts are the preflight's resolved list; binds on it are already on the replaced container.
+	Mounts []protocol.Mount `json:"mounts,omitempty"`
 }
 
 // DeploymentPlan is what a row decided: the services an apply replaces, or the containers a
@@ -50,6 +52,8 @@ type DeploymentPlan struct {
 	Project    string              `json:"project"`
 	Services   []PlannedService    `json:"services"`
 	Containers []RemovalPlanTarget `json:"containers,omitempty"`
+	// Volumes are the named volumes the agent ensures, host names in first-use order.
+	Volumes []string `json:"volumes,omitempty"`
 }
 type RemovalPlanTarget struct {
 	Service     string `json:"service"`
@@ -295,9 +299,14 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 			refs = append(refs, ref.SecretRef)
 		}
 		slices.Sort(refs)
-		ps := PlannedService{Name: s.Name, Reference: s.Image, ImageID: row.ImageID, ImageDigest: digests[row.ImageID], ContainerID: row.ContainerID, Restart: s.Restart, Ports: s.Ports, SecretRefs: refs}
+		ps := PlannedService{Name: s.Name, Reference: s.Image, ImageID: row.ImageID, ImageDigest: digests[row.ImageID], ContainerID: row.ContainerID, Restart: s.Restart, Ports: s.Ports, SecretRefs: refs, Mounts: row.Mounts}
 		if ps.Ports == nil {
 			ps.Ports = []ApplicationPort{}
+		}
+		for _, mount := range row.Mounts {
+			if mount.Kind == protocol.MountVolume && !slices.Contains(plan.Volumes, mount.Source) {
+				plan.Volumes = append(plan.Volumes, mount.Source)
+			}
 		}
 		if row.InspectionTarget != nil {
 			ps.Replaces = *row.InspectionTarget

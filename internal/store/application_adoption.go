@@ -23,6 +23,10 @@ type AdoptedContainer struct {
 	Name      string    `json:"name"`
 	ImageID   string    `json:"image_id"`
 	CreatedAt time.Time `json:"created_at"`
+	// Mounts as the inventory reported them; nil when the agent reports none (older than
+	// mounts). Preflight compares binds against them.
+	Mounts          []protocol.Mount `json:"mounts,omitempty"`
+	MountsTruncated bool             `json:"mounts_truncated,omitempty"`
 }
 type AdoptionPreview struct {
 	ApplicationID   string             `json:"application_id"`
@@ -111,7 +115,7 @@ func (t *tenancyStore) adoptionPreview(ctx context.Context, tx *sql.Tx, a Tenant
 			return nil, ErrAdoptionChanged
 		}
 		seen[c.ID] = true
-		p.Containers = append(p.Containers, AdoptedContainer{ID: c.ID, Name: c.Name, ImageID: c.ImageID, CreatedAt: c.CreatedAt})
+		p.Containers = append(p.Containers, AdoptedContainer{ID: c.ID, Name: c.Name, ImageID: c.ImageID, CreatedAt: c.CreatedAt, Mounts: c.Mounts, MountsTruncated: c.MountsTruncated})
 	}
 	if len(p.Containers) == 0 || len(p.Containers) > protocol.MaxContainers {
 		return nil, ErrAdoptionChanged

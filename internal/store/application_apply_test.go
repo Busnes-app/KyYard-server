@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math/rand/v2"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -904,4 +905,85 @@ func TestApplyDeploymentRechecksTheAnonymousPullPolicy(t *testing.T) {
 	if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "planned" {
 		t.Fatalf("state %s %v", state, err)
 	}
+}
+
+// The frame's mounts and volumes are the plan's, unchanged.
+func TestApplyDeploymentCarriesMountsAndVolumes(t *testing.T) {
+	webBind := protocol.Mount{Kind: protocol.MountBind, Source: "/srv/web", Target: "/srv", ReadOnly: true}
+	st, a, app, m := volumesFixture(t, volumesSpec(), map[string][]protocol.Mount{"web": {webBind}})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	key := make([]byte, 32)
+	d := planWithValues(t, st, a, app, m, volumesSpec(), key)
+	_, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Services) != 2 || !slices.Equal(req.Services[0].Mounts, d.Plan.Services[0].Mounts) || !slices.Equal(req.Services[1].Mounts, d.Plan.Services[1].Mounts) || !slices.Equal(req.Volumes, []string{"shop_data", "shared"}) {
+		t.Fatalf("frame: %+v", req)
+	}
+	if err := req.Validate(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Spec and plan caps keep binds far below the agent's frame bound, so the frame check stays
+// the guard: a frame of long binds past the endpoint's cap is refused while the row is planned.
+func TestApplyDeploymentRefusesAFrameOfLongBinds(t *testing.T) {
+	var volumes []ApplicationVolume
+	var mounts []protocol.Mount
+	for i := range protocol.MaxMounts {
+		p := "/" + strings.Repeat(string(rune('a'+i%26)), 200) + "/" + string(rune('a'+i/26))
+		volumes = append(volumes, ApplicationVolume{Kind: "bind", Source: p, Target: p})
+		mounts = append(mounts, protocol.Mount{Kind: protocol.MountBind, Source: p, Target: p})
+	}
+	spec := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Volumes: volumes}}}
+	st, a, app, m := volumesFixture(t, spec, map[string][]protocol.Mount{"web": mounts})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	key := make([]byte, 32)
+	d := planWithValues(t, st, a, app, m, spec, key)
+	const limit = 12 << 10
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, limit); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("oversized frame: %v", err)
+	}
+	var state string
+	if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "planned" {
+		t.Fatalf("refused apply left state %s (%v)", state, err)
+	}
+	_, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := json.Marshal(req); len(raw) <= limit {
+		t.Fatalf("fixture frame is %d bytes, not past the cap", len(raw))
+	}
+}
+
+// planWithValues saves spec as a revision with its (empty) value bundle, remaps it to the
+// containers m binds and plans it: apply resolves values, which a created revision lacks.
+func planWithValues(t *testing.T, st *SQLStore, a TenantAccess, app *Application, m *ApplicationMapping, spec ApplicationSpec, key []byte) *Deployment {
+	t.Helper()
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, m.Preview.Revision, spec, nil, key); err != nil {
+		t.Fatal(err)
+	}
+	next, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := mappingRequest(next)
+	r.Bindings = m.Bindings
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, r); err != nil {
+		t.Fatal(err)
+	}
+	if next, err = ts.ReadApplicationMapping(ctx, a, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(next), nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

@@ -99,7 +99,7 @@ func TestRestoreCarriesControlPlaneState(t *testing.T) {
 		raw, err := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"},
 			Containers: []protocol.Container{
 				shopWeb,
-				{ID: blogContainer, Name: "blog-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "blog", CreatedAt: now},
+				{ID: blogContainer, Name: "blog-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "blog", CreatedAt: now, Mounts: []protocol.Mount{}},
 			},
 			Images: []protocol.Image{
 				{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:2"}},
@@ -112,7 +112,7 @@ func TestRestoreCarriesControlPlaneState(t *testing.T) {
 			t.Fatal("inventory refused")
 		}
 	}
-	report(now.Unix(), protocol.Container{ID: shopContainer, Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: now})
+	report(now.Unix(), protocol.Container{ID: shopContainer, Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: now, Mounts: []protocol.Mount{}})
 	// Issued and never used, so it must still enroll after restore.
 	spareToken, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
 	mustTenant(t, err)
@@ -126,7 +126,7 @@ func TestRestoreCarriesControlPlaneState(t *testing.T) {
 		Steps:    []protocol.DeploymentStep{{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}},
 		Services: []protocol.DeploymentIdentity{{Service: "web", ContainerID: newContainer, ImageID: succeeded.Plan.Services[0].ImageID, CreatedUnix: 1800000000}}}))
 	// The host reports the container the apply created, as a live agent would.
-	report(now.Unix()+1, protocol.Container{ID: newContainer, Name: "shop-web", ImageID: succeeded.Plan.Services[0].ImageID, ComposeProject: "shop", CreatedAt: time.Unix(1800000000, 0).UTC()})
+	report(now.Unix()+1, protocol.Container{ID: newContainer, Name: "shop-web", ImageID: succeeded.Plan.Services[0].ImageID, ComposeProject: "shop", CreatedAt: time.Unix(1800000000, 0).UTC(), Mounts: []protocol.Mount{}})
 	applying := planAdopted(t, ts, a, blog.ID, host.ID, "blog", blogContainer, 1)
 	_, _, err = ts.ApplyDeployment(ctx, a, blog.ID, applying.ID, "blog", key, protocol.MaxDeploymentRequestBytes)
 	mustTenant(t, err)

@@ -34,6 +34,11 @@ type PreflightService struct {
 	ImageID          string                     `json:"image_id"`
 	ContainerID      string                     `json:"container_id"`
 	Blockers         []string                   `json:"blockers"`
+	// Mounts is the definition's volumes resolved to host names. DroppedMounts are the mapped
+	// container's mounts a recreate leaves off; DroppedBinds are the binds among them.
+	Mounts        []protocol.Mount `json:"mounts"`
+	DroppedBinds  []protocol.Mount `json:"dropped_binds"`
+	DroppedMounts []protocol.Mount `json:"dropped_mounts"`
 }
 
 // PreflightApplication reports whether a plan may be minted; it approves nothing. Inventory
@@ -192,18 +197,45 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 		}
 	}
 	owned := make(map[string]protocol.InspectionTarget, len(m.Preview.Containers))
+	containers := make(map[string]AdoptedContainer, len(m.Preview.Containers))
 	for _, c := range m.Preview.Containers {
 		target := protocol.InspectionTarget{ContainerID: c.ID, ImageID: c.ImageID, CreatedUnix: c.CreatedAt.Unix()}
 		if target.Validate() == nil {
 			owned[c.ID] = target
 		}
+		containers[c.ID] = c
+	}
+	declared := make(map[string]DeclaredVolume, len(spec.Volumes))
+	for _, v := range spec.Volumes {
+		declared[v.Name] = v
 	}
 	desired := map[portKey]map[string]bool{}
 	blocked := false
 	for _, s := range spec.Services {
-		row := PreflightService{Name: s.Name, Reference: s.Image, ContainerID: m.Bindings[s.Name], Blockers: []string{}}
+		row := PreflightService{Name: s.Name, Reference: s.Image, ContainerID: m.Bindings[s.Name], Blockers: []string{}, Mounts: resolveMounts(m.Preview.Project, declared, s.Volumes), DroppedBinds: []protocol.Mount{}, DroppedMounts: []protocol.Mount{}}
 		if target, ok := owned[row.ContainerID]; ok {
 			row.InspectionTarget = &target
+			c := containers[row.ContainerID]
+			if c.Mounts == nil || c.MountsTruncated {
+				row.Blockers = append(row.Blockers, "mounts_unreported")
+			} else {
+				if slices.ContainsFunc(row.Mounts, func(want protocol.Mount) bool {
+					return want.Kind == protocol.MountBind && !slices.Contains(c.Mounts, want)
+				}) {
+					row.Blockers = append(row.Blockers, "bind_mount_new")
+				}
+				for _, has := range c.Mounts {
+					if slices.ContainsFunc(row.Mounts, func(want protocol.Mount) bool {
+						return want.Kind == has.Kind && want.Source == has.Source && want.Target == has.Target
+					}) {
+						continue
+					}
+					row.DroppedMounts = append(row.DroppedMounts, has)
+					if has.Kind == protocol.MountBind {
+						row.DroppedBinds = append(row.DroppedBinds, has)
+					}
+				}
+			}
 		}
 		if row.ContainerID == "" {
 			if latest {
@@ -248,6 +280,20 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 		blocked = blocked || len(row.Blockers) > 0
 	}
 	out.Executable = !blocked && len(out.Blockers) == 0
+	return out
+}
+
+// resolveMounts turns a service's volumes into runtime mounts: a named volume by its host name
+// in project, a bind by its path.
+func resolveMounts(project string, declared map[string]DeclaredVolume, volumes []ApplicationVolume) []protocol.Mount {
+	out := make([]protocol.Mount, 0, len(volumes))
+	for _, v := range volumes {
+		mount := protocol.Mount{Kind: protocol.MountBind, Source: v.Source, Target: v.Target, ReadOnly: v.ReadOnly}
+		if v.Kind == "named" {
+			mount.Kind, mount.Source = protocol.MountVolume, VolumeHostName(project, declared[v.Source])
+		}
+		out = append(out, mount)
+	}
 	return out
 }
 
