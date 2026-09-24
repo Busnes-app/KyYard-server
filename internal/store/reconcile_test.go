@@ -47,6 +47,11 @@ func TestReconcileAfterStartSettlesInFlightCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending := reconcileCommand(t, st, a, e1)
+	// An answered command beside pending ones: the UPDATE must not overwrite it.
+	answered := reconcileCommand(t, st, a, e1)
+	if err := ts.SettleCommand(ctx, e1, answered.ID, protocol.OutcomeSucceeded, "ok"); err != nil {
+		t.Fatal(err)
+	}
 	done := reconcileCommand(t, st, a, e2)
 	if err := ts.SettleCommand(ctx, e2, done.ID, protocol.OutcomeSucceeded, "ok"); err != nil {
 		t.Fatal(err)
@@ -64,6 +69,9 @@ func TestReconcileAfterStartSettlesInFlightCommands(t *testing.T) {
 		if cmd.Outcome != protocol.OutcomeUnknown || cmd.Detail != reconcileDetail || cmd.SettledAt == nil {
 			t.Fatalf("command %s after reconcile: %+v", id, cmd)
 		}
+	}
+	if cmd, err := ts.ReadCommand(ctx, a, e1, answered.ID); err != nil || cmd.Outcome != protocol.OutcomeSucceeded || cmd.Detail != "ok" {
+		t.Fatalf("answered command on a reconciled endpoint changed: %+v %v", cmd, err)
 	}
 	if cmd, err := ts.ReadCommand(ctx, a, e2, done.ID); err != nil || cmd.Outcome != protocol.OutcomeSucceeded || cmd.Detail != "ok" {
 		t.Fatalf("settled command changed: %+v %v", cmd, err)
@@ -142,7 +150,7 @@ func TestReconcileAfterStartSettlesRowsWithStrayTimestamps(t *testing.T) {
 	if n, err := ts.ReconcileAfterStart(ctx); err != nil || n != 1 {
 		t.Fatalf("reconcile: %d %v", n, err)
 	}
-	if got, err := ts.ReadCommand(ctx, a, e, cmd.ID); err != nil || got.Outcome != protocol.OutcomeUnknown || got.Detail != reconcileDetail {
+	if got, err := ts.ReadCommand(ctx, a, e, cmd.ID); err != nil || got.Outcome != protocol.OutcomeUnknown || got.Detail != reconcileDetail || got.SettledAt == nil || !got.SettledAt.After(cmd.CreatedAt) {
 		t.Fatalf("stray-timestamp row: %+v %v", got, err)
 	}
 }

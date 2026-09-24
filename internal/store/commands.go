@@ -186,7 +186,7 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 }
 
 // MarkCommandDispatched records that the frame reached the socket. Until this is set the
-// command was never sent, so nothing needs reconciling if the server stops here.
+// command was never sent; a restart settles it as unknown so it stops looking pending.
 func (t *tenancyStore) MarkCommandDispatched(ctx context.Context, id string) error {
 	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET dispatched_at=? WHERE id=? AND dispatched_at IS NULL`), time.Now().UTC(), id)
 	return err
