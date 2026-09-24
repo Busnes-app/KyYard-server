@@ -137,11 +137,14 @@ asserts `ErrInvalid`.
 
 ## 6. Volume-name minimum length
 
-Declared volume names need two characters: `applicationVolumeName` becomes
-`^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,63}$`, the importer's refusal text quotes the new grammar, and
+Declared volume names need two characters where a definition enters: the importer refuses a
+one-character name (`Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{1,63}`) and
 `protocol.deploymentVolume` becomes `{1,128}` (a resolved `<project>_<name>` is longer; an
-external volume is a bare name). Tests pin that `a` is refused and `ab` accepted at all
-three layers.
+external volume is a bare name). The store's `applicationVolumeName` stays `{0,63}`, because
+`ValidateApplicationSpec` also runs on stored revisions at preflight, mapping and comparison,
+and a revision saved before this change must keep planning. Tests pin that `a` is refused by
+the importer and the protocol and `ab` accepted; the store test pins that a stored
+one-character name still validates.
 
 ## Documents
 
