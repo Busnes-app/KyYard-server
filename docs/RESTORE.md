@@ -32,8 +32,8 @@ Everything a fresh server needs to be the old one:
 
 | Path in the capsule | What it is |
 |---|---|
-| `data/ky_server.db` | Users, MFA enrolments, devices, SCIM groups, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
-| `data/encryption.key` | 32 bytes. Every TOTP secret and the KyRecovery pairing token are encrypted under it |
+| `data/ky_server.db` | Users, MFA enrolments, devices, SCIM groups, organizations, environments, endpoints and their keys, commands, applications, deployments, registries, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
+| `data/encryption.key` | 32 bytes. Every TOTP secret, registry credential, application environment value, SSO provider secret and the KyRecovery pairing token are encrypted under it |
 | `data/session.key` | 32-byte proof-of-work challenge key, including the active environment override |
 | `data/instance.key` | 32-byte Ed25519 identity seed; restore preserves the control-plane identity |
 | `data/recovery.pub` | The suite recovery public key, so the restored server comes back pinned (present when the backup had a key) |
@@ -41,6 +41,20 @@ Everything a fresh server needs to be the old one:
 
 The restored directory is the live directory in the clear. Treat it like the running server's
 `data/`.
+
+**A capsule is the control plane only.** It holds no workload volumes, no images, no container
+data and nothing from a remote host. Those live on the hosts and are the hosts' own backup
+problem; KyYard's application removal keeps named volumes for the same reason. A restore brings
+back what KyYard knows about the hosts, not what runs on them.
+
+**The capsule records its schema.** The recipe carries `schema_version`, the latest migration
+of the binary that sealed it. The drill check `Schema Version: data/ky_server.db` compares it
+with the snapshot's `schema_migrations` and fails with `database schema is version N, capsule
+expects M` when they differ, typically a data directory last run by a newer binary than the one
+sealing. The restore command does not check the schema. A newer binary migrates a restored
+database forward at first start, and that is one way; an older binary starts on a schema it
+does not know. Restore with the commit that made the capsule (Step 1 pins it), or accept the
+forward migration knowingly.
 
 **This procedure is for SQLite deployments.** A capsule carries `data/ky_server.db` because the
 collector snapshots SQLite with `VACUUM INTO`; on `KY_DB_DRIVER=postgres` no snapshot is
@@ -253,8 +267,8 @@ as before, and start.
 
 The restore proves the service works. It does not make the restored state current or safe.
 Everything comes back as of the capsule's `created_at`: users, passwords, MFA enrolments,
-paired devices and SCIM state. Anything you revoked or changed after that moment is
-undone. New capsules exclude sessions, pending MFA challenges and device pairings from
+paired devices, SCIM state, organizations, endpoints, applications and registries. Anything
+you revoked or changed after that moment is undone. New capsules exclude sessions, pending MFA challenges and device pairings from
 the snapshot. Older capsules and external database dumps may still contain them.
 
 1. For an older capsule or external database dump, revoke authentication grants before
@@ -271,13 +285,24 @@ the snapshot. Older capsules and external database dumps may still contain them.
    server was lost (the restored server's log stops at `created_at`), and re-apply what
    happened after the capsule: disabled accounts, rotated passwords, removed devices, reset
    MFA, SCIM changes.
-3. If the reason for the restore was a suspected compromise rather than hardware loss, treat
+3. Re-check endpoints. The audit walk lists every `endpoint.revoke` after `created_at`:
+   a capsule from before a revocation brings that agent identity back, so revoke it again on
+   the environment screen (Hosts, Revoke). Hosts enrolled after `created_at` are unknown to
+   the restored server; enroll them again. Every command in flight at the capsule moment
+   shows `unknown` with `the server restarted before a result arrived` (one
+   `endpoint.commands.reconciled` audit row per endpoint), and nothing sends them after the
+   restart. A deployment that was applying shows `unknown` until its agent reconnects and
+   re-sends the result, which it keeps for 24 hours. Read the application's deployment
+   history before planning again. A capsule taken between a deployment settling and the
+   agent's next inventory report shows the application's mapping as "adoption changed" until
+   that agent reconnects and reports; that is drift detection working, not data loss.
+4. If the reason for the restore was a suspected compromise rather than hardware loss, treat
    the restored secrets as exposed and rotate the ones that can be rotated. A restore from
    before a compromise brings the attacker's access back with the service unless you do this.
 
-   **Never rotate `encryption.key`.** Every TOTP secret and the KyRecovery pairing token are
-   encrypted under it. Remove it and every user's second factor and the pairing are gone for
-   good, on a server you just recovered.
+   **Never rotate `encryption.key`.** Every TOTP secret, registry credential, application
+   environment value and the KyRecovery pairing token are encrypted under it. Remove it and
+   all of them are gone for good, on a server you just recovered.
 
    What can be rotated, and how:
 
@@ -285,9 +310,10 @@ the snapshot. Older capsules and external database dumps may still contain them.
      stopped and `KY_SESSION_SECRET` unset, remove only `data/session.key`; startup securely
      generates a replacement. If an override is used, replace that encoded 32-byte value in
      its secret store instead. Neither action revokes sessions; use the deletion above.
-   - `instance.key` preserves control-plane identity. Do not copy it to another active
-     installation or casually rotate it. Agent identity recovery/rotation is a later
-     protocol milestone; no agents use this key yet.
+   - `instance.key` is the control plane's identity: its public key is the fingerprint every
+     agent pinned at enrollment, and it derives the built-in local Docker binding. Rotating
+     it changes that fingerprint, so every agent refuses the server. Never rotate it during a
+     restore, and never copy it to another active installation.
    - `KY_SCIM_TOKEN` is the SCIM bearer. Replace it the same way and give the new value to the
      identity provider. If it was never set, the server mints a fresh one at every start.
    - The KyRecovery pairing token: ask the KyRecovery admin to revoke this service and pair
@@ -313,7 +339,8 @@ real custodians and their real cards, and then delete the output. The in-app dri
 capsule format restores; only this proves the cards do.
 
 The in-app drill and `backup-drill` CLI validate the recipe from the capsule actually opened,
-including required files, read-only SQLite integrity and environment-variable presence.
+including required files, read-only SQLite integrity, the schema version and
+environment-variable presence.
 A malformed recipe fails the drill. Concurrent drills on one data directory are refused
 (HTTP 409 or a CLI error); retry after the active drill finishes. The OS releases the lock
 if the process exits. Keep `data/drill.lock` in place; it holds no secret and must not be
