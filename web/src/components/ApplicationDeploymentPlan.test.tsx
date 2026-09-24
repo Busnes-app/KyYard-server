@@ -321,3 +321,12 @@ it('re-reads the plan when refreshKey changes', async () => {
   await screen.findByText(`sha256:${'a'.repeat(64)}`);
   expect(fetcher.mock.calls.filter(c => String(c[0]).endsWith('/deployments')).length).toBe(reads + 1);
 });
+it('lists each service mount and the volumes the plan ensures', async () => {
+  const mounted = { ...plan, plan: { ...plan.plan, volumes: ['shop_db_data', 'shared'], services: [{ ...plan.plan.services[0], mounts: [{ kind: 'volume', source: 'shop_db_data', target: '/data' }, { kind: 'bind', source: '/srv/conf', target: '/etc/app', read_only: true }] }] } };
+  vi.stubGlobal('fetch', stubFetch([mounted]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  expect(await screen.findByText('Volumes to ensure: shop_db_data, shared')).toBeTruthy();
+  expect(screen.getByText('shop_db_data → /data')).toBeTruthy();
+  expect(screen.getByText('/srv/conf → /etc/app').parentElement?.querySelector('.badge')?.textContent).toBe('ro');
+});

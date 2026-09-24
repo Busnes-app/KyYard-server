@@ -1,4 +1,4 @@
-import { ApplicationPreflight } from './ApplicationPreflight';
+import { ApplicationPreflight, MountList, type Mount } from './ApplicationPreflight';
 import { ApplicationUpdates } from './ApplicationUpdates';
 import { ApplicationDeploymentPlan, ApplicationHistory } from './ApplicationDeploymentPlan';
 import { ApplicationMapping } from './ApplicationMapping';
@@ -12,7 +12,7 @@ import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 
 type Draft = { id: string; name: string; latest_revision: number; removed_at?: string | null };
-type Revision = { digest: string; spec: { services: { name: string; image: string; restart?: string; ports?: { target: number; published: number; host_ip?: string; protocol: string }[]; environment?: Record<string, { secret_ref: string }> }[] } };
+type Revision = { digest: string; spec: { services: { name: string; image: string; restart?: string; ports?: { target: number; published: number; host_ip?: string; protocol: string }[]; environment?: Record<string, { secret_ref: string }>; volumes?: Mount[] }[] } };
 
 function RevisionView({ base, draft }: { base: string; draft: Draft }) {
   const [number, setNumber] = useState(draft.latest_revision);
@@ -25,6 +25,7 @@ function RevisionView({ base, draft }: { base: string; draft: Draft }) {
       <ul>{revision.data.spec.services.map((service) => <li key={service.name}>
         <strong>{service.name}</strong> · {service.image} · restart: {service.restart || 'no'}
         {service.ports?.map((port, i) => <div key={i}>Port {port.host_ip || 'all interfaces'}:{port.published} → {port.target}/{port.protocol}</div>)}
+        {service.volumes?.length ? <MountList mounts={service.volumes} /> : null}
         {Object.keys(service.environment ?? {}).length > 0 && <div>Encrypted environment keys: {Object.keys(service.environment ?? {}).join(', ')}</div>}
       </li>)}</ul>
     </>}
@@ -87,7 +88,7 @@ export function Applications({ org, env }: { org: string; env: string }) {
       </li>)}
     </ul>}
     <details><summary>Import Compose draft</summary>
-      <p>Initial supported fields: services with image, environment (explicit quoted strings), restart, and ports (long syntax with target/published, optional host_ip/protocol). Other fields are rejected, including volumes, build, env_file, command, and networks.</p>
+      <p>Initial supported fields: services with image, environment (explicit quoted strings), restart, ports (long syntax with target/published, optional host_ip/protocol) and volumes (a named volume declared under top-level volumes, or a bind with an absolute host path; anonymous volumes are refused). Other fields are rejected, including build, env_file, command, and networks.</p>
       <p>Supply resolved values; variables, YAML anchors and aliases are unsupported. Escape literal dollars as $$. All environment values are encrypted and hidden from saved configuration views.</p>
       <form className="dr-stack" onSubmit={(event) => { event.preventDefault(); void write('POST', base, { name, compose: source }); }}>
         <label htmlFor="application-name">Application name</label>
