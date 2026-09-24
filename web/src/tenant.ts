@@ -24,6 +24,10 @@ export interface Registry { id: string; host: string; name: string; username: st
 // private_registries_enabled is the operator's KY_REGISTRY_ALLOW_PRIVATE, read-only here.
 export interface RegistryPolicy { anonymous_pull_enabled: boolean; private_registries_enabled: boolean }
 
+// Cached update verdicts for one adopted instance; services is [] before the first check.
+export interface ImageCheck { service: string; reference: string; local_digest: string; remote_digest: string; verdict: string; detail: string; checked_at: string }
+export interface UpdateCheck { instance_id: string; mapping_version: number; services: ImageCheck[] }
+
 export const privateDisabled = 'Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).';
 
 export const tenantRoles = ['organization_admin', 'environment_admin', 'operator', 'developer', 'read_only'] as const;
@@ -60,14 +64,15 @@ export function useTenantResource<T>(url: string, refreshKey = ''): { state: Loa
 }
 
 // Writes return a message for the form instead of throwing; 409 codes are user-facing.
-// `texts` lets a screen name its own 403 and 400 refusals.
-export async function tenantWrite(url: string, method: string, body?: unknown, texts: { forbidden?: string; invalid?: string } = {}): Promise<string> {
+// `texts` lets a screen name its own 403 and 400 refusals and its own 409 codes.
+export async function tenantWrite(url: string, method: string, body?: unknown, texts: { forbidden?: string; invalid?: string; conflict?: Record<string, string> } = {}): Promise<string> {
   try {
     const resp = await secureFetch(url, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     if (resp.ok) return '';
     const payload = await resp.json().catch(() => ({}));
     if (payload.code === 'last_administrator') return 'At least one active administrator is required.';
     if (payload.code === 'private_registries_disabled') return privateDisabled;
+    if (resp.status === 409 && texts.conflict && typeof payload.code === 'string' && Object.hasOwn(texts.conflict, payload.code)) return texts.conflict[payload.code];
     if (resp.status === 403) return texts.forbidden ?? 'You do not have permission to do that.';
     if (resp.status === 400 && texts.invalid) return texts.invalid;
     if (resp.status === 404) return 'Not found in this access scope.';
