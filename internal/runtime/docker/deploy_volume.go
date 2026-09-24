@@ -12,30 +12,18 @@ import (
 
 const notOwned = "volume is not owned by this project"
 
+const notPresent = "volume mount not present on the container"
+
 func mountsVolume(mounts []inspectedMount, name string) bool {
 	return slices.ContainsFunc(mounts, func(o inspectedMount) bool { return o.Type == "volume" && o.Name == name })
 }
 
-// mountedBefore reports whether the old container of any frame service mounting name already
-// mounts it: first's from its precondition, the others read here. A read that fails is false.
-// The others' identity is checked by their own precondition before any container is touched.
-func (r *deployRun) mountedBefore(ctx context.Context, name, first string, old []inspectedMount) bool {
-	if mountsVolume(old, name) {
-		return true
-	}
-	for _, s := range r.req.Services {
-		if s.Name == first || !slices.ContainsFunc(s.Mounts, func(m protocol.Mount) bool { return m.Kind == protocol.MountVolume && m.Source == name }) {
-			continue
-		}
-		cctx, cancel := context.WithTimeout(ctx, callBudget)
-		var in struct{ Mounts []inspectedMount }
-		err := r.c.get(cctx, "/containers/"+url.PathEscape(s.Replaces.ContainerID)+"/json", &in)
-		cancel()
-		if err == nil && mountsVolume(in.Mounts, name) {
-			return true
-		}
-	}
-	return false
+// keeps reports that old already has m exactly: the same volume at the same target, with the
+// same write access. A volume the project does not own may only be kept where it is.
+func keeps(old []inspectedMount, m protocol.Mount) bool {
+	return slices.ContainsFunc(old, func(o inspectedMount) bool {
+		return o.Type == "volume" && o.Name == m.Source && o.Destination == m.Target && o.RW == !m.ReadOnly
+	})
 }
 
 // dockerVolume is what the Engine reports for a volume, inspected or created.
@@ -53,9 +41,11 @@ func (v dockerVolume) owned(project string) bool {
 
 // ensureVolumes records a volume step for each volume s mounts that no earlier service did
 // (Validate guarantees every mounted volume is in Volumes). An absent volume is created with
-// Compose's labels. An existing one is mounted only when it is owned by the project or the old
-// container of some service mounting it already does; anything else would let a revision reach
-// another application's data or a host path.
+// Compose's labels. An existing one the project owns may be mounted anywhere. Any other is
+// keep-only, like a bind: s's old container must already mount it at each frame target with the
+// same write access, and every later service's precondition checks its own mounts of it (a
+// `local` volume with device options is a host path by another name). Anything else would let a
+// revision reach another application's data or a host path, or gain write access to it.
 func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentService, old []inspectedMount) {
 	for _, m := range s.Mounts {
 		if m.Kind != protocol.MountVolume || r.ensured[m.Source] {
@@ -68,10 +58,18 @@ func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentServ
 			var v dockerVolume
 			err := r.c.get(cctx, "/volumes/"+url.PathEscape(m.Source), &v)
 			switch {
-			case err == nil && (v.owned(r.req.Project) || r.mountedBefore(ctx, m.Source, s.Name, old)):
+			case err == nil && v.owned(r.req.Project):
 				return protocol.OutcomeSucceeded, ""
-			case err == nil:
+			case err == nil && !mountsVolume(old, m.Source):
 				return protocol.OutcomeDenied, notOwned
+			case err == nil:
+				for _, sm := range s.Mounts {
+					if sm.Kind == protocol.MountVolume && sm.Source == m.Source && !keeps(old, sm) {
+						return protocol.OutcomeDenied, notPresent
+					}
+				}
+				r.keepOnly[m.Source] = true
+				return protocol.OutcomeSucceeded, ""
 			case statusOf(err) != http.StatusNotFound:
 				return r.outcomeFor(cctx, err, statusOf(err))
 			}

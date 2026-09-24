@@ -153,38 +153,53 @@ func TestDeployVolumeFailureTouchesNoContainer(t *testing.T) {
 // project's plain local volume; a foreign one, or a local volume that is a host path by another
 // name, is denied before any container is touched.
 func TestDeployVolumeOwnership(t *testing.T) {
-	const notOwned = "volume is not owned by this project"
+	const notOwned, notPresent = "volume is not owned by this project", "volume mount not present on the container"
 	project := map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.volume": "cache"}
 	hostPath := map[string]string{"type": "none", "o": "bind", "device": "/"}
+	hostRoot := map[string]any{"Name": "hostroot", "Driver": "local", "Options": hostPath}
+	roOnOld := map[string]any{"Type": "volume", "Name": "hostroot", "Destination": "/cache", "RW": false}
 	for name, tc := range map[string]struct {
-		volume   string // the frame mounts it at /cache and lists it in Volumes
+		volume   string // the frame mounts it at target (default /cache) and lists it in Volumes
+		target   string
+		ro       bool
+		oldMount map[string]any // added to the old container's mounts (shop_data at /data, rw, is there already)
 		existing map[string]any
 		created  map[string]any // what a racing create answers with instead of the new volume
 		outcome  string
 		detail   string
 		creates  int
 	}{
-		"absent is created":            {"shop_cache", nil, nil, protocol.OutcomeSucceeded, "", 1},
-		"same-project local accepted":  {"shop_cache", map[string]any{"Name": "shop_cache", "Driver": "local", "Labels": project}, nil, protocol.OutcomeSucceeded, "", 0},
-		"foreign project denied":       {"shop_cache", map[string]any{"Name": "shop_cache", "Driver": "local", "Labels": map[string]string{"com.docker.compose.project": "billing"}}, nil, protocol.OutcomeDenied, notOwned, 0},
-		"unlabelled denied":            {"kyyard_data", map[string]any{"Name": "kyyard_data", "Driver": "local"}, nil, protocol.OutcomeDenied, notOwned, 0},
-		"local host path denied":       {"shop_cache", map[string]any{"Name": "shop_cache", "Driver": "local", "Options": hostPath}, nil, protocol.OutcomeDenied, notOwned, 0},
-		"project host path denied":     {"shop_cache", map[string]any{"Name": "shop_cache", "Driver": "local", "Labels": project, "Options": hostPath}, nil, protocol.OutcomeDenied, notOwned, 0},
-		"project other driver denied":  {"shop_cache", map[string]any{"Name": "shop_cache", "Driver": "nfs", "Labels": project}, nil, protocol.OutcomeDenied, notOwned, 0},
-		"already mounted accepted":     {"shop_data", map[string]any{"Name": "shop_data", "Driver": "local", "Options": hostPath}, nil, protocol.OutcomeSucceeded, "", 0},
-		"racing foreign create denied": {"shop_cache", nil, map[string]any{"Name": "shop_cache", "Driver": "local", "Options": hostPath}, protocol.OutcomeDenied, notOwned, 1},
-		"absent external denied":       {"shared", nil, nil, protocol.OutcomeDenied, "volume does not exist", 0},
-		"absent other project denied":  {"billing_cache", nil, nil, protocol.OutcomeDenied, "volume does not exist", 0},
+		"absent is created":                 {volume: "shop_cache", outcome: protocol.OutcomeSucceeded, creates: 1},
+		"project-owned, new to the service": {volume: "shop_cache", existing: map[string]any{"Name": "shop_cache", "Driver": "local", "Labels": project}, outcome: protocol.OutcomeSucceeded},
+		"foreign project denied":            {volume: "shop_cache", existing: map[string]any{"Name": "shop_cache", "Driver": "local", "Labels": map[string]string{"com.docker.compose.project": "billing"}}, outcome: protocol.OutcomeDenied, detail: notOwned},
+		"unlabelled denied":                 {volume: "kyyard_data", existing: map[string]any{"Name": "kyyard_data", "Driver": "local"}, outcome: protocol.OutcomeDenied, detail: notOwned},
+		"local host path denied":            {volume: "shop_cache", existing: map[string]any{"Name": "shop_cache", "Driver": "local", "Options": hostPath}, outcome: protocol.OutcomeDenied, detail: notOwned},
+		"project host path denied":          {volume: "shop_cache", existing: map[string]any{"Name": "shop_cache", "Driver": "local", "Labels": project, "Options": hostPath}, outcome: protocol.OutcomeDenied, detail: notOwned},
+		"project other driver denied":       {volume: "shop_cache", existing: map[string]any{"Name": "shop_cache", "Driver": "nfs", "Labels": project}, outcome: protocol.OutcomeDenied, detail: notOwned},
+		"already mounted, same place":       {volume: "shop_data", target: "/data", existing: map[string]any{"Name": "shop_data", "Driver": "local", "Options": hostPath}, outcome: protocol.OutcomeSucceeded},
+		"already mounted, other target":     {volume: "shop_data", existing: map[string]any{"Name": "shop_data", "Driver": "local", "Options": hostPath}, outcome: protocol.OutcomeDenied, detail: notPresent},
+		"host path read-only, frame rw":     {volume: "hostroot", oldMount: roOnOld, existing: hostRoot, outcome: protocol.OutcomeDenied, detail: notPresent},
+		"host path read-only, frame ro":     {volume: "hostroot", ro: true, oldMount: roOnOld, existing: hostRoot, outcome: protocol.OutcomeSucceeded},
+		"racing foreign create denied":      {volume: "shop_cache", created: map[string]any{"Name": "shop_cache", "Driver": "local", "Options": hostPath}, outcome: protocol.OutcomeDenied, detail: notOwned, creates: 1},
+		"absent external denied":            {volume: "shared", outcome: protocol.OutcomeDenied, detail: "volume does not exist"},
+		"absent other project denied":       {volume: "billing_cache", outcome: protocol.OutcomeDenied, detail: "volume does not exist"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
 			withBind(f) // the old container mounts shop_data at /data
+			if tc.oldMount != nil {
+				f.oldContainer["Mounts"] = append(f.oldContainer["Mounts"].([]any), tc.oldMount)
+			}
 			f.volumes = map[string]any{}
 			if tc.existing != nil {
 				f.volumes[tc.volume] = tc.existing
 			}
+			target := tc.target
+			if target == "" {
+				target = "/cache"
+			}
 			s := webService()
-			s.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: tc.volume, Target: "/cache"}}
+			s.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: tc.volume, Target: target, ReadOnly: tc.ro}}
 			req := request(s)
 			req.Volumes = []string{tc.volume}
 			f.createdInstead = tc.created // free when inspected, taken by the time the create lands
@@ -300,31 +315,57 @@ func TestDeployRefusesAnUnlistedVolumeMount(t *testing.T) {
 	}
 }
 
-// The already-mounted exemption covers every service mounting the volume, not only the first.
-func TestDeployVolumeMountedByALaterService(t *testing.T) {
+// A volume that is not the project's own is kept only where each service already has it: same
+// name, target and read-only flag on that service's old container. It cannot move to another
+// service, nor gain write access. A project-owned volume may be shared freely.
+func TestDeployKeepOnlyVolumePerService(t *testing.T) {
+	const notPresent = "volume mount not present on the container"
+	ext := func(rw bool) map[string]any {
+		return map[string]any{"Type": "volume", "Name": "shared_ext", "Destination": "/ext", "RW": rw}
+	}
 	for name, tc := range map[string]struct {
-		dbMounts []any
-		outcome  string
+		volume             map[string]any
+		webOld, dbOld      []any
+		webMounts, dbMount bool
+		outcome            string
+		failing            string // "service step" of the refused step
+		detail             string
 	}{
-		"second service's old container has it": {[]any{map[string]any{"Type": "volume", "Name": "shared_ext", "Destination": "/ext", "RW": true}}, protocol.OutcomeSucceeded},
-		"neither has it":                        {[]any{}, protocol.OutcomeDenied},
+		"both kept in place": {map[string]any{"Name": "shared_ext", "Driver": "local"}, []any{ext(true)}, []any{ext(true)}, true, true, protocol.OutcomeSucceeded, "", ""},
+		"only the other service's container has it": {map[string]any{"Name": "shared_ext", "Driver": "local"}, []any{}, []any{ext(true)}, true, true, protocol.OutcomeDenied,
+			"web volume", "volume is not owned by this project"},
+		"moved to a service that lacks it": {map[string]any{"Name": "shared_ext", "Driver": "local"}, []any{ext(true)}, []any{}, false, true, protocol.OutcomeDenied,
+			"db volume", "volume is not owned by this project"},
+		"added to a second service": {map[string]any{"Name": "shared_ext", "Driver": "local"}, []any{ext(true)}, []any{}, true, true, protocol.OutcomeDenied,
+			"db precondition", notPresent},
+		"project-owned added to a second service": {map[string]any{"Name": "shared_ext", "Driver": "local", "Labels": map[string]string{"com.docker.compose.project": "shop"}}, []any{}, []any{}, true, true, protocol.OutcomeSucceeded, "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
-			f.volumes = map[string]any{"shared_ext": map[string]any{"Name": "shared_ext", "Driver": "local"}} // unlabelled: not owned
-			f.otherMounts = tc.dbMounts
+			f.volumes = map[string]any{"shared_ext": tc.volume}
+			f.oldContainer["Mounts"], f.otherMounts = tc.webOld, tc.dbOld
 			web, db := webService(), mountedDB()
-			web.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: "shared_ext", Target: "/ext"}}
-			db.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: "shared_ext", Target: "/ext"}}
+			web.Mounts, db.Mounts = []protocol.Mount{}, []protocol.Mount{} // present: nil is a server older than mounts
+			if tc.webMounts {
+				web.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: "shared_ext", Target: "/ext"}}
+			}
+			if tc.dbMount {
+				db.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: "shared_ext", Target: "/ext"}}
+			}
 			req := request(web, db)
 			req.Volumes = []string{"shared_ext"}
 			res := f.client().Deploy(context.Background(), req)
-			if res.Outcome != tc.outcome || res.Steps[1].Step != protocol.StepVolume || res.Steps[1].Service != "web" || res.Steps[1].Outcome != tc.outcome {
+			if res.Outcome != tc.outcome {
 				t.Fatalf("%+v", res)
 			}
+			for _, s := range res.Steps {
+				if s.Outcome != protocol.OutcomeSucceeded && s.Outcome != protocol.OutcomeSkipped && (s.Service+" "+s.Step != tc.failing || s.Detail != tc.detail) {
+					t.Fatalf("refused at %+v, want %s %q", s, tc.failing, tc.detail)
+				}
+			}
 			for _, c := range f.steps() {
-				if c == "POST /volumes/create" {
-					t.Fatal("an existing volume was created")
+				if c == "POST /volumes/create" || (tc.outcome != protocol.OutcomeSucceeded && !strings.HasPrefix(c, "GET ")) {
+					t.Fatalf("unexpected call: %v", f.steps())
 				}
 			}
 		})

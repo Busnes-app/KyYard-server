@@ -45,7 +45,7 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) 
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
-	r := &deployRun{c: c, parent: parent, req: req, res: res, ensured: map[string]bool{}}
+	r := &deployRun{c: c, parent: parent, req: req, res: res, ensured: map[string]bool{}, keepOnly: map[string]bool{}}
 	// The daemon default runtime is what a container created without one gets; read once per run.
 	ictx, icancel := context.WithTimeout(ctx, callBudget)
 	var info struct{ DefaultRuntime string }
@@ -77,6 +77,7 @@ type deployRun struct {
 	defaultRuntime string          // "" when it could not be read; the first precondition then fails
 	pullDeadline   time.Time       // shared by every pull; see pullPhase
 	ensured        map[string]bool // volumes whose step is recorded
+	keepOnly       map[string]bool // existing volumes not the project's own: each service may only keep its mounts of them
 }
 
 // step records one outcome. The first non-success fixes the run's outcome and detail.
@@ -337,6 +338,9 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 				return o.Type == "bind" && o.Source == m.Source && o.Destination == m.Target && o.RW == !m.ReadOnly
 			}) {
 				return protocol.OutcomeDenied, "bind mount not present on the container"
+			}
+			if m.Kind == protocol.MountVolume && r.keepOnly[m.Source] && !keeps(*before.Mounts, m) {
+				return protocol.OutcomeDenied, notPresent
 			}
 		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
