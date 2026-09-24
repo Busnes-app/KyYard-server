@@ -204,11 +204,17 @@ func (d *deployer) handleRemoval(sessionCtx context.Context, endpointID string, 
 // run is called on the session loop, which is out's only reader, so every send happens off it.
 func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, endpoint, endpointID string, validate func(time.Time) error, exec func(context.Context) protocol.DeploymentResult, noRuntime string) {
 	// A re-sent frame for the live run: a refusal would settle the row it is still applying,
-	// so say nothing and let the real result answer, even once the frame's deadline has passed.
+	// so say nothing and let the real result answer. A remembered result is replayed. Both
+	// hold whatever the frame carries, even once its deadline has passed.
 	d.mu.Lock()
 	live := id != "" && d.running == id
+	prior, replay := d.done[id]
 	d.mu.Unlock()
 	if live {
+		return
+	}
+	if replay {
+		go send(sessionCtx, out, resultFrame(prior.Result))
 		return
 	}
 	if err := validate(time.Now()); err != nil {
@@ -224,7 +230,7 @@ func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, endp
 		return
 	}
 	d.mu.Lock()
-	prior, replay := d.done[id]
+	prior, replay = d.done[id]
 	running := d.running
 	if !replay && exec != nil && running == "" {
 		d.running = id

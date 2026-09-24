@@ -789,3 +789,30 @@ func TestDeployerPruneKeepsAStartedRun(t *testing.T) {
 		}
 	}
 }
+
+// A remembered result is replayed whatever the frame carrying its ID: a re-sent frame for a
+// run settled unknown after a restart is answered from the ledger even past its deadline.
+func TestDeployerReplaysTheLedgerPastTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	req := testRequest("ep_1")
+	newDeployer(context.Background(), dir, &Options{}).begin(req.Deployment)
+	var ran atomic.Bool
+	d := newDeployer(context.Background(), dir, &Options{Deploy: func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
+		ran.Store(true)
+		return protocol.DeploymentResult{}
+	}})
+	req.IssuedAt, req.Deadline = time.Now().Add(-4*time.Minute), time.Now().Add(-time.Minute)
+	if req.Validate(time.Now()) == nil {
+		t.Fatal("the frame must be past its deadline")
+	}
+	raw, _ := json.Marshal(req)
+	out := make(chan outFrame, 1)
+	d.handleApply(context.Background(), "ep_1", raw, out)
+	var res protocol.DeploymentResult
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Detail != "the agent restarted after replacement began; inspect the host" {
+		t.Fatalf("expired re-sent frame: %+v", res)
+	}
+	if ran.Load() {
+		t.Fatal("a remembered deployment ran again")
+	}
+}
