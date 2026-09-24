@@ -166,7 +166,7 @@ func TestApplicationMappingRefusedWhileApplying(t *testing.T) {
 	st, a, app, _, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); !errors.Is(err, ErrDeploymentInProgress) {

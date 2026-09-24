@@ -21,9 +21,9 @@ const pullBudget = 10 * time.Minute
 // pullImage fetches a reference onto this host. The reference travels as a query parameter, so
 // it is escaped rather than concatenated, exactly as a container identifier is.
 //
-// No credential is sent. Registry credentials are M7a, and until they exist a private registry
-// answers with an authorization failure, which is reported as a refusal naming the reason
-// rather than as a generic failure an operator would have to guess at.
+// No credential is sent: credentials travel only with a deployment, which pulls by digest. A
+// private registry's authorization failure is reported as a refusal naming that route rather
+// than as a generic failure an operator would have to guess at.
 func (c *Client) pullImage(ctx context.Context, reference string) (outcome, detail string) {
 	if !protocol.ValidImageReference(reference) {
 		return protocol.OutcomeDenied, "that is not an image reference"
@@ -59,9 +59,8 @@ func (c *Client) pullImage(ctx context.Context, reference string) (outcome, deta
 }
 
 // credentialsMissing is the same sentence wherever the registry asks for one, because an
-// operator should not have to work out that two different messages mean the same missing
-// feature.
-const credentialsMissing = "this registry needs a credential, and registry credentials are not implemented yet"
+// operator should not have to work out that two different messages mean the same thing.
+const credentialsMissing = "this registry needs a credential; pull it through a deployment, which carries the organization's registry credential"
 
 // readPullStream decides what a pull did from the progress the Engine streams under a 200. It
 // reads to the end rather than buffering a slice of it: a stream cut short at a byte ceiling
@@ -71,30 +70,8 @@ func readPullStream(body io.Reader) (outcome, detail string) {
 	if body == nil {
 		return protocol.OutcomeUnknown, "the runtime returned no progress to read"
 	}
-	scanner := bufio.NewScanner(body)
-	// One line per layer per update; a single line far past this is not progress we can read.
-	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
-	var failure string
-	for scanner.Scan() {
-		var event struct {
-			Error       string `json:"error"`
-			ErrorDetail struct {
-				Message string `json:"message"`
-			} `json:"errorDetail"`
-		}
-		// Decoded rather than searched for a substring: a progress line that merely mentions
-		// the word would otherwise read as a failure.
-		if json.Unmarshal(scanner.Bytes(), &event) != nil {
-			continue
-		}
-		if event.Error != "" {
-			failure = event.Error
-			if event.ErrorDetail.Message != "" {
-				failure = event.ErrorDetail.Message
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	failure, err := scanPullStream(body)
+	if err != nil {
 		// The stream ended badly, so what the pull did is genuinely unknown. Saying so is the
 		// honest answer; saying "succeeded" would be a guess in the dangerous direction.
 		return protocol.OutcomeUnknown, bound("the progress stream ended early: "+err.Error(), protocol.MaxResultDetailBytes)
@@ -106,6 +83,36 @@ func readPullStream(body io.Reader) (outcome, detail string) {
 		return protocol.OutcomeFailed, bound(failure, protocol.MaxResultDetailBytes)
 	}
 	return protocol.OutcomeSucceeded, ""
+}
+
+// maxPullLineBytes bounds one progress line (one per layer per update); the stream itself is
+// read to its end.
+const maxPullLineBytes = 1 << 20
+
+// scanPullStream reads a pull's progress to EOF and returns the last error line's text, if any.
+// Lines are decoded rather than searched for a substring: a progress line that merely mentions
+// the word would otherwise read as a failure.
+func scanPullStream(body io.Reader) (failure string, err error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64<<10), maxPullLineBytes)
+	for scanner.Scan() {
+		var event struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		if event.Error != "" {
+			failure = event.Error
+			if event.ErrorDetail.Message != "" {
+				failure = event.ErrorDetail.Message
+			}
+		}
+	}
+	return failure, scanner.Err()
 }
 
 // removeImage deletes a reference from this host. An image a container still uses is refused

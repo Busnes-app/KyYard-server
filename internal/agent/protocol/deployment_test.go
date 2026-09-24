@@ -98,6 +98,180 @@ func TestDeploymentRequestValidation(t *testing.T) {
 	}
 }
 
+// pulled turns service i into one the agent pulls from host, pinned to a digest.
+func pulled(r *DeploymentRequest, i int, host string) {
+	d := "sha256:" + strings.Repeat("e", 64)
+	r.Services[i].ImageID = ""
+	r.Services[i].Pull = &ImagePull{Reference: host + "/acme/web@" + d, Digest: d}
+}
+
+// withServices grows r to n services, each with its own name, container and replaced identity.
+func withServices(r *DeploymentRequest, n int) {
+	base := r.Services[0]
+	for i := len(r.Services); i < n; i++ {
+		s := base
+		s.Name, s.ContainerName, s.Replaces.ContainerID, s.Ports = fmt.Sprintf("s%d", i), fmt.Sprintf("shop-s%d-1", i), fmt.Sprintf("%064x", i), nil
+		r.Services = append(r.Services, s)
+	}
+}
+
+func TestDeploymentRequestPull(t *testing.T) {
+	now := time.Now()
+	for name, mutate := range map[string]func(*DeploymentRequest){
+		"pull":           func(r *DeploymentRequest) { pulled(r, 0, "ghcr.io") },
+		"localhost host": func(r *DeploymentRequest) { pulled(r, 0, "localhost") },
+		"host with port": func(r *DeploymentRequest) { pulled(r, 0, "registry.lan:5000") },
+		"port, no dot":   func(r *DeploymentRequest) { pulled(r, 0, "registry:5000") },
+		"pull and tag": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "ghcr.io/acme/web:1.2"
+		},
+		"pull and auth": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Registries = map[string]RegistryAuth{"ghcr.io": {Username: "bot", Secret: "token"}}
+		},
+		"secret at cap": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Registries = map[string]RegistryAuth{"ghcr.io": {Username: strings.Repeat("u", 255), Secret: strings.Repeat("s", MaxRegistryAuthSecretBytes)}}
+		},
+		"hosts at cap": func(r *DeploymentRequest) {
+			withServices(r, MaxRegistryAuthHosts)
+			r.Registries = map[string]RegistryAuth{}
+			for i := range r.Services {
+				host := fmt.Sprintf("r%d.example", i)
+				pulled(r, i, host)
+				r.Registries[host] = RegistryAuth{Secret: "token"}
+			}
+		},
+	} {
+		r := goodDeployment(now)
+		mutate(&r)
+		if err := r.Validate(now); err != nil {
+			t.Fatalf("%s refused: %v", name, err)
+		}
+	}
+	for name, mutate := range map[string]func(*DeploymentRequest){
+		"pull with image id": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].ImageID = "sha256:" + strings.Repeat("a", 64)
+		},
+		"no pull no image id": func(r *DeploymentRequest) { r.Services[0].ImageID = "" },
+		"pull by tag": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Reference = "ghcr.io/acme/web:1.2"
+		},
+		// Digest agrees with the pin, so only the sha256: rule refuses it.
+		"pull pinned by tag": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Reference, r.Services[0].Pull.Digest = "ghcr.io/acme/web:1.2", "1.2"
+		},
+		"tag with digest": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = r.Services[0].Pull.Reference
+		},
+		"tag without tag": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "ghcr.io/acme/web"
+		},
+		"tag invalid": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "ghcr.io/../web:1.2"
+		},
+		"tag other repository": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "ghcr.io/acme/api:1.2"
+		},
+		"tag other host": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "quay.io/acme/web:1.2"
+		},
+		"pull without host": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Reference = strings.TrimPrefix(r.Services[0].Pull.Reference, "ghcr.io/")
+		},
+		"pull single component": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Reference = "nginx@" + r.Services[0].Pull.Digest
+		},
+		"pull digest mismatch": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Digest = "sha256:" + strings.Repeat("f", 64)
+		},
+		"pull bad reference": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Reference = "ghcr.io/../web@" + r.Services[0].Pull.Digest
+		},
+		"auth for unpulled host": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Registries = map[string]RegistryAuth{"quay.io": {Secret: "token"}}
+		},
+		"auth without pull": func(r *DeploymentRequest) {
+			r.Registries = map[string]RegistryAuth{"ghcr.io": {Secret: "token"}}
+		},
+		"too many hosts": func(r *DeploymentRequest) {
+			withServices(r, MaxRegistryAuthHosts+1)
+			r.Registries = map[string]RegistryAuth{}
+			for i := range r.Services {
+				host := fmt.Sprintf("r%d.example", i)
+				pulled(r, i, host)
+				r.Registries[host] = RegistryAuth{Secret: "token"}
+			}
+		},
+		"empty secret": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Registries = map[string]RegistryAuth{"ghcr.io": {Username: "bot"}}
+		},
+		"secret over cap": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Registries = map[string]RegistryAuth{"ghcr.io": {Secret: strings.Repeat("s", MaxRegistryAuthSecretBytes+1)}}
+		},
+		"secret nul": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Registries = map[string]RegistryAuth{"ghcr.io": {Secret: "a\x00b"}}
+		},
+		"secret not utf-8": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Registries = map[string]RegistryAuth{"ghcr.io": {Secret: "a\xffb"}}
+		},
+		"username over cap": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Registries = map[string]RegistryAuth{"ghcr.io": {Username: strings.Repeat("u", 256), Secret: "token"}}
+		},
+	} {
+		r := goodDeployment(now)
+		mutate(&r)
+		if r.Validate(now) == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+}
+
+func TestImagePullHost(t *testing.T) {
+	d := "@sha256:" + strings.Repeat("e", 64)
+	for ref, want := range map[string]string{
+		"ghcr.io/acme/web" + d:              "ghcr.io",
+		"registry.lan:5000/web" + d:         "registry.lan:5000",
+		"registry:5000/app" + d:             "registry:5000",
+		"localhost/web" + d:                 "localhost",
+		"acme/web" + d:                      "",
+		"nginx" + d:                         "",
+		"ghcr.io" + d:                       "",
+		"ghcr.io/../web" + d:                "",
+		"sha256:" + strings.Repeat("e", 64): "",
+	} {
+		if got := (ImagePull{Reference: ref}).Host(); got != want {
+			t.Errorf("Host(%q) = %q, want %q", ref, got, want)
+		}
+	}
+}
+
+// The caps are wire bounds agents already built against; a change must be deliberate.
+func TestDeploymentCaps(t *testing.T) {
+	if MaxDeploymentRequestBytes != 327680 || MaxDeploymentRequestBytesLegacy != 196608 || MaxDeploymentResultBytes != 163840 || MaxRegistryAuthHosts != 16 || MaxRegistryAuthSecretBytes != 4096 {
+		t.Fatal("a deployment wire cap changed")
+	}
+}
+
 func goodRemoval(now time.Time) RemovalRequest {
 	return RemovalRequest{
 		Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", Deadline: now.Add(5 * time.Minute),
@@ -160,9 +334,11 @@ func TestDeploymentResultValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*DeploymentResult){
-		"outcome":      func(r *DeploymentResult) { r.Outcome = "done" },
-		"step name":    func(r *DeploymentResult) { r.Steps[0].Step = "pull" },
-		"step outcome": func(r *DeploymentResult) { r.Steps[0].Outcome = "ok" },
+		"outcome":          func(r *DeploymentResult) { r.Outcome = "done" },
+		"step name":        func(r *DeploymentResult) { r.Steps[0].Step = "fetch" },
+		"image digest":     func(r *DeploymentResult) { r.Services[0].ImageDigest = "sha256:" + strings.Repeat("B", 64) },
+		"image digest tag": func(r *DeploymentResult) { r.Services[0].ImageDigest = "latest" },
+		"step outcome":     func(r *DeploymentResult) { r.Steps[0].Outcome = "ok" },
 		"step detail": func(r *DeploymentResult) {
 			r.Steps[0].Outcome, r.Steps[0].Detail = OutcomeFailed, strings.Repeat("d", MaxDeploymentStepDetailBytes+1)
 		},
@@ -180,6 +356,15 @@ func TestDeploymentResultValidation(t *testing.T) {
 			t.Fatalf("%s accepted", name)
 		}
 	}
+	for _, step := range []string{StepImage, StepPull} {
+		r := good
+		r.Steps = []DeploymentStep{{Service: "web", Step: step, Outcome: OutcomeSucceeded}}
+		r.Services = []DeploymentIdentity{good.Services[0]}
+		r.Services[0].ImageDigest = "sha256:" + strings.Repeat("d", 64)
+		if err := r.Validate(); err != nil {
+			t.Fatalf("%s step with a pulled identity refused: %v", step, err)
+		}
+	}
 	skipped := good
 	skipped.Steps = []DeploymentStep{{Service: "web", Step: StepStop, Outcome: OutcomeSkipped}}
 	if err := skipped.Validate(); err != nil {
@@ -191,7 +376,7 @@ func TestDeploymentResultValidation(t *testing.T) {
 // Validate allows a detail only on the step that ended the run; succeeded and skipped steps carry
 // none. The run's own detail is at its maximum in every case.
 func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
-	steps := []string{StepPrecondition, StepImage, StepRename, StepCreate, StepStop, StepStart, StepRemove}
+	steps := []string{StepPrecondition, StepPull, StepRename, StepCreate, StepStop, StepStart, StepRemove}
 	detail := strings.Repeat("d", MaxDeploymentStepDetailBytes)
 	build := func(outcome string, stepOutcome func(service, step int) string, identities int) DeploymentResult {
 		r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: outcome, Detail: strings.Repeat("r", MaxResultDetailBytes)}
@@ -205,7 +390,7 @@ func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
 				r.Steps = append(r.Steps, s)
 			}
 			if i < identities {
-				r.Services = append(r.Services, DeploymentIdentity{Service: name, ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), CreatedUnix: 1700000000})
+				r.Services = append(r.Services, DeploymentIdentity{Service: name, ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), ImageDigest: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000})
 			}
 		}
 		return r

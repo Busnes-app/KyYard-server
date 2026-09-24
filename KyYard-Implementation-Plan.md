@@ -124,7 +124,7 @@ Provide deploy/update/remove, deployment history, drift display, and deliberate 
 
 ### M7a — Manual updates and 0.1 completion
 
-**PR 16: registry access, detection, deliberate recreate.** Add scoped registries/encrypted credentials with read/manage permissions; credential use is gated by the using operation's own permission. Compare image digests, represent architecture/platform and unavailable/private registry failures, and report updates without deploying. Operator approval produces a previewed M6 deployment; pin exact chosen digests and retain prior references. Short-lived agent delivery handles credentials in memory where possible and removes temporary files on failure/restart.
+**PR 16: registry access, detection, deliberate recreate.** Add scoped registries/encrypted credentials with read/manage permissions; credential use is gated by the using operation's own permission. Compare image digests, represent architecture/platform and unavailable/private registry failures, and report updates without deploying. Operator approval produces a previewed M6 deployment; pin exact chosen digests and retain prior references. Agent delivery holds credentials in memory only for the run and never writes them to disk.
 
 **PR 17: recovery and operator acceptance.** Complete capsule coverage and restore verification for every new control-plane table and required key/secret. Exercise recovery to a clean installation with endpoint reconnect, revoked identities and pending/unknown commands; stale restored commands must not execute. Clarify that control-plane backup does not back up workload volumes or remote host data. Validate the full operator journey in section 7.
 
@@ -245,7 +245,21 @@ Implemented M7a PR A (`feat/registries`): per-organization registries with write
 
 Implemented M7a PR B (`feat/update-detection`): on-demand update detection for an adopted, mapped instance under `application.deploy`. Each mapped service's host repository digest is compared with the registry's (`Head`, credential in memory only, no transaction open during registry calls) and cached in `image_checks` as `current`, `update_available`, `pinned`, `unknown_local` or `registry_error` with a fixed detail; a check refuses to write if the mapping, revision or containers changed mid-check, and a succeeded apply clears the rows. The Updates panel shows them. Nothing pulls or deploys. Spec `docs/superpowers/specs/2026-09-23-update-detection-design.md`.
 
-Next, M7a PR C: a plan pins a repository digest, the agent gains a `pull` step with the credential in the frame, carrying forward from M6 a closed step-detail vocabulary (currently fixed text), a started-marker in the agent's deployment ledger, refusing a request whose deadline implies host/server clock skew, and plan-time inspection of live host configuration beyond the stored precondition identity.
+Implemented M7a PR C (`feat/pull-step`): a plan with `update` pins each named service to a fresh registry digest (`Head` under `application.deploy`, `registry_*` blockers, a server-wide cap of 4 registry operations); apply carries the credential once per pulled host in the frame, only to an agent advertising `deployment.pull`, and re-checks the anonymous-pull policy; the agent pulls every service by digest before replacing any, verifies the pulled repository digest and never persists the credential; settle accepts a pulled identity only at the planned digest. The Updates panel offers **Plan update**; `application.update` is retired in favour of plan plus apply under `application.deploy`. Real Docker CI runs the pull step for `alpine` by digest (`KY_TEST_DOCKER_PULL_DIGEST`; the image is already present, so the download itself is not exercised); an authenticated pull from a private registry against a real daemon is unproven. Spec `docs/superpowers/specs/2026-09-23-pull-step-design.md`.
+
+M7a's manual update path (section 4 PR 16) is complete: PR A #58, PR B #59, PR C `feat/pull-step`. PR 17 (recovery and operator acceptance, including the section 7 script) remains before the M7a gate.
+
+Next, M7a PR D (hardening), carried from M6 and PR C review:
+- Closed step-detail vocabulary (details are fixed text today, not a closed set).
+- A started-marker in the agent's deployment ledger.
+- Refusing a request whose deadline implies host/server clock skew.
+- Plan-time inspection of live host configuration beyond the stored precondition identity; also re-check the precondition at the start of each replacement, since pulls widen the gap between precondition and rename (an in-place `docker update` in that gap is not caught).
+- Audit correlation IDs linking plan, apply and settle.
+- Refuse at plan time a plan whose frame would exceed 16 credentialed hosts or 320 KiB; today only apply refuses it.
+- Put update plans under the per-application guard, so one user cannot fill all 4 registry slots with plans for one application.
+- Mixed-version agents: a pulling plan is gated on `deployment.pull` only at apply (501, nothing sent); an older agent's operator learns it no earlier.
+
+Then M7b (automated update policies, maintenance windows, health validation and eligible rollback).
 
 The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

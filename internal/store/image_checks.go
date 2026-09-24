@@ -207,17 +207,8 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 			return err
 		}
 		// Settle, remap and revision append write the application row; locking it first
-		// serializes them with the comparison. SQLite's single writer already does.
-		lock := ""
-		if t.store.driver == "postgres" {
-			lock = " FOR UPDATE"
-		}
-		var one int
-		err := tx.QueryRowContext(wctx, t.store.rebind(`SELECT 1 FROM applications WHERE id=? AND organization_id=? AND environment_id=?`+lock), id.String(), a.OrganizationID, a.EnvironmentID).Scan(&one)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrAdoptionChanged
-		}
-		if err != nil {
+		// serializes them with the comparison.
+		if err := t.lockApplication(wctx, tx, a, id.String()); err != nil {
 			return err
 		}
 		current, err := t.imageCheckState(wctx, tx, a, id.String(), instance)

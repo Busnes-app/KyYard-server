@@ -211,7 +211,20 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
-	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input)
+	if len(input.Update) > 0 {
+		// Authorize before the slot, so a caller who may not deploy can neither see nor hold it.
+		if err := s.store.Tenancy().CheckImageUpdateAccess(r.Context(), a, r.PathValue("application")); err != nil {
+			s.tenantError(w, err)
+			return
+		}
+		release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
+		if !ok {
+			return
+		}
+		defer release()
+		extendRegistryDeadline(w)
+	}
+	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input, s.resolver(), s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
 	if err != nil {
 		s.tenantError(w, err)
 		return
@@ -260,11 +273,20 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable deployments")
 		return
 	}
+	pulls := slices.ContainsFunc(plan.Plan.Services, func(ps store.PlannedService) bool { return ps.PullDigest != "" })
+	if pulls && !slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentPull) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable deployments that pull images")
+		return
+	}
 	if !s.Connected(plan.EndpointID) {
 		s.tenantError(w, store.ErrEndpointOffline)
 		return
 	}
-	applied, req, err := s.store.Tenancy().ApplyDeployment(r.Context(), a, app, id, input.Confirm, s.config.Security.EncryptionKey)
+	maxFrame := protocol.MaxDeploymentRequestBytesLegacy
+	if slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentPull) {
+		maxFrame = protocol.MaxDeploymentRequestBytes
+	}
+	applied, req, err := s.store.Tenancy().ApplyDeployment(r.Context(), a, app, id, input.Confirm, s.config.Security.EncryptionKey, maxFrame)
 	if err != nil {
 		s.tenantError(w, err)
 		return

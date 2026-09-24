@@ -10,13 +10,14 @@ import (
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/registry"
 	"github.com/google/uuid"
 )
 
 // ApplyDeployment turns a planned row into an applying one and builds the frame the agent
-// executes. The values it resolves exist only in the returned request. See
-// docs/application-schema.md, Deploy.
-func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte) (*Deployment, *protocol.DeploymentRequest, error) {
+// executes. The values it resolves exist only in the returned request. maxFrameBytes is the
+// largest frame the endpoint's agent accepts. See docs/application-schema.md, Deploy.
+func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error) {
 	appID, err := uuid.Parse(app)
 	if err != nil || a.EnvironmentID == "" || len(key) != 32 {
 		return nil, nil, ErrInvalid
@@ -96,12 +97,26 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 		}
 		now := time.Now().UTC()
 		req = &protocol.DeploymentRequest{Deployment: d.ID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}}
+		hosts := map[string]bool{}
 		for i, ps := range d.Plan.Services {
 			name, ok := names[ps.ContainerID]
 			if !ok || spec.Services[i].Name != ps.Name {
 				return ErrAdoptionChanged
 			}
 			svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}}
+			if ps.PullDigest != "" {
+				svc.ImageID, svc.Pull = "", &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}
+				// The agent moves the service's tag to the pulled image, so the next plan (and
+				// Compose on the host) resolves the tag to the update rather than reverting it.
+				ref, err := registry.ParseReference(ps.Reference)
+				if err != nil {
+					return ErrAdoptionChanged
+				}
+				if ref.Digest == "" {
+					svc.Pull.Tag = ref.Host + "/" + ref.Repository + ":" + ref.Tag
+				}
+				hosts[svc.Pull.Host()] = true
+			}
 			for _, p := range ps.Ports {
 				svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol, HostIP: p.HostIP})
 			}
@@ -110,12 +125,36 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 			}
 			req.Services = append(req.Services, svc)
 		}
+		// A credential travels once per host, decrypted here and never stored. A host whose
+		// row is gone pulls anonymously only while the organization still allows it.
+		for host := range hosts {
+			_, cred, err := t.registryFor(ctx, tx, a.OrganizationID, host, key)
+			if errors.Is(err, ErrNotFound) {
+				anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
+				if err != nil {
+					return err
+				}
+				if !anonymous {
+					return ErrAdoptionChanged
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if cred != nil {
+				if req.Registries == nil {
+					req.Registries = map[string]protocol.RegistryAuth{}
+				}
+				req.Registries[host] = protocol.RegistryAuth{Username: cred.Username, Secret: cred.Secret}
+			}
+		}
 		if err := req.Validate(now); err != nil {
 			return ErrInvalid
 		}
 		// The agent closes the session on a frame past its bound, so refuse it while the row
 		// is still planned rather than send one that can only end unknown.
-		if raw, err := json.Marshal(req); err != nil || len(raw) > protocol.MaxDeploymentRequestBytes {
+		if raw, err := json.Marshal(req); err != nil || len(raw) > min(maxFrameBytes, protocol.MaxDeploymentRequestBytes) {
 			return ErrInvalid
 		}
 		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=? WHERE id=? AND state='planned'`), a.ActorID, now, req.Deadline, d.ID)
@@ -302,8 +341,9 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 }
 
 // settleApply rebinds each replaced service to the container the agent reports. Each identity
-// names a distinct planned service and runs its pinned image; a success accounts for every
-// planned service. Checked in full before any write.
+// names a distinct planned service and runs its pinned image, or for a pulled service a full
+// image ID pulled at the planned digest; a success accounts for every planned service. Checked
+// in full before any write.
 func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, instance string, plan DeploymentPlan, res protocol.DeploymentResult) error {
 	replaced := map[string]PlannedService{}
 	for _, ps := range plan.Services {
@@ -312,7 +352,15 @@ func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, 
 	seen := map[string]bool{}
 	for _, idn := range res.Services {
 		ps, ok := replaced[idn.Service]
-		if !ok || seen[idn.Service] || idn.ImageID != ps.ImageID {
+		if !ok || seen[idn.Service] {
+			return ErrInvalid
+		}
+		if ps.PullDigest != "" {
+			// res.Validate already required a full ImageID.
+			if idn.ImageDigest != ps.PullDigest {
+				return ErrInvalid
+			}
+		} else if idn.ImageID != ps.ImageID {
 			return ErrInvalid
 		}
 		seen[idn.Service] = true

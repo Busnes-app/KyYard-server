@@ -27,12 +27,14 @@ const stopGrace = 10
 // operationBudget, rename, create and the identity read at callBudget.
 const replaceBudget = 2*operationBudget + 3*callBudget
 
-// Deploy replaces each service's mapped container with one created from the pinned image ID,
-// in plan order: precondition, image, rename, create, stop, start, remove. Renaming and creating
-// while the old container still runs means a name conflict or a refused create costs no
-// downtime. The first step that is not a success ends the run and every later step is recorded
-// as skipped. Nothing is rolled back: the steps say where the old container was left. No image
-// is pulled and no volume is touched. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md.
+// Deploy replaces each service's mapped container with one created from the pinned image ID.
+// First every service's precondition and image (pull, for a service naming a digest), in plan
+// order; then per service rename, create, stop, start, remove. Renaming and creating while the
+// old container still runs means a name conflict or a refused create costs no downtime. The
+// first step that is not a success ends the run and every later step is recorded as skipped.
+// Nothing is rolled back: the steps say where the old container was left. No volume is
+// touched. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md and
+// 2026-09-23-pull-step-design.md.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
@@ -49,8 +51,15 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) 
 		r.defaultRuntime = info.DefaultRuntime
 	}
 	icancel()
+	r.pullDeadline = time.Now().Add(pullPhase(time.Until(req.Deadline)))
+	// Every service is checked and its image made present before any container is touched, so
+	// a refused precondition or a failed pull on any service leaves the host unchanged.
+	ready := make([]prepared, 0, len(req.Services))
 	for _, s := range req.Services {
-		r.service(ctx, s)
+		ready = append(ready, r.prepare(ctx, s))
+	}
+	for _, p := range ready {
+		r.replace(ctx, p)
 	}
 	if r.res.Outcome == "" {
 		r.res.Outcome = protocol.OutcomeSucceeded
@@ -63,7 +72,8 @@ type deployRun struct {
 	parent         context.Context
 	req            protocol.DeploymentRequest
 	res            protocol.DeploymentResult
-	defaultRuntime string // "" when it could not be read; the first precondition then fails
+	defaultRuntime string    // "" when it could not be read; the first precondition then fails
+	pullDeadline   time.Time // shared by every pull; see pullPhase
 }
 
 // step records one outcome. The first non-success fixes the run's outcome and detail.
@@ -236,7 +246,14 @@ func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) s
 	return ""
 }
 
-func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
+// prepared is what a service's precondition and image (or pull) steps settled for its replacement.
+type prepared struct {
+	s           protocol.DeploymentService // ImageID is the pulled ID for a pulled service
+	name        string                     // the old container's name, without the leading slash
+	networkMode string
+}
+
+func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) prepared {
 	old := url.PathEscape(s.Replaces.ContainerID)
 	var before inspectedForDeploy
 	var networkMode string
@@ -273,30 +290,43 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		networkMode = before.HostConfig.NetworkMode
 		return protocol.OutcomeSucceeded, ""
 	})
-	r.step(s.Name, protocol.StepImage, func() (string, string) {
-		cctx, cancel := context.WithTimeout(ctx, callBudget)
-		defer cancel()
-		var im struct {
-			ID string `json:"Id"`
-		}
-		if err := r.c.get(cctx, "/images/"+url.PathEscape(s.ImageID)+"/json", &im); err != nil {
-			if statusOf(err) == http.StatusNotFound {
-				return protocol.OutcomeFailed, "the pinned image is not present on this host"
+	if s.Pull != nil {
+		r.step(s.Name, protocol.StepPull, func() (string, string) {
+			outcome, detail, id := r.pull(ctx, s)
+			s.ImageID = id // the replacement is created from, and verified against, the pulled ID
+			return outcome, detail
+		})
+	} else {
+		r.step(s.Name, protocol.StepImage, func() (string, string) {
+			cctx, cancel := context.WithTimeout(ctx, callBudget)
+			defer cancel()
+			var im struct {
+				ID string `json:"Id"`
 			}
-			return r.outcomeFor(cctx, err, statusOf(err))
-		}
-		if im.ID != s.ImageID {
-			return protocol.OutcomeFailed, "the host reported a different image identity"
-		}
-		return protocol.OutcomeSucceeded, ""
-	})
+			if err := r.c.get(cctx, "/images/"+url.PathEscape(s.ImageID)+"/json", &im); err != nil {
+				if statusOf(err) == http.StatusNotFound {
+					return protocol.OutcomeFailed, "the pinned image is not present on this host"
+				}
+				return r.outcomeFor(cctx, err, statusOf(err))
+			}
+			if im.ID != s.ImageID {
+				return protocol.OutcomeFailed, "the host reported a different image identity"
+			}
+			return protocol.OutcomeSucceeded, ""
+		})
+	}
+	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode}
+}
+
+func (r *deployRun) replace(ctx context.Context, p prepared) {
+	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
 	r.step(s.Name, protocol.StepRename, func() (string, string) {
 		if time.Until(r.req.Deadline) < replaceBudget {
 			return protocol.OutcomeTimedOut, "not enough time left before the deadline to replace this service safely"
 		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
-		name := strings.TrimPrefix(before.Name, "/") + ".kyyard-prev-" + r.req.Deployment[:8]
+		name := p.name + ".kyyard-prev-" + r.req.Deployment[:8]
 		status, err := r.c.post(cctx, "/containers/"+old+"/rename?name="+url.QueryEscape(name))
 		if err != nil || status >= 400 {
 			if status == http.StatusConflict {
@@ -313,7 +343,7 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 		var out struct {
 			ID string `json:"Id"`
 		}
-		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s, networkMode), &out)
+		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s, p.networkMode), &out)
 		if err != nil || status != http.StatusCreated {
 			if status == http.StatusConflict {
 				return protocol.OutcomeFailed, "a container with that name already exists"
@@ -352,6 +382,9 @@ func (r *deployRun) service(ctx context.Context, s protocol.DeploymentService) {
 			return outcome, fmt.Sprintf("the container started but its identity could not be read: %s (container %s)", detail, created)
 		}
 		id := protocol.DeploymentIdentity{Service: s.Name, ContainerID: after.ID, ImageID: after.Image, CreatedUnix: after.Created.Unix()}
+		if s.Pull != nil {
+			id.ImageDigest = s.Pull.Digest
+		}
 		if after.ID != created || after.Image != s.ImageID || (protocol.InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil {
 			return protocol.OutcomeFailed, fmt.Sprintf("the container started but its identity could not be verified (container %s)", created)
 		}

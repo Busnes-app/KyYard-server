@@ -59,7 +59,7 @@ func TestImageChecksClearedBySuccessfulApply(t *testing.T) {
 	if c := out.Services[0]; c.Service != "web" || c.Reference != "nginx:1" || c.Verdict != "update_available" || c.LocalDigest == "" || c.RemoteDigest == "" || !c.CheckedAt.Equal(at) {
 		t.Fatalf("row: %+v", c)
 	}
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))); err != nil {
@@ -75,7 +75,7 @@ func TestImageChecksSurviveAFailedApply(t *testing.T) {
 	ctx := context.Background()
 	ts := st.Tenancy()
 	insertImageCheck(t, st, m.InstanceID, time.Now().UTC())
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeFailed, "")); err != nil {
@@ -407,7 +407,7 @@ func TestCheckImageUpdatesRefusesASettledApply(t *testing.T) {
 	if err := ts.SetAnonymousPull(ctx, org, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	f := &fakeResolver{reply: map[string]fakeReply{"docker.io/library/nginx:1": {digest: digestOf("e")}}}

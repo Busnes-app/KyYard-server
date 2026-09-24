@@ -7,7 +7,7 @@ const local = `sha256:${'1234567890ab'}${'c'.repeat(52)}`;
 const remote = `sha256:${'fedcba987654'}${'d'.repeat(52)}`;
 const row = (over: Record<string, string>) => ({ service: 'web', reference: 'nginx:1', local_digest: local, remote_digest: remote, verdict: 'current', detail: '', checked_at: '2026-09-23T12:00:00Z', ...over });
 const body = (services: unknown[]) => ({ instance_id: 'i', mapping_version: 2, services });
-const props = { base: '/app', instanceID: 'i', mappingVersion: 2 };
+const props = { base: '/app', instanceID: 'i', mappingVersion: 2, project: 'shop', latestRevision: 4, onPlanned: () => {} };
 const openPanel = () => fireEvent.click(screen.getByRole('button', { name: 'Updates' }));
 function stub(get: unknown, post?: Response) {
   const fetcher = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? post ?? new Response(JSON.stringify(get)) : new Response(JSON.stringify(get)));
@@ -130,4 +130,87 @@ it('keeps the previous rows while the post-check read is in flight', async () =>
   expect(screen.queryByText('Loading…')).toBeNull();
   release(new Response(JSON.stringify(body([row({ verdict: 'update_available' })]))));
   await screen.findByText('Update available');
+});
+
+const planUpdate = () => {
+  fireEvent.change(screen.getByLabelText('Confirm update project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Plan update' }));
+};
+it('offers no plan update without an available update', async () => {
+  stub(body([row({ verdict: 'current' }), row({ service: 'b', verdict: 'pinned' })]));
+  render(<ApplicationUpdates {...props} />);
+  openPanel();
+  await screen.findByText('Up to date');
+  expect(screen.queryByRole('button', { name: 'Plan update' })).toBeNull();
+  expect(screen.queryByLabelText('Confirm update project')).toBeNull();
+});
+it('plans the available updates after typed confirmation and reloads the plan panel', async () => {
+  document.cookie = 'ky_csrf=csrf';
+  const onPlanned = vi.fn();
+  const fetcher = stub(body([row({ service: 'web', verdict: 'update_available' }), row({ service: 'db', verdict: 'current' }), row({ service: 'cache', verdict: 'update_available' })]), new Response(JSON.stringify({ id: 'd1' }), { status: 201 }));
+  render(<ApplicationUpdates {...props} onPlanned={onPlanned} />);
+  openPanel();
+  await screen.findByText('Up to date');
+  const button = screen.getByRole('button', { name: 'Plan update' }) as HTMLButtonElement;
+  expect(button.disabled).toBe(true);
+  planUpdate();
+  await screen.findByText('Plan created; review it in the deployment plan panel.');
+  const post = fetcher.mock.calls.find((c) => c[1]?.method === 'POST');
+  expect(post?.[0]).toBe('/app/deployments');
+  expect(new Headers(post?.[1]?.headers).get('X-CSRF-Token')).toBe('csrf');
+  expect(JSON.parse(String(post?.[1]?.body))).toEqual({ instance_id: 'i', mapping_version: 2, revision: 4, confirm: 'shop', update: ['web', 'cache'] });
+  expect(onPlanned).toHaveBeenCalledTimes(1);
+  expect((screen.getByLabelText('Confirm update project') as HTMLInputElement).value).toBe('');
+});
+it.each([
+  ['update_not_mapped', 'Map the services first.'],
+  ['registry_not_configured', 'No registry entry for this host and anonymous pulls are off.'],
+  ['registry_unauthorized', 'The registry refused the credentials.'],
+  ['registry_not_found', 'The image was not found in the registry.'],
+  ['registry_rate_limited', 'The registry rate limit was reached; try later.'],
+  ['registry_private_destination', 'The registry is on a private address this organization may not reach.'],
+  ['registry_unavailable', 'The registry could not be reached.'],
+])('maps the %s blocker to fixed text', async (blocker, text) => {
+  const onPlanned = vi.fn();
+  stub(body([row({ verdict: 'update_available' })]), new Response(JSON.stringify({ error: 'secret-canary', code: 'preflight_blocked', blockers: [blocker, 'made_up_canary'] }), { status: 409 }));
+  render(<ApplicationUpdates {...props} onPlanned={onPlanned} />);
+  openPanel();
+  await screen.findByText('Update available');
+  planUpdate();
+  await screen.findByText(text);
+  expect(document.body.textContent).not.toContain('secret-canary');
+  expect(document.body.textContent).not.toContain('made_up_canary');
+  expect(document.body.textContent).not.toContain(blocker);
+  expect(onPlanned).not.toHaveBeenCalled();
+});
+it('maps 429 to fixed text', async () => {
+  stub(body([row({ verdict: 'update_available' })]), new Response(JSON.stringify({ error: 'secret-canary', code: 'too_many_checks' }), { status: 429 }));
+  render(<ApplicationUpdates {...props} />);
+  openPanel();
+  await screen.findByText('Update available');
+  planUpdate();
+  await screen.findByText('Too many registry checks are running; try again in a moment.');
+  expect(document.body.textContent).not.toContain('secret-canary');
+});
+it.each([
+  ['adoption_changed', 'Adoption changed. Refresh applications before planning.'],
+  ['deployment_in_progress', 'A deployment is being applied; wait for it to finish.'],
+  ['made_up_canary', 'The plan was refused or its outcome is unknown. Refresh before trying again.'],
+])('maps the %s conflict to fixed text', async (code, text) => {
+  stub(body([row({ verdict: 'update_available' })]), new Response(JSON.stringify({ error: 'secret-canary', code }), { status: 409 }));
+  render(<ApplicationUpdates {...props} />);
+  openPanel();
+  await screen.findByText('Update available');
+  planUpdate();
+  await screen.findByText(text);
+  expect(document.body.textContent).not.toContain('secret-canary');
+});
+it('hides an unknown refusal body', async () => {
+  stub(body([row({ verdict: 'update_available' })]), new Response(JSON.stringify({ error: 'secret-canary', code: 'made_up_canary' }), { status: 500 }));
+  render(<ApplicationUpdates {...props} />);
+  openPanel();
+  await screen.findByText('Update available');
+  planUpdate();
+  await screen.findByText('The plan was refused or its outcome is unknown. Refresh before trying again.');
+  expect(document.body.textContent).not.toContain('secret-canary');
 });

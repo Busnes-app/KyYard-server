@@ -95,6 +95,8 @@ jobs:
           KY_TEST_REGISTRY_ONLINE: "1"
         run: |
           docker pull "$KY_TEST_DOCKER_EXEC_IMAGE"
+          export KY_TEST_DOCKER_PULL_DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' alpine:3.24 | cut -d@ -f2)
+          test -n "$KY_TEST_DOCKER_PULL_DIGEST"
           go test -race ./internal/runtime/docker -run '^Test(Exec|Inspection|Deploy|Remove)RealDocker$' -count=1
           go test -race ./internal/api -run '^Test(BrowserExec|Apply)RealDocker$' -count=1
           go test -race ./internal/registry -run '^TestResolveDockerHubAlpine$' -count=1

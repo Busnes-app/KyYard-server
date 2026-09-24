@@ -294,3 +294,30 @@ it('explains a prior revision whose services differ from the mapping', async () 
   fireEvent.click(screen.getByRole('button', { name: 'Plan deployment' }));
   await screen.findByText("The chosen revision's services differ from the mapped ones. Map against the latest definition or choose another revision.");
 });
+
+it('shows the pinned registry digest for a pulled service', async () => {
+  const digest = `sha256:${'abcdef012345'}${'9'.repeat(52)}`;
+  const pulled = { ...plan, plan: { project: 'shop', services: [{ ...plan.plan.services[0], pull_reference: `registry-1.docker.io/library/nginx@${digest}`, pull_digest: digest }, { ...plan.plan.services[0], name: 'db' }] } };
+  vi.stubGlobal('fetch', stubFetch([pulled]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('pulls abcdef012345');
+  expect(screen.getAllByText(/^pulls /).length).toBe(1);
+  expect(document.body.textContent).not.toContain('9'.repeat(52));
+  // The pulled row's pinned image is the digest, not the image the host runs now.
+  const pinned = document.querySelectorAll('td[data-label="Pinned image"]');
+  expect(pinned[0].textContent).not.toContain(plan.plan.services[0].image_id);
+  expect(pinned[1].textContent).toContain(plan.plan.services[0].image_id);
+});
+it('re-reads the plan when refreshKey changes', async () => {
+  const fetcher = stubFetch([]);
+  vi.stubGlobal('fetch', fetcher);
+  const { rerender } = render(<ApplicationDeploymentPlan {...props} refreshKey={0} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('No plan for this instance.');
+  const reads = fetcher.mock.calls.filter(c => String(c[0]).endsWith('/deployments')).length;
+  fetcher.mockImplementation(async (url: string) => new Response(JSON.stringify(String(url).endsWith('/mapping') ? mapping : [plan])));
+  rerender(<ApplicationDeploymentPlan {...props} refreshKey={1} />);
+  await screen.findByText(`sha256:${'a'.repeat(64)}`);
+  expect(fetcher.mock.calls.filter(c => String(c[0]).endsWith('/deployments')).length).toBe(reads + 1);
+});
