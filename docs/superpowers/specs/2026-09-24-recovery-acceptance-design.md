@@ -22,7 +22,7 @@ capsule recipe pins the schema version; the acceptance run itself stays with Yos
   pending. A dispatched row's real outcome, if the agent still has it, is not modelled for
   container commands (the agent keeps no ledger for them), so `unknown` is the truthful state.
 - One audit row per affected endpoint: `action='endpoint.commands.reconciled'`,
-  `scope='system'`, `resource=<endpoint id>`, `details='commands=<n>'`, `result='unknown'`,
+  `user_id='system'`, `scope='organization'` with the command's organization and environment (so tenant audit views list it, like `auditDeployment`), `resource=<endpoint id>`, `details='commands=<n>'`, `result='unknown'`,
   written through the existing system-audit path (`systemTransition`'s audit shape).
 - `deployments` in `applying` are untouched: the periodic sweep marks them `unknown` two
   minutes past their deadline, and an agent that re-sends the result (its ledger keeps results
