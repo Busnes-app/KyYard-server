@@ -1,9 +1,13 @@
-const CACHE_NAME = 'kyyard-busnes-v2';
+const CACHE_NAME = 'kyyard-busnes-icons-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
   '/favicon.svg',
+  '/favicon.png',
+  '/app-icon.png',
+  '/app-icon-192.png',
+  '/app-icon-512.png',
   '/favicon.ico',
   '/icon-192.png',
   '/icon-512.png',
