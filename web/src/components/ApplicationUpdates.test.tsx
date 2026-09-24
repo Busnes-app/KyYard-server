@@ -8,6 +8,7 @@ const remote = `sha256:${'fedcba987654'}${'d'.repeat(52)}`;
 const row = (over: Record<string, string>) => ({ service: 'web', reference: 'nginx:1', local_digest: local, remote_digest: remote, verdict: 'current', detail: '', checked_at: '2026-09-23T12:00:00Z', ...over });
 const body = (services: unknown[]) => ({ instance_id: 'i', mapping_version: 2, services });
 const props = { base: '/app', instanceID: 'i', mappingVersion: 2 };
+const openPanel = () => fireEvent.click(screen.getByRole('button', { name: 'Updates' }));
 function stub(get: unknown, post?: Response) {
   const fetcher = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? post ?? new Response(JSON.stringify(get)) : new Response(JSON.stringify(get)));
   vi.stubGlobal('fetch', fetcher);
@@ -23,6 +24,7 @@ it('renders nothing without a mapping', () => {
 it('shows the empty state and a check button', async () => {
   stub(body([]));
   render(<ApplicationUpdates {...props} />);
+  openPanel();
   await screen.findByText('No update check yet.');
   expect(screen.getByRole('button', { name: 'Check for updates' })).toBeTruthy();
 });
@@ -34,6 +36,7 @@ it('labels each verdict with fixed text and short digests', async () => {
     row({ service: 'd', verdict: 'unknown_local', local_digest: '' }),
   ]));
   render(<ApplicationUpdates {...props} />);
+  openPanel();
   await screen.findByText('Up to date');
   expect(screen.getByText('Update available')).toBeTruthy();
   expect(screen.getByText('Pinned')).toBeTruthy();
@@ -53,6 +56,7 @@ it('maps every registry error detail to fixed text and never renders the raw det
   };
   stub(body([...Object.keys(details).map((d, n) => row({ service: `s${n}`, verdict: 'registry_error', detail: d, remote_digest: '' })), row({ service: 'z', verdict: 'registry_error', detail: 'secret-canary', remote_digest: '' })]));
   render(<ApplicationUpdates {...props} />);
+  openPanel();
   await screen.findByText(details.unauthorized);
   for (const text of Object.values(details)) expect(screen.getByText(text)).toBeTruthy();
   expect(screen.getAllByText('Registry error').length).toBe(7);
@@ -68,6 +72,7 @@ it('posts the check with the CSRF header and renders the new rows', async () => 
   });
   vi.stubGlobal('fetch', fetcher);
   render(<ApplicationUpdates {...props} />);
+  openPanel();
   await screen.findByText('No update check yet.');
   fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
   await screen.findByText('Update available');
@@ -83,6 +88,7 @@ it.each([
 ])('maps %i %s to fixed text', async (status, code, text) => {
   stub(body([]), new Response(JSON.stringify({ error: 'secret-canary', code }), { status }));
   render(<ApplicationUpdates {...props} />);
+  openPanel();
   await screen.findByText('No update check yet.');
   fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
   await screen.findByText(text);
@@ -91,6 +97,37 @@ it.each([
 it('hides rows cached for another instance', async () => {
   stub({ instance_id: 'other', mapping_version: 2, services: [row({})] });
   render(<ApplicationUpdates {...props} />);
+  openPanel();
   await screen.findByText('No update check yet.');
   expect(screen.queryByText('Up to date')).toBeNull();
+});
+it('requests nothing until opened', async () => {
+  const fetcher = stub(body([]));
+  render(<ApplicationUpdates {...props} />);
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Check for updates' })).toBeNull();
+  openPanel();
+  await screen.findByText('No update check yet.');
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher.mock.calls[0][0]).toBe('/app/updates');
+  fireEvent.click(screen.getByRole('button', { name: 'Close updates' }));
+  expect(screen.queryByText('No update check yet.')).toBeNull();
+});
+it('keeps the previous rows while the post-check read is in flight', async () => {
+  let release: (r: Response) => void = () => {};
+  let gets = 0;
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') return new Response(JSON.stringify(body([row({ verdict: 'update_available' })])));
+    if (++gets === 1) return new Response(JSON.stringify(body([row({})])));
+    return new Promise<Response>((resolve) => { release = resolve; });
+  }));
+  render(<ApplicationUpdates {...props} />);
+  openPanel();
+  await screen.findByText('Up to date');
+  fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
+  await vi.waitFor(() => expect(gets).toBe(2));
+  expect(screen.getByText('Up to date')).toBeTruthy();
+  expect(screen.queryByText('Loading…')).toBeNull();
+  release(new Response(JSON.stringify(body([row({ verdict: 'update_available' })]))));
+  await screen.findByText('Update available');
 });

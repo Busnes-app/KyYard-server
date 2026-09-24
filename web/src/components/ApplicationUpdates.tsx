@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { tenantWrite, useTenantResource, type UpdateCheck } from '../tenant';
 import { StateNotice } from './StateNotice';
 
@@ -26,10 +26,18 @@ const short = (d: string) => /^sha256:[0-9a-f]{64}$/.test(d) ? d.slice(7, 19) : 
 type Props = { base: string; instanceID: string; mappingVersion: number };
 
 export function ApplicationUpdates(props: Props) {
-  return props.mappingVersion >= 1 ? <UpdatesView {...props} /> : null;
+  const [open, setOpen] = useState(false);
+  if (props.mappingVersion < 1) return null;
+  return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
+    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close updates' : 'Updates'}</button>
+    {open && <UpdatesView key={`${props.base}/${props.instanceID}`} {...props} />}
+  </section>;
 }
 function UpdatesView({ base, instanceID }: Props) {
   const checks = useTenantResource<UpdateCheck>(`${base}/updates`);
+  // The last ready read stays on screen while a post-check reload is in flight.
+  const [shown, setShown] = useState<UpdateCheck | null>(null);
+  useEffect(() => { if (checks.state === 'ready') setShown(checks.data); }, [checks.state, checks.data]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const check = async () => {
@@ -39,14 +47,15 @@ function UpdatesView({ base, instanceID }: Props) {
     setMessage(err);
     if (!err) checks.reload();
   };
-  const rows = checks.data?.instance_id === instanceID ? checks.data.services : [];
-  return <section className="dr-stack" aria-label="Updates" style={{ overflowWrap: 'anywhere' }}>
-    <div className="panel-header"><h3 style={{ fontSize: 15 }}>Updates</h3></div>
+  const visible = checks.state === 'ready' || (checks.state === 'loading' && shown !== null);
+  const data = checks.state === 'ready' ? checks.data : shown;
+  const rows = data?.instance_id === instanceID ? data.services : [];
+  return <>
     <p>Compares each mapped service's image with its registry. Nothing is pulled or deployed.</p>
     <button type="button" className="btn-secondary" disabled={busy} onClick={() => void check()}>Check for updates</button>
     {message && <p role="alert">{message}</p>}
-    <StateNotice state={checks.state} onRetry={checks.reload} />
-    {checks.state === 'ready' && (rows.length === 0 ? <p>No update check yet.</p> : <table>
+    {!visible && <StateNotice state={checks.state} onRetry={checks.reload} />}
+    {visible && (rows.length === 0 ? <p>No update check yet.</p> : <table>
       <thead><tr><th>Service</th><th>Reference</th><th>Status</th><th>On host</th><th>In registry</th><th>Checked</th></tr></thead>
       <tbody>{rows.map((r) => <tr key={r.service}>
         <td>{r.service}</td>
@@ -57,5 +66,5 @@ function UpdatesView({ base, instanceID }: Props) {
         <td>{new Date(r.checked_at).toLocaleString()}</td>
       </tr>)}</tbody>
     </table>)}
-  </section>;
+  </>;
 }
