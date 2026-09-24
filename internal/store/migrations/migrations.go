@@ -841,6 +841,15 @@ ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled BOOLEAN NOT NULL DEF
 `},
 }
 
+// Latest returns the highest registered migration version: the schema this binary runs.
+func Latest() int {
+	latest := 0
+	for _, m := range registry {
+		latest = max(latest, m.Version)
+	}
+	return latest
+}
+
 // Run executes all pending migrations for the specified database driver.
 func Run(ctx context.Context, db *sql.DB, driver string) error {
 	driver = strings.ToLower(driver)

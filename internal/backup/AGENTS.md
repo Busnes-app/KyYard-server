@@ -38,6 +38,12 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   the database, settings and all three private keys; key encoding/permissions, SQLite integrity and required environment
   checks cannot be disabled. File checks accept only clean relative manifest members;
   SQLite opens read-only and missing/empty databases fail.
+- `Collect` pins `schema_version: migrations.Latest()` in the recipe. `Checks` requires it
+  (int, or an integral JSON number) and, right after the integrity check for
+  `data/ky_server.db`, adds `Schema Version: data/ky_server.db`: `MAX(version)` from the
+  restored `schema_migrations` must equal it, else `database schema is version N, capsule
+  expects M`. A capsule from another schema fails the drill instead of migrating silently on
+  first start.
 - HTTP and CLI call `RunDrill`, which holds an OS advisory lock on `<data dir>/drill.lock`
   across scratch preparation and the library drill. Contention returns `ErrDrillBusy`;
   closing the descriptor or process exit releases ownership. Keep the lock file in place.
