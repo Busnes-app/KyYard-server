@@ -3,7 +3,7 @@ import { useTenantResource } from '../tenant';
 import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
-import { knownBlockers, messages, MountList, type Mount } from './ApplicationPreflight';
+import { knownBlockers, messages, serviceFindings, MountList, type Mount } from './ApplicationPreflight';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
 type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[] };
@@ -28,6 +28,7 @@ const FIXED_DETAIL_PREFIXES = [
   'not enough time', 'a container', 'service ', 'the host reported', 'the run was cancelled',
   'this agent', 'invalid deployment request',
   'the connection ended', 'no result arrived', 'the endpoint disconnected', "the host's result",
+  'unsupported: ', 'clock skew', 'the agent restarted',
 ];
 function fixedDetail(detail: string): string {
   return FIXED_DETAIL_PREFIXES.some(p => detail.startsWith(p)) ? detail : '';
@@ -40,6 +41,7 @@ function isDeployment(x: unknown): x is Deployment {
     && typeof d.plan === 'object' && d.plan !== null;
 }
 function preconditionExplanation(detail: string): string {
+  if (detail.includes('changed after the precondition')) return 'The mapped container changed on the host while the deployment prepared; it and every later service were left untouched, and services before it were replaced. Review the host, then plan again.';
   if (detail.includes('no longer exists')) return 'The mapped container no longer exists on the host; refresh the inventory and plan again.';
   if (detail.includes('not the one this plan')) return 'The mapped container changed on the host; plan again.';
   if (detail.includes('image is no longer present')) return "The mapped container's image is no longer present on the host. Review it on the host before planning again.";
@@ -51,9 +53,10 @@ function explanationFor(current: Deployment): string {
   if (current.state === 'unknown') return 'The host may or may not have acted. Inspect it before planning again.';
   if (current.state === 'timed_out') return 'The host did not answer in time.';
   if (current.state === 'failed' && current.result === null) return 'The deployment was not sent to the host.';
+  if (current.state === 'failed' && current.detail.startsWith('clock skew')) return 'The host clock differs from the server by more than five minutes; nothing ran. Correct the host clock, then plan again.';
   const failing = current.result?.steps.find(s => s.outcome !== 'succeeded' && s.outcome !== 'skipped');
   if (!failing) return '';
-  if (failing.outcome === 'denied' && failing.step === 'precondition') return current.kind === 'remove'
+  if (failing.outcome === 'denied' && (failing.step === 'precondition' || failing.step === 'recheck')) return current.kind === 'remove'
     ? 'A container of this application is not the one recorded; refresh the inventory and, if it was recreated outside KyYard, release and adopt it again.'
     : preconditionExplanation(failing.detail);
   if (failing.detail.includes('pinned image is not present')) return 'The pinned image is no longer present on the host.';
@@ -229,8 +232,9 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
       }
       setBlocked(true);
       if (r.status === 409) {
-        const blockers = knownBlockers(await r.json().catch(() => null), messages);
-        setError(blockers.length ? blockers.map(b => messages[b]) : ['Ownership, mapping or the definition changed. Refresh applications and review before planning again.']);
+        const payload: unknown = await r.json().catch(() => null);
+        const lines = [...knownBlockers(payload, messages).map(b => messages[b]), ...serviceFindings(payload)];
+        setError(lines.length ? lines : ['Ownership, mapping or the definition changed. Refresh applications and review before planning again.']);
         return;
       }
       setError([r.status === 403 ? 'You do not have permission to plan deployments.' : 'The plan was refused or its outcome is unknown. Refresh before trying again.']);

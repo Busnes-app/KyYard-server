@@ -1,10 +1,11 @@
-import { ApplicationInspection, type InspectionTarget } from './ApplicationInspection';
+import { ApplicationInspection, unsupportedNames, type InspectionTarget } from './ApplicationInspection';
 import { useState } from 'react';
 import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
-type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'mounts_unreported' | 'mount_unsupported' | 'volume_missing';
+type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'mounts_unreported' | 'mount_unsupported' | 'volume_missing'
+  | 'clock_skew' | 'inspection_unavailable' | 'replacement_identity_changed' | 'configuration_unsupported' | 'frame_too_large' | 'too_many_registry_hosts' | 'frame_invalid' | 'agent_deploy_unsupported' | 'agent_pull_unsupported' | 'agent_inspect_unsupported';
 export const messages: Record<Blocker, string> = {
   mapping_requires_review: 'Review and save service mapping for the latest definition.',
   unassigned_adopted_containers: 'Some adopted containers are unassigned. Review service mapping before planning replacement.',
@@ -22,6 +23,16 @@ export const messages: Record<Blocker, string> = {
   mounts_unreported: "The agent has not reported this container's mounts, or reported only part of them. Upgrade the host agent to this release, then check again.",
   mount_unsupported: 'This container has mounts KyYard cannot recreate (anonymous volumes or unsupported mount types). Recreate it by hand with named volumes first.',
   volume_missing: 'An external volume this revision names does not exist on the host. Create it there first.',
+  clock_skew: "The host's clock differs from the server's by more than five minutes. Correct the host clock (NTP), then check again.",
+  inspection_unavailable: 'The live container could not be inspected before planning. Check that the host agent is connected, then plan again.',
+  replacement_identity_changed: 'The live container is not the one in the stored inventory. Refresh the host inventory and plan again.',
+  configuration_unsupported: 'The live container has configuration the definition cannot express, which a recreate would drop. Change it on the host, or recreate the container from the definition by hand, then plan again.',
+  frame_too_large: 'This deployment is larger than the host agent accepts. Upgrade the agent, or reduce the environment values, then plan again.',
+  too_many_registry_hosts: 'This deployment pulls with credentials from more than 16 registries. Pull from fewer, then plan again.',
+  frame_invalid: 'This deployment could not be built from the saved definition and values. Review the definition, then plan again.',
+  agent_deploy_unsupported: 'Upgrade the host agent to enable deployments.',
+  agent_pull_unsupported: 'Upgrade the host agent to enable deployments that pull images.',
+  agent_inspect_unsupported: 'Upgrade the host agent to enable live inspection, which planning requires.',
 };
 // Definition volumes (named|bind) and runtime mounts (volume|bind); kinds render from this table only.
 export type Mount = { kind: string; source: string; target: string; read_only?: boolean };
@@ -33,6 +44,23 @@ export function MountList({ mounts }: { mounts: Mount[] }) {
 export function knownBlockers<K extends string>(payload: unknown, table: Record<K, string>): K[] {
   const blockers = payload && typeof payload === 'object' ? (payload as { blockers?: unknown }).blockers : undefined;
   return Array.isArray(blockers) ? blockers.filter((b): b is K => typeof b === 'string' && Object.hasOwn(table, b)) : [];
+}
+// serviceFindings reads the services a 409 preflight_blocked body names and states, in fixed
+// text, what a live inspection found for each: "web: runs privileged, maps host devices".
+// Names outside the service grammar and unknown codes are dropped.
+export function serviceFindings(payload: unknown): string[] {
+  const services = payload && typeof payload === 'object' ? (payload as { services?: unknown }).services : undefined;
+  if (!Array.isArray(services)) return [];
+  const lines: string[] = [];
+  for (const s of services) {
+    if (!s || typeof s !== 'object') continue;
+    const { name, blockers, unsupported } = s as { name?: unknown; blockers?: unknown; unsupported?: unknown };
+    if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) continue;
+    const codes = Array.isArray(unsupported) ? unsupported.filter((c): c is string => typeof c === 'string' && Object.hasOwn(unsupportedNames, c)) : [];
+    if (codes.length) lines.push(`${name}: ${codes.map(c => unsupportedNames[c]).join(', ')}`);
+    else if (Array.isArray(blockers) && blockers.includes('inspection_unavailable')) lines.push(`${name}: no live inspection answered`);
+  }
+  return lines;
 }
 type Preflight = { instance_id: string; endpoint_id: string; endpoint_name: string; revision: number; mapping_version: number; received_at: string; executable: boolean; blockers: Blocker[]; services: { name: string; reference: string; image_id: string; container_id: string; inspection_target?: InspectionTarget; blockers: Blocker[]; mounts?: Mount[]; dropped_mounts?: Mount[]; unsupported_mounts?: Mount[] }[] };
 export function ApplicationPreflight({ base, instanceID, org }: { base: string; instanceID: string; org: string }) {
