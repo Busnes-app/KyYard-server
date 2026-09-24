@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/google/uuid"
 )
@@ -19,6 +20,7 @@ import (
 // values reach the agent and nobody else.
 func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	s, st, cfg := setupTestServer(t)
+	api.SetPlanInspectorForTest(s, verifiedInspector)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	ts := st.Tenancy()

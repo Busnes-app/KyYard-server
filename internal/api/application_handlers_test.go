@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
@@ -39,6 +40,7 @@ func expireDeployments(t *testing.T, cfg *config.Config) {
 
 func TestApplicationImportRoutes(t *testing.T) {
 	s, st, cfg := setupTestServer(t)
+	api.SetPlanInspectorForTest(s, verifiedInspector)
 	ctx := context.Background()
 	ts := st.Tenancy()
 	must := func(err error) {
@@ -191,6 +193,7 @@ func TestApplicationImportRoutes(t *testing.T) {
 
 func TestApplicationRevisionReplacementRoutes(t *testing.T) {
 	s, st, _ := setupTestServer(t)
+	api.SetPlanInspectorForTest(s, verifiedInspector)
 	ctx := context.Background()
 	ts := st.Tenancy()
 	must := func(err error) {

@@ -26,6 +26,7 @@ import (
 // The stored credential reaches the agent's frame and no HTTP body.
 func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 	s, st, _ := setupTestServer(t)
+	api.SetPlanInspectorForTest(s, verifiedInspector)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	ts := st.Tenancy()

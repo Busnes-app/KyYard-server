@@ -245,6 +245,10 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 		return
 	}
 	input.MaxFrameBytes = maxFrameBytes(ep.Capabilities)
+	input.Inspections = s.planInspections(w, r, a, ep, pre)
+	if len(input.Update) > 0 {
+		extendRegistryDeadline(w) // the registry work starts after the inspections
+	}
 	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input, s.resolver(), s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
 	if err != nil {
 		s.tenantError(w, err)
