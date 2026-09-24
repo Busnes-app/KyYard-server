@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kyyard-pwa-v3';
+const CACHE_NAME = 'kyyard-busnes-v2';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

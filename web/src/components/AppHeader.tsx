@@ -1,4 +1,4 @@
-import { LogOut, Container, Server, Settings as SettingsIcon, LayoutDashboard } from 'lucide-react';
+import { LogOut, Server, Settings as SettingsIcon, LayoutDashboard } from 'lucide-react';
 import { OrganizationSelect } from './OrganizationSelect';
 import { Link } from './Link';
 import type { Route } from '../router';
@@ -17,7 +17,7 @@ const navItems = [
 export function AppHeader({ appName, route, user, onLogout }: AppHeaderProps) {
   const org = 'org' in route ? route.org : undefined;
   return <header className="ky-header">
-    <Link to="/" className="ky-brand"><Container size={25} /><span>{appName || 'KyYard'}</span></Link>
+    <Link to="/" className="ky-brand"><img src="/app-icon.png" width={28} height={28} alt="" /><span>{appName || 'KyYard'}</span></Link>
     <nav aria-label="Primary" className="ky-nav">
       {navItems.map(({ name, to, label, icon: Icon }) => {
         const active = route.name === name || (name === 'endpoints' && ['endpoint', 'environment', 'organization'].includes(route.name)) || (name === 'settings' && ['backup', 'members', 'audit'].includes(route.name));
