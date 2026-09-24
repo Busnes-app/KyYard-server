@@ -354,7 +354,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 
 // endpointCapabilities is what the endpoint's agent advertised at its last connect.
 func (t *tenancyStore) endpointCapabilities(ctx context.Context, tx *sql.Tx, endpoint string) (map[string]bool, error) {
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT capability FROM endpoint_capabilities WHERE endpoint_id=?`), endpoint)
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT capability FROM endpoint_capabilities WHERE endpoint_id=? ORDER BY capability LIMIT ?`), endpoint, MaxCapabilities)
 	if err != nil {
 		return nil, err
 	}
