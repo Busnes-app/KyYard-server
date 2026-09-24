@@ -255,15 +255,12 @@ Implemented acceptance readiness (`feat/acceptance-readiness`), so the runbook n
 
 Implemented volumes in the application definition (`feat/volumes`): the import accepts named volumes (declared at top level, optionally `external`) and absolute bind mounts; inventory reports each container's mounts; the plan carries resolved mounts (`<project>_<name>` for project volumes) and the volumes to ensure; the agent's new `volume` step creates a missing project volume with Compose's labels before any container is touched and mounts an existing one only when the old container already mounts it or it is the project's plain `local` volume; the recreate sets `HostConfig.Mounts`. Bind mounts are preserve-only (`bind_mount_new` at preflight, re-checked by the agent). Preflight also blocks `mounts_unreported` (an older agent: every plan blocks until it is upgraded), `mount_unsupported` (anonymous volumes, tmpfs and other kinds) and `volume_missing` (an absent external volume). tmpfs, anonymous volumes, volume drivers and options, propagation and volume deletion stay out of scope. Proven against a fake Engine, SQLite and PostgreSQL, and real Docker (`TestDeployRealDocker` reads a file back through a recreate). The acceptance sample now keeps its data in a named volume of the deployed project. Spec `docs/superpowers/specs/2026-09-24-volumes-design.md`.
 
-Next: M7a PR D (hardening), carried from M6 and PR C review:
+Implemented M7a PR D1 (`feat/deploy-safety`): the agent re-checks each container immediately before its replacement (`recheck`: identity, `Config`, `HostConfig`, `Mounts`); a plan inspects every mapped container live and is refused on configuration a recreate would drop, measures the real frame against the agent's cap, and requires the capabilities apply needs; frames carry `issued_at` and both sides refuse more than five minutes of clock skew; the agent ledger records a started marker before the first phase-two mutation, so a restart mid-replacement reports `unknown` instead of running the frame again.
+
+Next: M7a PR D2 (hardening), carried from M6 and PR C review:
 - Closed step-detail vocabulary (details are fixed text today, not a closed set).
-- A started-marker in the agent's deployment ledger.
-- Refusing a request whose deadline implies host/server clock skew.
-- Plan-time inspection of live host configuration beyond the stored precondition identity; also re-check the precondition at the start of each replacement, since pulls widen the gap between precondition and rename (an in-place `docker update` in that gap is not caught).
 - Audit correlation IDs linking plan, apply and settle.
-- Refuse at plan time a plan whose frame would exceed 16 credentialed hosts or 320 KiB; today only apply refuses it.
 - Put update plans under the per-application guard, so one user cannot fill all 4 registry slots with plans for one application.
-- Mixed-version agents: a pulling plan is gated on `deployment.pull` only at apply (501, nothing sent); an older agent's operator learns it no earlier.
 
 Then M7b (automated update policies, maintenance windows, health validation and eligible rollback).
 
