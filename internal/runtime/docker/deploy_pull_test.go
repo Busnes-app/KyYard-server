@@ -14,7 +14,7 @@ import (
 
 func pulledService(reference string) protocol.DeploymentService {
 	s := webService()
-	s.ImageID, s.Pull = "", &protocol.ImagePull{Reference: reference + "@" + pullDigest, Digest: pullDigest}
+	s.ImageID, s.Pull = "", &protocol.ImagePull{Reference: reference + "@" + pullDigest, Digest: pullDigest, Tag: reference + ":1.2"}
 	return s
 }
 
@@ -28,19 +28,23 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 		t.Fatalf("outcome: %+v", res)
 	}
 	inspect := "GET /images/" + url.PathEscape("ghcr.io/org/app@"+pullDigest) + "/json"
-	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "POST /images/create", inspect, "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
+	// The tag moves only after the digest is verified, and before any container is touched.
+	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "POST /images/create", inspect, "POST /images/" + newImage + "/tag", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
 	if got := f.steps(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("call order:\n got %v\nwant %v", got, want)
 	}
 	if q, _ := url.ParseQuery(f.calls[3].Query); len(q) != 2 || q.Get("fromImage") != "ghcr.io/org/app" || q.Get("tag") != pullDigest {
 		t.Fatalf("pull query: %q", f.calls[3].Query)
 	}
+	if q, _ := url.ParseQuery(f.calls[5].Query); len(q) != 2 || q.Get("repo") != "ghcr.io/org/app" || q.Get("tag") != "1.2" {
+		t.Fatalf("tag query: %q", f.calls[5].Query)
+	}
 	raw, err := base64.URLEncoding.DecodeString(f.pullAuth[0])
 	if err != nil || string(raw) != `{"username":"u","password":"a?","serveraddress":"ghcr.io"}` {
 		t.Fatalf("X-Registry-Auth: %q %v", raw, err)
 	}
 	var body struct{ Image string }
-	if err := json.Unmarshal([]byte(f.calls[6].Body), &body); err != nil || body.Image != newImage {
+	if err := json.Unmarshal([]byte(f.calls[7].Body), &body); err != nil || body.Image != newImage {
 		t.Fatalf("create body image: %q %v", body.Image, err)
 	}
 	steps := []string{}
@@ -57,9 +61,17 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A digest-pinned spec reference has no tag to move.
 	f = newFakeDeployEngine(t)
-	if res := f.client().Deploy(context.Background(), request(pulledService("ghcr.io/org/app"))); res.Outcome != protocol.OutcomeSucceeded || len(f.pullAuth) != 1 || f.pullAuth[0] != "" {
+	anon := pulledService("ghcr.io/org/app")
+	anon.Pull.Tag = ""
+	if res := f.client().Deploy(context.Background(), request(anon)); res.Outcome != protocol.OutcomeSucceeded || len(f.pullAuth) != 1 || f.pullAuth[0] != "" {
 		t.Fatalf("anonymous pull: %+v auth=%q", res, f.pullAuth)
+	}
+	for _, c := range f.steps() {
+		if strings.HasSuffix(c, "/tag") {
+			t.Fatalf("tagged without a tag: %v", f.steps())
+		}
 	}
 }
 
@@ -109,6 +121,8 @@ func TestDeployPullFailuresTouchNothing(t *testing.T) {
 		"id shape":    {func(f *fakeDeployEngine) { f.pulled["Id"] = "abc" }, "pulled image does not match"},
 		"inspect 404": {func(f *fakeDeployEngine) { f.pulledStatus = 404 }, "the runtime refused with status 404"},
 		"inspect 500": {func(f *fakeDeployEngine) { f.pulledStatus = 500 }, "the runtime refused with status 500"},
+		"tag 500":     {func(f *fakeDeployEngine) { f.tagStatus = 500 }, "tag failed"},
+		"tag 404":     {func(f *fakeDeployEngine) { f.tagStatus = 404 }, "tag failed"},
 		// A line past the per-line bound ends the scan with an error, never a success.
 		"stream cut": {func(f *fakeDeployEngine) { f.pullBody = `{"status":"` + strings.Repeat("x", 1<<20+1) + `"}` + "\n" }, "the runtime call failed"},
 	} {
@@ -127,7 +141,7 @@ func TestDeployPullFailuresTouchNothing(t *testing.T) {
 				}
 			}
 			for _, c := range f.steps() {
-				if !strings.HasPrefix(c, "GET ") && c != "POST /images/create" {
+				if !strings.HasPrefix(c, "GET ") && c != "POST /images/create" && c != "POST /images/"+newImage+"/tag" {
 					t.Fatalf("a container was touched: %v", f.steps())
 				}
 			}
@@ -156,7 +170,7 @@ func TestDeploySecondPullFailureTouchesNothing(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	for _, c := range f.steps() {
-		if !strings.HasPrefix(c, "GET ") && c != "POST /images/create" {
+		if !strings.HasPrefix(c, "GET ") && c != "POST /images/create" && c != "POST /images/"+newImage+"/tag" {
 			t.Fatalf("a container was touched: %v", f.steps())
 		}
 	}
@@ -169,7 +183,8 @@ func TestDeploySecondPullFailureTouchesNothing(t *testing.T) {
 	}
 }
 
-// A pull that would leave too little time for every replacement is refused before it is sent.
+// A pull that could not get callBudget inside the pull phase is refused before it is sent. The
+// phase does not reserve a replacement per service: two services get the same window as one.
 func TestDeployPullRefusedWithoutTimeToReplace(t *testing.T) {
 	const replace = 2*30*time.Second + 3*20*time.Second // replaceBudget
 	for name, tc := range map[string]struct {
@@ -177,7 +192,7 @@ func TestDeployPullRefusedWithoutTimeToReplace(t *testing.T) {
 		left     time.Duration
 	}{
 		"one service":  {[]protocol.DeploymentService{pulledService("ghcr.io/org/app")}, replace + 10*time.Second},
-		"two services": {[]protocol.DeploymentService{pulledService("ghcr.io/org/app"), webService()}, 2*replace + 10*time.Second},
+		"two services": {[]protocol.DeploymentService{pulledService("ghcr.io/org/app"), webService()}, replace + 10*time.Second},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)

@@ -13,33 +13,34 @@ import (
 // resolved environment values: it exists only in memory on both sides and is never logged.
 // See docs/agent-protocol.md, Deployment apply.
 const (
-	TypeDeploymentApply          = "deployment.apply"
-	TypeDeploymentResult         = "deployment.result"
-	CapabilityDeploymentApply    = "deployment.apply"
-	CapabilityDeploymentPull     = "deployment.pull" // the agent runs a service's Pull step
-	MaxDeploymentRequestBytes    = 320 << 10
-	MaxDeploymentResultBytes     = 160 << 10
-	DeploymentLifetime           = 15 * time.Minute
-	MaxDeploymentServices        = 100
-	MaxDeploymentEnvEntries      = 128
-	MaxDeploymentEnvValueBytes   = 16 << 10
-	MaxDeploymentEnvBytes        = 64 << 10
-	MaxDeploymentPorts           = 64
-	MaxDeploymentStepDetailBytes = 256
-	MaxRegistryAuthHosts         = 16
-	MaxRegistryAuthSecretBytes   = 4096
-	StepPrecondition             = "precondition"
-	StepImage                    = "image"
-	StepPull                     = "pull"
-	StepStop                     = "stop"
-	StepRename                   = "rename"
-	StepCreate                   = "create"
-	StepStart                    = "start"
-	StepRemove                   = "remove"
-	OutcomeSkipped               = "skipped"
-	TypeDeploymentRemove         = "deployment.remove"
-	CapabilityDeploymentRemove   = "deployment.remove"
-	MaxRemovalTargets            = 100 // three steps each fit a result's 8*MaxDeploymentServices
+	TypeDeploymentApply             = "deployment.apply"
+	TypeDeploymentResult            = "deployment.result"
+	CapabilityDeploymentApply       = "deployment.apply"
+	CapabilityDeploymentPull        = "deployment.pull" // the agent runs a service's Pull step
+	MaxDeploymentRequestBytes       = 320 << 10
+	MaxDeploymentRequestBytesLegacy = 192 << 10 // an agent without CapabilityDeploymentPull
+	MaxDeploymentResultBytes        = 160 << 10
+	DeploymentLifetime              = 15 * time.Minute
+	MaxDeploymentServices           = 100
+	MaxDeploymentEnvEntries         = 128
+	MaxDeploymentEnvValueBytes      = 16 << 10
+	MaxDeploymentEnvBytes           = 64 << 10
+	MaxDeploymentPorts              = 64
+	MaxDeploymentStepDetailBytes    = 256
+	MaxRegistryAuthHosts            = 16
+	MaxRegistryAuthSecretBytes      = 4096
+	StepPrecondition                = "precondition"
+	StepImage                       = "image"
+	StepPull                        = "pull"
+	StepStop                        = "stop"
+	StepRename                      = "rename"
+	StepCreate                      = "create"
+	StepStart                       = "start"
+	StepRemove                      = "remove"
+	OutcomeSkipped                  = "skipped"
+	TypeDeploymentRemove            = "deployment.remove"
+	CapabilityDeploymentRemove      = "deployment.remove"
+	MaxRemovalTargets               = 100 // three steps each fit a result's 8*MaxDeploymentServices
 )
 
 var (
@@ -74,18 +75,21 @@ type DeploymentService struct {
 	Pull *ImagePull `json:"pull,omitempty"`
 }
 
-// ImagePull names an image by host, repository and the digest it must resolve to.
+// ImagePull names an image by host, repository and the digest it must resolve to. Tag, when
+// set, is the service's tag reference (same host and repository) the pulled image is tagged
+// with, so the host's tag follows the update; empty for a digest-pinned spec reference.
 type ImagePull struct {
 	Reference string `json:"reference"`
 	Digest    string `json:"digest"`
+	Tag       string `json:"tag,omitempty"`
 }
 type RegistryAuth struct {
 	Username string `json:"username"`
 	Secret   string `json:"secret"`
 }
 
-// Host is the registry host Reference names (internal/registry.ParseReference's rule), or ""
-// when it names none or is invalid.
+// Host is the registry host Reference names, or "" when it names none or is invalid. It is
+// read as written, not canonicalised; the server sends the canonical host.
 func (p ImagePull) Host() string {
 	if !ValidImageReference(p.Reference) {
 		return ""
@@ -98,8 +102,15 @@ func (p ImagePull) Host() string {
 }
 
 func (p ImagePull) valid() bool {
-	_, digest := SplitImageReference(p.Reference)
-	return p.Host() != "" && imageID.MatchString(digest) && digest == p.Digest
+	name, digest := SplitImageReference(p.Reference)
+	if p.Host() == "" || !imageID.MatchString(digest) || digest != p.Digest {
+		return false
+	}
+	if p.Tag == "" {
+		return true
+	}
+	tagName, tag := SplitImageReference(p.Tag)
+	return ValidImageReference(p.Tag) && !strings.Contains(p.Tag, "@") && tag != "" && tagName == name
 }
 
 func fullImageID(id string) bool {

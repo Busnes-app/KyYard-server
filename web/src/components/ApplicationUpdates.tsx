@@ -30,6 +30,10 @@ const planCodes: Record<number, string> = {
   403: 'You do not have permission to plan deployments.',
   429: 'Too many registry checks are running; try again in a moment.',
 };
+const planConflicts: Record<string, string> = {
+  adoption_changed: 'Adoption changed. Refresh applications before planning.',
+  deployment_in_progress: 'A deployment is being applied; wait for it to finish.',
+};
 const planUnknown = 'The plan was refused or its outcome is unknown. Refresh before trying again.';
 // Server strings never render raw: unknown verdicts and details show nothing.
 const fixed = (table: Record<string, string>, key: string) => Object.hasOwn(table, key) ? table[key] : '';
@@ -68,8 +72,11 @@ function UpdatesView({ base, instanceID, project, latestRevision, onPlanned }: P
     try {
       const r = await secureFetch(`${base}/deployments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instance_id: instanceID, mapping_version: mappingVersion, revision: latestRevision, confirm, update }) });
       if (r.ok) { setConfirm(''); setPlanned(true); setPlanMessages(['Plan created; review it in the deployment plan panel.']); onPlanned(); return; }
-      const blockers = r.status === 409 ? knownBlockers(await r.json().catch(() => null), planBlockers) : [];
-      setPlanMessages(blockers.length ? blockers.map((b) => planBlockers[b]) : [planCodes[r.status] ?? planUnknown]);
+      const body: unknown = r.status === 409 ? await r.json().catch(() => null) : null;
+      const blockers = knownBlockers(body, planBlockers);
+      const code = body && typeof body === 'object' ? (body as { code?: unknown }).code : undefined;
+      const conflict = typeof code === 'string' ? fixed(planConflicts, code) : '';
+      setPlanMessages(blockers.length ? blockers.map((b) => planBlockers[b]) : [conflict || (planCodes[r.status] ?? planUnknown)]);
     } catch { setPlanMessages([planUnknown]); }
     finally { setPlanning(false); }
   };

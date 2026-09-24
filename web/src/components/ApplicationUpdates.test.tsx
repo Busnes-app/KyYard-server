@@ -192,6 +192,19 @@ it('maps 429 to fixed text', async () => {
   await screen.findByText('Too many registry checks are running; try again in a moment.');
   expect(document.body.textContent).not.toContain('secret-canary');
 });
+it.each([
+  ['adoption_changed', 'Adoption changed. Refresh applications before planning.'],
+  ['deployment_in_progress', 'A deployment is being applied; wait for it to finish.'],
+  ['made_up_canary', 'The plan was refused or its outcome is unknown. Refresh before trying again.'],
+])('maps the %s conflict to fixed text', async (code, text) => {
+  stub(body([row({ verdict: 'update_available' })]), new Response(JSON.stringify({ error: 'secret-canary', code }), { status: 409 }));
+  render(<ApplicationUpdates {...props} />);
+  openPanel();
+  await screen.findByText('Update available');
+  planUpdate();
+  await screen.findByText(text);
+  expect(document.body.textContent).not.toContain('secret-canary');
+});
 it('hides an unknown refusal body', async () => {
   stub(body([row({ verdict: 'update_available' })]), new Response(JSON.stringify({ error: 'secret-canary', code: 'made_up_canary' }), { status: 500 }));
   render(<ApplicationUpdates {...props} />);

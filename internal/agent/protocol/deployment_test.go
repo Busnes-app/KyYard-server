@@ -121,6 +121,11 @@ func TestDeploymentRequestPull(t *testing.T) {
 		"pull":           func(r *DeploymentRequest) { pulled(r, 0, "ghcr.io") },
 		"localhost host": func(r *DeploymentRequest) { pulled(r, 0, "localhost") },
 		"host with port": func(r *DeploymentRequest) { pulled(r, 0, "registry.lan:5000") },
+		"port, no dot":   func(r *DeploymentRequest) { pulled(r, 0, "registry:5000") },
+		"pull and tag": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "ghcr.io/acme/web:1.2"
+		},
 		"pull and auth": func(r *DeploymentRequest) {
 			pulled(r, 0, "ghcr.io")
 			r.Registries = map[string]RegistryAuth{"ghcr.io": {Username: "bot", Secret: "token"}}
@@ -154,6 +159,31 @@ func TestDeploymentRequestPull(t *testing.T) {
 		"pull by tag": func(r *DeploymentRequest) {
 			pulled(r, 0, "ghcr.io")
 			r.Services[0].Pull.Reference = "ghcr.io/acme/web:1.2"
+		},
+		// Digest agrees with the pin, so only the sha256: rule refuses it.
+		"pull pinned by tag": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Reference, r.Services[0].Pull.Digest = "ghcr.io/acme/web:1.2", "1.2"
+		},
+		"tag with digest": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = r.Services[0].Pull.Reference
+		},
+		"tag without tag": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "ghcr.io/acme/web"
+		},
+		"tag invalid": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "ghcr.io/../web:1.2"
+		},
+		"tag other repository": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "ghcr.io/acme/api:1.2"
+		},
+		"tag other host": func(r *DeploymentRequest) {
+			pulled(r, 0, "ghcr.io")
+			r.Services[0].Pull.Tag = "quay.io/acme/web:1.2"
 		},
 		"pull without host": func(r *DeploymentRequest) {
 			pulled(r, 0, "ghcr.io")
@@ -221,6 +251,7 @@ func TestImagePullHost(t *testing.T) {
 	for ref, want := range map[string]string{
 		"ghcr.io/acme/web" + d:              "ghcr.io",
 		"registry.lan:5000/web" + d:         "registry.lan:5000",
+		"registry:5000/app" + d:             "registry:5000",
 		"localhost/web" + d:                 "localhost",
 		"acme/web" + d:                      "",
 		"nginx" + d:                         "",
@@ -231,6 +262,13 @@ func TestImagePullHost(t *testing.T) {
 		if got := (ImagePull{Reference: ref}).Host(); got != want {
 			t.Errorf("Host(%q) = %q, want %q", ref, got, want)
 		}
+	}
+}
+
+// The caps are wire bounds agents already built against; a change must be deliberate.
+func TestDeploymentCaps(t *testing.T) {
+	if MaxDeploymentRequestBytes != 327680 || MaxDeploymentRequestBytesLegacy != 196608 || MaxDeploymentResultBytes != 163840 || MaxRegistryAuthHosts != 16 || MaxRegistryAuthSecretBytes != 4096 {
+		t.Fatal("a deployment wire cap changed")
 	}
 }
 

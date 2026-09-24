@@ -18,7 +18,7 @@ import (
 // the resources it replaced, and a socket that ends first leaves the row unknown. Resolved
 // values reach the agent and nobody else.
 func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
-	s, st, _ := setupTestServer(t)
+	s, st, cfg := setupTestServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	ts := st.Tenancy()
@@ -250,4 +250,37 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 		t.Fatalf("a refused apply moved the row: %+v", got)
 	}
 	sock.conn.CloseNow()
+
+	// A frame past 192 KiB goes only to an agent with deployment.pull: an older one would close
+	// its session on it. One stored value feeds four variables and JSON escapes '<' as six
+	// bytes, so the frame is ~240 KiB while the stored values stay inside their bound.
+	env := map[string]store.ApplicationSecretRef{}
+	for _, n := range []string{"A", "B", "C", "D"} {
+		env["V"+n] = store.ApplicationSecretRef{SecretRef: "web-a"}
+	}
+	spec := store.ApplicationSpec{Kind: "compose.v1", Services: []store.ApplicationService{{Name: "web", Image: "nginx:1", Environment: env}}}
+	_, err = ts.ReplaceApplicationRevision(ctx, store.TenantAccess{ActorID: "usr_envadmin", OrganizationID: "a", EnvironmentID: "env-a"}, app.ID, 1, spec, map[string]string{"web-a": strings.Repeat("<", 10000)}, cfg.Security.EncryptionKey)
+	must(err)
+	for _, capabilities := range [][]string{{protocol.CapabilityDeploymentApply}, {protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull}} {
+		sock = online(capabilities)
+		inventory(sock, newID, newImage, replacedAt)
+		sync(sock)
+		waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+		if len(capabilities) == 1 {
+			must(json.Unmarshal([]byte(request(admin, "GET", mapping, "", 200)), &mapped))
+			mappingBody, _ = json.Marshal(store.MappingRequest{InstanceID: instance.ID, Version: mapped.Version, Digest: mapped.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": newID}})
+			request(admin, "PUT", mapping, string(mappingBody), 204)
+			planBody, _ = json.Marshal(store.PlanRequest{InstanceID: instance.ID, MappingVersion: mapped.Version + 1, Revision: 2, Confirm: "shop"})
+		}
+		wide := plan()
+		if len(capabilities) == 1 {
+			request(admin, "POST", deployments+"/"+wide.ID+"/apply", `{"confirm":"shop"}`, 400)
+			if got := state(wide.ID); got.State != "planned" {
+				t.Fatalf("an oversized frame for a legacy agent moved the row: %+v", got)
+			}
+		} else {
+			request(admin, "POST", deployments+"/"+wide.ID+"/apply", `{"confirm":"shop"}`, 202)
+		}
+		sock.conn.CloseNow()
+	}
 }

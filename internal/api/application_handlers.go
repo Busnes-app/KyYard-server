@@ -282,7 +282,11 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, store.ErrEndpointOffline)
 		return
 	}
-	applied, req, err := s.store.Tenancy().ApplyDeployment(r.Context(), a, app, id, input.Confirm, s.config.Security.EncryptionKey)
+	maxFrame := protocol.MaxDeploymentRequestBytesLegacy
+	if slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentPull) {
+		maxFrame = protocol.MaxDeploymentRequestBytes
+	}
+	applied, req, err := s.store.Tenancy().ApplyDeployment(r.Context(), a, app, id, input.Confirm, s.config.Security.EncryptionKey, maxFrame)
 	if err != nil {
 		s.tenantError(w, err)
 		return

@@ -109,7 +109,7 @@ function PlanDetails({ d }: { d: Deployment }) {
     {services.controls}
     <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Pinned image</th><th>Replaces container</th><th>Secrets</th></tr></thead><tbody>{services.rows.map(s => <tr key={s.name}>
       <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>
-      <td data-label="Pinned image"><div className="ky-resource-name"><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small>{/^sha256:[0-9a-f]{64}$/.test(s.pull_digest ?? '') && <small>pulls {s.pull_digest?.slice(7, 19)}</small>}</div></td>
+      <td data-label="Pinned image"><div className="ky-resource-name">{/^sha256:[0-9a-f]{64}$/.test(s.pull_digest ?? '') ? <span>pulls {s.pull_digest?.slice(7, 19)}</span> : <><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small></>}</div></td>
       <td data-label="Replaces container"><div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div></td>
       <td data-label="Secrets">{s.secret_refs.length ? `${s.secret_refs.length} reference(s), values not shown` : 'None'}</td>
     </tr>)}</tbody></table>

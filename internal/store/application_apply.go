@@ -10,13 +10,14 @@ import (
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/registry"
 	"github.com/google/uuid"
 )
 
 // ApplyDeployment turns a planned row into an applying one and builds the frame the agent
-// executes. The values it resolves exist only in the returned request. See
-// docs/application-schema.md, Deploy.
-func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte) (*Deployment, *protocol.DeploymentRequest, error) {
+// executes. The values it resolves exist only in the returned request. maxFrameBytes is the
+// largest frame the endpoint's agent accepts. See docs/application-schema.md, Deploy.
+func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error) {
 	appID, err := uuid.Parse(app)
 	if err != nil || a.EnvironmentID == "" || len(key) != 32 {
 		return nil, nil, ErrInvalid
@@ -105,6 +106,15 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 			svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}}
 			if ps.PullDigest != "" {
 				svc.ImageID, svc.Pull = "", &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}
+				// The agent moves the service's tag to the pulled image, so the next plan (and
+				// Compose on the host) resolves the tag to the update rather than reverting it.
+				ref, err := registry.ParseReference(ps.Reference)
+				if err != nil {
+					return ErrAdoptionChanged
+				}
+				if ref.Digest == "" {
+					svc.Pull.Tag = ref.Host + "/" + ref.Repository + ":" + ref.Tag
+				}
 				hosts[svc.Pull.Host()] = true
 			}
 			for _, p := range ps.Ports {
@@ -144,7 +154,7 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 		}
 		// The agent closes the session on a frame past its bound, so refuse it while the row
 		// is still planned rather than send one that can only end unknown.
-		if raw, err := json.Marshal(req); err != nil || len(raw) > protocol.MaxDeploymentRequestBytes {
+		if raw, err := json.Marshal(req); err != nil || len(raw) > min(maxFrameBytes, protocol.MaxDeploymentRequestBytes) {
 			return ErrInvalid
 		}
 		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=? WHERE id=? AND state='planned'`), a.ActorID, now, req.Deadline, d.ID)

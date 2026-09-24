@@ -5,21 +5,20 @@ import (
 	"time"
 )
 
-// The pull window reserves every service's replacement and never goes below callBudget.
-func TestPullWindowReservesEveryReplacement(t *testing.T) {
+// The pull phase is the smaller of 80% of what remains and what remains less one replacement,
+// whatever the service count: a 5-service frame with the full 600 s deadline pulls.
+func TestPullPhase(t *testing.T) {
 	for _, tc := range []struct {
-		remaining time.Duration
-		services  int
-		window    time.Duration
-		ok        bool
+		remaining, phase time.Duration
 	}{
-		{replaceBudget + callBudget, 1, callBudget, true},
-		{replaceBudget + callBudget - time.Nanosecond, 1, callBudget - time.Nanosecond, false},
-		{3*replaceBudget + time.Minute, 3, time.Minute, true},
-		{3*replaceBudget + time.Minute, 4, time.Minute - replaceBudget, false},
+		{15 * time.Minute, 720 * time.Second},  // 80% binds
+		{600 * time.Second, 480 * time.Second}, // both rules agree
+		{500 * time.Second, 380 * time.Second}, // replaceBudget binds
+		{replaceBudget + callBudget, callBudget},
+		{replaceBudget, 0},
 	} {
-		if window, ok := pullWindow(tc.remaining, tc.services); window != tc.window || ok != tc.ok {
-			t.Fatalf("pullWindow(%s, %d) = %s %v, want %s %v", tc.remaining, tc.services, window, ok, tc.window, tc.ok)
+		if got := pullPhase(tc.remaining); got != tc.phase {
+			t.Fatalf("pullPhase(%s) = %s, want %s", tc.remaining, got, tc.phase)
 		}
 	}
 }

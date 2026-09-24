@@ -51,12 +51,13 @@ type fakeDeployEngine struct {
 	pullAuth         []string       // X-Registry-Auth of each pull, "" when absent
 	pulledStatus     int            // GET /images/{host%2Frepo@digest}/json; 200 default
 	pulled           map[string]any // its body
+	tagStatus        int            // POST /images/{pulled}/tag; 201 default
 	srv              *httptest.Server
 }
 
 func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
-	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200,
+	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200, tagStatus: 201,
 		pullBody: `{"status":"Pulling from org/app"}` + "\n" + `{"status":"Digest: ` + pullDigest + `"}` + "\n",
 		pulled:   map[string]any{"Id": newImage, "RepoDigests": []string{"ghcr.io/org/app@" + pullDigest}}}
 	f.oldContainer = map[string]any{"Id": oldID, "Image": oldImage, "Name": "/shop-web-1", "Created": "2023-11-14T22:13:20Z", "Mounts": []any{},
@@ -105,6 +106,8 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "GET" && strings.Contains(p, "%2F") && strings.HasSuffix(p, "@"+pullDigest+"/json"):
 			w.WriteHeader(f.pulledStatus)
 			_ = json.NewEncoder(w).Encode(f.pulled)
+		case r.Method == "POST" && strings.HasSuffix(p, "/images/"+newImage+"/tag"):
+			w.WriteHeader(f.tagStatus)
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/stop"):
 			time.Sleep(f.stopDelay)
 			w.WriteHeader(f.stopStatus)

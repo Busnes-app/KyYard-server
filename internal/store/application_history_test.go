@@ -81,7 +81,7 @@ func TestPlanPriorRevision(t *testing.T) {
 	if err != nil || d.SpecDigest != rev2.Digest {
 		t.Fatalf("digest: %v", err)
 	}
-	_, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key)
+	_, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes)
 	if err != nil || req.Revision != 2 || req.Services[0].Env["TOKEN"] != "apply-secret-canary" {
 		t.Fatalf("apply prior: %+v %v", req, err)
 	}
@@ -389,7 +389,7 @@ func TestPruneKeepsCurrentAndPreviousHistory(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))); err != nil {
@@ -467,7 +467,7 @@ func TestAbandonSweepAndFailAreAudited(t *testing.T) {
 	st, a, app, endpoint, _, _, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -489,7 +489,7 @@ func TestAbandonSweepAndFailAreAudited(t *testing.T) {
 
 	st, a, app, _, _, _, d, key = applyFixture(t)
 	ts = st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET deadline=? WHERE id=?`), time.Now().Add(-3*time.Minute), d.ID); err != nil {
@@ -630,7 +630,7 @@ func TestRemovalRefusesOrphaningContainers(t *testing.T) {
 
 	// The last apply was abandoned; a newer remove row that is still planned does not hide it.
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
-	if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Tenancy().AbandonDeployments(ctx, endpoint); err != nil {
@@ -651,7 +651,7 @@ func TestPruneKeepsRemovedApplicationHistory(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeFailed, "")); err != nil {

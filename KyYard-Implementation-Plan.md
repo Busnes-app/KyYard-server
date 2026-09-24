@@ -255,7 +255,6 @@ Next, M7a PR D (hardening), carried from M6 and PR C review:
 - Refusing a request whose deadline implies host/server clock skew.
 - Plan-time inspection of live host configuration beyond the stored precondition identity; also re-check the precondition at the start of each replacement, since pulls widen the gap between precondition and rename (an in-place `docker update` in that gap is not caught).
 - Audit correlation IDs linking plan, apply and settle.
-- A per-pull budget beyond the frame deadline; the pull window reserves every service's replacement but not later services' precondition and image checks.
 - Refuse at plan time a plan whose frame would exceed 16 credentialed hosts or 320 KiB; today only apply refuses it.
 - Put update plans under the per-application guard, so one user cannot fill all 4 registry slots with plans for one application.
 - Mixed-version agents: a pulling plan is gated on `deployment.pull` only at apply (501, nothing sent); an older agent's operator learns it no earlier.

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"runtime"
@@ -40,7 +41,7 @@ func TestApplyDeploymentBuildsTheRequestAndMovesToApplying(t *testing.T) {
 	st, a, app, endpoint, snapshot, _, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key)
+	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +69,7 @@ func TestApplyDeploymentBuildsTheRequestAndMovesToApplying(t *testing.T) {
 		t.Fatalf("secret in audit: %d %v", leaked, err)
 	}
 	// Apply twice: the CAS lets one through.
-	if _, _, err = ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); !errors.Is(err, ErrDeploymentInProgress) {
+	if _, _, err = ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrDeploymentInProgress) {
 		t.Fatalf("second apply: %v", err)
 	}
 }
@@ -140,7 +141,7 @@ func TestApplyDeploymentPreconditions(t *testing.T) {
 			if name == "wrong confirm" {
 				confirm = "nope"
 			}
-			if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, confirm, key); !errors.Is(err, tc.want) {
+			if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, confirm, key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, tc.want) {
 				t.Fatalf("%s: %v", name, err)
 			}
 			var state string
@@ -154,13 +155,13 @@ func TestApplyDeploymentPreconditions(t *testing.T) {
 	if err := st.Tenancy().SetMembership(ctx, &OrganizationMembership{OrganizationID: a.OrganizationID, UserID: a.ActorID, Role: RoleOperator, Status: "active"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); !errors.Is(err, ErrForbidden) {
+	if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("operator: %v", err)
 	}
 	if err := st.Tenancy().SetMembership(ctx, &OrganizationMembership{OrganizationID: a.OrganizationID, UserID: a.ActorID, Role: RoleDeveloper, Status: "active"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := st.Tenancy().ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatalf("developer: %v", err)
 	}
 }
@@ -191,7 +192,7 @@ func TestApplyDeploymentRefusesAnOversizedFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); !errors.Is(err, ErrInvalid) {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("oversized frame: %v", err)
 	}
 	var state string
@@ -200,12 +201,53 @@ func TestApplyDeploymentRefusesAnOversizedFrame(t *testing.T) {
 	}
 }
 
+// An agent without deployment.pull closes its session on a frame past the legacy bound, so the
+// endpoint's cap refuses it while the row is still planned. JSON escapes '<' as six bytes: four
+// 10000-byte values marshal to about 240 KiB.
+func TestApplyDeploymentHonoursTheEndpointFrameCap(t *testing.T) {
+	st, a, app, _, _, _ := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	key := make([]byte, 32)
+	env := map[string]ApplicationSecretRef{}
+	for _, n := range []string{"A", "B", "C", "D"} {
+		env["V"+n] = ApplicationSecretRef{SecretRef: "web-a"}
+	}
+	spec := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Environment: env}}}
+	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, spec, map[string]string{"web-a": strings.Repeat("<", 10000)}, key); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytesLegacy); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("legacy cap: %v", err)
+	}
+	var state string
+	if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "planned" {
+		t.Fatalf("refused apply left state %s (%v)", state, err)
+	}
+	_, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := json.Marshal(req); len(raw) <= protocol.MaxDeploymentRequestBytesLegacy || len(raw) > protocol.MaxDeploymentRequestBytes {
+		t.Fatalf("fixture frame is %d bytes, not between the caps", len(raw))
+	}
+}
+
 // A frame that never left fails its row even when a disconnect abandoned it first.
 func TestFailDeploymentCoversApplyingAndUnknown(t *testing.T) {
 	st, a, app, endpoint, _, _, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
@@ -236,7 +278,7 @@ func TestSettleDeploymentRebindsAndAdvances(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	newID := strings.Repeat("e", 64)
@@ -273,7 +315,7 @@ func TestSettleDeploymentFromUnknownAndAbandon(t *testing.T) {
 	st, a, app, endpoint, _, _, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	n, err := ts.AbandonDeployments(ctx, endpoint)
@@ -299,7 +341,7 @@ func TestPruneSweepsStaleApplying(t *testing.T) {
 	st, a, app, _, _, _, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET deadline=? WHERE id=?`), time.Now().Add(-3*time.Minute), d.ID); err != nil {
@@ -318,7 +360,7 @@ func TestSettleRebindRefusesMissingResource(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.Exec(st.rebind(`DELETE FROM application_resources WHERE instance_id=?`), m.InstanceID); err != nil {
@@ -339,7 +381,7 @@ func TestLateResultSettlesPastANewerPlan(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
@@ -366,7 +408,7 @@ func TestLateResultSettlesPastANewerPlan(t *testing.T) {
 	if plan.State != "planned" || !plan.Expired {
 		t.Fatalf("newer plan still live: %+v", plan)
 	}
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key); !errors.Is(err, ErrAdoptionChanged) {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrAdoptionChanged) {
 		t.Fatalf("apply of the expired plan: %v", err)
 	}
 }
@@ -376,7 +418,7 @@ func TestLateResultAfterNewerApplyIsIgnored(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
@@ -386,7 +428,7 @@ func TestLateResultAfterNewerApplyIsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))); !errors.Is(err, ErrNotFound) {
@@ -410,7 +452,7 @@ func TestRefuseDeploymentResult(t *testing.T) {
 	st, a, app, endpoint, _, _, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.RefuseDeploymentResult(ctx, "other-endpoint", d.ID, "refused"); !errors.Is(err, ErrNotFound) {
@@ -447,7 +489,7 @@ func TestRefuseSupersededDeploymentResult(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
@@ -457,7 +499,7 @@ func TestRefuseSupersededDeploymentResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, newer.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := ts.ReadDeployment(ctx, a, app.ID, d.ID)
@@ -478,7 +520,7 @@ func TestLateResultAfterReleaseIsIgnored(t *testing.T) {
 	st, a, app, endpoint, _, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
@@ -505,7 +547,7 @@ func TestSettleDeploymentRefusesIncompleteOrWrongIdentities(t *testing.T) {
 			st, a, app, endpoint, _, m, d, key := applyFixture(t)
 			ctx := context.Background()
 			ts := st.Tenancy()
-			if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+			if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 				t.Fatal(err)
 			}
 			res := settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))
@@ -529,7 +571,7 @@ func TestConcurrentSettlesCommitOnce(t *testing.T) {
 	}
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	// A success must name every planned service, so it carries the identity; the failure none.
@@ -599,7 +641,7 @@ func TestSettleDeploymentRefusesOversizedResult(t *testing.T) {
 	st, a, app, endpoint, _, _, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil {
 		t.Fatal(err)
 	}
 	res := settledResult(d, protocol.OutcomeFailed, "")
@@ -701,7 +743,7 @@ func pulledApply(t *testing.T, services []ApplicationService, digests map[string
 	if err != nil {
 		t.Fatal(err)
 	}
-	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey)
+	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey, protocol.MaxDeploymentRequestBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,8 +756,10 @@ func TestApplyDeploymentCarriesThePullAndItsCredential(t *testing.T) {
 	reply := map[string]fakeReply{"ghcr.io/org/web:1.2": {digest: digestOf("1")}, "ghcr.io/org/api:1": {digest: digestOf("2")}, "docker.io/library/postgres:16": {digest: digestOf("3")}}
 	st, _, _, _, d, req := pulledApply(t, services, digests, reply)
 	want := map[string]string{"web": "ghcr.io/org/web@" + digestOf("1"), "api": "ghcr.io/org/api@" + digestOf("2"), "db": "docker.io/library/postgres@" + digestOf("3")}
+	// The tag the agent moves: the spec reference, canonical.
+	tags := map[string]string{"web": "ghcr.io/org/web:1.2", "api": "ghcr.io/org/api:1", "db": "docker.io/library/postgres:16"}
 	for _, s := range req.Services {
-		if s.Pull == nil || s.Pull.Reference != want[s.Name] || !strings.HasSuffix(s.Pull.Reference, "@"+s.Pull.Digest) || s.ImageID != "" {
+		if s.Pull == nil || s.Pull.Reference != want[s.Name] || s.Pull.Tag != tags[s.Name] || !strings.HasSuffix(s.Pull.Reference, "@"+s.Pull.Digest) || s.ImageID != "" {
 			t.Fatalf("%s: %+v %+v", s.Name, s, s.Pull)
 		}
 	}
@@ -740,6 +784,72 @@ func TestApplyDeploymentSendsNoCredentialForAnAnonymousPull(t *testing.T) {
 	_, _, _, _, _, req := pulledApply(t, []ApplicationService{{Name: "db", Image: "postgres:16"}}, map[string][]string{"db": {"postgres@" + digestOf("c")}}, map[string]fakeReply{"docker.io/library/postgres:16": {digest: digestOf("3")}})
 	if req.Registries != nil || req.Services[0].Pull == nil {
 		t.Fatalf("request: %+v", req)
+	}
+	if raw, _ := json.Marshal(req); !strings.Contains(string(raw), `"tag":"docker.io/library/postgres:16"`) {
+		t.Fatalf("frame carries no tag: %s", raw)
+	}
+}
+
+// A digest-pinned spec reference names no tag, so the frame asks for none.
+func TestApplyDeploymentSendsNoTagForADigestPinnedReference(t *testing.T) {
+	image := "ghcr.io/org/web@" + digestOf("5")
+	_, _, _, _, _, req := pulledApply(t, []ApplicationService{{Name: "web", Image: image}}, map[string][]string{"web": {image}}, nil)
+	if p := req.Services[0].Pull; p == nil || p.Reference != image || p.Tag != "" {
+		t.Fatalf("pull: %+v", p)
+	}
+	if raw, _ := json.Marshal(req); strings.Contains(string(raw), `"tag"`) {
+		t.Fatalf("frame carries a tag: %s", raw)
+	}
+}
+
+// A result mixing a pulled and a pinned service is checked per service: each must carry its
+// own identity, and swapping them is refused.
+func TestSettleDeploymentVerifiesAMixedResult(t *testing.T) {
+	services := []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1.2"}, {Name: "db", Image: "postgres:16"}}
+	digests := map[string][]string{"web": {"ghcr.io/org/web@" + digestOf("a")}, "db": {"postgres@" + digestOf("c")}}
+	st, a, app, endpoint, _ := pullFixture(t, services, digests)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	d, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, "web"), &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1.2": {digest: digestOf("1")}}}, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey, protocol.MaxDeploymentRequestBytes); err != nil {
+		t.Fatal(err)
+	}
+	web, db := d.Plan.Services[0], d.Plan.Services[1]
+	if web.Name != "web" || web.PullDigest != digestOf("1") || db.PullDigest != "" {
+		t.Fatalf("plan: %+v", d.Plan.Services)
+	}
+	pulledImage := "sha256:" + strings.Repeat("9", 64)
+	result := func(webImage, webDigest, dbImage, dbDigest string) protocol.DeploymentResult {
+		return protocol.DeploymentResult{Deployment: d.ID, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{
+			{Service: "web", ContainerID: strings.Repeat("e", 64), ImageID: webImage, ImageDigest: webDigest, CreatedUnix: 1800000000},
+			{Service: "db", ContainerID: strings.Repeat("f", 64), ImageID: dbImage, ImageDigest: dbDigest, CreatedUnix: 1800000000},
+		}}
+	}
+	for name, res := range map[string]protocol.DeploymentResult{
+		"db reports web's digest":      result(pulledImage, web.PullDigest, pulledImage, web.PullDigest),
+		"web reports db's pinned ID":   result(db.ImageID, "", db.ImageID, ""),
+		"db reports a new ID":          result(pulledImage, web.PullDigest, pulledImage, ""),
+		"web reports no digest at all": result(pulledImage, "", db.ImageID, ""),
+	} {
+		if err := ts.SettleDeployment(ctx, endpoint, res); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var state string
+		if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "applying" {
+			t.Fatalf("%s: state %s %v", name, state, err)
+		}
+	}
+	if err := ts.SettleDeployment(ctx, endpoint, result(pulledImage, web.PullDigest, db.ImageID, "")); err != nil {
+		t.Fatal(err)
+	}
+	for service, want := range map[string]string{"web": pulledImage, "db": db.ImageID} {
+		var image string
+		if err := st.db.QueryRow(st.rebind(`SELECT image_id FROM application_resources WHERE instance_id=? AND service_name=?`), d.InstanceID, service).Scan(&image); err != nil || image != want {
+			t.Fatalf("%s image: %s %v", service, image, err)
+		}
 	}
 }
 
@@ -787,7 +897,7 @@ func TestApplyDeploymentRechecksTheAnonymousPullPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	setAnonymousPull(t, st, a, false)
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey); !errors.Is(err, ErrAdoptionChanged) {
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrAdoptionChanged) {
 		t.Fatalf("apply with anonymous pull off: %v", err)
 	}
 	var state string

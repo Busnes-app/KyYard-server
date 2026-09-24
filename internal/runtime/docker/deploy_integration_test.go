@@ -21,7 +21,9 @@ import (
 // With KY_TEST_DOCKER_PULL_DIGEST (alpine's repository digest) a second service is replaced
 // from docker.io/library/alpine pulled anonymously by that digest. The local image is not
 // removed first: on the containerd image store removing the digest reference also drops every
-// tag on it (alpine:3.24, which the other regressions run with --pull never).
+// tag on it (alpine:3.24, which the other regressions run with --pull never). The pull tags the
+// pulled image alpine:3.24: the same image, so the tag does not move, but the test proves the
+// call succeeded and the tag names the pulled ID.
 func TestDeployRealDocker(t *testing.T) {
 	image := os.Getenv("KY_TEST_DOCKER_DEPLOY_IMAGE")
 	if image == "" {
@@ -113,7 +115,7 @@ func TestDeployRealDocker(t *testing.T) {
 			t.Fatalf("worker identity: %v: %s", err, raw)
 		}
 		req.Services = append(req.Services, protocol.DeploymentService{
-			Name: "worker", ContainerName: workerName, Pull: &protocol.ImagePull{Reference: pulledRef, Digest: pullDigest},
+			Name: "worker", ContainerName: workerName, Pull: &protocol.ImagePull{Reference: pulledRef, Digest: pullDigest, Tag: "docker.io/library/alpine:3.24"},
 			Replaces: protocol.InspectionTarget{ContainerID: workerID, ImageID: identity.Image, CreatedUnix: worker.Created.Unix()},
 		})
 	}
@@ -137,6 +139,9 @@ func TestDeployRealDocker(t *testing.T) {
 		}
 		if out, err = docker("inspect", "--format", "{{.Image}}", pulled.ContainerID); err != nil || out != pulled.ImageID {
 			t.Fatalf("worker container image: %v %s", err, out)
+		}
+		if out, err = docker("image", "inspect", "--format", "{{.Id}}", "alpine:3.24"); err != nil || out != pulled.ImageID {
+			t.Fatalf("alpine:3.24 names %s, want the pulled %s: %v", out, pulled.ImageID, err)
 		}
 	}
 	raw, err = docker("inspect", "--format", "{{json .}}", res.Services[0].ContainerID)

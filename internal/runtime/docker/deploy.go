@@ -51,6 +51,7 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) 
 		r.defaultRuntime = info.DefaultRuntime
 	}
 	icancel()
+	r.pullDeadline = time.Now().Add(pullPhase(time.Until(req.Deadline)))
 	// Every service is checked and its image made present before any container is touched, so
 	// a refused precondition or a failed pull on any service leaves the host unchanged.
 	ready := make([]prepared, 0, len(req.Services))
@@ -71,7 +72,8 @@ type deployRun struct {
 	parent         context.Context
 	req            protocol.DeploymentRequest
 	res            protocol.DeploymentResult
-	defaultRuntime string // "" when it could not be read; the first precondition then fails
+	defaultRuntime string    // "" when it could not be read; the first precondition then fails
+	pullDeadline   time.Time // shared by every pull; see pullPhase
 }
 
 // step records one outcome. The first non-success fixes the run's outcome and detail.

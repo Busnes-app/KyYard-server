@@ -304,6 +304,10 @@ it('shows the pinned registry digest for a pulled service', async () => {
   await screen.findByText('pulls abcdef012345');
   expect(screen.getAllByText(/^pulls /).length).toBe(1);
   expect(document.body.textContent).not.toContain('9'.repeat(52));
+  // The pulled row's pinned image is the digest, not the image the host runs now.
+  const pinned = document.querySelectorAll('td[data-label="Pinned image"]');
+  expect(pinned[0].textContent).not.toContain(plan.plan.services[0].image_id);
+  expect(pinned[1].textContent).toContain(plan.plan.services[0].image_id);
 });
 it('re-reads the plan when refreshKey changes', async () => {
   const fetcher = stubFetch([]);

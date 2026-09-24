@@ -43,6 +43,7 @@ The plan preview and history show `pull_digest` per service.
 type ImagePull struct {
 	Reference string `json:"reference"` // host/repository@sha256:…
 	Digest    string `json:"digest"`
+	Tag       string `json:"tag,omitempty"` // host/repository:tag, the pulled image is tagged with it; empty when the spec is digest-pinned
 }
 type RegistryAuth struct {
 	Username string `json:"username"`
@@ -66,9 +67,15 @@ type RegistryAuth struct {
   full otherwise; every `Registries` key must be a host some service's `Pull.Reference` names
   (no unused credentials in a frame); a `Registries` entry needs a non-empty secret. A result
   identity for a pulled service must carry a full `ImageID` and `ImageDigest == Pull.Digest`.
-- `replaceBudget` gains one call budget for the pull step's inspect; the pull itself runs under
-  the frame deadline (unchanged `DeploymentApplyDeadline`, 10 min). A large image can exhaust
-  it: the result is `timed_out` before any container change, which the UI already explains.
+- The pulls (each with its inspect and tag) share one pull-phase deadline: from when the first
+  could start, `min(remaining − replaceBudget, 0.8 × remaining)` of the frame deadline
+  (unchanged `DeploymentApplyDeadline`, 10 min). A pull that could not get one call budget is
+  `timed_out` before it is sent; each replacement keeps its own `replaceBudget` check. A large
+  image can exhaust the phase: the result is `timed_out` before any container change.
+- After the digest check the adapter tags the pulled image with `Tag`, so the host's tag (which
+  the next plan and Compose resolve) follows the update; a failure is `tag failed`, nothing
+  changed. An agent without `deployment.pull` keeps the 192 KiB frame cap; apply refuses a
+  larger frame for it.
 
 ## Agent (`internal/agent/client`)
 
