@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"path"
 	"regexp"
+	"strings"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
@@ -84,7 +85,7 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 	}
 	declared := make(map[string]bool, len(spec.Volumes))
 	for _, v := range spec.Volumes {
-		if !applicationVolumeName.MatchString(v.Name) || declared[v.Name] {
+		if !ValidVolumeName(v.Name) || declared[v.Name] {
 			return nil, "", ErrInvalid
 		}
 		declared[v.Name] = true
@@ -119,8 +120,8 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 		}
 		targets := make(map[string]bool, len(service.Volumes))
 		for _, v := range service.Volumes {
-			source := (v.Kind == "named" && declared[v.Source]) || (v.Kind == "bind" && cleanAbsolutePath(v.Source))
-			if !source || !cleanAbsolutePath(v.Target) || v.Target == "/" || targets[v.Target] {
+			source := (v.Kind == "named" && declared[v.Source]) || (v.Kind == "bind" && CleanAbsolutePath(v.Source))
+			if !source || !CleanAbsolutePath(v.Target) || v.Target == "/" || targets[v.Target] {
 				return nil, "", ErrInvalid
 			}
 			targets[v.Target] = true
@@ -138,8 +139,13 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 	return raw, applicationSpecDigest(raw), nil
 }
 
-func cleanAbsolutePath(p string) bool {
-	return path.IsAbs(p) && path.Clean(p) == p && displaySafe(p)
+// ValidVolumeName is Docker's volume name grammar.
+func ValidVolumeName(name string) bool { return applicationVolumeName.MatchString(name) }
+
+// CleanAbsolutePath holds mount paths to absolute, normalized, display-safe (so at most
+// 255 bytes) text with no surrounding whitespace.
+func CleanAbsolutePath(p string) bool {
+	return path.IsAbs(p) && path.Clean(p) == p && strings.TrimSpace(p) == p && displaySafe(p)
 }
 
 func applicationSpecDigest(raw []byte) string {

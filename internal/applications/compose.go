@@ -80,9 +80,13 @@ func ParseCompose(source string) (*Import, error) {
 		if len(entries) > 64 {
 			return nil, refusal(top, "At most 64 volumes may be declared")
 		}
-		for _, name := range sortedKeys(entries) {
-			v := store.DeclaredVolume{Name: name}
-			if n := entries[name]; n.Tag != "!!null" {
+		for i := 0; i < len(top.Content); i += 2 {
+			key, n := top.Content[i], top.Content[i+1]
+			if !store.ValidVolumeName(key.Value) {
+				return nil, refusal(key, "Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}")
+			}
+			v := store.DeclaredVolume{Name: key.Value}
+			if n.Tag != "!!null" {
 				config, err := mapping(n)
 				if err != nil {
 					return nil, err
@@ -96,9 +100,10 @@ func ParseCompose(source string) (*Import, error) {
 					}
 				}
 			}
-			declared[name] = true
+			declared[v.Name] = true
 			out.Spec.Volumes = append(out.Spec.Volumes, v)
 		}
+		sort.Slice(out.Spec.Volumes, func(i, j int) bool { return out.Spec.Volumes[i].Name < out.Spec.Volumes[j].Name })
 	}
 	for _, name := range sortedKeys(services) {
 		node := services[name]
@@ -221,6 +226,7 @@ func ParseCompose(source string) (*Import, error) {
 const (
 	relativeBind    = "Relative and home-relative bind mounts are unsupported; write the absolute path"
 	anonymousVolume = "Anonymous volumes are unsupported; declare a named volume"
+	normalizedPath  = "Paths must be absolute and normalized (no trailing slash, surrounding spaces, . or ..)"
 )
 
 // volumes parses short (SOURCE:TARGET[:ro|rw]) and long syntax. Relative and home binds
@@ -230,9 +236,10 @@ func volumes(n *yaml.Node, declared map[string]bool) ([]store.ApplicationVolume,
 		return nil, refusal(n, "volumes must be a list of at most 32 entries")
 	}
 	out := make([]store.ApplicationVolume, 0, len(n.Content))
+	targets := map[string]bool{}
 	for _, entry := range n.Content {
 		v := store.ApplicationVolume{Kind: "named"}
-		at := entry
+		at, targetAt := entry, entry
 		if entry.Kind == yaml.MappingNode {
 			m, err := mapping(entry)
 			if err != nil {
@@ -259,7 +266,7 @@ func volumes(n *yaml.Node, declared map[string]bool) ([]store.ApplicationVolume,
 			if source == nil {
 				return nil, refusal(entry, anonymousVolume)
 			}
-			at = source
+			at, targetAt = source, target
 			if v.Source, err = literal(source); err != nil {
 				return nil, err
 			}
@@ -279,8 +286,8 @@ func volumes(n *yaml.Node, declared map[string]bool) ([]store.ApplicationVolume,
 			if err != nil {
 				return nil, err
 			}
-			// A drive letter (C:\ or C:/) is a Windows path unless that letter is a declared volume.
-			windows := len(s) > 2 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') && strings.ContainsRune(asciiLetters, rune(s[0])) && !declared[s[:1]]
+			// A leading drive letter is a Windows path, as Compose reads it.
+			windows := len(s) > 1 && s[1] == ':' && ('a' <= s[0]|0x20 && s[0]|0x20 <= 'z')
 			if windows || strings.HasPrefix(s, ".") || strings.HasPrefix(s, "~") {
 				return nil, refusal(entry, relativeBind)
 			}
@@ -302,15 +309,25 @@ func volumes(n *yaml.Node, declared map[string]bool) ([]store.ApplicationVolume,
 				v.Kind = "bind"
 			}
 		}
-		if v.Kind == "named" && !declared[v.Source] {
+		switch {
+		case v.Source == "" || v.Target == "":
+			return nil, refusal(at, "Volume source and target are required")
+		case v.Kind == "named" && !declared[v.Source]:
 			return nil, refusal(at, "Named volumes must be declared under top-level volumes")
+		case v.Kind == "bind" && !store.CleanAbsolutePath(v.Source):
+			return nil, refusal(at, normalizedPath)
+		case !store.CleanAbsolutePath(v.Target):
+			return nil, refusal(targetAt, normalizedPath)
+		case v.Target == "/":
+			return nil, refusal(targetAt, "A volume cannot be mounted at /")
+		case targets[v.Target]:
+			return nil, refusal(targetAt, "Duplicate volume target")
 		}
+		targets[v.Target] = true
 		out = append(out, v)
 	}
 	return out, nil
 }
-
-const asciiLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 func boolean(n *yaml.Node) (bool, error) {
 	var b bool

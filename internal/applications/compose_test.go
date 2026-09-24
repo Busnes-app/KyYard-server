@@ -109,8 +109,6 @@ func TestComposeVolumes(t *testing.T) {
 			`[{"kind":"bind","source":"/srv/cfg","target":"/etc/app","read_only":true}]`, `null`},
 		{"long", volumeDoc("      - type: volume\n        source: db\n        target: /x\n      - type: bind\n        source: /srv\n        target: /y\n        read_only: true\n", declared),
 			`[{"kind":"named","source":"db","target":"/x"},{"kind":"bind","source":"/srv","target":"/y","read_only":true}]`, `[{"name":"db"}]`},
-		{"drive-letter name", volumeDoc("      - c:/x\n", "volumes:\n  c:\n"),
-			`[{"kind":"named","source":"c","target":"/x"}]`, `[{"name":"c"}]`},
 		{"external", volumeDoc("      - shared:/x\n      - db:/y\n", "volumes:\n  shared:\n    external: true\n  db:\n    external: false\n"),
 			`[{"kind":"named","source":"shared","target":"/x"},{"kind":"named","source":"db","target":"/y"}]`, `[{"name":"db"},{"name":"shared","external":true}]`},
 	}
@@ -137,6 +135,9 @@ func TestComposeVolumeRefusals(t *testing.T) {
 		boolean    = "An explicit true or false is required"
 		list       = "volumes must be a list of at most 32 entries"
 		unsupport  = "Unsupported field; see the supported import fields"
+		normalized = "Paths must be absolute and normalized (no trailing slash, surrounding spaces, . or ..)"
+		required   = "Volume source and target are required"
+		longKeys   = "Long-syntax volumes require type and target"
 	)
 	declared := "volumes:\n  db:\n"
 	var many strings.Builder
@@ -156,6 +157,23 @@ func TestComposeVolumeRefusals(t *testing.T) {
 		{"dot bind", volumeDoc("      - ./data:/x\n", ""), 5, 9, relative},
 		{"home bind", volumeDoc("      - ~/data:/x\n", ""), 5, 9, relative},
 		{"windows bind", volumeDoc("      - C:\\data:/x\n", ""), 5, 9, relative},
+		{"drive letter declared", volumeDoc("      - c:/x\n", "volumes:\n  c:\n"), 5, 9, relative},
+		{"bind trailing slash", volumeDoc("      - /srv/cfg/:/etc/app\n", ""), 5, 9, normalized},
+		{"bind double slash", volumeDoc("      - //srv:/x\n", ""), 5, 9, normalized},
+		{"bind dot dot", volumeDoc("      - /a/../b:/x\n", ""), 5, 9, normalized},
+		{"relative target", volumeDoc("      - db:data\n", declared), 5, 9, normalized},
+		{"unclean target", volumeDoc("      - db:/x/\n", declared), 5, 9, normalized},
+		{"trailing space target", volumeDoc("      - \"db:/x \"\n", declared), 5, 9, normalized},
+		{"root target", volumeDoc("      - db:/\n", declared), 5, 9, "A volume cannot be mounted at /"},
+		{"duplicate target", volumeDoc("      - db:/x\n      - /srv:/x\n", declared), 6, 9, "Duplicate volume target"},
+		{"empty source", volumeDoc("      - :/x\n", declared), 5, 9, required},
+		{"empty target", volumeDoc("      - \"db:\"\n", declared), 5, 9, required},
+		{"long no type", volumeDoc("      - source: db\n        target: /x\n", declared), 5, 9, longKeys},
+		{"long no target", volumeDoc("      - type: volume\n        source: db\n", declared), 5, 9, longKeys},
+		{"long relative target", volumeDoc("      - type: volume\n        source: db\n        target: rel\n", declared), 7, 17, normalized},
+		{"long duplicate target", volumeDoc("      - db:/x\n      - type: bind\n        source: /srv\n        target: /x\n", declared), 8, 17, "Duplicate volume target"},
+		{"long bind unclean", volumeDoc("      - type: bind\n        source: /srv/\n        target: /x\n", ""), 6, 17, normalized},
+		{"bad declared name", volumeDoc("      - db:/x\n", "volumes:\n  db:\n  _cache:\n"), 8, 3, "Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}"},
 		{"anonymous", volumeDoc("      - /x\n", ""), 5, 9, anonymous},
 		{"undeclared", volumeDoc("      - cache:/x\n", declared), 5, 9, undeclared},
 		{"mode", volumeDoc("      - db:/x:z\n", declared), 5, 9, mode},

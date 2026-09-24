@@ -35,6 +35,8 @@ func TestApplicationSpecVolumeBounds(t *testing.T) {
 		"control bind":     func(s *store.ApplicationSpec) { s.Services[0].Volumes[2].Source = "/srv/\ncfg" },
 		"relative target":  func(s *store.ApplicationSpec) { s.Services[0].Volumes[0].Target = "var/lib" },
 		"unclean target":   func(s *store.ApplicationSpec) { s.Services[0].Volumes[0].Target = "/var/../lib" },
+		"space target":     func(s *store.ApplicationSpec) { s.Services[0].Volumes[0].Target = "/x " },
+		"256-byte bind":    func(s *store.ApplicationSpec) { s.Services[0].Volumes[2].Source = "/" + strings.Repeat("a", 255) },
 		"root target":      func(s *store.ApplicationSpec) { s.Services[0].Volumes[0].Target = "/" },
 		"duplicate target": func(s *store.ApplicationSpec) { s.Services[0].Volumes[1].Target = "/var/lib/postgresql/data" },
 		"tmpfs":            func(s *store.ApplicationSpec) { s.Services[0].Volumes[0].Kind = "tmpfs" },
@@ -44,7 +46,7 @@ func TestApplicationSpecVolumeBounds(t *testing.T) {
 			s.Volumes[0].Name = strings.Repeat("d", 65)
 			s.Services[0].Volumes[0].Source = s.Volumes[0].Name
 		},
-		"duplicate declared": func(s *store.ApplicationSpec) { s.Volumes[1].Name = "db" },
+		"duplicate declared": func(s *store.ApplicationSpec) { s.Volumes = append(s.Volumes, store.DeclaredVolume{Name: "db"}) },
 		"33 on a service": func(s *store.ApplicationSpec) {
 			s.Services[0].Volumes = nil
 			for i := 0; i < 33; i++ {
@@ -72,6 +74,7 @@ func TestApplicationSpecVolumeBounds(t *testing.T) {
 	for i := 0; i < 62; i++ {
 		at.Volumes = append(at.Volumes, store.DeclaredVolume{Name: fmt.Sprint("v", i)})
 	}
+	at.Services[0].Volumes[0] = store.ApplicationVolume{Kind: "bind", Source: "/" + strings.Repeat("a", 254), Target: "/v0"}
 	if err := store.ValidateApplicationSpec(at); err != nil {
 		t.Fatalf("32 mounts and 64 declared refused: %v", err)
 	}
