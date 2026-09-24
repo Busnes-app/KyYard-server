@@ -140,7 +140,7 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 - [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
 - [web/AGENTS.md](web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
 
-`cmd/server` `runServer` starts in this order: open the store (migrations), bootstrap the admin, `Tenancy().Initialize`, then `Tenancy().ReconcileAfterStart`, and only then `api.NewServer`, the local-agent, backup and prune loops and the listener. A reconcile failure is fatal like a failed migration. No test checks this order; `runServer` must keep it.
+`cmd/server` `runServer` starts in this order: open the store (migrations; a schema newer than the binary is refused), bootstrap the admin, `startStore` (`Tenancy().Initialize`, then `Tenancy().ReconcileAfterStart`), and only then `api.NewServer`, the local-agent, backup and prune loops and the listener. A `startStore` failure is fatal like a failed migration. `TestStartStoreSettlesInFlightCommands` proves `startStore` settles an in-flight command; that `runServer` calls it before the listener is not tested, so keep the order.
 
 `cmd/server` supervises the built-in local agent with jittered exponential retry (1s to 60s base delay); disabled configuration and persisted authority refusal stop the loop. Transient socket/store failures retry. Shutdown cancels and waits for this loop before the detached-handler wait and store close. Its private authenticated WebSocket handler joins the existing detached counter.
 

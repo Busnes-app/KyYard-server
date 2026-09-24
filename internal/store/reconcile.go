@@ -13,7 +13,7 @@ const reconcileDetail = "the server restarted before a result arrived"
 
 // ReconcileAfterStart settles every command still in flight as unknown: the process that
 // dispatched it is gone, so no answer can arrive. Returns the number of commands settled.
-// outcome=” is the only condition, so a first real answer always wins and a partially
+// An empty outcome is the only condition, so a first real answer always wins and a partially
 // written row still settles. Deployments are left to their own sweep.
 func (t *tenancyStore) ReconcileAfterStart(ctx context.Context) (int64, error) {
 	tx, err := t.store.db.BeginTx(ctx, nil)

@@ -47,14 +47,22 @@ data and nothing from a remote host. Those live on the hosts and are the hosts' 
 problem; KyYard's application removal keeps named volumes for the same reason. A restore brings
 back what KyYard knows about the hosts, not what runs on them.
 
-**The capsule records its schema.** The recipe carries `schema_version`, the latest migration
-of the binary that sealed it. The drill check `Schema Version: data/ky_server.db` compares it
-with the snapshot's `schema_migrations` and fails with `database schema is version N, capsule
-expects M` when they differ, typically a data directory last run by a newer binary than the one
-sealing. The restore command does not check the schema. A newer binary migrates a restored
-database forward at first start, and that is one way; an older binary starts on a schema it
-does not know. Restore with the commit that made the capsule (Step 1 pins it), or accept the
-forward migration knowingly.
+**The capsule records its schema, not its commit.** The recipe carries `schema_version`, the
+latest migration of the binary that sealed it. No commit is recorded: the manifest prints
+`v1.0.0` for every build. `restore` prints `capsule schema version N; this binary migrates to
+M`. Compare the two numbers:
+
+- Equal: this binary runs the capsule's schema as it is.
+- M is greater: the first start migrates the database forward, and that is one way. The drill
+  compares a capsule with its own snapshot, so a drill on the newer binary passes either way
+  and cannot tell you a migration happened; only this line does. Accept it knowingly, or pick a
+  commit whose `internal/store/migrations` ends at N.
+- M is smaller: the server refuses to start with `database schema version N is newer than this
+  binary (M)`. Use a binary whose migrations reach N.
+
+The drill check `Schema Version: data/ky_server.db` fails with `database schema is version N,
+capsule expects M` when a snapshot and its own recipe differ, typically a data directory last
+run by a newer binary than the one sealing.
 
 **This procedure is for SQLite deployments.** A capsule carries `data/ky_server.db` because the
 collector snapshots SQLite with `VACUUM INTO`; on `KY_DB_DRIVER=postgres` no snapshot is
@@ -91,7 +99,7 @@ under a different app name; the capsule's service name must match or the restore
 reading a share.
 
 For a published-image install, and always on a fresh recovery machine, pin the commit you
-intend to run (normally the one that made the backup, or the current tip) to a digest you have
+intend to run (normally the current tip; see the schema note above) to a digest you have
 verified before it reads a single share (`gh` must be logged in). Name the commit yourself.
 Tags are movable, `:<commit sha>` included, so the chain also checks that the attestation records
 your commit as its source: the guarantee is the commit you named, not whatever the tag points at. The
@@ -160,6 +168,7 @@ Restored 4 files from capsule cap-KyYard-1788605720094118543
   created:      2026-09-05T12:15:20Z
   recovery key: 886ff52c...
   payload hash: 8a053985...
+  capsule schema version 27; this binary migrates to 27
 ```
 
 **Check it against KyRecovery's record.** The capsule ID and `created` must match the

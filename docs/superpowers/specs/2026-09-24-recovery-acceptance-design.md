@@ -20,7 +20,9 @@ capsule recipe pins the schema version; the acceptance run itself stays with Yos
   `dispatched_at` is set. A never-dispatched row is never sent: dispatch happens only inside
   the creating request, so a restored pending command cannot execute; it just stops looking
   pending. A dispatched row's real outcome, if the agent still has it, is not modelled for
-  container commands (the agent keeps no ledger for them), so `unknown` is the truthful state.
+  container commands: the agent keeps a 24-hour dedupe ledger, but it only answers a
+  re-dispatch and never re-sends command results on reconnect, so `unknown` is the truthful
+  state.
 - One audit row per affected endpoint: `action='endpoint.commands.reconciled'`,
   `user_id='system'`, `scope='organization'` with the command's organization and environment (so tenant audit views list it, like `auditDeployment`), `resource=<endpoint id>`, `details='commands=<n>'`, `result='unknown'`,
   written through the existing system-audit path (`systemTransition`'s audit shape).

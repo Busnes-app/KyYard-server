@@ -877,6 +877,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		return fmt.Errorf("failed to init schema_migrations: %w", err)
 	}
 
+	// An older binary must not serve a schema it has never read (a downgrade, or a restore
+	// onto an older build); migrating forward is the only direction Run knows.
+	var applied int
+	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
+		return fmt.Errorf("failed to read schema version: %w", err)
+	}
+	if applied > Latest() {
+		return fmt.Errorf("database schema version %d is newer than this binary (%d)", applied, Latest())
+	}
+
 	for _, m := range registry {
 		var exists int
 		err := db.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations WHERE version = $1", m.Version).Scan(&exists)

@@ -136,6 +136,9 @@ bind and DNS overlays already in use:
   Existing database volumes need the same TLS setup before enabling this overlay. Capsule
   backups support SQLite only. A separately managed PostgreSQL server with a stable address
   and verified TLS is also supported by setting the server's database environment directly.
+  Run exactly one server per database: every start settles all in-flight commands as
+  `unknown`, including another live server's, so a second server (a rolling deploy or a
+  stray compose project) corrupts the first one's command results.
 - SSO: configure providers in **Settings → Single sign-on**. OIDC discovery supports KyIdentity;
   OAuth 2 providers can supply explicit endpoints and JSON profile field mappings. Register the
   displayed callback URL with the provider. New identities require an organization membership

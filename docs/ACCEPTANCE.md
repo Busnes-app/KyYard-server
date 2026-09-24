@@ -31,6 +31,13 @@ in the results table.
 - Live container configuration is shown only through Deployment preflight's "Inspect live
   container", so only for adopted, mapped containers.
 - Platform audit (sign-in, password change, backup) has no screen; only tenant audit does.
+- Terminal is offered to every member, read-only included, on any running container of an
+  active host. The server refuses a non-administrator, and the UI reports it as a generic
+  connection failure, not a permission message.
+- The audit Actor column shows user IDs (`usr_…`), not names. Keep a list of which ID is which
+  account before step 8.
+- Container command results (restart, start, stop, remove) are not audited as results; the
+  audit row is the request, under its permission.
 
 ## Prerequisites
 
@@ -119,7 +126,8 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 - `docker compose up -d`; the one-time password is in `docker compose logs kyyard` on the
   line `[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: …`.
 - Sign in as `admin`. The next screen is "Change your password": Current password, New
-  password (at least 12 characters), Confirm new password, Change password. Sign in again.
+  password, Confirm new password, Change password (the 12-character minimum is stated in the
+  paragraph above the fields). Sign in again.
 - Pass: after the second sign-in, Containers shows Local Docker; the old password is refused.
 - Record: time taken, whether the operator found the log line unaided.
 
@@ -152,8 +160,11 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 ### 4. Read-only and cross-tenant
 
 - As reader: Restart answers "You do not have permission for this action."; Logs answers "You
-  do not have permission to read logs."; Terminal is refused (organization administrators
-  only); Applications shows environment variable names only ("Encrypted environment keys");
+  do not have permission to read logs."; Terminal is offered and opens its dialog, but the
+  open fails with "Terminal connection failed. Check permissions and the configured site
+  address." or "Terminal ended or was refused. …" (see Known gaps). Pass for Terminal: no
+  shell appears, and step 8 shows a `container.exec` row with result `denied` for the reader.
+  Applications shows environment variable names only ("Encrypted environment keys");
   Registries shows "credential set", never the value.
 - As outsider: open `/organizations/org_initial/endpoints/<host A id>` and
   `/api/organizations/org_initial/endpoints` directly. Neither returns data about
@@ -215,11 +226,14 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 - Organization Environments page, Audit (or View audit history on the environment). Columns:
   Time, Actor, Action, Target, Result, Request.
 - Expect rows such as `environment.create`, `endpoint.enroll`, `endpoint.revoke`,
-  `container.restart`, `container.logs`, `container.exec.open`, `application.deploy`,
-  `registry.manage`, and reader's refusals with result `denied`. Agent-reported results carry
-  actor `agent:<endpoint id>`.
-- Pass: every privileged action from steps 2 to 7 and every refusal from step 4 is there,
-  attributed to the right account.
+  `container.operate` (restart, start, stop), `container.destroy` (remove), `container.logs`,
+  `container.exec.open`, `application.deploy`, `registry.manage`, and reader's refusals with
+  result `denied`. There is no `container.restart` row: that name appears only in the
+  container row's status. Enrollment, connection, key rotation and deployment results carry
+  actor `agent:<endpoint id>`; reconciled commands carry `system`. Container command results
+  are not audited.
+- Pass: every privileged action from steps 2 to 7 and every refusal from step 4 is there, and
+  its Actor (a user ID) is the ID of the account that did it.
 - Record: any action missing or misattributed.
 
 ### 9. Backup, drill, clean-install restore
@@ -227,7 +241,8 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 - Settings, Recovery, Open backup & recovery. If no key is pinned, "Recovery key by hand":
   paste the scratch ceremony's public key, Needed / Of, Pin key.
 - Back up now: a success message, Local copies counts one more. Run restore drill: "Restore
-  drill passed" with its checks, including `Schema Version: data/ky_server.db`.
+  drill" with a green "passed" badge and its checks, including `Schema Version:
+  data/ky_server.db`.
 - Clean-install restore: follow `docs/RESTORE.md` Steps 1 to 5 with the recovery operator and
   the custodians on a fresh machine, keeping `KY_APP_URL` so the agents find it. Stop the
   original first; two servers with one identity must never run together.

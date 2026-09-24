@@ -198,6 +198,8 @@ func TestDrillRejectsMalformedRecipes(t *testing.T) {
 		"missing schema":       func(r map[string]any) { delete(r, "schema_version") },
 		"string schema":        func(r map[string]any) { r["schema_version"] = fmt.Sprint(migrations.Latest()) },
 		"fractional schema":    func(r map[string]any) { r["schema_version"] = float64(migrations.Latest()) + 0.5 },
+		"zero schema":          func(r map[string]any) { r["schema_version"] = float64(0) },
+		"negative schema":      func(r map[string]any) { r["schema_version"] = float64(-1) },
 	}
 	for _, path := range []string{"", ".", "../outside", "/etc/passwd", "data/../data/ky_server.db", "data//ky_server.db", "data\\ky_server.db", "data/not-in-manifest", "data/\x00db"} {
 		cases["unsafe path "+path] = func(r map[string]any) {

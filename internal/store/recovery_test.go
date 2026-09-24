@@ -36,9 +36,9 @@ func planAdopted(t *testing.T, ts store.TenancyStore, a store.TenantAccess, appI
 	return d
 }
 
-// Every control-plane table added since the base survives a snapshot restore with its secrets
+// The control-plane state the spec lists (registries, applications with revisions and values, instances with resources and mappings, image checks, deployments, endpoints with keys and capabilities, enrollment tokens, commands and revoked identities) survives a snapshot restore with its secrets
 // usable under the key from the capsule, and startup reconcile settles only what it owns.
-func TestRestoreCarriesEveryControlPlaneTable(t *testing.T) {
+func TestRestoreCarriesControlPlaneState(t *testing.T) {
 	ctx := context.Background()
 	db := testdb.Config(t)
 	if db.Driver != "sqlite" {

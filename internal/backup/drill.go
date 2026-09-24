@@ -40,7 +40,7 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 		return recipeFailure("check_sqlite_integrity must be true")
 	}
 	schemaVersion, ok := recipeInt(recipe["schema_version"])
-	if !ok {
+	if !ok || schemaVersion < 1 {
 		return recipeFailure("schema_version must be the latest migration number")
 	}
 	for _, name := range []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath, sessionKeyPath, instanceKeyPath} {
