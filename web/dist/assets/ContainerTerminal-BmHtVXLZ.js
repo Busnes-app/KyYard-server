@@ -1,8 +1,12 @@
 <<<<<<<< HEAD:web/dist/assets/ContainerTerminal-BmHtVXLZ.js
+<<<<<<<< HEAD:web/dist/assets/ContainerTerminal-BmHtVXLZ.js
 import{r as Ee,j as K,c as Xr}from"./index-BPEb6RKh.js";/**
 ========
 import{r as Ee,j as K,c as Xr}from"./index-zkKrF0iq.js";/**
 >>>>>>>> 12f0b70 (feat(web): volumes in revision, preflight and plan panels):web/dist/assets/ContainerTerminal-1AXBhZXy.js
+========
+import{r as Ee,j as K,c as Xr}from"./index-CazL4bFJ.js";/**
+>>>>>>>> 73eac28 (fix: mounts always sent; dropped mounts on the plan; only project volumes are created):web/dist/assets/ContainerTerminal-CIIOlUkk.js
  * Copyright (c) 2014-2024 The xterm.js authors. All rights reserved.
  * @license MIT
  *

@@ -329,4 +329,14 @@ it('lists each service mount and the volumes the plan ensures', async () => {
   expect(await screen.findByText('Volumes to ensure: shop_db_data, shared')).toBeTruthy();
   expect(screen.getByText('shop_db_data → /data')).toBeTruthy();
   expect(screen.getByText('/srv/conf → /etc/app').parentElement?.querySelector('.badge')?.textContent).toBe('ro');
+  expect(screen.queryByText('Will be dropped by the recreate:')).toBeNull();
+});
+it('shows the mounts the recreate drops for approval', async () => {
+  const dropping = { ...plan, plan: { ...plan.plan, services: [{ ...plan.plan.services[0], mounts: [], dropped_mounts: [{ kind: 'bind', source: '/srv/old', target: '/old' }, { kind: 'volume', source: 'shop_cache', target: '/cache' }] }] } };
+  vi.stubGlobal('fetch', stubFetch([dropping]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  expect(await screen.findByText('Will be dropped by the recreate:')).toBeTruthy();
+  expect(screen.getByText('/srv/old → /old')).toBeTruthy();
+  expect(screen.getByText('shop_cache → /cache')).toBeTruthy();
 });

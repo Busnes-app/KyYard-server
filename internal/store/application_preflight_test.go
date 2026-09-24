@@ -379,6 +379,10 @@ func TestPlanDeploymentCarriesMountsAndVolumes(t *testing.T) {
 	if !reflect.DeepEqual(d.Plan.Services[0].Mounts, web) || !reflect.DeepEqual(d.Plan.Services[1].Mounts, worker) || !reflect.DeepEqual(d.Plan.Volumes, []string{"shop_data", "shared"}) {
 		t.Fatalf("plan: %+v", d.Plan)
 	}
+	// The approver sees the bind the definition dropped; the stored plan keeps it.
+	if !reflect.DeepEqual(d.Plan.Services[0].DroppedMounts, []protocol.Mount{{Kind: protocol.MountBind, Source: "/old", Target: "/old"}}) || d.Plan.Services[1].DroppedMounts != nil {
+		t.Fatalf("dropped on the plan: %+v", d.Plan.Services)
+	}
 	stored, err := ts.ReadDeployment(ctx, a, app.ID, d.ID)
 	if err != nil || !reflect.DeepEqual(stored.Plan, d.Plan) {
 		t.Fatalf("stored plan: %+v %v", stored, err)

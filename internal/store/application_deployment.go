@@ -44,6 +44,8 @@ type PlannedService struct {
 	PullDigest    string `json:"pull_digest,omitempty"`
 	// Mounts are the preflight's resolved list; binds on it are already on the replaced container.
 	Mounts []protocol.Mount `json:"mounts,omitempty"`
+	// DroppedMounts are the replaced container's mounts the recreate leaves off, for approval.
+	DroppedMounts []protocol.Mount `json:"dropped_mounts,omitempty"`
 }
 
 // DeploymentPlan is what a row decided: the services an apply replaces, or the containers a
@@ -302,6 +304,9 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 		ps := PlannedService{Name: s.Name, Reference: s.Image, ImageID: row.ImageID, ImageDigest: digests[row.ImageID], ContainerID: row.ContainerID, Restart: s.Restart, Ports: s.Ports, SecretRefs: refs, Mounts: row.Mounts}
 		if ps.Ports == nil {
 			ps.Ports = []ApplicationPort{}
+		}
+		if len(row.DroppedMounts) > 0 {
+			ps.DroppedMounts = row.DroppedMounts
 		}
 		for _, mount := range row.Mounts {
 			if mount.Kind == protocol.MountVolume && !slices.Contains(plan.Volumes, mount.Source) {

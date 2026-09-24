@@ -75,9 +75,10 @@ func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentServ
 			case statusOf(err) != http.StatusNotFound:
 				return r.outcomeFor(cctx, err, statusOf(err))
 			}
-			short := m.Source
-			if rest, ok := strings.CutPrefix(m.Source, r.req.Project+"_"); ok && rest != "" {
-				short = rest
+			// Only the project's own volumes are created; an external one must already exist.
+			short, ok := strings.CutPrefix(m.Source, r.req.Project+"_")
+			if !ok || short == "" {
+				return protocol.OutcomeDenied, "volume does not exist"
 			}
 			body := struct {
 				Name   string            `json:"Name"`

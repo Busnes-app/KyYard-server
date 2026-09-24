@@ -128,7 +128,7 @@ it('shows mounts, the volume blocker texts and the mounts a recreate drops', asy
   fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
   await screen.findByRole('heading', { name: 'Deployment preflight' });
   expect(screen.getByText('This revision adds a host path the running container does not have; KyYard never introduces bind mounts. Mount it by hand first, or drop it from the definition.')).toBeTruthy();
-  expect(screen.getByText("The host has not reported this container's mounts; wait for the agent to reconnect or re-adopt.")).toBeTruthy();
+  expect(screen.getByText("The agent has not reported this container's mounts, or reported only part of them. Upgrade the host agent to this release, then check again.")).toBeTruthy();
   expect(screen.getByText('shop_db_data → /var/lib/postgresql/data')).toBeTruthy();
   expect(screen.getByText('/srv/new → /new').parentElement?.querySelector('.badge')?.textContent).toBe('ro');
   expect(screen.getAllByText('Will be dropped by the recreate:')).toHaveLength(1);

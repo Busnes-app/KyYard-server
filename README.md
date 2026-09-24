@@ -59,9 +59,12 @@ docker compose pull && docker compose up -d
 A digest-pinned install (`KY_IMAGE` in `.env`) gets nothing from `pull`: re-run the pin recipe in
 `docker-compose.yml` with the commit sha you want first, or delete that line to follow `:latest` again.
 
-Upgrade every agent container (remote, or a legacy same-host one) with the server. An agent older than the server's volume support reports
-no container mounts, so every deployment plan on its host is blocked (`mounts_unreported`) until
-it runs the new image; the built-in local connection upgrades with the server.
+Upgrade the server first, then every agent container (remote, or a legacy same-host one); the
+built-in local connection upgrades with the server. The server must know about mounts before an
+agent recreates containers that have them: an older server sends no mount list and cannot show
+what a recreate drops, so an agent upgraded ahead of it refuses every container with a mount.
+Until an agent is upgraded it reports no container mounts, and every deployment plan on its host
+is blocked (`mounts_unreported`).
 
 `AGENTS.md` is the contract for working in this repository.
 

@@ -19,7 +19,7 @@ export const messages: Record<Blocker, string> = {
   replacement_identity_invalid: 'A mapped container\'s recorded identity is incomplete. Release and adopt the project again before planning.',
   revision_services_differ: "The chosen revision's services differ from the mapped ones. Map against the latest definition or choose another revision.",
   bind_mount_new: 'This revision adds a host path the running container does not have; KyYard never introduces bind mounts. Mount it by hand first, or drop it from the definition.',
-  mounts_unreported: "The host has not reported this container's mounts; wait for the agent to reconnect or re-adopt.",
+  mounts_unreported: "The agent has not reported this container's mounts, or reported only part of them. Upgrade the host agent to this release, then check again.",
   mount_unsupported: 'This container has mounts KyYard cannot recreate (anonymous volumes or unsupported mount types). Recreate it by hand with named volumes first.',
   volume_missing: 'An external volume this revision names does not exist on the host. Create it there first.',
 };

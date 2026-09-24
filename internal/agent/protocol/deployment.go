@@ -84,7 +84,8 @@ type DeploymentService struct {
 	// Pull, when set, has the agent pull the image first; ImageID is then empty.
 	Pull *ImagePull `json:"pull,omitempty"`
 	// Mounts are MountVolume or MountBind only; a bind must already be on the replaced container.
-	Mounts []Mount `json:"mounts,omitempty"`
+	// The server always sends the key; nil (absent) is an older server that knows no mounts.
+	Mounts []Mount `json:"mounts"`
 }
 
 // ImagePull names an image by host, repository and the digest it must resolve to. Tag, when

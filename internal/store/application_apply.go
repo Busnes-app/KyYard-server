@@ -103,7 +103,7 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 			if !ok || spec.Services[i].Name != ps.Name {
 				return ErrAdoptionChanged
 			}
-			svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: ps.Mounts}
+			svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: append([]protocol.Mount{}, ps.Mounts...)}
 			if ps.PullDigest != "" {
 				svc.ImageID, svc.Pull = "", &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}
 				// The agent moves the service's tag to the pulled image, so the next plan (and

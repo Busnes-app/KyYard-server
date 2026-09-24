@@ -327,6 +327,10 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		if detail := undescribed(before, r.req.Project+"_default", r.defaultRuntime); detail != "" {
 			return protocol.OutcomeDenied, detail
 		}
+		// No mounts key is a server older than mounts: it relied on the agent refusing them.
+		if s.Mounts == nil && len(*before.Mounts) > 0 {
+			return protocol.OutcomeDenied, cannotExpress + "mounts"
+		}
 		// Binds are preserve-only: a deploy never introduces a host path.
 		for _, m := range s.Mounts {
 			if m.Kind == protocol.MountBind && !slices.ContainsFunc(*before.Mounts, func(o inspectedMount) bool {

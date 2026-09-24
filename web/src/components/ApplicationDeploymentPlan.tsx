@@ -6,7 +6,7 @@ import { usePagination } from './Pagination';
 import { knownBlockers, messages, MountList, type Mount } from './ApplicationPreflight';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
-type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[] };
+type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[] };
 type DeployStep = { service: string; step: string; outcome: string; detail: string };
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number };
 type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
@@ -112,7 +112,7 @@ function PlanDetails({ d }: { d: Deployment }) {
       <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>
       <td data-label="Pinned image"><div className="ky-resource-name">{/^sha256:[0-9a-f]{64}$/.test(s.pull_digest ?? '') ? <span>pulls {s.pull_digest?.slice(7, 19)}</span> : <><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small></>}</div></td>
       <td data-label="Replaces container"><div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div></td>
-      <td data-label="Mounts">{s.mounts?.length ? <MountList mounts={s.mounts} /> : 'None'}</td>
+      <td data-label="Mounts">{s.mounts?.length ? <MountList mounts={s.mounts} /> : 'None'}{s.dropped_mounts?.length ? <><p>Will be dropped by the recreate:</p><MountList mounts={s.dropped_mounts} /></> : null}</td>
       <td data-label="Secrets">{s.secret_refs.length ? `${s.secret_refs.length} reference(s), values not shown` : 'None'}</td>
     </tr>)}</tbody></table>
   </>;

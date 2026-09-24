@@ -43,7 +43,8 @@ the production suite key.
 **Two disposable Docker hosts**, A and B, with outbound HTTPS to the control plane. Nothing on
 them you would miss. Their agents must run the same release as the control plane: an older
 agent reports no container mounts, and every deployment plan on its host is blocked with
-"The host has not reported this container's mounts" until it is upgraded.
+"The agent has not reported this container's mounts, or reported only part of them. Upgrade
+the host agent to this release, then check again." until it is upgraded.
 
 **Sample application on host A**, one Compose project, `acc-app`:
 

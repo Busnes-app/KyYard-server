@@ -60,6 +60,10 @@ func TestApplyDeploymentBuildsTheRequestAndMovesToApplying(t *testing.T) {
 	if err := req.Validate(time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	// The mounts key is always sent: an agent reads its absence as a server older than mounts.
+	if frame, err := json.Marshal(req); err != nil || !strings.Contains(string(frame), `"mounts":[]`) {
+		t.Fatalf("frame without an empty mounts list: %s %v", frame, err)
+	}
 	// The row and the audit trail carry no value.
 	var stored string
 	if err := st.db.QueryRow(st.rebind(`SELECT plan||detail||result FROM deployments WHERE id=?`), d.ID).Scan(&stored); err != nil || strings.Contains(stored, "canary") {
