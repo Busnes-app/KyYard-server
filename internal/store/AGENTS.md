@@ -66,6 +66,7 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `DeviceStore`, 
 
 ## Verification
 - `go test -v ./internal/store/...`
+- `TestRestoreCarriesEveryControlPlaneTable` (`recovery_test.go`, SQLite only): builds registries, applications with encrypted values, adopted instances and resources, an image check, a succeeded and an applying deployment, an active endpoint with key and capabilities, a revoked endpoint, an unused enrollment token and two in-flight commands; restores the `backup.Collect` snapshot and asserts every row reads back usable under the capsule's `data/encryption.key`, that `ReconcileAfterStart` settles both commands with one audit row and leaves the deployment `applying`, and that a second run changes nothing.
 
 ## Child DOX Index
 None.
