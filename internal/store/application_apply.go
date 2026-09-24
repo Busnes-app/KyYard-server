@@ -96,12 +96,17 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 		}
 		now := time.Now().UTC()
 		req = &protocol.DeploymentRequest{Deployment: d.ID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}}
+		hosts := map[string]bool{}
 		for i, ps := range d.Plan.Services {
 			name, ok := names[ps.ContainerID]
 			if !ok || spec.Services[i].Name != ps.Name {
 				return ErrAdoptionChanged
 			}
 			svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}}
+			if ps.PullDigest != "" {
+				svc.ImageID, svc.Pull = "", &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}
+				hosts[svc.Pull.Host()] = true
+			}
 			for _, p := range ps.Ports {
 				svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol, HostIP: p.HostIP})
 			}
@@ -109,6 +114,22 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 				svc.Env[envName] = values[ref.SecretRef]
 			}
 			req.Services = append(req.Services, svc)
+		}
+		// A credential travels once per host, decrypted here and never stored.
+		for host := range hosts {
+			_, cred, err := t.registryFor(ctx, tx, a.OrganizationID, host, key)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if cred != nil {
+				if req.Registries == nil {
+					req.Registries = map[string]protocol.RegistryAuth{}
+				}
+				req.Registries[host] = protocol.RegistryAuth{Username: cred.Username, Secret: cred.Secret}
+			}
 		}
 		if err := req.Validate(now); err != nil {
 			return ErrInvalid
@@ -302,8 +323,9 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 }
 
 // settleApply rebinds each replaced service to the container the agent reports. Each identity
-// names a distinct planned service and runs its pinned image; a success accounts for every
-// planned service. Checked in full before any write.
+// names a distinct planned service and runs its pinned image, or for a pulled service a full
+// image ID pulled at the planned digest; a success accounts for every planned service. Checked
+// in full before any write.
 func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, instance string, plan DeploymentPlan, res protocol.DeploymentResult) error {
 	replaced := map[string]PlannedService{}
 	for _, ps := range plan.Services {
@@ -312,7 +334,14 @@ func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, 
 	seen := map[string]bool{}
 	for _, idn := range res.Services {
 		ps, ok := replaced[idn.Service]
-		if !ok || seen[idn.Service] || idn.ImageID != ps.ImageID {
+		if !ok || seen[idn.Service] {
+			return ErrInvalid
+		}
+		if ps.PullDigest != "" {
+			if idn.ImageDigest != ps.PullDigest || !validSHA256(idn.ImageID) {
+				return ErrInvalid
+			}
+		} else if idn.ImageID != ps.ImageID {
 			return ErrInvalid
 		}
 		seen[idn.Service] = true

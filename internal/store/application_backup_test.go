@@ -66,7 +66,7 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	mapping, err := ts.ReadApplicationMapping(ctx, a, app.ID)
 	mustTenant(t, err)
 	mustTenant(t, ts.SetApplicationMapping(ctx, a, app.ID, store.MappingRequest{InstanceID: instance.ID, Version: mapping.Version, Digest: mapping.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": strings.Repeat("a", 64)}}))
-	planned, err := ts.PlanDeployment(ctx, a, app.ID, store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: 2, Confirm: "shop"})
+	planned, err := ts.PlanDeployment(ctx, a, app.ID, store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: 2, Confirm: "shop"}, nil, nil, false)
 	mustTenant(t, err)
 	checkedAt := time.Now().UTC().Truncate(time.Second)
 	rawDB, err := sql.Open("sqlite", db.DSN)

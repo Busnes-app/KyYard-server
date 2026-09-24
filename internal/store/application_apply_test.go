@@ -29,7 +29,7 @@ func applyFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, string, 
 		t.Fatal(err)
 	}
 	m2, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m2))
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m2), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestApplyDeploymentRefusesAnOversizedFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestLateResultSettlesPastANewerPlan(t *testing.T) {
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
-	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestLateResultAfterNewerApplyIsIgnored(t *testing.T) {
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
-	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +453,7 @@ func TestRefuseSupersededDeploymentResult(t *testing.T) {
 	if _, err := ts.AbandonDeployments(ctx, endpoint); err != nil {
 		t.Fatal(err)
 	}
-	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	newer, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func TestPlanAndReleaseNeverLeaveALivePlanForAReleasedInstance(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(time.Duration(rand.IntN(2000)) * time.Microsecond)
-			_, planErr = ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+			_, planErr = ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
 		}()
 		go func() {
 			defer wg.Done()
@@ -683,5 +683,95 @@ func TestPlanAndReleaseNeverLeaveALivePlanForAReleasedInstance(t *testing.T) {
 	t.Logf("plan first %d, release first %d", planFirst, releaseFirst)
 	if planFirst == 0 || releaseFirst == 0 {
 		t.Fatalf("one ordering never ran: plan first %d, release first %d", planFirst, releaseFirst)
+	}
+}
+
+// pulledApply plans an update of every service and applies it.
+func pulledApply(t *testing.T, services []ApplicationService, digests map[string][]string, reply map[string]fakeReply) (*SQLStore, TenantAccess, *Application, string, *Deployment, *protocol.DeploymentRequest) {
+	t.Helper()
+	st, a, app, endpoint, _ := pullFixture(t, services, digests)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	setAnonymousPull(t, st, a, true)
+	names := []string{}
+	for _, s := range services {
+		names = append(names, s.Name)
+	}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, names...), &fakeResolver{reply: reply}, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, a, app, endpoint, applied, req
+}
+
+func TestApplyDeploymentCarriesThePullAndItsCredential(t *testing.T) {
+	services := []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1.2"}, {Name: "api", Image: "ghcr.io/org/api:1"}, {Name: "db", Image: "postgres:16"}}
+	digests := map[string][]string{"web": {"ghcr.io/org/web@" + digestOf("a")}, "api": {"ghcr.io/org/api@" + digestOf("b")}, "db": {"postgres@" + digestOf("c")}}
+	reply := map[string]fakeReply{"ghcr.io/org/web:1.2": {digest: digestOf("1")}, "ghcr.io/org/api:1": {digest: digestOf("2")}, "docker.io/library/postgres:16": {digest: digestOf("3")}}
+	st, _, _, _, d, req := pulledApply(t, services, digests, reply)
+	want := map[string]string{"web": "ghcr.io/org/web@" + digestOf("1"), "api": "ghcr.io/org/api@" + digestOf("2"), "db": "docker.io/library/postgres@" + digestOf("3")}
+	for _, s := range req.Services {
+		if s.Pull == nil || s.Pull.Reference != want[s.Name] || !strings.HasSuffix(s.Pull.Reference, "@"+s.Pull.Digest) || s.ImageID != "" {
+			t.Fatalf("%s: %+v %+v", s.Name, s, s.Pull)
+		}
+	}
+	// One entry for the host both ghcr.io services pull from; none for the anonymous one.
+	if len(req.Registries) != 1 || req.Registries["ghcr.io"] != (protocol.RegistryAuth{Username: "bot", Secret: pullCanary}) {
+		t.Fatalf("registries: %+v", req.Registries)
+	}
+	if err := req.Validate(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := st.db.QueryRow(st.rebind(`SELECT plan||detail||result FROM deployments WHERE id=?`), d.ID).Scan(&stored); err != nil || strings.Contains(stored, pullCanary) || strings.Contains(stored, "registries") {
+		t.Fatalf("credential persisted on the row: %v", err)
+	}
+	var leaked int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM audit_records WHERE resource LIKE '%canary%' OR details LIKE '%canary%' OR details LIKE '%registries%'`).Scan(&leaked); err != nil || leaked != 0 {
+		t.Fatalf("credential in audit: %d %v", leaked, err)
+	}
+}
+
+func TestApplyDeploymentSendsNoCredentialForAnAnonymousPull(t *testing.T) {
+	_, _, _, _, _, req := pulledApply(t, []ApplicationService{{Name: "db", Image: "postgres:16"}}, map[string][]string{"db": {"postgres@" + digestOf("c")}}, map[string]fakeReply{"docker.io/library/postgres:16": {digest: digestOf("3")}})
+	if req.Registries != nil || req.Services[0].Pull == nil {
+		t.Fatalf("request: %+v", req)
+	}
+}
+
+func TestSettleDeploymentVerifiesThePull(t *testing.T) {
+	st, _, _, endpoint, d, _ := pulledApply(t, []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1.2"}}, map[string][]string{"web": {"ghcr.io/org/web@" + digestOf("a")}}, map[string]fakeReply{"ghcr.io/org/web:1.2": {digest: digestOf("1")}})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	ps := d.Plan.Services[0]
+	newImage := "sha256:" + strings.Repeat("9", 64)
+	result := func(imageID, digest string) protocol.DeploymentResult {
+		res := settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))
+		res.Services[0].ImageID, res.Services[0].ImageDigest = imageID, digest
+		return res
+	}
+	for name, res := range map[string]protocol.DeploymentResult{
+		"old image, no digest": result(ps.ImageID, ""),
+		"other digest":         result(newImage, digestOf("2")),
+		"new image, no digest": result(newImage, ""),
+	} {
+		if err := ts.SettleDeployment(ctx, endpoint, res); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var state string
+		if err := st.db.QueryRow(st.rebind(`SELECT state FROM deployments WHERE id=?`), d.ID).Scan(&state); err != nil || state != "applying" {
+			t.Fatalf("%s: state %s %v", name, state, err)
+		}
+	}
+	if err := ts.SettleDeployment(ctx, endpoint, result(newImage, ps.PullDigest)); err != nil {
+		t.Fatal(err)
+	}
+	var image string
+	if err := st.db.QueryRow(st.rebind(`SELECT image_id FROM application_resources WHERE instance_id=? AND service_name='web'`), d.InstanceID).Scan(&image); err != nil || image != newImage {
+		t.Fatalf("resource image: %s %v", image, err)
 	}
 }

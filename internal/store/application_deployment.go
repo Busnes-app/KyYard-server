@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/registry"
 	"github.com/google/uuid"
 )
 
@@ -24,6 +26,8 @@ type PlanRequest struct {
 	MappingVersion int    `json:"mapping_version"`
 	Revision       int    `json:"revision"`
 	Confirm        string `json:"confirm"`
+	// Update names services to pull from the registry, pinned to its digest at plan time.
+	Update []string `json:"update"`
 }
 type PlannedService struct {
 	Name        string                    `json:"name"`
@@ -35,6 +39,9 @@ type PlannedService struct {
 	Restart     string                    `json:"restart"`
 	Ports       []ApplicationPort         `json:"ports"`
 	SecretRefs  []string                  `json:"secret_refs"`
+	// Set for a pulled service: apply sends the pull and no image ID.
+	PullReference string `json:"pull_reference,omitempty"`
+	PullDigest    string `json:"pull_digest,omitempty"`
 }
 
 // DeploymentPlan is what a row decided: the services an apply replaces, or the containers a
@@ -91,90 +98,246 @@ func (e *PreflightBlockedError) Error() string {
 
 // PlanDeployment persists an executable preview. It is minted only from a clean preflight and
 // records every identity apply must recheck. It sends no command and reads no secret value.
+// Services named in r.Update are pinned to the registry's current digest: that plan reads,
+// resolves with no transaction open, then writes only if imageCheckState is unchanged.
 // See docs/application-schema.md, Deployment plans.
-func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app string, r PlanRequest) (*Deployment, error) {
+func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app string, r PlanRequest, resolver DigestResolver, key []byte, privateAllowed bool) (*Deployment, error) {
 	id, err := uuid.Parse(app)
 	if err != nil || a.EnvironmentID == "" {
 		return nil, ErrInvalid
 	}
+	if len(r.Update) > 0 {
+		sorted := slices.Sorted(slices.Values(r.Update))
+		if len(slices.Compact(sorted)) != len(r.Update) || len(key) != 32 || resolver == nil {
+			return nil, ErrInvalid
+		}
+	}
 	planID := uuid.NewString()
+	target := id.String() + "/deployments/" + planID
 	var out *Deployment
-	err = t.withTenantTarget(ctx, a, permissions.ApplicationDeploy, id.String()+"/deployments/"+planID, func(tx *sql.Tx) error {
-		p, m, spec, snapshot, digest, err := t.preflight(ctx, tx, a, id.String(), true, r.Revision)
-		if err != nil {
-			return err
-		}
-		if r.InstanceID != m.InstanceID || r.MappingVersion != m.Version || (r.Revision != 0 && r.Revision != p.Revision) || r.Confirm != m.Preview.Project {
-			return ErrAdoptionChanged
-		}
-		blockers := []string{}
-		for _, b := range p.Blockers {
-			if b != "runtime_verification_required" {
-				blockers = append(blockers, b)
-			}
-		}
-		plan := DeploymentPlan{Project: m.Preview.Project, Services: []PlannedService{}}
-		// The preflight resolved each reference to one full image ID, which is the pin. Record
-		// the repository digest beside it only when inventory reported exactly one; it is
-		// advisory, for a later registry pull.
-		digests := map[string]string{}
-		for _, im := range snapshot.Images {
-			if len(im.Digests) == 1 {
-				digests[im.ID] = im.Digests[0]
-			}
-		}
-		for i, s := range spec.Services {
-			row := p.Services[i]
-			for _, b := range row.Blockers {
-				blockers = append(blockers, b)
-			}
-			refs := make([]string, 0, len(s.Environment))
-			for _, ref := range s.Environment {
-				refs = append(refs, ref.SecretRef)
-			}
-			slices.Sort(refs)
-			ps := PlannedService{Name: s.Name, Reference: s.Image, ImageID: row.ImageID, ImageDigest: digests[row.ImageID], ContainerID: row.ContainerID, Restart: s.Restart, Ports: s.Ports, SecretRefs: refs}
-			if ps.Ports == nil {
-				ps.Ports = []ApplicationPort{}
-			}
-			if row.InspectionTarget != nil {
-				ps.Replaces = *row.InspectionTarget
-			}
-			plan.Services = append(plan.Services, ps)
-		}
-		if len(blockers) > 0 {
-			slices.Sort(blockers)
-			return &PreflightBlockedError{Blockers: slices.Compact(blockers)}
-		}
-		raw, err := json.Marshal(plan)
-		if err != nil {
-			return err
-		}
-		if len(raw) > MaxDeploymentPlanBytes {
-			return ErrInvalid
-		}
-		now := time.Now().UTC()
-		out = &Deployment{ID: planID, ApplicationID: id.String(), InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Kind: "apply", State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
-		var liveID, liveState string
-		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,state FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=? AND state IN ('planned','applying')`), a.OrganizationID, a.EnvironmentID, m.InstanceID).Scan(&liveID, &liveState)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if liveState == "applying" {
-			return ErrDeploymentInProgress
-		}
-		if liveState == "planned" {
-			if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE id=?`), liveID); err != nil {
+	if len(r.Update) == 0 {
+		err = t.withTenantTarget(ctx, a, permissions.ApplicationDeploy, target, func(tx *sql.Tx) error {
+			var m *ApplicationMapping
+			var blockers []string
+			out, m, blockers, err = t.draftPlan(ctx, tx, a, id.String(), planID, r, true)
+			if err != nil {
 				return err
 			}
+			if err := blocked(blockers); err != nil {
+				return err
+			}
+			return t.insertPlan(ctx, tx, a, out, m.InstanceID)
+		})
+		if err != nil {
+			return nil, err
 		}
-		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), out.ID, a.OrganizationID, a.EnvironmentID, out.ApplicationID, out.InstanceID, out.EndpointID, plan.Project, out.State, out.Revision, out.SpecDigest, out.MappingVersion, string(raw), out.CreatedBy, out.CreatedAt, out.ExpiresAt)
-		return err
+		return out, nil
+	}
+	var work []imageCheckWork
+	var pulled []int // plan service index per work item
+	var state string
+	// A read: no lock and no success row, but a denial or failure audits the plan's target.
+	err = t.run(ctx, a, permissions.ApplicationDeploy, &target, nil, false, func(tx *sql.Tx) error {
+		d, m, blockers, err := t.draftPlan(ctx, tx, a, id.String(), planID, r, false)
+		if err != nil {
+			return err
+		}
+		anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
+		if err != nil {
+			return err
+		}
+		for _, name := range r.Update {
+			i := slices.IndexFunc(d.Plan.Services, func(ps PlannedService) bool { return ps.Name == name })
+			if i < 0 || m.Bindings[name] == "" {
+				blockers = append(blockers, "update_not_mapped")
+				continue
+			}
+			ref, err := registry.ParseReference(d.Plan.Services[i].Reference)
+			if err != nil {
+				blockers = append(blockers, "registry_unavailable")
+				continue
+			}
+			reg, cred, err := t.registryFor(ctx, tx, a.OrganizationID, ref.Host, key)
+			switch {
+			case errors.Is(err, ErrNotFound) && !anonymous:
+				blockers = append(blockers, "registry_not_configured")
+				continue
+			case errors.Is(err, ErrNotFound):
+			case err != nil:
+				return err
+			}
+			if ref.Digest != "" {
+				pinPull(&d.Plan.Services[i], ref, ref.Digest)
+				continue
+			}
+			w := imageCheckWork{Ref: ref}
+			if reg != nil {
+				w.Cred, w.AllowPrivate = cred, reg.AllowPrivate && privateAllowed
+			}
+			work = append(work, w)
+			pulled = append(pulled, i)
+		}
+		if err := blocked(blockers); err != nil {
+			return err
+		}
+		// draftPlan's preflight verified m against the latest revision and live inventory.
+		state = imageCheckStateOf(m.Version, m.Preview.Revision, m.Preview.Containers)
+		out = d
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	resolveImageChecks(ctx, resolver, work)
+	blockers := []string{}
+	for n, w := range work {
+		switch {
+		case w.Row.Verdict == "registry_error":
+			blockers = append(blockers, "registry_"+w.Row.Detail)
+		case !validSHA256(w.Row.RemoteDigest):
+			blockers = append(blockers, "registry_unavailable")
+		default:
+			pinPull(&out.Plan.Services[pulled[n]], w.Ref, w.Row.RemoteDigest)
+		}
+	}
+	pulls := 0
+	for _, ps := range out.Plan.Services {
+		if ps.PullDigest != "" {
+			pulls++
+		}
+	}
+	details := fmt.Sprintf("pulls=%d", pulls)
+	// Uncancelled, so a plan the client abandoned mid-registry still audits a failure.
+	wctx := context.WithoutCancel(ctx)
+	err = t.withTenantTargetDetails(wctx, a, permissions.ApplicationDeploy, target, &details, func(tx *sql.Tx) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := t.lockApplication(wctx, tx, a, id.String()); err != nil {
+			return err
+		}
+		current, err := t.imageCheckState(wctx, tx, a, id.String(), out.InstanceID)
+		if err != nil {
+			return err
+		}
+		if current != state {
+			return ErrAdoptionChanged
+		}
+		if err := blocked(blockers); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		out.CreatedAt, out.ExpiresAt = now, now.Add(DeploymentPlanTTL)
+		return t.insertPlan(wctx, tx, a, out, out.InstanceID)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// pinPull points a planned service at the registry digest its update pulls. The canonical host
+// is what protocol.ImagePull.Host reads back and what the registry row and frame are keyed by.
+func pinPull(ps *PlannedService, ref registry.Reference, digest string) {
+	ps.PullReference, ps.PullDigest = ref.Host+"/"+ref.Repository+"@"+digest, digest
+}
+
+func blocked(blockers []string) error {
+	if len(blockers) == 0 {
+		return nil
+	}
+	slices.Sort(blockers)
+	return &PreflightBlockedError{Blockers: slices.Compact(blockers)}
+}
+
+// lockApplication takes the application row lock settle, remap and revision append contend on
+// (FOR UPDATE on PostgreSQL; SQLite's single writer already serializes). A missing row is
+// ErrAdoptionChanged.
+func (t *tenancyStore) lockApplication(ctx context.Context, tx *sql.Tx, a TenantAccess, app string) error {
+	lock := ""
+	if t.store.driver == "postgres" {
+		lock = " FOR UPDATE"
+	}
+	var one int
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM applications WHERE id=? AND organization_id=? AND environment_id=?`+lock), app, a.OrganizationID, a.EnvironmentID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAdoptionChanged
+	}
+	return err
+}
+
+// draftPlan runs the preflight (locking when the plan is written in the same transaction) and
+// builds the plan in memory, returning its blockers unrefused so an update can add its own.
+func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess, app, planID string, r PlanRequest, lock bool) (*Deployment, *ApplicationMapping, []string, error) {
+	p, m, spec, snapshot, digest, err := t.preflight(ctx, tx, a, app, lock, r.Revision)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if r.InstanceID != m.InstanceID || r.MappingVersion != m.Version || (r.Revision != 0 && r.Revision != p.Revision) || r.Confirm != m.Preview.Project {
+		return nil, nil, nil, ErrAdoptionChanged
+	}
+	blockers := []string{}
+	for _, b := range p.Blockers {
+		if b != "runtime_verification_required" {
+			blockers = append(blockers, b)
+		}
+	}
+	plan := DeploymentPlan{Project: m.Preview.Project, Services: []PlannedService{}}
+	// The preflight resolved each reference to one full image ID, which is the pin. Record
+	// the repository digest beside it only when inventory reported exactly one; it is
+	// advisory.
+	digests := map[string]string{}
+	for _, im := range snapshot.Images {
+		if len(im.Digests) == 1 {
+			digests[im.ID] = im.Digests[0]
+		}
+	}
+	for i, s := range spec.Services {
+		row := p.Services[i]
+		blockers = append(blockers, row.Blockers...)
+		refs := make([]string, 0, len(s.Environment))
+		for _, ref := range s.Environment {
+			refs = append(refs, ref.SecretRef)
+		}
+		slices.Sort(refs)
+		ps := PlannedService{Name: s.Name, Reference: s.Image, ImageID: row.ImageID, ImageDigest: digests[row.ImageID], ContainerID: row.ContainerID, Restart: s.Restart, Ports: s.Ports, SecretRefs: refs}
+		if ps.Ports == nil {
+			ps.Ports = []ApplicationPort{}
+		}
+		if row.InspectionTarget != nil {
+			ps.Replaces = *row.InspectionTarget
+		}
+		plan.Services = append(plan.Services, ps)
+	}
+	now := time.Now().UTC()
+	d := &Deployment{ID: planID, ApplicationID: app, InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Kind: "apply", State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
+	return d, m, blockers, nil
+}
+
+// insertPlan replaces the instance's planned row with d, refusing while one is applying.
+func (t *tenancyStore) insertPlan(ctx context.Context, tx *sql.Tx, a TenantAccess, d *Deployment, instance string) error {
+	raw, err := json.Marshal(d.Plan)
+	if err != nil {
+		return err
+	}
+	if len(raw) > MaxDeploymentPlanBytes {
+		return ErrInvalid
+	}
+	var liveID, liveState string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,state FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=? AND state IN ('planned','applying')`), a.OrganizationID, a.EnvironmentID, instance).Scan(&liveID, &liveState)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if liveState == "applying" {
+		return ErrDeploymentInProgress
+	}
+	if liveState == "planned" {
+		if _, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM deployments WHERE id=?`), liveID); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), d.ID, a.OrganizationID, a.EnvironmentID, d.ApplicationID, d.InstanceID, d.EndpointID, d.Plan.Project, d.State, d.Revision, d.SpecDigest, d.MappingVersion, string(raw), d.CreatedBy, d.CreatedAt, d.ExpiresAt)
+	return err
 }
 
 // selectDeployments reads rows aliased d with the endpoint's current name (empty once the

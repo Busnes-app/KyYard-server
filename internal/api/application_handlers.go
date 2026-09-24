@@ -211,7 +211,11 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
-	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input)
+	resolver := s.digestResolver
+	if resolver == nil {
+		resolver = registryResolver{}
+	}
+	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input, resolver, s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
 	if err != nil {
 		s.tenantError(w, err)
 		return

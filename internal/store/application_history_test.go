@@ -60,7 +60,7 @@ func TestPlanPriorRevision(t *testing.T) {
 	for _, rev := range []int{3, 0} {
 		r := planRequest(m)
 		r.Revision = rev
-		if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "service_unmapped") {
+		if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, nil, false); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "service_unmapped") {
 			t.Fatalf("revision %d: %v", rev, err)
 		}
 	}
@@ -69,11 +69,11 @@ func TestPlanPriorRevision(t *testing.T) {
 	}
 	r := planRequest(m)
 	r.Revision = 4
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.Is(err, ErrNotFound) {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, nil, false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing revision: %v", err)
 	}
 	r.Revision = 2
-	d, err := ts.PlanDeployment(ctx, a, app.ID, r)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, nil, false)
 	if err != nil || d.Revision != 2 || len(d.Plan.Services) != 1 {
 		t.Fatalf("prior revision: %+v %v", d, err)
 	}
@@ -97,7 +97,7 @@ func TestPlanPriorRevision(t *testing.T) {
 	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
 	r = planRequest(m)
 	r.Revision = 2
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"revision_services_differ"}) {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, nil, false); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"revision_services_differ"}) {
 		t.Fatalf("stray binding: %v", err)
 	}
 	// A prior revision defining a service the mapping lacks is blocked the same way.
@@ -112,7 +112,7 @@ func TestPlanPriorRevision(t *testing.T) {
 	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
 	r = planRequest(m)
 	r.Revision = 3
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, r); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"revision_services_differ"}) {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, nil, false); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"revision_services_differ"}) {
 		t.Fatalf("unmapped service in a prior revision: %v", err)
 	}
 }
@@ -165,7 +165,7 @@ func TestRemoveApplicationBuildsARemovalAndSettles(t *testing.T) {
 		t.Fatalf("list: %+v %v", apps, err)
 	}
 	// Removed means released: planning has no instance, discard is allowed.
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m)); !errors.Is(err, ErrNotFound) {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("plan after removal: %v", err)
 	}
 	if err := ts.DiscardApplication(ctx, a, app.ID, 1); err != nil {
@@ -195,13 +195,13 @@ func TestRemovalPreconditions(t *testing.T) {
 			return RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"}
 		}, ErrEndpointOffline},
 		"live plan": {func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, _ string, m *ApplicationMapping) RemovalBody {
-			if _, err := st.Tenancy().PlanDeployment(ctx, a, app.ID, planRequest(m)); err != nil {
+			if _, err := st.Tenancy().PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false); err != nil {
 				t.Fatal(err)
 			}
 			return RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"}
 		}, ErrDeploymentPlanned},
 		"applying": {func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, _ string, m *ApplicationMapping) RemovalBody {
-			if _, err := st.Tenancy().PlanDeployment(ctx, a, app.ID, planRequest(m)); err != nil {
+			if _, err := st.Tenancy().PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := st.db.Exec(`UPDATE deployments SET state='applying'`); err != nil {
@@ -251,7 +251,7 @@ func TestRemovalPreconditions(t *testing.T) {
 	// An expired plan does not block, and goes.
 	st, a, app, _, _, m := planFixture(t)
 	ts := st.Tenancy()
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m)); err != nil {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.Exec(st.rebind(`UPDATE deployments SET expires_at=?`), time.Now().Add(-time.Minute)); err != nil {
@@ -575,7 +575,7 @@ func TestDeploymentCarriesEndpointName(t *testing.T) {
 	st, a, app, _, _, m := planFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m))
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
 	if err != nil || d.EndpointName != "host" || d.Kind != "apply" {
 		t.Fatalf("plan: %+v %v", d, err)
 	}

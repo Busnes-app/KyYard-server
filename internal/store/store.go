@@ -175,7 +175,7 @@ type TenancyStore interface {
 	AppendApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int, spec ApplicationSpec) (int, error)
 	ListApplications(ctx context.Context, access TenantAccess, offset, limit int) ([]Application, error)
 	PreflightApplication(ctx context.Context, access TenantAccess, applicationID string) (*DeploymentPreflight, error)
-	PlanDeployment(ctx context.Context, access TenantAccess, applicationID string, request PlanRequest) (*Deployment, error)
+	PlanDeployment(ctx context.Context, access TenantAccess, applicationID string, request PlanRequest, resolver DigestResolver, key []byte, privateAllowed bool) (*Deployment, error)
 	ReadDeployment(ctx context.Context, access TenantAccess, applicationID, id string) (*Deployment, error)
 	ApplyDeployment(ctx context.Context, access TenantAccess, applicationID, id, confirm string, key []byte) (*Deployment, *protocol.DeploymentRequest, error)
 	FailDeployment(ctx context.Context, id, detail string) error
