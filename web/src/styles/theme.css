@@ -437,3 +437,107 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
  select:not([multiple]):not([size]) option:checked { background: var(--accent-soft); color: var(--ink-strong); }
  select:not([multiple]):not([size]) option:hover, select:not([multiple]):not([size]) option:focus { background: var(--panel-hover); outline: 2px solid var(--accent); outline-offset: -2px; }
 }
+
+/* Busnes.app light/dark defaults. Existing named palettes remain selectable. */
+:root[data-theme="busnes-light"] {
+  --bg: #f8f6f0;
+  --panel: #ffffff;
+  --ink: #566461;
+  --ink-strong: #182326;
+  --accent: #bf3f18;
+  --accent-soft: #fbf0ec;
+  --line: rgba(24, 35, 38, 0.22);
+  --glow: transparent;
+  --sidebar-start: #f2efe7;
+  --sidebar-end: #f2efe7;
+  --button-text: #ffffff;
+  --panel-hover: #f2efe7;
+  --panel-active: #f2efe7;
+  --ink-muted: #566461;
+  --accent-hover: #bf3f18;
+  --line-focus: #bf3f18;
+  --line-strong: rgba(24, 35, 38, 0.22);
+  --danger: #b42318;
+  --success: #267442;
+  --warning: #875b12;
+  color-scheme: light;
+}
+:root:not([data-theme]) {
+  --bg: #f8f6f0;
+  --panel: #ffffff;
+  --ink: #566461;
+  --ink-strong: #182326;
+  --accent: #bf3f18;
+  --accent-soft: #fbf0ec;
+  --line: rgba(24, 35, 38, 0.22);
+  --glow: transparent;
+  --sidebar-start: #f2efe7;
+  --sidebar-end: #f2efe7;
+  --button-text: #ffffff;
+  --panel-hover: #f2efe7;
+  --panel-active: #f2efe7;
+  --ink-muted: #566461;
+  --accent-hover: #bf3f18;
+  --line-focus: #bf3f18;
+  --line-strong: rgba(24, 35, 38, 0.22);
+  --danger: #b42318;
+  --success: #267442;
+  --warning: #875b12;
+  color-scheme: light;
+}
+:root[data-theme="busnes-dark"] {
+  --bg: #182326;
+  --panel: #1f2b2e;
+  --ink: #b3bcb8;
+  --ink-strong: #f2efe8;
+  --accent: #f5865f;
+  --accent-soft: #2b2622;
+  --line: rgba(242, 239, 232, 0.24);
+  --glow: transparent;
+  --sidebar-start: #1f2b2e;
+  --sidebar-end: #1f2b2e;
+  --button-text: #182326;
+  --panel-hover: #243033;
+  --panel-active: #243033;
+  --ink-muted: #b3bcb8;
+  --accent-hover: #f5865f;
+  --line-focus: #f5865f;
+  --line-strong: rgba(242, 239, 232, 0.24);
+  --danger: #eb9d93;
+  --success: #6fbf8a;
+  --warning: #d8a657;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+:root:not([data-theme]) {
+  --bg: #182326;
+  --panel: #1f2b2e;
+  --ink: #b3bcb8;
+  --ink-strong: #f2efe8;
+  --accent: #f5865f;
+  --accent-soft: #2b2622;
+  --line: rgba(242, 239, 232, 0.24);
+  --glow: transparent;
+  --sidebar-start: #1f2b2e;
+  --sidebar-end: #1f2b2e;
+  --button-text: #182326;
+  --panel-hover: #243033;
+  --panel-active: #243033;
+  --ink-muted: #b3bcb8;
+  --accent-hover: #f5865f;
+  --line-focus: #f5865f;
+  --line-strong: rgba(242, 239, 232, 0.24);
+  --danger: #eb9d93;
+  --success: #6fbf8a;
+  --warning: #d8a657;
+  color-scheme: dark;
+}
+}
+
+.theme-selector {
+  font: inherit; font-size: 0.875rem; width: auto; max-width: 100%; min-height: 36px;
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--panel); color: var(--ink-strong);
+}
+.theme-selector:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.auth-theme { padding: 12px; text-align: right; }
