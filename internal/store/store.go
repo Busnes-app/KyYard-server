@@ -255,6 +255,8 @@ type TenancyStore interface {
 	MarkCommandDispatched(ctx context.Context, id string) error
 	SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
+	// ReconcileAfterStart settles every in-flight command as unknown; startup only.
+	ReconcileAfterStart(ctx context.Context) (int64, error)
 	ReadCommand(ctx context.Context, access TenantAccess, endpointID, id string) (*Command, error)
 	ListCommands(ctx context.Context, access TenantAccess, endpointID string, limit int) ([]Command, error)
 	RollUp(ctx context.Context, since time.Time) (int64, error)

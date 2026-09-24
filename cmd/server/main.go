@@ -127,6 +127,13 @@ func runServer() {
 	if err := st.Tenancy().Initialize(ctx); err != nil {
 		log.Fatalf("Failed to initialize tenancy: %v", err)
 	}
+	// Before anything serves or schedules: a restarted (or restored) server must not show
+	// commands in flight that no live process dispatched.
+	if n, err := st.Tenancy().ReconcileAfterStart(ctx); err != nil {
+		log.Fatalf("Failed to reconcile in-flight commands: %v", err)
+	} else if n > 0 {
+		log.Printf("[RECOVERY] %d in-flight command(s) settled as unknown after restart", n)
+	}
 
 	srv := api.NewServer(cfg, st)
 	localDone := make(chan struct{})
