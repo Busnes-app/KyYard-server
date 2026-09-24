@@ -49,6 +49,11 @@ type Server struct {
 	logs        *logRegistry
 	execs       execRegistry
 	inspections inspectionRegistry
+	// imageChecks holds "org/env/app" while an update check runs; one process is the supported
+	// deployment, so an in-memory guard is enough.
+	imageChecks sync.Map
+	// digestResolver answers update checks; nil means the real registry client.
+	digestResolver store.DigestResolver
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -216,6 +221,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/organizations/{organization}/environments/{environment}/applications/{application}/mapping", s.tenantRoute(s.handleSetApplicationMapping))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/revisions", s.tenantRoute(s.handleReplaceApplicationRevision))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/comparison", s.tenantRoute(s.handleApplicationComparison))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/updates", s.tenantRoute(s.handleImageChecks))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/updates/check", s.tenantRoute(s.handleCheckImageUpdates))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleAdoptionPreview))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleAdoption))
 	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleReleaseApplication))

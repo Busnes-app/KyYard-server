@@ -816,6 +816,29 @@ ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled INTEGER NOT NULL DEF
 );
 ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled BOOLEAN NOT NULL DEFAULT false;
 `},
+	{Version: 27, Name: "image_checks", SQLite: `CREATE TABLE image_checks (
+ instance_id TEXT NOT NULL REFERENCES application_instances(id) ON DELETE CASCADE,
+ service_name TEXT NOT NULL,
+ reference TEXT NOT NULL,
+ local_digest TEXT NOT NULL DEFAULT '',
+ remote_digest TEXT NOT NULL DEFAULT '',
+ verdict TEXT NOT NULL CHECK(verdict IN ('current','update_available','pinned','unknown_local','registry_error')),
+ detail TEXT NOT NULL DEFAULT '',
+ checked_at DATETIME NOT NULL,
+ PRIMARY KEY (instance_id, service_name)
+);
+`, Postgres: `CREATE TABLE image_checks (
+ instance_id TEXT NOT NULL REFERENCES application_instances(id) ON DELETE CASCADE,
+ service_name TEXT NOT NULL,
+ reference TEXT NOT NULL,
+ local_digest TEXT NOT NULL DEFAULT '',
+ remote_digest TEXT NOT NULL DEFAULT '',
+ verdict TEXT NOT NULL CHECK(verdict IN ('current','update_available','pinned','unknown_local','registry_error')),
+ detail TEXT NOT NULL DEFAULT '',
+ checked_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY (instance_id, service_name)
+);
+`},
 }
 
 // Run executes all pending migrations for the specified database driver.

@@ -223,7 +223,7 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 			row.Blockers = append(row.Blockers, "image_reference_ambiguous")
 		default:
 			for id := range images[s.Image] {
-				if fullImageID(id) {
+				if validSHA256(id) {
 					row.ImageID = id
 				} else {
 					row.Blockers = append(row.Blockers, "image_identity_invalid")
@@ -247,7 +247,9 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 	}
 	return out
 }
-func fullImageID(id string) bool {
+
+// validSHA256 accepts a full image ID or digest: sha256: and 64 lowercase hex.
+func validSHA256(id string) bool {
 	if !strings.HasPrefix(id, "sha256:") {
 		return false
 	}

@@ -38,6 +38,7 @@ var (
 	// ErrPrivateRegistriesDisabled refuses allow_private while the operator has not set
 	// KY_REGISTRY_ALLOW_PRIVATE.
 	ErrPrivateRegistriesDisabled = errors.New("private registries are disabled by the operator")
+	ErrMappingRequired           = errors.New("application has no adopted mapping")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
@@ -184,6 +185,13 @@ type TenancyStore interface {
 	RemoveApplication(ctx context.Context, access TenantAccess, applicationID string, body RemovalBody) (*Deployment, *protocol.RemovalRequest, error)
 	ListDeployments(ctx context.Context, access TenantAccess, applicationID string) ([]Deployment, error)
 	ReadApplicationMapping(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMapping, error)
+	ReadImageChecks(ctx context.Context, access TenantAccess, applicationID string) (*UpdateCheck, error)
+	// CheckImageUpdateAccess authorizes application.deploy on an application in scope, with
+	// no success row; the API calls it before taking the per-application check slot.
+	CheckImageUpdateAccess(ctx context.Context, access TenantAccess, applicationID string) error
+	// CheckImageUpdates resolves each mapped service's reference through resolver and replaces
+	// the instance's cached checks, audited as application.deploy on <app>/updates.
+	CheckImageUpdates(ctx context.Context, access TenantAccess, applicationID string, resolver DigestResolver, key []byte, privateAllowed bool) (*UpdateCheck, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)
 	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)

@@ -40,3 +40,6 @@ func RegisterDetachedForTest(s *Server) func() {
 	s.detached.add()
 	return s.detached.done
 }
+
+// SetDigestResolverForTest replaces the registry resolver behind update checks. Test-only.
+func SetDigestResolverForTest(s *Server, r store.DigestResolver) { s.digestResolver = r }
