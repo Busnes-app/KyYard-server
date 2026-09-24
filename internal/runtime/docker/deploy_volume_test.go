@@ -52,8 +52,8 @@ func TestDeployEnsuresVolumesAndMountsThem(t *testing.T) {
 		t.Fatalf("outcome: %+v", res)
 	}
 	want := "web precondition succeeded,web volume succeeded,web volume succeeded,web image succeeded,db precondition succeeded,db image succeeded," +
-		"web rename succeeded,web create succeeded,web stop succeeded,web start succeeded,web remove succeeded," +
-		"db rename succeeded,db create succeeded,db stop succeeded,db start succeeded,db remove succeeded"
+		"web recheck succeeded,web rename succeeded,web create succeeded,web stop succeeded,web start succeeded,web remove succeeded," +
+		"db recheck succeeded,db rename succeeded,db create succeeded,db stop succeeded,db start succeeded,db remove succeeded"
 	if got := stepList(res); got != want {
 		t.Fatalf("steps:\n got %v\nwant %v", got, want)
 	}
@@ -136,8 +136,8 @@ func TestDeployVolumeFailureTouchesNoContainer(t *testing.T) {
 			t.Fatalf("%d: outcome: %+v", status, res)
 		}
 		want := "web precondition succeeded,web volume failed,web volume skipped,web image skipped,db precondition skipped,db image skipped," +
-			"web rename skipped,web create skipped,web stop skipped,web start skipped,web remove skipped," +
-			"db rename skipped,db create skipped,db stop skipped,db start skipped,db remove skipped"
+			"web recheck skipped,web rename skipped,web create skipped,web stop skipped,web start skipped,web remove skipped," +
+			"db recheck skipped,db rename skipped,db create skipped,db stop skipped,db start skipped,db remove skipped"
 		if got := stepList(res); got != want {
 			t.Fatalf("%d steps:\n got %v\nwant %v", status, got, want)
 		}

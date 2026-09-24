@@ -12,8 +12,8 @@ func TestPullPhase(t *testing.T) {
 		remaining, phase time.Duration
 	}{
 		{15 * time.Minute, 720 * time.Second},  // 80% binds
-		{600 * time.Second, 480 * time.Second}, // both rules agree
-		{500 * time.Second, 380 * time.Second}, // replaceBudget binds
+		{700 * time.Second, 560 * time.Second}, // both rules agree
+		{500 * time.Second, 360 * time.Second}, // replaceBudget binds
 		{replaceBudget + callBudget, callBudget},
 		{replaceBudget, 0},
 	} {

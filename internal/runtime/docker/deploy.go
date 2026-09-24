@@ -25,14 +25,14 @@ import (
 // Docker's own default and Compose's.
 const stopGrace = 10
 
-// replaceBudget is the time one service's mutating steps may need: stop and start at
-// operationBudget, rename, create and the identity read at callBudget.
-const replaceBudget = 2*operationBudget + 3*callBudget
+// replaceBudget is the time one service's phase-two steps may need: stop and start at
+// operationBudget, recheck, rename, create and the identity read at callBudget.
+const replaceBudget = 2*operationBudget + 4*callBudget
 
 // Deploy replaces each service's mapped container with one created from the pinned image ID.
 // First every service's precondition and image (pull, for a service naming a digest), in plan
 // order, with each frame volume ensured after the precondition of the first service mounting
-// it; then per service rename, create, stop, start, remove. Renaming and creating while the
+// it; then per service recheck, rename, create, stop, start, remove. Renaming and creating while the
 // old container still runs means a name conflict or a refused create costs no downtime. The
 // first step that is not a success ends the run and every later step is recorded as skipped.
 // Nothing is rolled back: the steps say where the old container was left. No volume is ever
@@ -292,6 +292,7 @@ type prepared struct {
 	s           protocol.DeploymentService // ImageID is the pulled ID for a pulled service
 	name        string                     // the old container's name, without the leading slash
 	networkMode string
+	before      inspectedForDeploy // the precondition's read; recheck compares against it
 }
 
 func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) prepared {
@@ -376,15 +377,31 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 			return protocol.OutcomeSucceeded, ""
 		})
 	}
-	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode}
+	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode, before: before}
 }
 
 func (r *deployRun) replace(ctx context.Context, p prepared) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
-	r.step(s.Name, protocol.StepRename, func() (string, string) {
+	// The pull window can be minutes: re-read the container right before touching it.
+	r.step(s.Name, protocol.StepRecheck, func() (string, string) {
 		if time.Until(r.req.Deadline) < replaceBudget {
 			return protocol.OutcomeTimedOut, "not enough time left before the deadline to replace this service safely"
 		}
+		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		defer cancel()
+		var now inspectedForDeploy
+		if err := r.c.get(cctx, "/containers/"+old+"/json", &now); err != nil {
+			if statusOf(err) == http.StatusNotFound {
+				return protocol.OutcomeDenied, "the container no longer exists"
+			}
+			return r.outcomeFor(cctx, err, statusOf(err))
+		}
+		if now.ID != s.Replaces.ContainerID || now.Image != s.Replaces.ImageID || now.Created.Unix() != s.Replaces.CreatedUnix || !sameConfiguration(p.before, now) {
+			return protocol.OutcomeDenied, "the container changed after the precondition"
+		}
+		return protocol.OutcomeSucceeded, ""
+	})
+	r.step(s.Name, protocol.StepRename, func() (string, string) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		name := p.name + ".kyyard-prev-" + r.req.Deployment[:8]

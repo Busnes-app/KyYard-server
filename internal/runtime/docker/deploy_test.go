@@ -45,23 +45,25 @@ type fakeDeployEngine struct {
 	createStatus     int // 201 default
 	startStatus      int
 	removeStatus     int
-	pullStatus       int            // POST /images/create; 200 default
-	pullStatusFor    map[string]int // per fromImage, overriding pullStatus
-	pullBody         string         // its progress stream
-	pullAuth         []string       // X-Registry-Auth of each pull, "" when absent
-	pulledStatus     int            // GET /images/{host%2Frepo@digest}/json; 200 default
-	pulled           map[string]any // its body
-	tagStatus        int            // POST /images/{pulled}/tag; 201 default
-	volumeStatus     int            // POST /volumes/create; 201 default, as Docker answers for an existing name too
-	volumes          map[string]any // existing volumes by name: GET /volumes/{name} answers 200 with it, else 404
-	createdInstead   map[string]any // what POST /volumes/create answers with, as if another client created the name first
-	otherMounts      []any          // the second fixture container's Mounts; the first's when nil
+	pullStatus       int                                            // POST /images/create; 200 default
+	pullStatusFor    map[string]int                                 // per fromImage, overriding pullStatus
+	pullBody         string                                         // its progress stream
+	pullAuth         []string                                       // X-Registry-Auth of each pull, "" when absent
+	pulledStatus     int                                            // GET /images/{host%2Frepo@digest}/json; 200 default
+	pulled           map[string]any                                 // its body
+	tagStatus        int                                            // POST /images/{pulled}/tag; 201 default
+	volumeStatus     int                                            // POST /volumes/create; 201 default, as Docker answers for an existing name too
+	volumes          map[string]any                                 // existing volumes by name: GET /volumes/{name} answers 200 with it, else 404
+	createdInstead   map[string]any                                 // what POST /volumes/create answers with, as if another client created the name first
+	otherMounts      []any                                          // the second fixture container's Mounts; the first's when nil
+	reads            map[string]int                                 // GETs of each old container so far
+	drift            func(id string, read int, body map[string]any) // edits a copy of what the read-th GET (from 1) of an old container answers
 	srv              *httptest.Server
 }
 
 func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
-	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200, tagStatus: 201, volumeStatus: 201,
+	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200, tagStatus: 201, volumeStatus: 201, reads: map[string]int{},
 		pullBody: `{"status":"Pulling from org/app"}` + "\n" + `{"status":"Digest: ` + pullDigest + `"}` + "\n",
 		pulled:   map[string]any{"Id": newImage, "RepoDigests": []string{"ghcr.io/org/app@" + pullDigest}}}
 	f.oldContainer = map[string]any{"Id": oldID, "Image": oldImage, "Name": "/shop-web-1", "Created": "2023-11-14T22:13:20Z", "Mounts": []any{},
@@ -82,18 +84,16 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "GET" && strings.HasSuffix(p, "/info"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"DefaultRuntime": f.defaultRuntime})
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+oldID+"/json"):
+			body := f.oldRead(oldID, f.oldContainer)
 			w.WriteHeader(f.oldStatus)
-			_ = json.NewEncoder(w).Encode(f.oldContainer)
+			_ = json.NewEncoder(w).Encode(body)
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+otherOldID+"/json"):
-			other := map[string]any{}
-			for k, v := range f.oldContainer {
-				other[k] = v
-			}
+			other := cloneJSON(f.oldContainer)
 			other["Id"], other["Name"] = otherOldID, "/shop-db-1"
 			if f.otherMounts != nil {
 				other["Mounts"] = f.otherMounts
 			}
-			_ = json.NewEncoder(w).Encode(other)
+			_ = json.NewEncoder(w).Encode(f.oldRead(otherOldID, other))
 		case r.Method == "GET" && strings.HasSuffix(p, "/images/"+oldImage+"/json"):
 			w.WriteHeader(f.oldImageStatus)
 			_ = json.NewEncoder(w).Encode(map[string]any{"Id": oldImage, "Config": f.oldImageConfig})
@@ -161,6 +161,34 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	return f
 }
 func (f *fakeDeployEngine) client() *docker.Client { return docker.NewHTTP(f.srv.Client(), f.srv.URL) }
+
+// oldRead counts a GET of an old container and lets drift edit a copy of its body. drift runs on
+// the handler goroutine before the status is written, so it may also set oldStatus.
+func (f *fakeDeployEngine) oldRead(id string, body map[string]any) map[string]any {
+	f.mu.Lock()
+	f.reads[id]++
+	n, drift := f.reads[id], f.drift
+	f.mu.Unlock()
+	body = cloneJSON(body)
+	if drift != nil {
+		drift(id, n, body)
+	}
+	return body
+}
+
+func cloneJSON(m map[string]any) map[string]any {
+	raw, _ := json.Marshal(m)
+	out := map[string]any{}
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
+// dbService is a second service on otherOldID, so both services can succeed against the fake.
+func dbService() protocol.DeploymentService {
+	db := webService()
+	db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", otherOldID, nil
+	return db
+}
 func (f *fakeDeployEngine) steps() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -183,11 +211,11 @@ func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 	if res.Outcome != protocol.OutcomeSucceeded || res.Deployment != deploymentID {
 		t.Fatalf("outcome: %+v", res)
 	}
-	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
+	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json", "GET /containers/" + oldID + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
 	if got := f.steps(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("call order:\n got %v\nwant %v", got, want)
 	}
-	if f.calls[4].Query != "name=shop-web-1.kyyard-prev-3f2b1c9e" || f.calls[5].Query != "name=shop-web-1" || f.calls[6].Query != "t=10" || f.calls[9].Query != "" {
+	if f.calls[5].Query != "name=shop-web-1.kyyard-prev-3f2b1c9e" || f.calls[6].Query != "name=shop-web-1" || f.calls[7].Query != "t=10" || f.calls[10].Query != "" {
 		t.Fatalf("queries: %+v", f.calls)
 	}
 	var body struct {
@@ -207,7 +235,7 @@ func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 			EndpointsConfig map[string]struct{ Aliases []string }
 		}
 	}
-	if err := json.Unmarshal([]byte(f.calls[5].Body), &body); err != nil {
+	if err := json.Unmarshal([]byte(f.calls[6].Body), &body); err != nil {
 		t.Fatal(err)
 	}
 	if body.HostConfig.NetworkMode != "" || body.NetworkingConfig != nil {
@@ -224,7 +252,7 @@ func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 	if _, ok := body.ExposedPorts["80/tcp"]; !ok || len(body.HostConfig.PortBindings["80/tcp"]) != 1 || body.HostConfig.PortBindings["80/tcp"][0].HostIp != "127.0.0.1" || body.HostConfig.PortBindings["80/tcp"][0].HostPort != "8080" {
 		t.Fatalf("ports: %+v", body)
 	}
-	if len(res.Steps) != 7 || len(res.Services) != 1 || res.Services[0].ContainerID != newID || res.Services[0].ImageID != newImage || res.Services[0].CreatedUnix != 1704067201 {
+	if len(res.Steps) != 8 || len(res.Services) != 1 || res.Services[0].ContainerID != newID || res.Services[0].ImageID != newImage || res.Services[0].CreatedUnix != 1704067201 {
 		t.Fatalf("result: %+v", res)
 	}
 	for _, s := range res.Steps {
@@ -267,7 +295,7 @@ func TestDeployKeepsTheProjectNetwork(t *testing.T) {
 			EndpointsConfig map[string]struct{ Aliases []string }
 		}
 	}
-	if err := json.Unmarshal([]byte(f.calls[5].Body), &body); err != nil {
+	if err := json.Unmarshal([]byte(f.calls[6].Body), &body); err != nil {
 		t.Fatal(err)
 	}
 	if body.HostConfig.NetworkMode != "shop_default" {
@@ -457,7 +485,7 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 					t.Fatalf("%s: mutating call %+v", name, c)
 				}
 			}
-			if res.Steps[0].Outcome != protocol.OutcomeDenied || res.Steps[1].Outcome != protocol.OutcomeSkipped || res.Steps[len(res.Steps)-1].Service != "db" || res.Steps[len(res.Steps)-1].Outcome != protocol.OutcomeSkipped || len(res.Steps) != 14 {
+			if res.Steps[0].Outcome != protocol.OutcomeDenied || res.Steps[1].Outcome != protocol.OutcomeSkipped || res.Steps[len(res.Steps)-1].Service != "db" || res.Steps[len(res.Steps)-1].Outcome != protocol.OutcomeSkipped || len(res.Steps) != 16 {
 				t.Fatalf("%s steps: %+v", name, res.Steps)
 			}
 			if !strings.Contains(res.Detail, "service web, step precondition") {
@@ -504,11 +532,11 @@ func TestDeployStepFailuresStopTheRun(t *testing.T) {
 		calls   int
 	}{
 		"image missing":   {func(f *fakeDeployEngine) { f.imageStatus = 404 }, protocol.OutcomeFailed, protocol.StepImage, 4},
-		"rename conflict": {func(f *fakeDeployEngine) { f.renameStatus = 409 }, protocol.OutcomeFailed, protocol.StepRename, 5},
-		"create conflict": {func(f *fakeDeployEngine) { f.createStatus = 409 }, protocol.OutcomeFailed, protocol.StepCreate, 6},
-		"stop refused":    {func(f *fakeDeployEngine) { f.stopStatus = 500 }, protocol.OutcomeFailed, protocol.StepStop, 7},
-		"start fails":     {func(f *fakeDeployEngine) { f.startStatus = 500 }, protocol.OutcomeFailed, protocol.StepStart, 8},
-		"remove fails":    {func(f *fakeDeployEngine) { f.removeStatus = 409 }, protocol.OutcomeFailed, protocol.StepRemove, 10},
+		"rename conflict": {func(f *fakeDeployEngine) { f.renameStatus = 409 }, protocol.OutcomeFailed, protocol.StepRename, 6},
+		"create conflict": {func(f *fakeDeployEngine) { f.createStatus = 409 }, protocol.OutcomeFailed, protocol.StepCreate, 7},
+		"stop refused":    {func(f *fakeDeployEngine) { f.stopStatus = 500 }, protocol.OutcomeFailed, protocol.StepStop, 8},
+		"start fails":     {func(f *fakeDeployEngine) { f.startStatus = 500 }, protocol.OutcomeFailed, protocol.StepStart, 9},
+		"remove fails":    {func(f *fakeDeployEngine) { f.removeStatus = 409 }, protocol.OutcomeFailed, protocol.StepRemove, 11},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -563,7 +591,7 @@ func TestDeployTimeAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	res := f.client().Deploy(ctx, request(webService()))
-	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[4].Step != protocol.StepStop || res.Steps[4].Outcome != protocol.OutcomeTimedOut || len(res.Services) != 0 {
+	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[5].Step != protocol.StepStop || res.Steps[5].Outcome != protocol.OutcomeTimedOut || len(res.Services) != 0 {
 		t.Fatalf("deadline mid-stop: %+v", res)
 	}
 	f = newFakeDeployEngine(t)
@@ -571,7 +599,7 @@ func TestDeployTimeAndCancellation(t *testing.T) {
 	ctx, cancel = context.WithCancel(context.Background())
 	go func() { time.Sleep(500 * time.Millisecond); cancel() }()
 	res = f.client().Deploy(ctx, request(webService()))
-	if res.Outcome != protocol.OutcomeUnknown || res.Steps[4].Step != protocol.StepStop || res.Steps[4].Outcome != protocol.OutcomeUnknown {
+	if res.Outcome != protocol.OutcomeUnknown || res.Steps[5].Step != protocol.StepStop || res.Steps[5].Outcome != protocol.OutcomeUnknown {
 		t.Fatalf("cancel mid-stop: %+v", res)
 	}
 }
@@ -581,7 +609,7 @@ func TestDeployRefusesToStartWithoutTimeToFinish(t *testing.T) {
 	req := request(webService())
 	req.Deadline = time.Now().Add(60 * time.Second)
 	res := f.client().Deploy(context.Background(), req)
-	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[2].Step != protocol.StepRename || res.Steps[2].Outcome != protocol.OutcomeTimedOut || res.Steps[2].Detail != "not enough time left before the deadline to replace this service safely" {
+	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[2].Step != protocol.StepRecheck || res.Steps[2].Outcome != protocol.OutcomeTimedOut || res.Steps[2].Detail != "not enough time left before the deadline to replace this service safely" {
 		t.Fatalf("guard: %+v", res)
 	}
 	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json"}
@@ -599,7 +627,7 @@ func TestDeployIdentityReadFailureNamesTheContainer(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	f.inspectNewStatus = 500
 	res := f.client().Deploy(context.Background(), request(webService()))
-	if res.Outcome != protocol.OutcomeFailed || res.Steps[5].Step != protocol.StepStart || !strings.Contains(res.Steps[5].Detail, newID) || len(res.Services) != 0 {
+	if res.Outcome != protocol.OutcomeFailed || res.Steps[6].Step != protocol.StepStart || !strings.Contains(res.Steps[6].Detail, newID) || len(res.Services) != 0 {
 		t.Fatalf("identity read: %+v", res)
 	}
 	for _, c := range f.calls {
@@ -624,8 +652,8 @@ func TestDeployTwoServicesSecondRefusedTouchesNothing(t *testing.T) {
 		got = append(got, s.Service+" "+s.Step+" "+s.Outcome)
 	}
 	want := "web precondition succeeded,web image succeeded,db precondition denied,db image skipped," +
-		"web rename skipped,web create skipped,web stop skipped,web start skipped,web remove skipped," +
-		"db rename skipped,db create skipped,db stop skipped,db start skipped,db remove skipped"
+		"web recheck skipped,web rename skipped,web create skipped,web stop skipped,web start skipped,web remove skipped," +
+		"db recheck skipped,db rename skipped,db create skipped,db stop skipped,db start skipped,db remove skipped"
 	if strings.Join(got, ",") != want {
 		t.Fatalf("steps:\n got %v\nwant %v", got, want)
 	}
@@ -656,5 +684,88 @@ func TestDeployReportsClockSkewWithoutCalling(t *testing.T) {
 	}
 	if err := res.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The recheck re-reads each old container right before its rename. A changed identity or a
+// changed Config, HostConfig or Mounts is denied there: that service is untouched, later
+// services are skipped, and a service already replaced stays replaced.
+func TestRecheckDeniesDriftBetweenThePhases(t *testing.T) {
+	for name, change := range map[string]func(map[string]any){
+		"identity":    func(b map[string]any) { b["Created"] = "2023-11-14T22:13:21Z" },
+		"image":       func(b map[string]any) { b["Image"] = newImage },
+		"host config": func(b map[string]any) { b["HostConfig"].(map[string]any)["Memory"] = 1 << 30 },
+		"config":      func(b map[string]any) { b["Config"].(map[string]any)["User"] = "1000" },
+		"mounts": func(b map[string]any) {
+			b["Mounts"] = []any{map[string]any{"Type": "volume", "Name": "shop_data", "Destination": "/data", "RW": true}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeDeployEngine(t)
+			f.drift = func(id string, read int, body map[string]any) {
+				if id == otherOldID && read > 1 {
+					change(body)
+				}
+			}
+			res := f.client().Deploy(context.Background(), request(webService(), dbService()))
+			if res.Outcome != protocol.OutcomeDenied || res.Detail != "service db, step recheck: the container changed after the precondition" {
+				t.Fatalf("outcome: %+v", res)
+			}
+			got := []string{}
+			for _, s := range res.Steps {
+				if s.Step != protocol.StepPrecondition && s.Step != protocol.StepImage {
+					got = append(got, s.Service+" "+s.Step+" "+s.Outcome)
+				}
+			}
+			want := "web recheck succeeded,web rename succeeded,web create succeeded,web stop succeeded,web start succeeded,web remove succeeded," +
+				"db recheck denied,db rename skipped,db create skipped,db stop skipped,db start skipped,db remove skipped"
+			if strings.Join(got, ",") != want {
+				t.Fatalf("steps:\n got %v\nwant %v", got, want)
+			}
+			if len(res.Services) != 1 || res.Services[0].Service != "web" {
+				t.Fatalf("the replaced service must keep its identity: %+v", res.Services)
+			}
+			for _, c := range f.calls {
+				if c.Method != "GET" && strings.Contains(c.Path, otherOldID) {
+					t.Fatalf("db was touched: %v", f.steps())
+				}
+			}
+			if err := res.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// A container removed between the phases is denied at recheck with nothing touched.
+func TestRecheckDeniesAContainerGoneBetweenThePhases(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.drift = func(id string, read int, _ map[string]any) {
+		if id == oldID && read > 1 {
+			f.oldStatus = 404
+		}
+	}
+	res := f.client().Deploy(context.Background(), request(webService()))
+	if res.Outcome != protocol.OutcomeDenied || res.Steps[2].Step != protocol.StepRecheck || res.Steps[2].Detail != "the container no longer exists" {
+		t.Fatalf("gone at recheck: %+v", res)
+	}
+	for _, c := range f.calls {
+		if c.Method != "GET" {
+			t.Fatalf("mutating call: %v", f.steps())
+		}
+	}
+}
+
+// A restart between the phases changes State and NetworkSettings only: that is not drift.
+func TestRecheckIgnoresStateAndNetworkSettings(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.drift = func(_ string, read int, body map[string]any) {
+		if read > 1 {
+			body["State"] = map[string]any{"Status": "running", "StartedAt": "2026-09-24T12:00:00Z", "RestartCount": 3}
+			body["NetworkSettings"] = map[string]any{"Networks": map[string]any{"bridge": map[string]any{"IPAddress": "172.17.0.9"}}}
+		}
+	}
+	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("a restart denied the replacement: %+v", res)
 	}
 }

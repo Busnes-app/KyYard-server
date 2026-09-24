@@ -29,7 +29,7 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 	}
 	inspect := "GET /images/" + url.PathEscape("ghcr.io/org/app@"+pullDigest) + "/json"
 	// The tag moves only after the digest is verified, and before any container is touched.
-	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "POST /images/create", inspect, "POST /images/" + newImage + "/tag", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
+	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "POST /images/create", inspect, "POST /images/" + newImage + "/tag", "GET /containers/" + oldID + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
 	if got := f.steps(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("call order:\n got %v\nwant %v", got, want)
 	}
@@ -44,14 +44,14 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 		t.Fatalf("X-Registry-Auth: %q %v", raw, err)
 	}
 	var body struct{ Image string }
-	if err := json.Unmarshal([]byte(f.calls[7].Body), &body); err != nil || body.Image != newImage {
+	if err := json.Unmarshal([]byte(f.calls[8].Body), &body); err != nil || body.Image != newImage {
 		t.Fatalf("create body image: %q %v", body.Image, err)
 	}
 	steps := []string{}
 	for _, s := range res.Steps {
 		steps = append(steps, s.Step)
 	}
-	if strings.Join(steps, ",") != "precondition,pull,rename,create,stop,start,remove" {
+	if strings.Join(steps, ",") != "precondition,pull,recheck,rename,create,stop,start,remove" {
 		t.Fatalf("steps: %v", steps)
 	}
 	if len(res.Services) != 1 || res.Services[0].ImageID != newImage || res.Services[0].ImageDigest != pullDigest {
@@ -178,7 +178,7 @@ func TestDeploySecondPullFailureTouchesNothing(t *testing.T) {
 	for _, s := range res.Steps {
 		got = append(got, s.Service+" "+s.Step+" "+s.Outcome)
 	}
-	if strings.Join(got[:4], ",") != "web precondition succeeded,web pull succeeded,db precondition succeeded,db pull failed" || len(got) != 14 {
+	if strings.Join(got[:4], ",") != "web precondition succeeded,web pull succeeded,db precondition succeeded,db pull failed" || len(got) != 16 {
 		t.Fatalf("steps: %v", got)
 	}
 }
@@ -186,7 +186,7 @@ func TestDeploySecondPullFailureTouchesNothing(t *testing.T) {
 // A pull that could not get callBudget inside the pull phase is refused before it is sent. The
 // phase does not reserve a replacement per service: two services get the same window as one.
 func TestDeployPullRefusedWithoutTimeToReplace(t *testing.T) {
-	const replace = 2*30*time.Second + 3*20*time.Second // replaceBudget
+	const replace = 2*30*time.Second + 4*20*time.Second // replaceBudget
 	for name, tc := range map[string]struct {
 		services []protocol.DeploymentService
 		left     time.Duration
