@@ -46,7 +46,7 @@ const (
 	OutcomeSkipped                  = "skipped"
 	TypeDeploymentRemove            = "deployment.remove"
 	CapabilityDeploymentRemove      = "deployment.remove"
-	MaxRemovalTargets               = 100 // three steps each fit a result's 8*MaxDeploymentServices
+	MaxRemovalTargets               = 100 // three steps each fit a result's MaxDeploymentResultSteps
 	// MaxClockSkew bounds the difference between the server's clock when it built a frame and
 	// the agent's when it reads one, and between an inventory's observed and received times.
 	MaxClockSkew = 5 * time.Minute
