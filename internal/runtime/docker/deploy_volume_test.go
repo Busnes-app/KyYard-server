@@ -283,3 +283,46 @@ func TestDeployBindPrecondition(t *testing.T) {
 		})
 	}
 }
+
+// Every volume mount must be listed for ensuring, so none escapes the ownership check.
+func TestDeployRefusesAnUnlistedVolumeMount(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	withBind(f)
+	req := request(mountedWeb())
+	req.Volumes = []string{"shop_data"} // mountedWeb also mounts ext
+	res := f.client().Deploy(context.Background(), req)
+	if res.Outcome != protocol.OutcomeDenied || len(res.Steps) != 0 || len(f.calls) != 0 {
+		t.Fatalf("%+v calls=%v", res, f.steps())
+	}
+}
+
+// The already-mounted exemption covers every service mounting the volume, not only the first.
+func TestDeployVolumeMountedByALaterService(t *testing.T) {
+	for name, tc := range map[string]struct {
+		dbMounts []any
+		outcome  string
+	}{
+		"second service's old container has it": {[]any{map[string]any{"Type": "volume", "Name": "shared_ext", "Destination": "/ext", "RW": true}}, protocol.OutcomeSucceeded},
+		"neither has it":                        {[]any{}, protocol.OutcomeDenied},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeDeployEngine(t)
+			f.volumes = map[string]any{"shared_ext": map[string]any{"Name": "shared_ext", "Driver": "local"}} // unlabelled: not owned
+			f.otherMounts = tc.dbMounts
+			web, db := webService(), mountedDB()
+			web.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: "shared_ext", Target: "/ext"}}
+			db.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: "shared_ext", Target: "/ext"}}
+			req := request(web, db)
+			req.Volumes = []string{"shared_ext"}
+			res := f.client().Deploy(context.Background(), req)
+			if res.Outcome != tc.outcome || res.Steps[1].Step != protocol.StepVolume || res.Steps[1].Service != "web" || res.Steps[1].Outcome != tc.outcome {
+				t.Fatalf("%+v", res)
+			}
+			for _, c := range f.steps() {
+				if c == "POST /volumes/create" {
+					t.Fatal("an existing volume was created")
+				}
+			}
+		})
+	}
+}

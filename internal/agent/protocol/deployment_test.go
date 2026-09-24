@@ -471,9 +471,6 @@ func TestDeploymentRequestMounts(t *testing.T) {
 			mounted(r)
 			withServices(r, 2)
 		},
-		"volume not ensured": func(r *DeploymentRequest) {
-			r.Services[0].Mounts = []Mount{{Kind: MountVolume, Source: "ext", Target: "/data"}}
-		},
 	} {
 		r := goodDeployment(now)
 		mutate(&r)
@@ -507,7 +504,12 @@ func TestDeploymentRequestMounts(t *testing.T) {
 		"volume unused":     func(r *DeploymentRequest) { mounted(r); r.Volumes = append(r.Volumes, "shop_other") },
 		"volume only bound": func(r *DeploymentRequest) { mounted(r); r.Volumes = []string{"shop_data", "srv"} },
 		"volume duplicate":  func(r *DeploymentRequest) { mounted(r); r.Volumes = []string{"shop_data", "shop_data"} },
-		"volume bad name":   func(r *DeploymentRequest) { mounted(r); r.Volumes = []string{"shop data"} },
+		"volume not listed": func(r *DeploymentRequest) { mounted(r); r.Volumes = nil },
+		"second volume not listed": func(r *DeploymentRequest) {
+			mounted(r)
+			r.Services[0].Mounts = append(r.Services[0].Mounts, Mount{Kind: MountVolume, Source: "ext", Target: "/ext"})
+		},
+		"volume bad name": func(r *DeploymentRequest) { mounted(r); r.Volumes = []string{"shop data"} },
 		"33 mounts": func(r *DeploymentRequest) {
 			for i := 0; i <= MaxMounts; i++ {
 				r.Services[0].Mounts = append(r.Services[0].Mounts, Mount{Kind: MountVolume, Source: "shop_data", Target: fmt.Sprintf("/m%d", i)})

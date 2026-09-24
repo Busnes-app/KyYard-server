@@ -55,6 +55,7 @@ type fakeDeployEngine struct {
 	volumeStatus     int            // POST /volumes/create; 201 default, as Docker answers for an existing name too
 	volumes          map[string]any // existing volumes by name: GET /volumes/{name} answers 200 with it, else 404
 	createdInstead   map[string]any // what POST /volumes/create answers with, as if another client created the name first
+	otherMounts      []any          // the second fixture container's Mounts; the first's when nil
 	srv              *httptest.Server
 }
 
@@ -89,6 +90,9 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 				other[k] = v
 			}
 			other["Id"], other["Name"] = otherOldID, "/shop-db-1"
+			if f.otherMounts != nil {
+				other["Mounts"] = f.otherMounts
+			}
 			_ = json.NewEncoder(w).Encode(other)
 		case r.Method == "GET" && strings.HasSuffix(p, "/images/"+oldImage+"/json"):
 			w.WriteHeader(f.oldImageStatus)

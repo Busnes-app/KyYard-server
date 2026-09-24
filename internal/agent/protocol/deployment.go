@@ -223,7 +223,7 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 			}
 		}
 	}
-	// Every volume to ensure is one some service mounts, once.
+	// Volumes lists exactly the volumes the services mount, once each, so every one is ensured.
 	if len(r.Volumes) > MaxDeploymentVolumes {
 		return errors.New("too many volumes")
 	}
@@ -233,6 +233,9 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 			return errors.New("invalid volume")
 		}
 		ensured[v] = true
+	}
+	if len(ensured) != len(mounted) {
+		return errors.New("invalid volume")
 	}
 	// No credential travels for a host nothing in this frame pulls from.
 	if len(r.Registries) > MaxRegistryAuthHosts {
