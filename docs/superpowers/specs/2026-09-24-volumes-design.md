@@ -67,11 +67,23 @@ mounts with their identity, and the on-demand inspection keeps its counts.
   read-only) on the container. Text in the UI: "This revision adds a host path the running
   container does not have; KyYard never introduces bind mounts. Mount it by hand first, or
   drop it from the definition."
-- Named volumes never block: the recreate mounts what the definition says, creating the
-  volume if needed. A bind the container has that the definition dropped is allowed (an
-  operator's deliberate change); it is listed in the preview as "will be dropped".
+- Project volumes never block: the recreate mounts what the definition says, creating the
+  volume if needed. A bind or volume the container has that the definition dropped is
+  allowed (an operator's deliberate change); it is listed in the preview as "will be
+  dropped". Only an identical mount (kind, source, target, read-only) is kept, so a
+  read-only to read-write change shows the old mount as dropped beside the new one.
 - `mounts_unreported`: the inventory carries no mount list for the container (an agent older
-  than this slice) or the list was truncated; blocks like `image_not_reported`.
+  than this slice: every plan blocks until the agent is upgraded) or the list was truncated;
+  blocks like `image_not_reported`.
+- `mount_unsupported` (amended 2026-09-24): the container has a mount the agent refuses to
+  replace: an anonymous volume (64-hex name) or a mount of kind `other` (tmpfs and the
+  like). Listed in `unsupported_mounts`, not `dropped_mounts`. What inventory cannot show
+  (`volumes-from`) is left to the agent's precondition.
+- `volume_missing` (amended 2026-09-24): a service names an `external: true` volume that is
+  absent from the inventory's volume list, or that list is truncated. Only project volumes
+  are ever created; external names stay in the plan's `volumes` (the agent's ownership check
+  requires them already mounted on the old container or project-labelled), and this blocker
+  keeps the agent from creating one.
 
 The `PlannedService` gains `mounts` (the resolved list: kind `volume`|`bind`, resolved host
 source, target, read-only) and the plan gains `volumes` (the named volumes to ensure, resolved

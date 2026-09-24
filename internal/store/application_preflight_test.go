@@ -180,23 +180,34 @@ func TestDeploymentPreflightMounts(t *testing.T) {
 	bind := func(source, target string, ro bool) protocol.Mount {
 		return protocol.Mount{Kind: protocol.MountBind, Source: source, Target: target, ReadOnly: ro}
 	}
+	volume := func(source, target string, ro bool) protocol.Mount {
+		return protocol.Mount{Kind: protocol.MountVolume, Source: source, Target: target, ReadOnly: ro}
+	}
 	for _, tc := range []struct {
-		name      string
-		want      ApplicationVolume
-		has       []protocol.Mount
-		truncated bool
-		blocker   string
+		name        string
+		want        ApplicationVolume
+		has         []protocol.Mount
+		truncated   bool
+		blocker     string
+		dropped     []protocol.Mount
+		unsupported []protocol.Mount
 	}{
 		{name: "identical bind", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{bind("/srv/data", "/data", false)}},
 		{name: "identical read-only bind", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data", ReadOnly: true}, has: []protocol.Mount{bind("/srv/data", "/data", true)}},
 		{name: "new bind", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{}, blocker: "bind_mount_new"},
-		{name: "trailing slash is another path", want: ApplicationVolume{Kind: "bind", Source: "/data", Target: "/data"}, has: []protocol.Mount{bind("/data/", "/data", false)}, blocker: "bind_mount_new"},
-		{name: "other target", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{bind("/srv/data", "/var/data", false)}, blocker: "bind_mount_new"},
-		{name: "read-only to read-write", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{bind("/srv/data", "/data", true)}, blocker: "bind_mount_new"},
-		{name: "read-write to read-only", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data", ReadOnly: true}, has: []protocol.Mount{bind("/srv/data", "/data", false)}, blocker: "bind_mount_new"},
-		{name: "a volume of the same name is not the bind", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{{Kind: protocol.MountVolume, Source: "/srv/data", Target: "/data"}}, blocker: "bind_mount_new"},
+		{name: "trailing slash is another path", want: ApplicationVolume{Kind: "bind", Source: "/data", Target: "/data"}, has: []protocol.Mount{bind("/data/", "/data", false)}, blocker: "bind_mount_new", dropped: []protocol.Mount{bind("/data/", "/data", false)}},
+		{name: "other target", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{bind("/srv/data", "/var/data", false)}, blocker: "bind_mount_new", dropped: []protocol.Mount{bind("/srv/data", "/var/data", false)}},
+		{name: "read-only to read-write", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{bind("/srv/data", "/data", true)}, blocker: "bind_mount_new", dropped: []protocol.Mount{bind("/srv/data", "/data", true)}},
+		{name: "read-write to read-only", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data", ReadOnly: true}, has: []protocol.Mount{bind("/srv/data", "/data", false)}, blocker: "bind_mount_new", dropped: []protocol.Mount{bind("/srv/data", "/data", false)}},
+		{name: "a volume of the same name is not the bind", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{volume("/srv/data", "/data", false)}, blocker: "bind_mount_new", dropped: []protocol.Mount{volume("/srv/data", "/data", false)}},
 		{name: "new named volume", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, has: []protocol.Mount{}},
-		{name: "named volume over a bind", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, has: []protocol.Mount{bind("/srv/data", "/data", false)}},
+		{name: "identical named volume", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, has: []protocol.Mount{volume("shop_data", "/data", false)}},
+		{name: "named volume over a bind", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, has: []protocol.Mount{bind("/srv/data", "/data", false)}, dropped: []protocol.Mount{bind("/srv/data", "/data", false)}},
+		{name: "only the volume source differs", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, has: []protocol.Mount{volume("shop_old", "/data", false)}, dropped: []protocol.Mount{volume("shop_old", "/data", false)}},
+		{name: "only the volume target differs", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, has: []protocol.Mount{volume("shop_data", "/old", false)}, dropped: []protocol.Mount{volume("shop_data", "/old", false)}},
+		{name: "volume read-only to read-write", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, has: []protocol.Mount{volume("shop_data", "/data", true)}, dropped: []protocol.Mount{volume("shop_data", "/data", true)}},
+		{name: "anonymous volume", has: []protocol.Mount{volume(strings.Repeat("f", 64), "/cache", false)}, blocker: "mount_unsupported", unsupported: []protocol.Mount{volume(strings.Repeat("f", 64), "/cache", false)}},
+		{name: "tmpfs", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, has: []protocol.Mount{volume("shop_data", "/data", false), {Kind: protocol.MountOther, Target: "/tmp"}}, blocker: "mount_unsupported", unsupported: []protocol.Mount{{Kind: protocol.MountOther, Target: "/tmp"}}},
 		{name: "unreported", want: ApplicationVolume{Kind: "named", Source: "data", Target: "/data"}, blocker: "mounts_unreported"},
 		{name: "truncated", want: ApplicationVolume{Kind: "bind", Source: "/srv/data", Target: "/data"}, has: []protocol.Mount{bind("/srv/data", "/data", false)}, truncated: true, blocker: "mounts_unreported"},
 		{name: "unreported without volumes", blocker: "mounts_unreported"},
@@ -218,26 +229,33 @@ func TestDeploymentPreflightMounts(t *testing.T) {
 			} else if p.Executable || !reflect.DeepEqual(row.Blockers, []string{tc.blocker}) {
 				t.Fatalf("expected only %s: %+v", tc.blocker, row)
 			}
+			binds := []protocol.Mount{}
+			for _, d := range tc.dropped {
+				if d.Kind == protocol.MountBind {
+					binds = append(binds, d)
+				}
+			}
+			if !slices.Equal(row.DroppedMounts, tc.dropped) || !slices.Equal(row.DroppedBinds, binds) || !slices.Equal(row.UnsupportedMounts, tc.unsupported) {
+				t.Fatalf("dropped %+v, binds %+v, unsupported %+v", row.DroppedMounts, row.DroppedBinds, row.UnsupportedMounts)
+			}
 		})
 	}
 }
 
 // The resolved list names volumes by host name (project prefix unless external); every mount
-// on the container the definition does not list is reported, binds also on their own.
+// on the container the definition does not list identically is reported, binds also on their own.
 func TestDeploymentPreflightResolvesAndReportsDroppedMounts(t *testing.T) {
 	kept := protocol.Mount{Kind: protocol.MountBind, Source: "/srv/web", Target: "/srv"}
 	oldBind := protocol.Mount{Kind: protocol.MountBind, Source: "/old", Target: "/old", ReadOnly: true}
-	anonymous := protocol.Mount{Kind: protocol.MountVolume, Source: strings.Repeat("f", 64), Target: "/cache"}
-	tmpfs := protocol.Mount{Kind: protocol.MountOther, Target: "/tmp"}
-	sameVolume := protocol.Mount{Kind: protocol.MountVolume, Source: "shop_data", Target: "/var/lib/data", ReadOnly: true}
-	owned := AdoptedContainer{ID: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64), CreatedAt: time.Unix(1700000000, 0), Mounts: []protocol.Mount{kept, oldBind, anonymous, tmpfs, sameVolume}}
+	readOnly := protocol.Mount{Kind: protocol.MountVolume, Source: "shop_data", Target: "/var/lib/data", ReadOnly: true}
+	owned := AdoptedContainer{ID: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64), CreatedAt: time.Unix(1700000000, 0), Mounts: []protocol.Mount{kept, oldBind, readOnly}}
 	m := &ApplicationMapping{Preview: &AdoptionPreview{Project: "shop", Revision: 1, Containers: []AdoptedContainer{owned}}, Version: 1, MappedRevision: 1, Bindings: map[string]string{"web": owned.ID}}
 	spec := ApplicationSpec{Volumes: []DeclaredVolume{{Name: "data"}, {Name: "shared", External: true}}, Services: []ApplicationService{{Name: "web", Image: "nginx:1", Volumes: []ApplicationVolume{
 		{Kind: "named", Source: "data", Target: "/var/lib/data"},
 		{Kind: "named", Source: "shared", Target: "/shared", ReadOnly: true},
 		{Kind: "bind", Source: "/srv/web", Target: "/srv"},
 	}}}}
-	p := buildDeploymentPreflight(m, spec, protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}}, true)
+	p := buildDeploymentPreflight(m, spec, protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}, Volumes: []protocol.Volume{{Name: "shared"}}}, true)
 	row := p.Services[0]
 	if !p.Executable {
 		t.Fatalf("blocked: %+v", p)
@@ -246,14 +264,44 @@ func TestDeploymentPreflightResolvesAndReportsDroppedMounts(t *testing.T) {
 	if !reflect.DeepEqual(row.Mounts, want) {
 		t.Fatalf("mounts: %+v", row.Mounts)
 	}
-	// A volume still mounted at its target, only read-only now, is kept, not dropped.
-	if !reflect.DeepEqual(row.DroppedBinds, []protocol.Mount{oldBind}) || !reflect.DeepEqual(row.DroppedMounts, []protocol.Mount{oldBind, anonymous, tmpfs}) {
+	// Read-only to read-write widens access: the old mount shows as dropped beside the new one.
+	if !reflect.DeepEqual(row.DroppedBinds, []protocol.Mount{oldBind}) || !reflect.DeepEqual(row.DroppedMounts, []protocol.Mount{oldBind, readOnly}) {
 		t.Fatalf("dropped: %+v %+v", row.DroppedBinds, row.DroppedMounts)
 	}
 }
 
+// An external volume is mounted, never created: it must be in a complete volume list.
+func TestDeploymentPreflightExternalVolumes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		external  bool
+		volumes   []protocol.Volume
+		truncated bool
+		missing   bool
+	}{
+		{name: "present", external: true, volumes: []protocol.Volume{{Name: "shared"}}},
+		{name: "absent", external: true, volumes: []protocol.Volume{{Name: "shop_shared"}}, missing: true},
+		{name: "list truncated", external: true, volumes: []protocol.Volume{{Name: "shared"}}, truncated: true, missing: true},
+		{name: "project volume is never checked", volumes: nil, truncated: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owned := AdoptedContainer{ID: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64), CreatedAt: time.Unix(1700000000, 0), Mounts: []protocol.Mount{}}
+			m := &ApplicationMapping{Preview: &AdoptionPreview{Project: "shop", Revision: 1, Containers: []AdoptedContainer{owned}}, Version: 1, MappedRevision: 1, Bindings: map[string]string{"web": owned.ID}}
+			spec := ApplicationSpec{Volumes: []DeclaredVolume{{Name: "shared", External: tc.external}}, Services: []ApplicationService{{Name: "web", Image: "nginx:1", Volumes: []ApplicationVolume{{Kind: "named", Source: "shared", Target: "/shared"}}}}}
+			snapshot := protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}, Volumes: tc.volumes}
+			if tc.truncated {
+				snapshot.Truncated = []string{"volumes"}
+			}
+			row := buildDeploymentPreflight(m, spec, snapshot, true).Services[0]
+			if tc.missing != slices.Equal(row.Blockers, []string{"volume_missing"}) || (!tc.missing && len(row.Blockers) != 0) {
+				t.Fatalf("blockers: %+v", row.Blockers)
+			}
+		})
+	}
+}
+
 // volumesFixture adopts and maps one container per service of spec, each reporting
-// mounts[service], with every image tagged in the inventory.
+// mounts[service], with every image tagged and every external volume in the inventory.
 func volumesFixture(t *testing.T, spec ApplicationSpec, mounts map[string][]protocol.Mount) (*SQLStore, TenantAccess, *Application, *ApplicationMapping) {
 	t.Helper()
 	st, a, app, endpoint, snapshot := adoptionFixtureSpec(t, spec, nil, mounts)
@@ -261,6 +309,11 @@ func volumesFixture(t *testing.T, spec ApplicationSpec, mounts map[string][]prot
 	ts := st.Tenancy()
 	for i, s := range spec.Services {
 		snapshot.Images = append(snapshot.Images, protocol.Image{ID: snapshot.Containers[i].ImageID, Tags: []string{s.Image}})
+	}
+	for _, v := range spec.Volumes {
+		if v.External {
+			snapshot.Volumes = append(snapshot.Volumes, protocol.Volume{Name: v.Name})
+		}
 	}
 	putAdoptionSnapshot(t, st, endpoint, snapshot)
 	p, err := ts.PreviewApplicationAdoption(ctx, a, app.ID, endpoint, "shop")
