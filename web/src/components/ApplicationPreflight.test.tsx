@@ -135,3 +135,14 @@ it('shows mounts, the volume blocker texts and the mounts a recreate drops', asy
   expect(screen.getByText('/srv/old → /old')).toBeTruthy();
   expect(screen.getByText('shop_cache → /cache')).toBeTruthy();
 });
+it('shows unsupported mounts and the missing-volume text', async () => {
+  const unsupported = { ...data, services: [{ ...data.services[0], name: 'db', blockers: ['mount_unsupported', 'volume_missing'], mounts: [], dropped_mounts: [], unsupported_mounts: [{ kind: 'other', source: '', target: '/scratch' }] }] };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(unsupported))));
+  render(<ApplicationPreflight org="org" base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  await screen.findByRole('heading', { name: 'Deployment preflight' });
+  expect(screen.getByText('This container has mounts KyYard cannot recreate (anonymous volumes or unsupported mount types). Recreate it by hand with named volumes first.')).toBeTruthy();
+  expect(screen.getByText('An external volume this revision names does not exist on the host. Create it there first.')).toBeTruthy();
+  expect(screen.getByText('Cannot be recreated:')).toBeTruthy();
+  expect(screen.getByText('→ /scratch').parentElement?.textContent).toContain('other');
+});

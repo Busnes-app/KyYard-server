@@ -4,7 +4,7 @@ import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
-type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'mounts_unreported';
+type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'mounts_unreported' | 'mount_unsupported' | 'volume_missing';
 export const messages: Record<Blocker, string> = {
   mapping_requires_review: 'Review and save service mapping for the latest definition.',
   unassigned_adopted_containers: 'Some adopted containers are unassigned. Review service mapping before planning replacement.',
@@ -20,6 +20,8 @@ export const messages: Record<Blocker, string> = {
   revision_services_differ: "The chosen revision's services differ from the mapped ones. Map against the latest definition or choose another revision.",
   bind_mount_new: 'This revision adds a host path the running container does not have; KyYard never introduces bind mounts. Mount it by hand first, or drop it from the definition.',
   mounts_unreported: "The host has not reported this container's mounts; wait for the agent to reconnect or re-adopt.",
+  mount_unsupported: 'This container has mounts KyYard cannot recreate (anonymous volumes or unsupported mount types). Recreate it by hand with named volumes first.',
+  volume_missing: 'An external volume this revision names does not exist on the host. Create it there first.',
 };
 // Definition volumes (named|bind) and runtime mounts (volume|bind); kinds render from this table only.
 export type Mount = { kind: string; source: string; target: string; read_only?: boolean };
@@ -32,7 +34,7 @@ export function knownBlockers<K extends string>(payload: unknown, table: Record<
   const blockers = payload && typeof payload === 'object' ? (payload as { blockers?: unknown }).blockers : undefined;
   return Array.isArray(blockers) ? blockers.filter((b): b is K => typeof b === 'string' && Object.hasOwn(table, b)) : [];
 }
-type Preflight = { instance_id: string; endpoint_id: string; endpoint_name: string; revision: number; mapping_version: number; received_at: string; executable: boolean; blockers: Blocker[]; services: { name: string; reference: string; image_id: string; container_id: string; inspection_target?: InspectionTarget; blockers: Blocker[]; mounts?: Mount[]; dropped_mounts?: Mount[] }[] };
+type Preflight = { instance_id: string; endpoint_id: string; endpoint_name: string; revision: number; mapping_version: number; received_at: string; executable: boolean; blockers: Blocker[]; services: { name: string; reference: string; image_id: string; container_id: string; inspection_target?: InspectionTarget; blockers: Blocker[]; mounts?: Mount[]; dropped_mounts?: Mount[]; unsupported_mounts?: Mount[] }[] };
 export function ApplicationPreflight({ base, instanceID, org }: { base: string; instanceID: string; org: string }) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
@@ -59,7 +61,7 @@ function PreflightView({ base, instanceID, org }: { base: string; instanceID: st
       <table className="ky-table ky-responsive-table"><thead><tr><th>Service / target</th><th>Local image</th><th>Mounts</th><th>Preflight findings</th></tr></thead><tbody>{page.rows.map(s => <tr key={s.name}>
         <td data-label="Service / target"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.container_id || 'Unmapped'}</small></div></td>
         <td data-label="Local image"><div className="ky-resource-name"><span>{s.reference}</span><small>{s.image_id || 'Unresolved'}</small></div></td>
-        <td data-label="Mounts">{s.mounts?.length ? <MountList mounts={s.mounts} /> : 'No mounts.'}{s.dropped_mounts?.length ? <><p>Will be dropped by the recreate:</p><MountList mounts={s.dropped_mounts} /></> : null}</td>
+        <td data-label="Mounts">{s.mounts?.length ? <MountList mounts={s.mounts} /> : 'No mounts.'}{s.dropped_mounts?.length ? <><p>Will be dropped by the recreate:</p><MountList mounts={s.dropped_mounts} /></> : null}{s.unsupported_mounts?.length ? <><p>Cannot be recreated:</p><MountList mounts={s.unsupported_mounts} /></> : null}</td>
         <td data-label="Preflight findings">{s.blockers.length ? <ul>{s.blockers.map(b => <li key={b}>{messages[b] ?? 'Unknown condition'}</li>)}</ul> : 'No findings.'}{s.inspection_target && <button type="button" className="btn-secondary" onClick={() => setSelected(s)} aria-label={`Inspect ${s.name}`}>Inspect live container</button>}</td>
       </tr>)}</tbody></table>
       {selected?.inspection_target && <ApplicationInspection key={`${data.endpoint_id}/${selected.name}`} org={org} endpoint={data.endpoint_id} service={selected.name} target={selected.inspection_target} onClose={() => setSelected(null)} />}
