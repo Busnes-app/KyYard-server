@@ -6,13 +6,13 @@ import { usePagination } from './Pagination';
 import { knownBlockers, messages } from './ApplicationPreflight';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
-type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[] };
+type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string };
 type DeployStep = { service: string; step: string; outcome: string; detail: string };
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number };
 type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
 type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[] } };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
-type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance };
+type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance; refreshKey?: number };
 
 const APPLY_CODES: Record<string, string> = {
   deployment_in_progress: 'A deployment is already in progress for this instance.',
@@ -68,7 +68,7 @@ export function ApplicationDeploymentPlan(props: Props) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
     <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close deployment plan' : 'Deployment plan'}</button>
-    {open && <PlanView key={`${props.instanceID}/${props.latestRevision}`} {...props} />}
+    {open && <PlanView key={`${props.instanceID}/${props.latestRevision}/${props.refreshKey ?? 0}`} {...props} />}
   </section>;
 }
 function isExpired(d: Deployment): boolean {
@@ -109,7 +109,7 @@ function PlanDetails({ d }: { d: Deployment }) {
     {services.controls}
     <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Pinned image</th><th>Replaces container</th><th>Secrets</th></tr></thead><tbody>{services.rows.map(s => <tr key={s.name}>
       <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>
-      <td data-label="Pinned image"><div className="ky-resource-name"><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small></div></td>
+      <td data-label="Pinned image"><div className="ky-resource-name"><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small>{/^sha256:[0-9a-f]{64}$/.test(s.pull_digest ?? '') && <small>pulls {s.pull_digest?.slice(7, 19)}</small>}</div></td>
       <td data-label="Replaces container"><div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div></td>
       <td data-label="Secrets">{s.secret_refs.length ? `${s.secret_refs.length} reference(s), values not shown` : 'None'}</td>
     </tr>)}</tbody></table>
