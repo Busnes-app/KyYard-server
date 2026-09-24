@@ -102,7 +102,7 @@ func TestRestoreCarriesControlPlaneState(t *testing.T) {
 	host, hostKey := enroll("restore-host")
 	gone, _ := enroll("revoked-host")
 	mustTenant(t, ts.RevokeEndpoint(ctx, a, gone.ID))
-	capabilities := []string{"compose.v1", protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply, "logs"}
+	capabilities := []string{"compose.v1", protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityDeploymentApply, "logs"}
 	mustTenant(t, ts.SetEndpointCapabilities(ctx, host.ID, capabilities))
 	shopContainer, blogContainer := strings.Repeat("a", 64), strings.Repeat("f", 64)
 	now := time.Now().UTC()

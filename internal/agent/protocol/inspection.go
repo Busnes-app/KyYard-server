@@ -89,7 +89,10 @@ const (
 	MaxInspectionFrameBytes    = 32 << 10
 	MaxInspectionsPerEndpoint  = 2
 	CapabilityContainerInspect = "container.inspect"
-	MaxUnsupported             = 32
+	// CapabilityContainerInspectVerdict marks an agent whose inspections carry the unsupported
+	// codes and configuration_verified; plans need it, the inspection dialog does not.
+	CapabilityContainerInspectVerdict = "container.inspect.verdict"
+	MaxUnsupported                    = 32
 )
 
 type InspectionOpen struct {

@@ -642,8 +642,9 @@ func TestPlanDeploymentRequiresAgentCapabilities(t *testing.T) {
 		want         []string
 	}{
 		"none":       {nil, []string{"agent_deploy_unsupported", "agent_inspect_unsupported"}},
-		"no deploy":  {[]string{protocol.CapabilityContainerInspect}, []string{"agent_deploy_unsupported"}},
+		"no deploy":  {[]string{protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict}, []string{"agent_deploy_unsupported"}},
 		"no inspect": {[]string{protocol.CapabilityDeploymentApply}, []string{"agent_inspect_unsupported"}},
+		"no verdict": {[]string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}, []string{"agent_inspect_unsupported"}},
 	} {
 		if err := ts.SetEndpointCapabilities(ctx, endpoint, tc.capabilities); err != nil {
 			t.Fatal(err)
@@ -653,7 +654,7 @@ func TestPlanDeploymentRequiresAgentCapabilities(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
-	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}); err != nil {
+	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityDeploymentApply}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); err != nil {
@@ -704,7 +705,7 @@ func TestPlanDeploymentChecksTheLiveInspection(t *testing.T) {
 	if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, imageCheckKey, false); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"agent_inspect_unsupported"}) || len(blocked.Services) != 0 {
 		t.Fatalf("no capability: %v", err)
 	}
-	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}); err != nil {
+	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityDeploymentApply}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); err != nil {
@@ -717,7 +718,7 @@ func TestPlanDeploymentRefusesAPullTheAgentCannotRun(t *testing.T) {
 	st, a, app, endpoint, _ := pullFixture(t, []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1.2"}}, map[string][]string{"web": {"ghcr.io/org/web@" + digestOf("a")}})
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}); err != nil {
+	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityDeploymentApply}); err != nil {
 		t.Fatal(err)
 	}
 	f := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1.2": {digest: digestOf("f")}}}

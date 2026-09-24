@@ -96,7 +96,7 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 		}
 		return sock
 	}
-	sock := online(protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityContainerInspect)
+	sock := online(protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict)
 
 	base := "/api/organizations/a/environments/env-a/applications"
 	importBody, _ := json.Marshal(map[string]string{"name": "shop", "compose": "services: {web: {image: ghcr.io/org/web:1.2}}"})
@@ -264,7 +264,7 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 	// capabilities changed is refused at apply with nothing sent.
 	planned = plan()
 	sock.conn.CloseNow()
-	sock = online(protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect)
+	sock = online(protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict)
 	if body := request("POST", deployments, string(planBody), 409); !strings.Contains(body, "agent_pull_unsupported") {
 		t.Fatalf("a pull for an agent without deployment.pull: %s", body)
 	}
@@ -290,7 +290,7 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 		return json.Unmarshal([]byte(request("GET", deployments+"/"+plain.ID, "", 200)), &d) == nil && d.State == protocol.OutcomeUnknown
 	})
 
-	sock = online(protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityContainerInspect)
+	sock = online(protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict)
 	defer sock.conn.CloseNow()
 	planned = plan()
 	request("POST", deployments+"/"+planned.ID+"/apply", `{"confirm":"shop"}`, 202)

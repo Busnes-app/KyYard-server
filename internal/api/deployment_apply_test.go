@@ -86,8 +86,8 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 		writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities})
 		return sock
 	}
-	legacy := []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect}
-	pulling := []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentPull}
+	legacy := []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict}
+	pulling := []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityDeploymentPull}
 	reconnect := func(capabilities []string) *agentSocket {
 		t.Helper()
 		sock := online(capabilities)
@@ -97,7 +97,7 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 		return sock
 	}
 
-	sock := online([]string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect})
+	sock := online([]string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict})
 	inventory(sock, oldID, oldImage, created)
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 	sync(sock)

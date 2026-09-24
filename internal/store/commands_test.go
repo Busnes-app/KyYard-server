@@ -90,7 +90,7 @@ func activeEndpointWith(t *testing.T, ts TenancyStore, a TenantAccess, container
 	if err := ts.ApproveEndpoint(ctx, a, enrolled.ID, enrolled.Fingerprint); err != nil {
 		t.Fatal(err)
 	}
-	if err := ts.SetEndpointCapabilities(ctx, enrolled.ID, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityDeploymentRemove}); err != nil {
+	if err := ts.SetEndpointCapabilities(ctx, enrolled.ID, []string{protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityDeploymentRemove}); err != nil {
 		t.Fatal(err)
 	}
 	if containers == nil {

@@ -353,11 +353,11 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 			digests[im.ID] = im.Digests[0]
 		}
 	}
-	inspected := capabilities[protocol.CapabilityContainerInspect]
+	inspected := inspectsVerdicts(capabilities)
 	var refused []BlockedService
 	for i, s := range spec.Services {
 		row := p.Services[i]
-		// Without container.inspect there was nothing to ask; agent_inspect_unsupported says why.
+		// Without both inspect capabilities there was nothing to ask; agent_inspect_unsupported says why.
 		if inspected && row.InspectionTarget != nil {
 			row.Blockers = append(row.Blockers, inspectionBlockers(&row, r.Inspections)...)
 		}
@@ -411,6 +411,13 @@ func (t *tenancyStore) endpointCapabilities(ctx context.Context, tx *sql.Tx, end
 	return out, rows.Err()
 }
 
+// inspectsVerdicts reports an agent whose inspections a plan can use: an agent with
+// container.inspect but not container.inspect.verdict predates the verdict and answers with
+// configuration_verified false and no codes, which the plan could only call unavailable.
+func inspectsVerdicts(capabilities map[string]bool) bool {
+	return capabilities[protocol.CapabilityContainerInspect] && capabilities[protocol.CapabilityContainerInspectVerdict]
+}
+
 // capabilityBlockers refuses a plan the endpoint's agent could not run: no deployments, no live
 // inspection for the plan to check, or a pull without deployment.pull. Apply checks again.
 func capabilityBlockers(capabilities map[string]bool, plan DeploymentPlan) []string {
@@ -418,7 +425,7 @@ func capabilityBlockers(capabilities map[string]bool, plan DeploymentPlan) []str
 	if !capabilities[protocol.CapabilityDeploymentApply] {
 		out = append(out, "agent_deploy_unsupported")
 	}
-	if !capabilities[protocol.CapabilityContainerInspect] {
+	if !inspectsVerdicts(capabilities) {
 		out = append(out, "agent_inspect_unsupported")
 	}
 	if !capabilities[protocol.CapabilityDeploymentPull] && slices.ContainsFunc(plan.Services, func(ps PlannedService) bool { return ps.PullDigest != "" }) {

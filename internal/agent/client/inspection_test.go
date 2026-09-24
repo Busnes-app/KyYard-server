@@ -144,7 +144,7 @@ func TestInspectionTransportKeepsHeartbeatsResponsive(t *testing.T) {
 			case protocol.TypeHello:
 				var hello protocol.Hello
 				json.Unmarshal(frame.Payload, &hello)
-				advertised = slices.Contains(hello.Capabilities, "container.inspect")
+				advertised = slices.Contains(hello.Capabilities, "container.inspect") && slices.Contains(hello.Capabilities, "container.inspect.verdict")
 			case protocol.TypeHeartbeat:
 				beats++
 				if err = write(ctx, conn, protocol.TypeHeartbeat, nil); err != nil {

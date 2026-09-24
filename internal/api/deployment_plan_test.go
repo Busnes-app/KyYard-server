@@ -115,7 +115,7 @@ func verifiedInspector(_ context.Context, target protocol.InspectionTarget) (pro
 	return verifiedObservation(target), nil
 }
 
-var inspecting = []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect}
+var inspecting = []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict}
 
 // The plan inspects each mapped service's container one at a time, in plan order, all under
 // the plan's budget.
@@ -447,24 +447,38 @@ func TestPlanRefusesWhenTheAgentNeverAnswers(t *testing.T) {
 	}
 }
 
-// An agent built before verdicts answers with configuration_verified false and no unsupported
-// list. The server refuses that answer, so the plan is uninspected, never verified
-// (Review Focus 5).
+// An agent built before verdicts advertises container.inspect without
+// container.inspect.verdict and answers with configuration_verified false and no unsupported
+// list. The plan asks it nothing and names the upgrade; an agent advertising the verdict but
+// answering the old way is refused as unavailable, never verified (Review Focus 5).
 func TestPlanRefusesAnOlderAgentsInspection(t *testing.T) {
-	h := newPlanHost(t, inspecting, "web")
-	sock, ctx := h.online(t, inspecting)
-	response := make(chan *httptest.ResponseRecorder, 1)
-	go func() { response <- tenantRequest(h.s, h.admin, "POST", h.deployments, h.planBody, true) }()
-	g := grant(t, ctx, sock)
-	raw, _ := json.Marshal(verifiedObservation(g.Target))
-	var older map[string]any
-	if err := json.Unmarshal(raw, &older); err != nil {
-		t.Fatal(err)
-	}
-	delete(older, "unsupported")
-	older["configuration_verified"] = false
-	writeEnvelope(t, ctx, sock.conn, protocol.TypeInspectionResult, map[string]any{"request": g.Request, "status": "ok", "result": older})
-	if w := <-response; w.Code != 409 || !strings.Contains(w.Body.String(), "inspection_unavailable") {
-		t.Fatalf("an older agent's answer: %d %s", w.Code, w.Body.String())
-	}
+	t.Run("no verdict capability", func(t *testing.T) {
+		h := newPlanHost(t, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect}, "web")
+		api.SetPlanInspectorForTest(h.s, func(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+			t.Error("inspected an agent without container.inspect.verdict")
+			return verifiedObservation(target), nil
+		})
+		body := h.do(t, "POST", h.deployments, h.planBody, 409)
+		if !strings.Contains(body, "agent_inspect_unsupported") || strings.Contains(body, "inspection_unavailable") {
+			t.Fatalf("blockers: %s", body)
+		}
+	})
+	t.Run("verdict advertised, old answer", func(t *testing.T) {
+		h := newPlanHost(t, inspecting, "web")
+		sock, ctx := h.online(t, inspecting)
+		response := make(chan *httptest.ResponseRecorder, 1)
+		go func() { response <- tenantRequest(h.s, h.admin, "POST", h.deployments, h.planBody, true) }()
+		g := grant(t, ctx, sock)
+		raw, _ := json.Marshal(verifiedObservation(g.Target))
+		var older map[string]any
+		if err := json.Unmarshal(raw, &older); err != nil {
+			t.Fatal(err)
+		}
+		delete(older, "unsupported")
+		older["configuration_verified"] = false
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeInspectionResult, map[string]any{"request": g.Request, "status": "ok", "result": older})
+		if w := <-response; w.Code != 409 || !strings.Contains(w.Body.String(), "inspection_unavailable") {
+			t.Fatalf("an older agent's answer: %d %s", w.Code, w.Body.String())
+		}
+	})
 }

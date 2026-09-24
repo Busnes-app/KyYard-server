@@ -52,7 +52,7 @@ func TestApplicationRevisionsSurviveBackup(t *testing.T) {
 	endpoint, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "backup-host"})
 	mustTenant(t, err)
 	mustTenant(t, ts.ApproveEndpoint(ctx, a, endpoint.ID, endpoint.Fingerprint))
-	mustTenant(t, ts.SetEndpointCapabilities(ctx, endpoint.ID, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}))
+	mustTenant(t, ts.SetEndpointCapabilities(ctx, endpoint.ID, []string{protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityDeploymentApply}))
 	raw, err := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: time.Now().UTC(), Mounts: []protocol.Mount{}}}, Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:2"}}}})
 	mustTenant(t, err)
 	_, err = ts.AcceptInventory(ctx, endpoint.ID, uint64(time.Now().Unix()), time.Now(), raw)
