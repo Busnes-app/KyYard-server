@@ -239,3 +239,89 @@ func TestPlanInspectsOverTheAgentSocket(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// An update plan inspects before it takes a registry slot, so slow agents cannot hold the
+// organization's registry slots for the inspection budget.
+func TestPlanUpdateInspectsBeforeTakingARegistrySlot(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web")
+	inspected := false
+	api.SetPlanInspectorForTest(h.s, func(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+		inspected = true
+		if held := api.RegistrySlotsHeldForTest(h.s); held != 0 {
+			t.Errorf("%d registry slots held while inspecting", held)
+		}
+		return verifiedObservation(target), nil
+	})
+	var plan store.PlanRequest
+	if err := json.Unmarshal([]byte(h.planBody), &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Update = []string{"web"}
+	body, _ := json.Marshal(plan)
+	tenantRequest(h.s, h.admin, "POST", h.deployments, string(body), true) // the registry outcome is not this test's
+	if !inspected {
+		t.Fatal("the update plan did not inspect")
+	}
+}
+
+// Over the real inspection path, each grant waits for its answer before the next is sent, an
+// answered grant is never cancelled, and one left unanswered is cancelled when the plan's
+// budget runs out, after which the plan returns without asking about the rest.
+func TestPlanInspectionBudgetCancelsTheUnansweredGrant(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web", "db", "cache")
+	api.SetPlanInspectorForTest(h.s, nil)
+	httpSrv := httptest.NewServer(h.s)
+	defer httpSrv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sock, reason := connect(t, ctx, httpSrv.URL, h.ag, h.ag.priv, protocol.Version)
+	if sock == nil {
+		t.Fatalf("connect refused: %s", reason)
+	}
+	defer sock.conn.CloseNow()
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: inspecting})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeHeartbeat {
+		t.Fatalf("expected a heartbeat, got %s", f.Type)
+	}
+	want := h.preflightTargets(t)
+	start := time.Now()
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() { response <- tenantRequest(h.s, h.admin, "POST", h.deployments, h.planBody, true) }()
+	grantOf := func() protocol.InspectionOpen {
+		t.Helper()
+		frame := readEnvelope(t, ctx, sock.conn)
+		var grant protocol.InspectionOpen
+		if frame.Type != protocol.TypeInspectionOpen || json.Unmarshal(frame.Payload, &grant) != nil {
+			t.Fatalf("expected an inspection grant, got %s", frame.Type)
+		}
+		return grant
+	}
+	first := grantOf()
+	if first.Target != want[0] {
+		t.Fatalf("first grant targets %+v, want %+v", first.Target, want[0])
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInspectionResult, protocol.InspectionResult{Request: first.Request, Status: "ok", Result: ptr(verifiedObservation(first.Target))})
+	second := grantOf() // an inspection.cancel here would mean the answered grant was cancelled
+	if second.Target != want[1] || second.Expires.After(start.Add(api.PlanInspectionBudgetForTest+time.Second)) {
+		t.Fatalf("second grant: %+v", second)
+	}
+	frame := readEnvelope(t, ctx, sock.conn)
+	var stopped protocol.InspectionCancel
+	if frame.Type != protocol.TypeInspectionCancel || json.Unmarshal(frame.Payload, &stopped) != nil || stopped.Request != second.Request {
+		t.Fatalf("expected the unanswered grant's cancel, got %s", frame.Type)
+	}
+	select {
+	case w := <-response:
+		if w.Code != 201 {
+			t.Fatalf("plan: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(start.Add(api.PlanInspectionBudgetForTest + 2*time.Second).Sub(time.Now())):
+		t.Fatal("the plan outlived its inspection budget")
+	}
+	// Frames leave in order, so a grant for the third service would precede this heartbeat.
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeHeartbeat {
+		t.Fatalf("a spent budget still sent %s", f.Type)
+	}
+}

@@ -39,6 +39,9 @@ func (s *Server) planInspections(w http.ResponseWriter, r *http.Request, a store
 		}
 	}
 	for _, svc := range pre.Services {
+		if ctx.Err() != nil {
+			break // the budget is spent: open no admission, send no expired grant
+		}
 		if svc.InspectionTarget == nil {
 			continue
 		}

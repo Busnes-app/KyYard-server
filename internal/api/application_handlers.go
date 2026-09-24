@@ -226,12 +226,6 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 			s.tenantError(w, err)
 			return
 		}
-		release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
-		if !ok {
-			return
-		}
-		defer release()
-		extendRegistryDeadline(w)
 	}
 	// The plan measures its frame against what this endpoint's agent accepts.
 	pre, err := s.store.Tenancy().PreflightApplication(r.Context(), a, r.PathValue("application"))
@@ -245,9 +239,15 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 		return
 	}
 	input.MaxFrameBytes = maxFrameBytes(ep.Capabilities)
+	// Inspect before taking a registry slot, so slow agents cannot hold the organization's slots.
 	input.Inspections = s.planInspections(w, r, a, ep, pre)
 	if len(input.Update) > 0 {
-		extendRegistryDeadline(w) // the registry work starts after the inspections
+		release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
+		if !ok {
+			return
+		}
+		defer release()
+		extendRegistryDeadline(w)
 	}
 	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input, s.resolver(), s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
 	if err != nil {

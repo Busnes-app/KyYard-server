@@ -53,3 +53,6 @@ func SetPlanInspectorForTest(s *Server, f func(context.Context, protocol.Inspect
 
 // PlanInspectionBudgetForTest is the plan's inspection budget.
 const PlanInspectionBudgetForTest = planInspectionBudget
+
+// RegistrySlotsHeldForTest counts the registry slots in use server-wide. Test-only.
+func RegistrySlotsHeldForTest(s *Server) int { return len(s.registrySlots) }
