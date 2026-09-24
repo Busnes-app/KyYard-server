@@ -84,6 +84,16 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 		writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities})
 		return sock
 	}
+	legacy := []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect}
+	pulling := []string{protocol.CapabilityDeploymentApply, protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentPull}
+	reconnect := func(capabilities []string) *agentSocket {
+		t.Helper()
+		sock := online(capabilities)
+		inventory(sock, newID, newImage, created.Add(30*time.Minute))
+		sync(sock)
+		waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+		return sock
+	}
 
 	sock := online([]string{protocol.CapabilityDeploymentApply})
 	inventory(sock, oldID, oldImage, created)
@@ -107,6 +117,8 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	request(admin, "PUT", mapping, string(mappingBody), 204)
 	deployments := base + "/" + app.ID + "/deployments"
 	planBody, _ := json.Marshal(store.PlanRequest{InstanceID: instance.ID, MappingVersion: mapped.Version + 1, Revision: 1, Confirm: "shop"})
+	// The frame cap is the server's: a client cannot name one.
+	request(admin, "POST", deployments, strings.TrimSuffix(string(planBody), "}")+`,"max_frame_bytes":1048576}`, 400)
 	plan := func() store.Deployment {
 		t.Helper()
 		var d store.Deployment
@@ -177,7 +189,7 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	if raw, _ := json.Marshal(big); big.Validate() != nil || len(raw) <= protocol.MaxDeploymentResultBytes {
 		t.Fatalf("the oversized fixture must validate and exceed the bound: %d bytes", len(raw))
 	}
-	sock = online([]string{protocol.CapabilityDeploymentApply})
+	sock = online(legacy)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, big)
 	if _, _, err := sock.conn.Read(ctx); err == nil {
 		t.Fatal("an oversized result frame was accepted")
@@ -188,7 +200,7 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 
 	// A result that validates but names an image the plan did not pin leaves the row unknown
 	// with a fixed detail and an audit row; the session stays.
-	sock = online([]string{protocol.CapabilityDeploymentApply})
+	sock = online(legacy)
 	replacedAt := created.Add(30 * time.Minute)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{
 		Deployment: planned.ID, Outcome: protocol.OutcomeSucceeded,
@@ -261,26 +273,29 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	spec := store.ApplicationSpec{Kind: "compose.v1", Services: []store.ApplicationService{{Name: "web", Image: "nginx:1", Environment: env}}}
 	_, err = ts.ReplaceApplicationRevision(ctx, store.TenantAccess{ActorID: "usr_envadmin", OrganizationID: "a", EnvironmentID: "env-a"}, app.ID, 1, spec, map[string]string{"web-a": strings.Repeat("<", 10000)}, cfg.Security.EncryptionKey)
 	must(err)
-	for _, capabilities := range [][]string{{protocol.CapabilityDeploymentApply}, {protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull}} {
-		sock = online(capabilities)
-		inventory(sock, newID, newImage, replacedAt)
-		sync(sock)
-		waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
-		if len(capabilities) == 1 {
-			must(json.Unmarshal([]byte(request(admin, "GET", mapping, "", 200)), &mapped))
-			mappingBody, _ = json.Marshal(store.MappingRequest{InstanceID: instance.ID, Version: mapped.Version, Digest: mapped.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": newID}})
-			request(admin, "PUT", mapping, string(mappingBody), 204)
-			planBody, _ = json.Marshal(store.PlanRequest{InstanceID: instance.ID, MappingVersion: mapped.Version + 1, Revision: 2, Confirm: "shop"})
-		}
-		wide := plan()
-		if len(capabilities) == 1 {
-			request(admin, "POST", deployments+"/"+wide.ID+"/apply", `{"confirm":"shop"}`, 400)
-			if got := state(wide.ID); got.State != "planned" {
-				t.Fatalf("an oversized frame for a legacy agent moved the row: %+v", got)
-			}
-		} else {
-			request(admin, "POST", deployments+"/"+wide.ID+"/apply", `{"confirm":"shop"}`, 202)
-		}
-		sock.conn.CloseNow()
+	// A frame past 192 KiB goes only to an agent with deployment.pull: an older one would close
+	// its session on it. The plan measures against the connected agent's cap and apply measures
+	// again, since the agent can change between them.
+	sock.conn.CloseNow()
+	sock = reconnect(legacy)
+	must(json.Unmarshal([]byte(request(admin, "GET", mapping, "", 200)), &mapped))
+	mappingBody, _ = json.Marshal(store.MappingRequest{InstanceID: instance.ID, Version: mapped.Version, Digest: mapped.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": newID}})
+	request(admin, "PUT", mapping, string(mappingBody), 204)
+	planBody, _ = json.Marshal(store.PlanRequest{InstanceID: instance.ID, MappingVersion: mapped.Version + 1, Revision: 2, Confirm: "shop"})
+	if body := request(admin, "POST", deployments, string(planBody), 409); !strings.Contains(body, "frame_too_large") {
+		t.Fatalf("a legacy agent's plan: %s", body)
 	}
+	sock.conn.CloseNow()
+	sock = reconnect(pulling)
+	wide := plan()
+	sock.conn.CloseNow()
+	sock = reconnect(legacy)
+	request(admin, "POST", deployments+"/"+wide.ID+"/apply", `{"confirm":"shop"}`, 400)
+	if got := state(wide.ID); got.State != "planned" {
+		t.Fatalf("an oversized frame for a legacy agent moved the row: %+v", got)
+	}
+	sock.conn.CloseNow()
+	sock = reconnect(pulling)
+	request(admin, "POST", deployments+"/"+wide.ID+"/apply", `{"confirm":"shop"}`, 202)
+	sock.conn.CloseNow()
 }

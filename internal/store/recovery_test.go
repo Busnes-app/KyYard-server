@@ -21,7 +21,7 @@ import (
 )
 
 // planAdopted adopts the project, maps its web service and plans the revision.
-func planAdopted(t *testing.T, ts store.TenancyStore, a store.TenantAccess, appID, endpointID, project, containerID string, revision int) *store.Deployment {
+func planAdopted(t *testing.T, ts store.TenancyStore, a store.TenantAccess, appID, endpointID, project, containerID string, revision int, key []byte) *store.Deployment {
 	t.Helper()
 	ctx := context.Background()
 	preview, err := ts.PreviewApplicationAdoption(ctx, a, appID, endpointID, project)
@@ -31,9 +31,15 @@ func planAdopted(t *testing.T, ts store.TenancyStore, a store.TenantAccess, appI
 	mapping, err := ts.ReadApplicationMapping(ctx, a, appID)
 	mustTenant(t, err)
 	mustTenant(t, ts.SetApplicationMapping(ctx, a, appID, store.MappingRequest{InstanceID: instance.ID, Version: mapping.Version, Digest: mapping.Preview.Digest, Confirm: project, Bindings: map[string]string{"web": containerID}}))
-	d, err := ts.PlanDeployment(ctx, a, appID, store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: revision, Confirm: project}, nil, nil, false)
+	d, err := ts.PlanDeployment(ctx, a, appID, verifiedPlan(store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: revision, Confirm: project}, mapping.Preview.Containers), nil, key, false)
 	mustTenant(t, err)
 	return d
+}
+
+// verifiedPlan adds what the API supplies to a plan request.
+func verifiedPlan(r store.PlanRequest, containers []store.AdoptedContainer) store.PlanRequest {
+	r.MaxFrameBytes = protocol.MaxDeploymentRequestBytes
+	return r
 }
 
 // The control-plane state the spec lists (registries, applications with revisions and values, instances with resources and mappings, image checks, deployments, endpoints with keys and capabilities, enrollment tokens, commands and revoked identities) survives a snapshot restore with its secrets
@@ -118,7 +124,7 @@ func TestRestoreCarriesControlPlaneState(t *testing.T) {
 	mustTenant(t, err)
 
 	// shop: adopted, mapped, applied and settled succeeded. blog: left applying.
-	succeeded := planAdopted(t, ts, a, shop.ID, host.ID, "shop", shopContainer, 2)
+	succeeded := planAdopted(t, ts, a, shop.ID, host.ID, "shop", shopContainer, 2, key)
 	_, _, err = ts.ApplyDeployment(ctx, a, shop.ID, succeeded.ID, "shop", key, protocol.MaxDeploymentRequestBytes)
 	mustTenant(t, err)
 	newContainer := strings.Repeat("e", 64)
@@ -127,7 +133,7 @@ func TestRestoreCarriesControlPlaneState(t *testing.T) {
 		Services: []protocol.DeploymentIdentity{{Service: "web", ContainerID: newContainer, ImageID: succeeded.Plan.Services[0].ImageID, CreatedUnix: 1800000000}}}))
 	// The host reports the container the apply created, as a live agent would.
 	report(now.Unix()+1, protocol.Container{ID: newContainer, Name: "shop-web", ImageID: succeeded.Plan.Services[0].ImageID, ComposeProject: "shop", CreatedAt: time.Unix(1800000000, 0).UTC(), Mounts: []protocol.Mount{}})
-	applying := planAdopted(t, ts, a, blog.ID, host.ID, "blog", blogContainer, 1)
+	applying := planAdopted(t, ts, a, blog.ID, host.ID, "blog", blogContainer, 1, key)
 	_, _, err = ts.ApplyDeployment(ctx, a, blog.ID, applying.ID, "blog", key, protocol.MaxDeploymentRequestBytes)
 	mustTenant(t, err)
 

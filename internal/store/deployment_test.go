@@ -36,14 +36,14 @@ func planFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, string, p
 	return st, a, app, endpoint, snapshot, m
 }
 func planRequest(m *ApplicationMapping) PlanRequest {
-	return PlanRequest{InstanceID: m.InstanceID, MappingVersion: m.Version, Revision: m.Preview.Revision, Confirm: m.Preview.Project}
+	return PlanRequest{InstanceID: m.InstanceID, MappingVersion: m.Version, Revision: m.Preview.Revision, Confirm: m.Preview.Project, MaxFrameBytes: protocol.MaxDeploymentRequestBytes}
 }
 
 func TestPlanDeploymentBindsIdentities(t *testing.T) {
 	st, a, app, _, snapshot, m := planFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestPlanDeploymentBindsIdentities(t *testing.T) {
 	if _, err = ts.ReadDeployment(ctx, foreign, app.ID, d.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign read: %v", err)
 	}
-	if _, err = ts.PlanDeployment(ctx, foreign, app.ID, planRequest(m), nil, nil, false); !errors.Is(err, ErrNotFound) {
+	if _, err = ts.PlanDeployment(ctx, foreign, app.ID, planRequest(m), nil, imageCheckKey, false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign plan: %v", err)
 	}
 }
@@ -86,11 +86,11 @@ func TestPlanDeploymentRefusesStaleAndBlocked(t *testing.T) {
 		"mapping":  {InstanceID: m.InstanceID, MappingVersion: 2, Revision: 1, Confirm: "shop"},
 		"project":  {InstanceID: m.InstanceID, MappingVersion: 1, Revision: 1, Confirm: "nope"},
 	} {
-		if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, nil, false); !errors.Is(err, ErrAdoptionChanged) {
+		if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, imageCheckKey, false); !errors.Is(err, ErrAdoptionChanged) {
 			t.Fatalf("%s accepted: %v", name, err)
 		}
 	}
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, PlanRequest{InstanceID: m.InstanceID, MappingVersion: 1, Revision: 2, Confirm: "shop"}, nil, nil, false); !errors.Is(err, ErrNotFound) {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, PlanRequest{InstanceID: m.InstanceID, MappingVersion: 1, Revision: 2, Confirm: "shop"}, nil, imageCheckKey, false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unsaved revision: %v", err)
 	}
 	// Definition advances: until the mapping is reviewed against the head, no revision plans.
@@ -101,7 +101,7 @@ func TestPlanDeploymentRefusesStaleAndBlocked(t *testing.T) {
 	for _, rev := range []int{1, 2} {
 		r := planRequest(m)
 		r.Revision = rev
-		if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, nil, false); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "mapping_requires_review") {
+		if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, imageCheckKey, false); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "mapping_requires_review") {
 			t.Fatalf("revision %d: mapping stale not reported: %v", rev, err)
 		}
 	}
@@ -113,7 +113,7 @@ func TestPlanDeploymentRefusesStaleAndBlocked(t *testing.T) {
 	snapshot.Images = nil
 	putAdoptionSnapshot(t, st, endpoint, snapshot)
 	m2, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m2), nil, nil, false); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "image_not_reported") {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m2), nil, imageCheckKey, false); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "image_not_reported") {
 		t.Fatalf("service blocker not reported: %v", err)
 	}
 	var n int
@@ -126,11 +126,11 @@ func TestPlanDeploymentReplacesAndExpires(t *testing.T) {
 	st, a, app, _, _, m := planFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	first, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	first, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	second, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil || second.ID == first.ID {
 		t.Fatalf("replacement: %+v %v", second, err)
 	}
@@ -158,7 +158,7 @@ func TestPlanDeploymentRoles(t *testing.T) {
 		if err := ts.SetMembership(ctx, &OrganizationMembership{OrganizationID: a.OrganizationID, UserID: a.ActorID, Role: role, Status: "active"}); err != nil {
 			t.Fatal(err)
 		}
-		_, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+		_, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 		if ok && err != nil || !ok && !errors.Is(err, ErrForbidden) {
 			t.Fatalf("%s: %v", role, err)
 		}
@@ -175,7 +175,7 @@ func TestPlanDeploymentRefusesInvalidReplacementIdentity(t *testing.T) {
 	st, a := tenantAtomicStore(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	app, err := ts.CreateApplication(ctx, a, "shop", ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}})
+	app, err := ts.ImportApplication(ctx, a, "shop", ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}}, map[string]string{}, imageCheckKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestPlanDeploymentRefusesInvalidReplacementIdentity(t *testing.T) {
 	snapshot.Images = []protocol.Image{{ID: "sha256:" + strings.Repeat("d", 64), Tags: []string{"nginx:1"}}}
 	putAdoptionSnapshot(t, st, endpoint, snapshot)
 	var blocked *PreflightBlockedError
-	if _, err = ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "replacement_identity_invalid") {
+	if _, err = ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); !errors.As(err, &blocked) || !slices.Contains(blocked.Blockers, "replacement_identity_invalid") {
 		t.Fatalf("invalid replacement identity not reported: %v", err)
 	}
 }
@@ -212,7 +212,7 @@ func TestReleaseRefusesLivePlanAndDeletesExpired(t *testing.T) {
 	st, a, app, _, _, m := planFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false); err != nil {
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.ReleaseApplication(ctx, a, app.ID, m.InstanceID, "shop"); !errors.Is(err, ErrDeploymentPlanned) {
@@ -249,7 +249,7 @@ func TestPlanDeploymentRespectsLiveRows(t *testing.T) {
 	st, a, app, _, _, m := planFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	first, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	first, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestPlanDeploymentRespectsLiveRows(t *testing.T) {
 	if _, err = st.db.Exec(st.rebind(`UPDATE deployments SET state='succeeded',settled_at=? WHERE id=?`), time.Now().UTC(), first.ID); err != nil {
 		t.Fatal(err)
 	}
-	second, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	second, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestPlanDeploymentRespectsLiveRows(t *testing.T) {
 	if _, err = st.db.Exec(st.rebind(`UPDATE deployments SET state='applying' WHERE id=?`), second.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false); !errors.Is(err, ErrDeploymentInProgress) {
+	if _, err = ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); !errors.Is(err, ErrDeploymentInProgress) {
 		t.Fatalf("plan during apply: %v", err)
 	}
 	if err = ts.ReleaseApplication(ctx, a, app.ID, m.InstanceID, "shop"); !errors.Is(err, ErrDeploymentInProgress) {
@@ -400,7 +400,7 @@ func TestPlanDeploymentPinsARegistryDigest(t *testing.T) {
 		t.Fatalf("credential in audit: %d %v", leaked, err)
 	}
 	// Without update the plan pins nothing and its audit row carries no details.
-	plain, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app), nil, nil, false)
+	plain, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app), nil, imageCheckKey, false)
 	if err != nil || plain.Plan.Services[0].PullDigest != "" {
 		t.Fatalf("plain plan: %+v %v", plain, err)
 	}
@@ -526,5 +526,100 @@ func TestPlanDeploymentRefusesAChangeMidResolve(t *testing.T) {
 	}
 	if len(f.called()) != 1 || deploymentRows(t, st, app.ID) != 0 {
 		t.Fatalf("calls %+v, rows %d", f.called(), deploymentRows(t, st, app.ID))
+	}
+}
+
+// The plan builds the real frame, secret values included, measures it against the endpoint's
+// cap and drops it: at the legacy cap it is refused, at 320 KiB the stored plan holds no value.
+func TestPlanDeploymentMeasuresTheFrame(t *testing.T) {
+	st, a, app, _, _, _ := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	env := map[string]ApplicationSecretRef{}
+	for _, n := range []string{"A", "B", "C", "D"} {
+		env["V"+n] = ApplicationSecretRef{SecretRef: "web-a"}
+	}
+	value := "frame-canary" + strings.Repeat("<", 9988)
+	spec := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Environment: env}}}
+	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, spec, map[string]string{"web-a": value}, imageCheckKey); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = ts.ReadApplicationMapping(ctx, a, app.ID)
+	legacy := planRequest(m)
+	legacy.MaxFrameBytes = protocol.MaxDeploymentRequestBytesLegacy
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, legacy, nil, imageCheckKey, false); !isBlocked(err, "frame_too_large") {
+		t.Fatalf("legacy cap: %v", err)
+	}
+	if n := deploymentRows(t, st, app.ID); n != 0 {
+		t.Fatalf("a refused plan left %d rows", n)
+	}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a plan without a key: %v", err)
+	}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, make([]byte, 32), false); !errors.Is(err, ErrRevisionCorrupt) {
+		t.Fatalf("a plan under the wrong key: %v", err)
+	}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := st.db.QueryRow(st.rebind(`SELECT plan FROM deployments WHERE id=?`), d.ID).Scan(&stored); err != nil || strings.Contains(stored, "frame-canary") {
+		t.Fatalf("stored plan: %v", err)
+	}
+}
+
+// An update plan decrypts the registry credential into the frame it measures and stores none of it.
+func TestPlanDeploymentDropsTheCredentialItMeasured(t *testing.T) {
+	st, a, app, _, _ := pullFixture(t, []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1.2"}}, map[string][]string{"web": {"ghcr.io/org/web@" + digestOf("a")}})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	f := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1.2": {digest: digestOf("f")}}}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, pullPlanRequest(t, ts, a, app, "web"), f, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := st.db.QueryRow(st.rebind(`SELECT plan FROM deployments WHERE id=?`), d.ID).Scan(&stored); err != nil || strings.Contains(stored, pullCanary) {
+		t.Fatalf("stored plan: %v", err)
+	}
+}
+
+// frameBlocker names the first thing that stops a frame: credentials, validity, then size.
+func TestFrameBlocker(t *testing.T) {
+	now := time.Now()
+	env := map[string]string{}
+	for _, n := range []string{"A", "B", "C", "D"} {
+		env["V"+n] = strings.Repeat("<", 10000)
+	}
+	good := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", Revision: 1, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{{
+		Name: "web", ContainerName: "shop-web", ImageID: "sha256:" + strings.Repeat("a", 64), Mounts: []protocol.Mount{}, Env: env,
+		Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000},
+	}}}
+	if b := frameBlocker(good, now, protocol.MaxDeploymentRequestBytes); b != "" {
+		t.Fatalf("a 240 KiB frame at 320 KiB: %s", b)
+	}
+	if b := frameBlocker(good, now, protocol.MaxDeploymentRequestBytesLegacy); b != "frame_too_large" {
+		t.Fatalf("a 240 KiB frame at 192 KiB: %s", b)
+	}
+	if b := frameBlocker(good, now, 1<<30); b != "" {
+		t.Fatalf("a cap above the wire bound: %s", b)
+	}
+	invalid := good
+	invalid.Deadline = now.Add(-time.Second)
+	if b := frameBlocker(invalid, now, protocol.MaxDeploymentRequestBytes); b != "frame_invalid" {
+		t.Fatalf("invalid: %s", b)
+	}
+	crowded := good
+	crowded.Registries = map[string]protocol.RegistryAuth{}
+	for i := range protocol.MaxRegistryAuthHosts + 1 {
+		crowded.Registries[fmt.Sprintf("r%d.example.com", i)] = protocol.RegistryAuth{Username: "u", Secret: "s"}
+	}
+	if b := frameBlocker(crowded, now, protocol.MaxDeploymentRequestBytes); b != "too_many_registry_hosts" {
+		t.Fatalf("17 hosts: %s", b)
 	}
 }

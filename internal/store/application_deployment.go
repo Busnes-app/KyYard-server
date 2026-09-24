@@ -28,6 +28,10 @@ type PlanRequest struct {
 	Confirm        string `json:"confirm"`
 	// Update names services to pull from the registry, pinned to its digest at plan time.
 	Update []string `json:"update"`
+	// Set by the API, never read from a client: the largest frame the endpoint's agent accepts,
+	// and one live inspection per mapped container, keyed by container ID.
+	MaxFrameBytes int                                     `json:"-"`
+	Inspections   map[string]protocol.ContainerInspection `json:"-"`
 }
 type PlannedService struct {
 	Name        string                    `json:"name"`
@@ -103,18 +107,19 @@ func (e *PreflightBlockedError) Error() string {
 }
 
 // PlanDeployment persists an executable preview. It is minted only from a clean preflight and
-// records every identity apply must recheck. It sends no command and reads no secret value.
-// Services named in r.Update are pinned to the registry's current digest: that plan reads,
-// resolves with no transaction open, then writes only if imageCheckState is unchanged.
-// See docs/application-schema.md, Deployment plans.
+// records every identity apply must recheck. Services named in r.Update are pinned to the
+// registry's current digest: that plan reads, resolves with no transaction open, then writes
+// only if imageCheckState is unchanged. It sends no command. It decrypts the revision's values
+// and credentials to build the frame apply would send, measures it against r.MaxFrameBytes and
+// drops it; nothing secret is stored. See docs/application-schema.md, Deployment plans.
 func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app string, r PlanRequest, resolver DigestResolver, key []byte, privateAllowed bool) (*Deployment, error) {
 	id, err := uuid.Parse(app)
-	if err != nil || a.EnvironmentID == "" {
+	if err != nil || a.EnvironmentID == "" || len(key) != 32 {
 		return nil, ErrInvalid
 	}
 	if len(r.Update) > 0 {
 		sorted := slices.Sorted(slices.Values(r.Update))
-		if len(r.Update) > protocol.MaxDeploymentServices || len(slices.Compact(sorted)) != len(r.Update) || len(key) != 32 || resolver == nil {
+		if len(r.Update) > protocol.MaxDeploymentServices || len(slices.Compact(sorted)) != len(r.Update) || resolver == nil {
 			return nil, ErrInvalid
 		}
 	}
@@ -130,6 +135,9 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 				return err
 			}
 			if err := blocked(blockers); err != nil {
+				return err
+			}
+			if err := t.checkFrame(ctx, tx, a, out, key, r.MaxFrameBytes); err != nil {
 				return err
 			}
 			return t.insertPlan(ctx, tx, a, out, m.InstanceID)
@@ -234,6 +242,9 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 		}
 		now := time.Now().UTC()
 		out.CreatedAt, out.ExpiresAt = now, now.Add(DeploymentPlanTTL)
+		if err := t.checkFrame(wctx, tx, a, out, key, r.MaxFrameBytes); err != nil {
+			return err
+		}
 		return t.insertPlan(wctx, tx, a, out, out.InstanceID)
 	})
 	if err != nil {

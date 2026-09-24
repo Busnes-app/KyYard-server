@@ -30,7 +30,7 @@ func adoptionFixtureSpec(t *testing.T, spec ApplicationSpec, digests map[string]
 	t.Helper()
 	st, a := tenantAtomicStore(t)
 	ctx := context.Background()
-	app, err := st.Tenancy().CreateApplication(ctx, a, "shop", spec)
+	app, err := st.Tenancy().ImportApplication(ctx, a, "shop", spec, map[string]string{}, imageCheckKey)
 	if err != nil {
 		t.Fatal(err)
 	}

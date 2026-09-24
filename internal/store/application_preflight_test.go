@@ -370,7 +370,7 @@ func TestPlanDeploymentCarriesMountsAndVolumes(t *testing.T) {
 	if len(p.Services[0].DroppedBinds) != 1 || p.Services[0].DroppedBinds[0].Source != "/old" {
 		t.Fatalf("dropped bind: %+v", p.Services[0])
 	}
-	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, nil, false)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestPlanDeploymentCarriesMountsAndVolumes(t *testing.T) {
 
 func TestPlanDeploymentRefusesANewBindMount(t *testing.T) {
 	st, a, app, m := volumesFixture(t, volumesSpec(), map[string][]protocol.Mount{"web": {{Kind: protocol.MountBind, Source: "/srv/web/", Target: "/srv", ReadOnly: true}}})
-	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, planRequest(m), nil, nil, false)
+	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	var blocked *PreflightBlockedError
 	if !errors.As(err, &blocked) || !reflect.DeepEqual(blocked.Blockers, []string{"bind_mount_new"}) {
 		t.Fatalf("new bind: %v", err)
@@ -404,7 +404,7 @@ func TestPlanDeploymentRefusesUnreportedMounts(t *testing.T) {
 	if previewMounts(m, "shop-worker") != nil || previewMounts(m, "shop-web") == nil {
 		t.Fatalf("reported and unreported mounts confused: %+v", m.Preview.Containers)
 	}
-	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, planRequest(m), nil, nil, false)
+	_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, planRequest(m), nil, imageCheckKey, false)
 	var blocked *PreflightBlockedError
 	if !errors.As(err, &blocked) || !reflect.DeepEqual(blocked.Blockers, []string{"mounts_unreported"}) {
 		t.Fatalf("unreported: %v", err)
