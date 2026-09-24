@@ -58,8 +58,8 @@ func main() {
 	var logs func(context.Context, protocol.LogRequest, func([]byte) error) error
 	var inspect func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error)
 	var exec func(context.Context, protocol.ExecSpec) (client.ExecSession, error)
-	var deploy func(context.Context, protocol.DeploymentRequest) protocol.DeploymentResult
-	var remove func(context.Context, protocol.RemovalRequest) protocol.DeploymentResult
+	var deploy func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult
+	var remove func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult
 	runtimeVersion := ""
 	if *socket != "" {
 		engine := docker.New(*socket)

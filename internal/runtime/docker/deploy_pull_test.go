@@ -23,7 +23,7 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 	req := request(pulledService("ghcr.io/org/app"))
 	// "a?" puts a '/' in the standard alphabet; the daemon decodes URL-safe and would drop it.
 	req.Registries = map[string]protocol.RegistryAuth{"ghcr.io": {Username: "u", Secret: "a?"}}
-	res := f.client().Deploy(context.Background(), req)
+	res := f.client().Deploy(context.Background(), req, func() {})
 	if res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("outcome: %+v", res)
 	}
@@ -65,7 +65,7 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 	f = newFakeDeployEngine(t)
 	anon := pulledService("ghcr.io/org/app")
 	anon.Pull.Tag = ""
-	if res := f.client().Deploy(context.Background(), request(anon)); res.Outcome != protocol.OutcomeSucceeded || len(f.pullAuth) != 1 || f.pullAuth[0] != "" {
+	if res := f.client().Deploy(context.Background(), request(anon), func() {}); res.Outcome != protocol.OutcomeSucceeded || len(f.pullAuth) != 1 || f.pullAuth[0] != "" {
 		t.Fatalf("anonymous pull: %+v auth=%q", res, f.pullAuth)
 	}
 	for _, c := range f.steps() {
@@ -91,7 +91,7 @@ func TestDeployPullVerifiesDockerHubSpelling(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
 			f.pulled = map[string]any{"Id": newImage, "RepoDigests": tc.digests}
-			res := f.client().Deploy(context.Background(), request(pulledService("docker.io/library/alpine")))
+			res := f.client().Deploy(context.Background(), request(pulledService("docker.io/library/alpine")), func() {})
 			if res.Outcome != tc.outcome {
 				t.Fatalf("%+v", res)
 			}
@@ -131,7 +131,7 @@ func TestDeployPullFailuresTouchNothing(t *testing.T) {
 			tc.mutate(f)
 			req := request(pulledService("ghcr.io/org/app"))
 			req.Registries = map[string]protocol.RegistryAuth{"ghcr.io": {Username: "user-canary", Secret: "secret-canary"}}
-			res := f.client().Deploy(context.Background(), req)
+			res := f.client().Deploy(context.Background(), req, func() {})
 			if res.Outcome != protocol.OutcomeFailed || res.Steps[1].Step != protocol.StepPull || res.Steps[1].Outcome != protocol.OutcomeFailed || res.Steps[1].Detail != tc.detail || len(res.Services) != 0 {
 				t.Fatalf("%+v", res)
 			}
@@ -165,7 +165,7 @@ func TestDeploySecondPullFailureTouchesNothing(t *testing.T) {
 	f.pullStatusFor = map[string]int{"ghcr.io/org/db": 401}
 	db := pulledService("ghcr.io/org/db")
 	db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", otherOldID, nil
-	res := f.client().Deploy(context.Background(), request(pulledService("ghcr.io/org/app"), db))
+	res := f.client().Deploy(context.Background(), request(pulledService("ghcr.io/org/app"), db), func() {})
 	if res.Outcome != protocol.OutcomeFailed || res.Detail != "service db, step pull: unauthorized" || len(res.Services) != 0 {
 		t.Fatalf("%+v", res)
 	}
@@ -201,7 +201,7 @@ func TestDeployPullRefusedWithoutTimeToReplace(t *testing.T) {
 			}
 			req := request(tc.services...)
 			req.Deadline = time.Now().Add(tc.left)
-			res := f.client().Deploy(context.Background(), req)
+			res := f.client().Deploy(context.Background(), req, func() {})
 			if res.Outcome != protocol.OutcomeTimedOut || res.Steps[1].Step != protocol.StepPull || res.Steps[1].Outcome != protocol.OutcomeTimedOut {
 				t.Fatalf("%+v", res)
 			}

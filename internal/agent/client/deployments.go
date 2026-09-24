@@ -16,12 +16,19 @@ import (
 const (
 	deploymentLedgerLife = 24 * time.Hour
 	deploymentLedgerMax  = 20
+	// restartedDetail settles a run that began changing the host and never recorded a result.
+	restartedDetail = "the agent restarted after replacement began; inspect the host"
 )
 
 type deploymentEntry struct {
 	Result   protocol.DeploymentResult `json:"result"`
 	Finished time.Time                 `json:"finished"`
+	// Started is set, with no result yet, while a run may be changing the host.
+	Started time.Time `json:"started,omitzero"`
 }
+
+// pending is a run that began changing the host and has no result yet.
+func (e deploymentEntry) pending() bool { return e.Result.Deployment == "" }
 
 // deployer runs one deployment at a time on the agent's root context, remembers every result
 // before sending it, delivers it to whichever session is current, and re-sends what no session
@@ -48,28 +55,67 @@ func newDeployer(root context.Context, dir string, opts *Options) *deployer {
 		var saved map[string]deploymentEntry
 		if json.Unmarshal(raw, &saved) == nil {
 			d.done = saved
+			if d.settleStarted() {
+				if err := d.save(); err != nil && d.opts.Log != nil {
+					d.opts.Log.Printf("deployment ledger: interrupted runs not recorded: %v", err)
+				}
+			}
 			d.prune()
 		}
 	}
 	return d
 }
 
-func (d *deployer) prune() {
-	cutoff := time.Now().UTC().Add(-deploymentLedgerLife)
+// settleStarted turns every run a restart interrupted after it began changing the host into an
+// unknown result, re-sent like any other. It reports whether it found one.
+func (d *deployer) settleStarted() bool {
+	now, found := time.Now().UTC(), false
 	for id, e := range d.done {
-		if e.Finished.Before(cutoff) {
-			delete(d.done, id)
+		if e.pending() {
+			d.done[id] = deploymentEntry{Result: protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeUnknown, Detail: restartedDetail, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: now}
+			found = true
 		}
 	}
-	if len(d.done) <= deploymentLedgerMax {
+	return found
+}
+
+// save writes the ledger durably. The caller holds mu, or owns d alone.
+func (d *deployer) save() error {
+	raw, err := json.Marshal(d.done)
+	if err != nil {
+		return err
+	}
+	return writeDurable(d.path, raw)
+}
+
+// begin records durably, before it returns, that run id is about to change the host.
+func (d *deployer) begin(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.done[id] = deploymentEntry{Started: time.Now().UTC()}
+	if err := d.save(); err != nil && d.opts.Log != nil {
+		// A restart before the result would then run the frame again; the recheck still guards it.
+		d.opts.Log.Printf("deployment %s: start not recorded: %v", id, err)
+	}
+}
+
+func (d *deployer) prune() {
+	cutoff := time.Now().UTC().Add(-deploymentLedgerLife)
+	ids := make([]string, 0, len(d.done))
+	for id, e := range d.done {
+		switch {
+		case e.pending():
+		case e.Finished.Before(cutoff):
+			delete(d.done, id)
+		default:
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) <= deploymentLedgerMax {
 		return
 	}
-	ids := make([]string, 0, len(d.done))
-	for id := range d.done {
-		ids = append(ids, id)
-	}
 	sort.Slice(ids, func(i, j int) bool { return d.done[ids[i]].Finished.Before(d.done[ids[j]].Finished) })
-	for _, id := range ids[:len(d.done)-deploymentLedgerMax] {
+	for _, id := range ids[:len(ids)-deploymentLedgerMax] {
 		delete(d.done, id)
 	}
 }
@@ -97,11 +143,7 @@ func (d *deployer) finish(res protocol.DeploymentResult) *sessionLink {
 	defer d.mu.Unlock()
 	d.done[res.Deployment] = deploymentEntry{Result: res, Finished: time.Now().UTC()}
 	d.prune()
-	raw, err := json.Marshal(d.done)
-	if err == nil {
-		err = writeDurable(d.path, raw)
-	}
-	if err != nil && d.opts.Log != nil {
+	if err := d.save(); err != nil && d.opts.Log != nil {
 		// Still delivered and re-sent from memory; only a restart loses it.
 		d.opts.Log.Printf("deployment %s: result not recorded: %v", res.Deployment, err)
 	}
@@ -130,7 +172,7 @@ func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, pa
 	var exec func(context.Context) protocol.DeploymentResult
 	if deploy := d.opts.Deploy; deploy != nil {
 		exec = func(ctx context.Context) protocol.DeploymentResult {
-			res := deploy(ctx, req)
+			res := deploy(ctx, req, func() { d.begin(req.Deployment) })
 			for i := range req.Services {
 				clear(req.Services[i].Env)
 			}
@@ -150,7 +192,9 @@ func (d *deployer) handleRemoval(sessionCtx context.Context, endpointID string, 
 	}
 	var exec func(context.Context) protocol.DeploymentResult
 	if remove := d.opts.Remove; remove != nil {
-		exec = func(ctx context.Context) protocol.DeploymentResult { return remove(ctx, req) }
+		exec = func(ctx context.Context) protocol.DeploymentResult {
+			return remove(ctx, req, func() { d.begin(req.Deployment) })
+		}
 	}
 	d.run(sessionCtx, out, req.Deployment, req.Endpoint, endpointID, req.Validate, exec, "this agent has no runtime to remove")
 }
@@ -224,7 +268,9 @@ func (d *deployer) resend(ctx context.Context, out chan<- outFrame) {
 	d.prune()
 	results := make([]protocol.DeploymentResult, 0, len(d.done))
 	for _, e := range d.done {
-		results = append(results, e.Result)
+		if !e.pending() {
+			results = append(results, e.Result)
+		}
 	}
 	d.mu.Unlock()
 	for _, res := range results {

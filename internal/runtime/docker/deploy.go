@@ -38,7 +38,9 @@ const replaceBudget = 2*operationBudget + 4*callBudget
 // Nothing is rolled back: the steps say where the old container was left. No volume is ever
 // removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
 // 2026-09-23-pull-step-design.md and 2026-09-24-volumes-design.md.
-func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+// started is called once, immediately before the first phase-two call (after the first recheck's
+// deadline guard); a run that ends in phase one never calls it.
+func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
 		res.Outcome, res.Detail = protocol.OutcomeDenied, "the deployment request is invalid"
@@ -49,7 +51,7 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) 
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
-	r := &deployRun{c: c, parent: parent, req: req, res: res, ensured: map[string]bool{}, keepOnly: map[string]bool{}}
+	r := &deployRun{c: c, parent: parent, req: req, res: res, ensured: map[string]bool{}, keepOnly: map[string]bool{}, started: started}
 	// The daemon default runtime is what a container created without one gets; read once per run.
 	ictx, icancel := context.WithTimeout(ctx, callBudget)
 	var info struct{ DefaultRuntime string }
@@ -82,6 +84,16 @@ type deployRun struct {
 	pullDeadline   time.Time       // shared by every pull; see pullPhase
 	ensured        map[string]bool // volumes whose step is recorded
 	keepOnly       map[string]bool // existing volumes not the project's own: each service may only keep its mounts of them
+	started        func()          // called once before the run first reads or changes a container in phase two
+	begun          bool
+}
+
+// begin tells the caller, once, that the run is about to change the host.
+func (r *deployRun) begin() {
+	if !r.begun {
+		r.begun = true
+		r.started()
+	}
 }
 
 // step records one outcome. The first non-success fixes the run's outcome and detail.
@@ -387,6 +399,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		if time.Until(r.req.Deadline) < replaceBudget {
 			return protocol.OutcomeTimedOut, "not enough time left before the deadline to replace this service safely"
 		}
+		r.begin()
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var now inspectedForDeploy

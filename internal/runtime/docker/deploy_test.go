@@ -207,7 +207,7 @@ func webService() protocol.DeploymentService {
 
 func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 	f := newFakeDeployEngine(t)
-	res := f.client().Deploy(context.Background(), request(webService()))
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeSucceeded || res.Deployment != deploymentID {
 		t.Fatalf("outcome: %+v", res)
 	}
@@ -273,7 +273,7 @@ func TestDeployRefusesAnInvalidRequestWithoutCalling(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	s := webService()
 	s.Env = map[string]string{"1BAD": "x"}
-	res := f.client().Deploy(context.Background(), request(s))
+	res := f.client().Deploy(context.Background(), request(s), func() {})
 	if res.Outcome != protocol.OutcomeDenied || len(f.calls) != 0 || len(res.Steps) != 0 {
 		t.Fatalf("invalid request: %+v calls=%d", res, len(f.calls))
 	}
@@ -283,7 +283,7 @@ func TestDeployKeepsTheProjectNetwork(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	f.oldContainer["HostConfig"].(map[string]any)["NetworkMode"] = "shop_default"
 	f.oldContainer["NetworkSettings"] = map[string]any{"Networks": map[string]any{"shop_default": map[string]any{}}}
-	res := f.client().Deploy(context.Background(), request(webService()))
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("outcome: %+v", res)
 	}
@@ -314,7 +314,7 @@ func TestDeployAcceptsImageInheritedSettings(t *testing.T) {
 		f.oldContainer["Config"].(map[string]any)[k] = v
 		f.oldImageConfig[k] = v
 	}
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("inherited settings: %+v", res)
 	}
 }
@@ -323,7 +323,7 @@ func TestDeployAcceptsImageInheritedSettings(t *testing.T) {
 func TestDeployAcceptsDisabledHealthcheckOnImageWithout(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	f.oldContainer["Config"].(map[string]any)["Healthcheck"] = map[string]any{"Test": []string{"NONE"}}
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("NONE healthcheck: %+v", res)
 	}
 }
@@ -333,14 +333,14 @@ func TestDeployRuntimeFollowsTheDaemonDefault(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	f.defaultRuntime = "nvidia"
 	f.oldContainer["HostConfig"].(map[string]any)["Runtime"] = "nvidia"
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("daemon-default runtime: %+v", res)
 	}
 	f = newFakeDeployEngine(t)
 	f.defaultRuntime = ""
 	db := webService()
 	db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", strings.Repeat("f", 64), nil
-	res := f.client().Deploy(context.Background(), request(webService(), db))
+	res := f.client().Deploy(context.Background(), request(webService(), db), func() {})
 	if res.Outcome != protocol.OutcomeFailed || res.Steps[0].Step != protocol.StepPrecondition || res.Steps[0].Detail != "the daemon's default runtime could not be read" || res.Steps[len(res.Steps)-1].Outcome != protocol.OutcomeSkipped || len(f.calls) != 1 {
 		t.Fatalf("unreadable default runtime: %+v calls=%v", res, f.steps())
 	}
@@ -351,7 +351,7 @@ func TestDeployAcceptsDaemonDefaultIPCModes(t *testing.T) {
 	for _, mode := range []string{"", "private", "shareable"} {
 		f := newFakeDeployEngine(t)
 		f.oldContainer["HostConfig"].(map[string]any)["IpcMode"] = mode
-		if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+		if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 			t.Fatalf("IpcMode %q: %+v", mode, res)
 		}
 	}
@@ -476,7 +476,7 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 			tc.mutate(f)
 			db := webService()
 			db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", strings.Repeat("f", 64), nil
-			res := f.client().Deploy(context.Background(), request(webService(), db))
+			res := f.client().Deploy(context.Background(), request(webService(), db), func() {})
 			if res.Outcome != protocol.OutcomeDenied || len(f.calls) != 1+tc.calls || res.Steps[0].Detail != tc.detail {
 				t.Fatalf("%s: %+v calls=%v", name, res, f.steps())
 			}
@@ -495,12 +495,12 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 	}
 	f := newFakeDeployEngine(t)
 	f.oldStatus = 404
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "the container no longer exists" || len(f.calls) != 2 {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "the container no longer exists" || len(f.calls) != 2 {
 		t.Fatalf("missing container: %+v", res)
 	}
 	f = newFakeDeployEngine(t)
 	delete(f.oldContainer, "HostConfig")
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Steps[0].Detail != "the runtime did not report the container's full configuration" {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Steps[0].Detail != "the runtime did not report the container's full configuration" {
 		t.Fatalf("absent HostConfig detail: %+v", res.Steps[0])
 	}
 }
@@ -515,7 +515,7 @@ func TestDeployUnsupportedDetailStaysWithinTheStepBound(t *testing.T) {
 	}
 	f.oldContainer["Config"].(map[string]any)["User"] = "1000"
 	f.oldContainer["Mounts"] = []any{map[string]any{"Type": "tmpfs", "Destination": "/run"}, map[string]any{"Type": "volume", "Name": strings.Repeat("ab", 32), "Destination": "/d", "Mode": "nocopy"}}
-	res := f.client().Deploy(context.Background(), request(webService()))
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeDenied || !strings.HasPrefix(res.Steps[0].Detail, "unsupported: mount_type, anonymous_volume") || len(res.Steps[0].Detail) > protocol.MaxDeploymentStepDetailBytes {
 		t.Fatalf("detail %d bytes: %q", len(res.Steps[0].Detail), res.Steps[0].Detail)
 	}
@@ -541,7 +541,7 @@ func TestDeployStepFailuresStopTheRun(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
 			tc.mutate(f)
-			res := f.client().Deploy(context.Background(), request(webService()))
+			res := f.client().Deploy(context.Background(), request(webService()), func() {})
 			if res.Outcome != tc.outcome || len(f.calls) != tc.calls {
 				t.Fatalf("%s: %+v calls=%v", name, res, f.steps())
 			}
@@ -572,7 +572,7 @@ func TestDeployStepFailuresStopTheRun(t *testing.T) {
 	}
 	f := newFakeDeployEngine(t)
 	f.stopStatus = 304
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("already stopped must count: %+v", res)
 	}
 }
@@ -581,7 +581,7 @@ func TestDeployTimeAndCancellation(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	req := request(webService())
 	req.Deadline = time.Now().Add(-time.Second)
-	if res := f.client().Deploy(context.Background(), req); res.Outcome != protocol.OutcomeDenied || len(f.calls) != 0 {
+	if res := f.client().Deploy(context.Background(), req, func() {}); res.Outcome != protocol.OutcomeDenied || len(f.calls) != 0 {
 		t.Fatalf("past deadline: %+v", res)
 	}
 	// A parent deadline stands in for the request deadline expiring mid-call: the guard before
@@ -590,7 +590,7 @@ func TestDeployTimeAndCancellation(t *testing.T) {
 	f.stopDelay = 3 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	res := f.client().Deploy(ctx, request(webService()))
+	res := f.client().Deploy(ctx, request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[5].Step != protocol.StepStop || res.Steps[5].Outcome != protocol.OutcomeTimedOut || len(res.Services) != 0 {
 		t.Fatalf("deadline mid-stop: %+v", res)
 	}
@@ -598,7 +598,7 @@ func TestDeployTimeAndCancellation(t *testing.T) {
 	f.stopDelay = 3 * time.Second
 	ctx, cancel = context.WithCancel(context.Background())
 	go func() { time.Sleep(500 * time.Millisecond); cancel() }()
-	res = f.client().Deploy(ctx, request(webService()))
+	res = f.client().Deploy(ctx, request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeUnknown || res.Steps[5].Step != protocol.StepStop || res.Steps[5].Outcome != protocol.OutcomeUnknown {
 		t.Fatalf("cancel mid-stop: %+v", res)
 	}
@@ -608,7 +608,7 @@ func TestDeployRefusesToStartWithoutTimeToFinish(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	req := request(webService())
 	req.Deadline = time.Now().Add(60 * time.Second)
-	res := f.client().Deploy(context.Background(), req)
+	res := f.client().Deploy(context.Background(), req, func() {})
 	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[2].Step != protocol.StepRecheck || res.Steps[2].Outcome != protocol.OutcomeTimedOut || res.Steps[2].Detail != "not enough time left before the deadline to replace this service safely" {
 		t.Fatalf("guard: %+v", res)
 	}
@@ -626,7 +626,7 @@ func TestDeployRefusesToStartWithoutTimeToFinish(t *testing.T) {
 func TestDeployIdentityReadFailureNamesTheContainer(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	f.inspectNewStatus = 500
-	res := f.client().Deploy(context.Background(), request(webService()))
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeFailed || res.Steps[6].Step != protocol.StepStart || !strings.Contains(res.Steps[6].Detail, newID) || len(res.Services) != 0 {
 		t.Fatalf("identity read: %+v", res)
 	}
@@ -643,7 +643,7 @@ func TestDeployTwoServicesSecondRefusedTouchesNothing(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	db := webService()
 	db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", strings.Repeat("f", 64), nil
-	res := f.client().Deploy(context.Background(), request(webService(), db))
+	res := f.client().Deploy(context.Background(), request(webService(), db), func() {})
 	if res.Outcome != protocol.OutcomeDenied || len(res.Services) != 0 {
 		t.Fatalf("outcome: %+v", res)
 	}
@@ -678,7 +678,7 @@ func TestDeployReportsClockSkewWithoutCalling(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	req := request(webService())
 	req.IssuedAt = time.Now().Add(-protocol.MaxClockSkew - time.Minute)
-	res := f.client().Deploy(context.Background(), req)
+	res := f.client().Deploy(context.Background(), req, func() {})
 	if res.Outcome != protocol.OutcomeFailed || res.Detail != "clock skew exceeds 5 minutes" || len(res.Steps) != 0 || len(f.calls) != 0 {
 		t.Fatalf("skewed frame: %+v calls=%v", res, f.steps())
 	}
@@ -707,7 +707,7 @@ func TestRecheckDeniesDriftBetweenThePhases(t *testing.T) {
 					change(body)
 				}
 			}
-			res := f.client().Deploy(context.Background(), request(webService(), dbService()))
+			res := f.client().Deploy(context.Background(), request(webService(), dbService()), func() {})
 			if res.Outcome != protocol.OutcomeDenied || res.Detail != "service db, step recheck: the container changed after the precondition" {
 				t.Fatalf("outcome: %+v", res)
 			}
@@ -745,7 +745,7 @@ func TestRecheckDeniesAContainerGoneBetweenThePhases(t *testing.T) {
 			f.oldStatus = 404
 		}
 	}
-	res := f.client().Deploy(context.Background(), request(webService()))
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeDenied || res.Steps[2].Step != protocol.StepRecheck || res.Steps[2].Detail != "the container no longer exists" {
 		t.Fatalf("gone at recheck: %+v", res)
 	}
@@ -765,7 +765,50 @@ func TestRecheckIgnoresStateAndNetworkSettings(t *testing.T) {
 			body["NetworkSettings"] = map[string]any{"Networks": map[string]any{"bridge": map[string]any{"IPAddress": "172.17.0.9"}}}
 		}
 	}
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("a restart denied the replacement: %+v", res)
+	}
+}
+
+// started is called once, after phase one and before the first phase-two call, and never when
+// phase one fails or the deadline guard refuses.
+func TestDeployCallsStartedOnceBeforePhaseTwo(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	marks := []int{}
+	res := f.client().Deploy(context.Background(), request(webService(), dbService()), func() {
+		f.mu.Lock()
+		marks = append(marks, len(f.calls))
+		f.mu.Unlock()
+	})
+	if res.Outcome != protocol.OutcomeSucceeded || len(marks) != 1 {
+		t.Fatalf("started %d times: %+v", len(marks), res)
+	}
+	f.mu.Lock()
+	before, next := f.calls[:marks[0]], f.calls[marks[0]]
+	f.mu.Unlock()
+	for _, c := range before {
+		if c.Method != "GET" {
+			t.Fatalf("mutation before started: %+v", c)
+		}
+	}
+	if next.Method != "GET" || !strings.HasSuffix(next.Path, "/containers/"+oldID+"/json") {
+		t.Fatalf("the first call after started is not web's recheck: %+v", next)
+	}
+	for name, mutate := range map[string]func(*fakeDeployEngine, *protocol.DeploymentRequest){
+		"precondition denied": func(f *fakeDeployEngine, _ *protocol.DeploymentRequest) {
+			f.oldContainer["HostConfig"].(map[string]any)["Privileged"] = true
+		},
+		"image missing": func(f *fakeDeployEngine, _ *protocol.DeploymentRequest) { f.imageStatus = 404 },
+		"deadline guard": func(_ *fakeDeployEngine, r *protocol.DeploymentRequest) {
+			r.Deadline = time.Now().Add(60 * time.Second)
+		},
+	} {
+		f := newFakeDeployEngine(t)
+		req := request(webService())
+		mutate(f, &req)
+		called := false
+		if res := f.client().Deploy(context.Background(), req, func() { called = true }); res.Outcome == protocol.OutcomeSucceeded || called {
+			t.Fatalf("%s: started=%v %+v", name, called, res)
+		}
 	}
 }

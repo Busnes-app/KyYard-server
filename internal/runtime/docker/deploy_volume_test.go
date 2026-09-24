@@ -47,7 +47,7 @@ func TestDeployEnsuresVolumesAndMountsThem(t *testing.T) {
 	withBind(f)
 	req := request(mountedWeb(), mountedDB())
 	req.Volumes = []string{"shop_data", "shop_ext"}
-	res := f.client().Deploy(context.Background(), req)
+	res := f.client().Deploy(context.Background(), req, func() {})
 	if res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("outcome: %+v", res)
 	}
@@ -110,7 +110,7 @@ func TestDeployEnsuresVolumesAndMountsThem(t *testing.T) {
 	}
 	// A service without mounts sends none.
 	f = newFakeDeployEngine(t)
-	if res := f.client().Deploy(context.Background(), request(webService())); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(webService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("plain: %+v", res)
 	}
 	for _, c := range f.calls {
@@ -131,7 +131,7 @@ func TestDeployVolumeFailureTouchesNoContainer(t *testing.T) {
 		f.volumeStatus = status
 		req := request(mountedWeb(), mountedDB())
 		req.Volumes = []string{"shop_data", "shop_ext"}
-		res := f.client().Deploy(context.Background(), req)
+		res := f.client().Deploy(context.Background(), req, func() {})
 		if res.Outcome != protocol.OutcomeFailed || res.Steps[1].Step != protocol.StepVolume || res.Steps[1].Detail != "volume create failed" || res.Detail != "service web, step volume: volume create failed" {
 			t.Fatalf("%d: outcome: %+v", status, res)
 		}
@@ -203,7 +203,7 @@ func TestDeployVolumeOwnership(t *testing.T) {
 			req := request(s)
 			req.Volumes = []string{tc.volume}
 			f.createdInstead = tc.created // free when inspected, taken by the time the create lands
-			res := f.client().Deploy(context.Background(), req)
+			res := f.client().Deploy(context.Background(), req, func() {})
 			if res.Steps[1].Step != protocol.StepVolume || res.Steps[1].Outcome != tc.outcome || res.Steps[1].Detail != tc.detail || res.Outcome != tc.outcome {
 				t.Fatalf("%+v", res)
 			}
@@ -238,7 +238,7 @@ func TestDeployVolumeRefusalDetails(t *testing.T) {
 	} {
 		f := newFakeDeployEngine(t)
 		mutate(f)
-		res := f.client().Deploy(context.Background(), request(webService()))
+		res := f.client().Deploy(context.Background(), request(webService()), func() {})
 		if res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "unsupported: "+detail {
 			t.Fatalf("%s: %+v", detail, res.Steps[0])
 		}
@@ -250,7 +250,7 @@ func TestDeployVolumeRefusalDetails(t *testing.T) {
 	f.oldContainer["HostConfig"].(map[string]any)["Mounts"] = []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{}}, map[string]any{"Type": "bind", "Source": "/srv", "Target": "/srv", "BindOptions": map[string]any{"Propagation": "rprivate", "CreateMountpoint": true}}}
 	s := webService()
 	s.Mounts = []protocol.Mount{} // the definition drops both
-	if res := f.client().Deploy(context.Background(), request(s)); res.Outcome != protocol.OutcomeSucceeded {
+	if res := f.client().Deploy(context.Background(), request(s), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("defaults refused: %+v", res.Steps[0])
 	}
 }
@@ -288,7 +288,7 @@ func TestDeployBindPrecondition(t *testing.T) {
 			tc.mutate(f, &s)
 			req := request(s)
 			req.Volumes = []string{"shop_data", "shop_ext"}
-			res := f.client().Deploy(context.Background(), req)
+			res := f.client().Deploy(context.Background(), req, func() {})
 			if res.Outcome != tc.outcome || res.Steps[0].Detail != tc.detail {
 				t.Fatalf("%+v", res)
 			}
@@ -309,7 +309,7 @@ func TestDeployRefusesAnUnlistedVolumeMount(t *testing.T) {
 	withBind(f)
 	req := request(mountedWeb())
 	req.Volumes = []string{"shop_data"} // mountedWeb also mounts shop_ext
-	res := f.client().Deploy(context.Background(), req)
+	res := f.client().Deploy(context.Background(), req, func() {})
 	if res.Outcome != protocol.OutcomeDenied || len(res.Steps) != 0 || len(f.calls) != 0 {
 		t.Fatalf("%+v calls=%v", res, f.steps())
 	}
@@ -354,7 +354,7 @@ func TestDeployKeepOnlyVolumePerService(t *testing.T) {
 			}
 			req := request(web, db)
 			req.Volumes = []string{"shared_ext"}
-			res := f.client().Deploy(context.Background(), req)
+			res := f.client().Deploy(context.Background(), req, func() {})
 			if res.Outcome != tc.outcome {
 				t.Fatalf("%+v", res)
 			}
@@ -417,7 +417,7 @@ func TestDeployFrameWithoutMountsKey(t *testing.T) {
 			if (s.Mounts == nil) != tc.absent {
 				t.Fatalf("decoded mounts %#v", s.Mounts)
 			}
-			res := f.client().Deploy(context.Background(), request(s))
+			res := f.client().Deploy(context.Background(), request(s), func() {})
 			if res.Outcome != tc.outcome || res.Steps[0].Detail != tc.detail {
 				t.Fatalf("%+v", res)
 			}
