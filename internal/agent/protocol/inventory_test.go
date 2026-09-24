@@ -86,6 +86,12 @@ func TestClampMounts(t *testing.T) {
 	if s.Containers[1].Mounts != nil {
 		t.Fatal("clamp invented a mount list for a container that reported none")
 	}
+	// A path cut at the text bound no longer names the mount: the list is marked incomplete.
+	long := &Snapshot{Containers: []Container{{Mounts: []Mount{{Kind: MountBind, Source: "/" + strings.Repeat("s", MaxImageRefBytes), Target: "/t"}}}, {Mounts: []Mount{{Kind: MountBind, Source: "/srv", Target: "/t"}}}}}
+	Clamp(long)
+	if !long.Containers[0].MountsTruncated || long.Containers[1].MountsTruncated {
+		t.Fatalf("cut path: %v, intact path: %v", long.Containers[0].MountsTruncated, long.Containers[1].MountsTruncated)
+	}
 }
 
 // Mounts go before containers do: a host full of mounts keeps every container, each marked.

@@ -191,9 +191,6 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 			pc.Mounts = append(pc.Mounts, mount)
 		}
 		sort.Slice(pc.Mounts, func(i, j int) bool { return pc.Mounts[i].Target < pc.Mounts[j].Target })
-		if len(pc.Mounts) > protocol.MaxMounts {
-			pc.Mounts, pc.MountsTruncated = pc.Mounts[:protocol.MaxMounts], true
-		}
 		pc.ComposeProject = ct.Labels["com.docker.compose.project"]
 		snap.Containers = append(snap.Containers, pc)
 	}

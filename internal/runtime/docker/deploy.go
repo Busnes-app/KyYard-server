@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -134,6 +135,19 @@ type inspectedForDeploy struct {
 		CpuShares, CpuQuota                                             int64
 		PidsLimit                                                       *int64
 		Init                                                            *bool
+		VolumesFrom                                                     []string
+		VolumeDriver                                                    string
+		Mounts                                                          []struct {
+			BindOptions *struct {
+				Propagation                                                string
+				NonRecursive, ReadOnlyNonRecursive, ReadOnlyForceRecursive bool
+			}
+			VolumeOptions *struct {
+				NoCopy       bool
+				Subpath      string
+				DriverConfig *struct{ Name string }
+			}
+		}
 	}
 	NetworkSettings *struct {
 		Networks map[string]json.RawMessage
@@ -141,8 +155,30 @@ type inspectedForDeploy struct {
 }
 
 type inspectedMount struct {
-	Type, Source, Destination string
-	RW                        bool
+	Type, Name, Source, Destination, Mode, Propagation string
+	RW                                                 bool
+}
+
+// anonymousVolume is the name Docker generates for a volume nobody named.
+var anonymousVolume = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// mountOptions reports an option on the old container's mounts the recreate would drop: a
+// propagation other than the default, nocopy, a volume subpath or driver, recursion settings.
+func mountOptions(in inspectedForDeploy) bool {
+	for _, m := range *in.Mounts {
+		if (m.Propagation != "" && m.Propagation != "rprivate") || slices.Contains(strings.Split(m.Mode, ","), "nocopy") {
+			return true
+		}
+	}
+	for _, m := range in.HostConfig.Mounts {
+		if b := m.BindOptions; b != nil && ((b.Propagation != "" && b.Propagation != "rprivate") || b.NonRecursive || b.ReadOnlyNonRecursive || b.ReadOnlyForceRecursive) {
+			return true
+		}
+		if v := m.VolumeOptions; v != nil && (v.NoCopy || v.Subpath != "" || (v.DriverConfig != nil && v.DriverConfig.Name != "" && v.DriverConfig.Name != "local")) {
+			return true
+		}
+	}
+	return false
 }
 
 // imageDefaults are the Config fields a container inherits from its image. A container whose
@@ -197,6 +233,14 @@ func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) s
 	switch {
 	case slices.ContainsFunc(*in.Mounts, func(m inspectedMount) bool { return m.Type != "volume" && m.Type != "bind" }):
 		return cannotExpress + "mounts"
+	case slices.ContainsFunc(*in.Mounts, func(m inspectedMount) bool { return m.Type == "volume" && anonymousVolume.MatchString(m.Name) }):
+		return cannotExpress + "anonymous volumes"
+	case len(h.VolumesFrom) > 0:
+		return cannotExpress + "volumes-from"
+	case h.VolumeDriver != "" && h.VolumeDriver != "local":
+		return cannotExpress + "volume driver"
+	case mountOptions(in):
+		return cannotExpress + "mount options"
 	case len(h.Tmpfs) > 0:
 		return cannotExpress + "tmpfs"
 	case *h.AutoRemove:
@@ -264,6 +308,7 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 	old := url.PathEscape(s.Replaces.ContainerID)
 	var before inspectedForDeploy
 	var networkMode string
+	var oldMounts []inspectedMount
 	r.step(s.Name, protocol.StepPrecondition, func() (string, string) {
 		if r.defaultRuntime == "" {
 			return protocol.OutcomeFailed, "the daemon's default runtime could not be read"
@@ -284,7 +329,9 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		}
 		// Binds are preserve-only: a deploy never introduces a host path.
 		for _, m := range s.Mounts {
-			if m.Kind == protocol.MountBind && !slices.Contains(*before.Mounts, inspectedMount{Type: "bind", Source: m.Source, Destination: m.Target, RW: !m.ReadOnly}) {
+			if m.Kind == protocol.MountBind && !slices.ContainsFunc(*before.Mounts, func(o inspectedMount) bool {
+				return o.Type == "bind" && o.Source == m.Source && o.Destination == m.Target && o.RW == !m.ReadOnly
+			}) {
 				return protocol.OutcomeDenied, "bind mount not present on the container"
 			}
 		}
@@ -300,10 +347,10 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		if field := before.Config.differs(im.Config); field != "" {
 			return protocol.OutcomeDenied, cannotExpress + field
 		}
-		networkMode = before.HostConfig.NetworkMode
+		networkMode, oldMounts = before.HostConfig.NetworkMode, *before.Mounts
 		return protocol.OutcomeSucceeded, ""
 	})
-	r.ensureVolumes(ctx, s)
+	r.ensureVolumes(ctx, s, oldMounts)
 	if s.Pull != nil {
 		r.step(s.Name, protocol.StepPull, func() (string, string) {
 			outcome, detail, id := r.pull(ctx, s)

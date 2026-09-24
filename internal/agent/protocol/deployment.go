@@ -125,9 +125,10 @@ func (p ImagePull) valid() bool {
 	return ValidImageReference(p.Tag) && !strings.Contains(p.Tag, "@") && tag != "" && tagName == name
 }
 
-// cleanAbsolute is an absolute path in canonical form, not the root, without control characters.
+// cleanAbsolute is an absolute path in canonical form, not the root, that displays as it is:
+// CleanText leaves it unchanged and it has no format characters (bidi, zero-width).
 func cleanAbsolute(p string) bool {
-	return len(p) > 1 && len(p) <= MaxMountPathBytes && path.IsAbs(p) && path.Clean(p) == p && utf8.ValidString(p) && !strings.ContainsFunc(p, unicode.IsControl)
+	return len(p) > 1 && len(p) <= MaxMountPathBytes && path.IsAbs(p) && path.Clean(p) == p && CleanText(p, MaxMountPathBytes) == p && !strings.ContainsFunc(p, func(r rune) bool { return unicode.Is(unicode.Cf, r) })
 }
 
 func validMounts(mounts []Mount, used map[string]bool) bool {

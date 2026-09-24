@@ -293,7 +293,10 @@ func Clamp(s *Snapshot) {
 			if m.Kind != MountVolume && m.Kind != MountBind {
 				m.Kind = MountOther
 			}
-			m.Source, m.Target = CleanText(m.Source, MaxImageRefBytes), CleanText(m.Target, MaxImageRefBytes)
+			source, target := CleanText(m.Source, MaxImageRefBytes), CleanText(m.Target, MaxImageRefBytes)
+			// A cut or cleaned path no longer names the mount; report the list as incomplete.
+			c.MountsTruncated = c.MountsTruncated || source != m.Source || target != m.Target
+			m.Source, m.Target = source, target
 		}
 		if c.Ports == nil {
 			c.Ports = []Port{}
