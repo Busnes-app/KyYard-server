@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -581,7 +582,8 @@ func TestPlanDeploymentMeasuresTheFrame(t *testing.T) {
 	}
 }
 
-// An update plan decrypts the registry credential into the frame it measures and stores none of it.
+// An update plan decrypts the registry credential into the frame it measures and stores none of
+// it. The proof it measured the credential: a cap the frame fits without it refuses the plan.
 func TestPlanDeploymentDropsTheCredentialItMeasured(t *testing.T) {
 	st, a, app, _, _ := pullFixture(t, []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1.2"}}, map[string][]string{"web": {"ghcr.io/org/web@" + digestOf("a")}})
 	ctx := context.Background()
@@ -591,9 +593,34 @@ func TestPlanDeploymentDropsTheCredentialItMeasured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := (&tenancyStore{store: st}).buildDeploymentFrame(ctx, tx, a, d, imageCheckKey, time.Now().UTC())
+	_ = tx.Rollback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, _ := json.Marshal(req)
+	req.Registries = nil
+	without, _ := json.Marshal(req)
+	if !strings.Contains(string(with), pullCanary) || strings.Contains(string(without), pullCanary) || len(with)-len(without) < 60 {
+		t.Fatalf("the built frame does not carry the credential: %d vs %d bytes", len(with), len(without))
+	}
+	// Timestamps vary by a few bytes between builds; the credential is well past that margin.
+	r := pullPlanRequest(t, ts, a, app, "web")
+	r.MaxFrameBytes = len(without) + 30
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, r, f, imageCheckKey, false); !isBlocked(err, "frame_too_large") {
+		t.Fatalf("a cap that fits only the frame without its credential: %v", err)
+	}
 	var stored string
 	if err := st.db.QueryRow(st.rebind(`SELECT plan FROM deployments WHERE id=?`), d.ID).Scan(&stored); err != nil || strings.Contains(stored, pullCanary) {
 		t.Fatalf("stored plan: %v", err)
+	}
+	var leaked int
+	if err := st.db.QueryRow(st.rebind(`SELECT COUNT(*) FROM audit_records WHERE resource LIKE ? OR details LIKE ?`), "%"+pullCanary+"%", "%"+pullCanary+"%").Scan(&leaked); err != nil || leaked != 0 {
+		t.Fatalf("credential in audit: %d %v", leaked, err)
 	}
 }
 
