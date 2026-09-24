@@ -37,15 +37,19 @@ image_checks (
 under `withTenantTargetDetails(ApplicationDeploy, app+"/updates", details)`. Three phases, so no
 network call runs inside a transaction:
 
-1. **Read** (own transaction, `readTenant(ApplicationDeploy)`): the instance, its mapping
+1. **Read** (own transaction, `ApplicationDeploy` without lock or success row, denials and
+   failures audited on `app+"/updates"`): the instance, its mapping
    (`mapping_version >= 1`, else `ErrMappingRequired`), the latest revision's services, the
    endpoint's inventory snapshot (`freshInventory`; a stale or missing snapshot is
    `ErrAdoptionChanged`), and for every mapped service: the parsed reference, the host image's
    repository digest, and the registry access for the reference's host (`registryFor` and the
-   anonymous-pull setting, with `allow_private = stored && privateAllowed`).
+   anonymous-pull setting, with `allow_private = stored && privateAllowed`). It also records the
+   state the rows will describe: `mapping_version`, the application's `latest_revision` and the
+   instance's `(container_id, image_id)` pairs from `application_resources`.
    - The local digest is the one entry of the mapped container's image `RepoDigests` whose
      repository (`host/repository` after `registry.CanonicalHost` and the `library/` default)
-     equals the reference's; zero or several entries is `unknown_local`.
+     equals the reference's and whose digest is `sha256:` and 64 lowercase hex; zero or several
+     entries is `unknown_local`.
    - A reference with a digest is `pinned`; no registry request is made.
    - A host with no registry row and the opt-in off is `registry_error/not_configured`; no
      request is made.
@@ -56,8 +60,9 @@ network call runs inside a transaction:
    `ErrUnauthorized`→`unauthorized`, `ErrNotFound`→`not_found`, `ErrRateLimited`→`rate_limited`,
    `ErrPrivateDestination`→`private_destination`, anything else→`unavailable`. Error strings
    are never stored.
-3. **Write** (own transaction, the audited one): if the mapping version changed since phase 1,
-   `ErrAdoptionChanged` (nothing written). Otherwise delete the instance's rows and insert the
+3. **Write** (own transaction, the audited one): if the instance was released or its recorded
+   state changed since phase 1 (a remap, a new revision, or a settled apply rebinding the
+   containers), `ErrAdoptionChanged` (nothing written). Otherwise delete the instance's rows and insert the
    new ones. Audit details `services=N updates=N errors=N`.
 
 `ReadImageChecks(ctx, a, app) ([]ImageCheck, error)` under `readTenant(ApplicationRead)` returns

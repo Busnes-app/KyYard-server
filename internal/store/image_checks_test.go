@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -310,8 +311,11 @@ func TestCheckImageUpdatesVerdicts(t *testing.T) {
 		t.Fatalf("audit: %q", details)
 	}
 	var leaked int
-	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_records WHERE details LIKE '%secret%'`).Scan(&leaked); err != nil || leaked != 0 {
-		t.Fatalf("secret in audit: %d %v", leaked, err)
+	if err := st.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM audit_records WHERE details LIKE '%secret%' OR resource LIKE '%secret%')+(SELECT COUNT(*) FROM image_checks WHERE service_name LIKE '%secret%' OR reference LIKE '%secret%' OR local_digest LIKE '%secret%' OR remote_digest LIKE '%secret%' OR verdict LIKE '%secret%' OR detail LIKE '%secret%')`).Scan(&leaked); err != nil || leaked != 0 {
+		t.Fatalf("secret stored: %d %v", leaked, err)
+	}
+	if raw, err := json.Marshal(out); err != nil || strings.Contains(string(raw), "secret") {
+		t.Fatalf("secret returned: %s %v", raw, err)
 	}
 }
 
@@ -340,27 +344,102 @@ func TestCheckImageUpdatesRegistryErrors(t *testing.T) {
 	}
 }
 
-func TestCheckImageUpdatesRefusesChangedMapping(t *testing.T) {
-	st, a, app := nginxCheckFixture(t)
+// Anything the rows describe that changes while the registry is asked refuses the write.
+func TestCheckImageUpdatesRefusesAChangeMidCheck(t *testing.T) {
+	for name, change := range map[string]func(t *testing.T, ts TenancyStore, a TenantAccess, app *Application){
+		"mapping": func(t *testing.T, ts TenancyStore, a TenantAccess, app *Application) {
+			m, err := ts.ReadApplicationMapping(context.Background(), a, app.ID)
+			if err == nil {
+				err = ts.SetApplicationMapping(context.Background(), a, app.ID, mappingRequest(m))
+			}
+			if err != nil {
+				t.Error(err)
+			}
+		},
+		"revision": func(t *testing.T, ts TenancyStore, a TenantAccess, app *Application) {
+			if _, err := ts.AppendApplicationRevision(context.Background(), a, app.ID, 1, ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:2"}}}); err != nil {
+				t.Error(err)
+			}
+		},
+		"release": func(t *testing.T, ts TenancyStore, a TenantAccess, app *Application) {
+			m, err := ts.ReadApplicationMapping(context.Background(), a, app.ID)
+			if err == nil {
+				err = ts.ReleaseApplication(context.Background(), a, app.ID, m.InstanceID, "shop")
+			}
+			if err != nil {
+				t.Error(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st, a, app := nginxCheckFixture(t)
+			ctx := context.Background()
+			ts := st.Tenancy()
+			m, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fakeResolver{reply: map[string]fakeReply{"docker.io/library/nginx:1": {digest: digestOf("e")}}}
+			f.during = func() { change(t, ts, a, app) }
+			if _, err := ts.CheckImageUpdates(ctx, a, app.ID, f, imageCheckKey, false); !errors.Is(err, ErrAdoptionChanged) {
+				t.Fatalf("check: %v", err)
+			}
+			if len(f.called()) != 1 {
+				t.Fatalf("the change did not run mid-check: %+v", f.called())
+			}
+			if n := imageCheckCount(t, st, m.InstanceID); n != 0 {
+				t.Fatalf("rows written: %d", n)
+			}
+		})
+	}
+}
+
+// An apply that succeeds while the registry is asked rebinds the containers; the check made
+// before it must not land over it.
+func TestCheckImageUpdatesRefusesASettledApply(t *testing.T) {
+	st, a, app, endpoint, snapshot, m, d, key := applyFixture(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
+	snapshot.Images = append(snapshot.Images, protocol.Image{ID: snapshot.Containers[0].ImageID, Digests: []string{"nginx@" + digestOf("f")}})
+	putAdoptionSnapshot(t, st, endpoint, snapshot)
+	org := a
+	org.EnvironmentID = ""
+	if err := ts.SetAnonymousPull(ctx, org, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", key); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeResolver{reply: map[string]fakeReply{"docker.io/library/nginx:1": {digest: digestOf("e")}}}
 	f.during = func() {
-		m, err := ts.ReadApplicationMapping(ctx, a, app.ID)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		if err := ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); err != nil {
+		if err := ts.SettleDeployment(ctx, endpoint, settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64))); err != nil {
 			t.Error(err)
 		}
 	}
 	if _, err := ts.CheckImageUpdates(ctx, a, app.ID, f, imageCheckKey, false); !errors.Is(err, ErrAdoptionChanged) {
-		t.Fatalf("changed mapping: %v", err)
+		t.Fatalf("check over a settled apply: %v", err)
 	}
-	stored, err := ts.ReadImageChecks(ctx, a, app.ID)
-	if err != nil || stored.MappingVersion != 2 || len(stored.Services) != 0 {
-		t.Fatalf("rows written: %+v %v", stored, err)
+	if len(f.called()) != 1 {
+		t.Fatalf("calls: %+v", f.called())
+	}
+	if n := imageCheckCount(t, st, m.InstanceID); n != 0 {
+		t.Fatalf("stale rows written: %d", n)
+	}
+}
+
+func TestCheckImageUpdatesRefusesMalformedLocalDigests(t *testing.T) {
+	for _, digest := range []string{"nginx@sha256:" + strings.Repeat("E", 64), "nginx@sha256:" + strings.Repeat("e", 63), "nginx@latest", "nginx@"} {
+		st, a, app, _, _ := imageCheckFixture(t, []ApplicationService{{Name: "web", Image: "nginx:1"}}, map[string][]string{"web": {digest}})
+		org := a
+		org.EnvironmentID = ""
+		if err := st.Tenancy().SetAnonymousPull(context.Background(), org, true); err != nil {
+			t.Fatal(err)
+		}
+		f := &fakeResolver{reply: map[string]fakeReply{"docker.io/library/nginx:1": {digest: digestOf("e")}}}
+		out, err := st.Tenancy().CheckImageUpdates(context.Background(), a, app.ID, f, imageCheckKey, false)
+		if err != nil || len(out.Services) != 1 || out.Services[0].Verdict != "unknown_local" || out.Services[0].LocalDigest != "" || len(f.called()) != 0 {
+			t.Fatalf("%q: %+v %v %+v", digest, out, err, f.called())
+		}
 	}
 }
 
@@ -449,6 +528,14 @@ func TestCheckImageUpdatesDeadline(t *testing.T) {
 	}
 }
 
+func targetDenials(t *testing.T, st *SQLStore, resource string) (n int) {
+	t.Helper()
+	if err := st.db.QueryRowContext(context.Background(), st.rebind(`SELECT COUNT(*) FROM audit_records WHERE action='application.deploy' AND result='denied' AND resource=?`), resource).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func TestCheckImageUpdatesPermissions(t *testing.T) {
 	st, a, app := nginxCheckFixture(t)
 	ctx := context.Background()
@@ -475,7 +562,7 @@ func TestCheckImageUpdatesPermissions(t *testing.T) {
 			}
 			continue
 		}
-		if !errors.Is(err, ErrForbidden) || auditCount(t, st, "application.deploy", "denied") != denied+1 {
+		if !errors.Is(err, ErrForbidden) || auditCount(t, st, "application.deploy", "denied") != denied+1 || targetDenials(t, st, app.ID+"/updates") != denied+1 {
 			t.Fatalf("%s: %v", role, err)
 		}
 	}

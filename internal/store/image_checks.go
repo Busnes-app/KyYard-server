@@ -84,25 +84,25 @@ func (t *tenancyStore) clearImageChecks(ctx context.Context, tx *sql.Tx, instanc
 }
 
 type imageCheckWork struct {
-	LocalDigest  string
 	Ref          registry.Reference
 	Cred         *registry.Credential
 	AllowPrivate bool
-	Row          ImageCheck // pre-filled for pinned, unknown_local and not_configured
-	Skip         bool       // no registry call
+	Row          ImageCheck // a verdict set in phase 1 means no registry call
 }
 
 // CheckImageUpdates compares each mapped service's local repository digest with the registry's.
-// It reads, resolves with no transaction open, then writes only if the mapping is unchanged.
+// It reads, resolves with no transaction open, then writes only if imageCheckState is unchanged.
 func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, app string, resolver DigestResolver, key []byte, privateAllowed bool) (*UpdateCheck, error) {
 	id, err := uuid.Parse(app)
 	if err != nil || a.EnvironmentID == "" || len(key) != 32 || resolver == nil {
 		return nil, ErrInvalid
 	}
 	var work []imageCheckWork
-	var instance string
+	var instance, state string
 	var version int
-	err = t.readTenant(ctx, a, permissions.ApplicationDeploy, func(tx *sql.Tx) error {
+	target := id.String() + "/updates"
+	// A read: no lock and no success row, but a denial or failure audits the check's target.
+	err = t.run(ctx, a, permissions.ApplicationDeploy, &target, nil, false, func(tx *sql.Tx) error {
 		m, err := t.applicationMapping(ctx, tx, a, id.String(), false)
 		if err != nil {
 			return err
@@ -115,6 +115,9 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 			return err
 		}
 		instance, version = m.InstanceID, m.Version
+		if state, err = t.imageCheckState(ctx, tx, a, id.String(), instance); err != nil {
+			return err
+		}
 		images := map[string]protocol.Image{}
 		for _, im := range snapshot.Images {
 			images[im.ID] = im
@@ -136,19 +139,19 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 			w.Ref, err = registry.ParseReference(s.Image)
 			switch {
 			case err != nil:
-				w.Skip, w.Row.Verdict, w.Row.Detail = true, "registry_error", "unavailable"
+				w.Row.Verdict, w.Row.Detail = "registry_error", "unavailable"
 			case w.Ref.Digest != "":
-				w.Skip, w.Row.Verdict = true, "pinned"
+				w.Row.Verdict = "pinned"
 			default:
-				w.LocalDigest = localRepoDigest(images[containers[container].ImageID], w.Ref)
-				if w.LocalDigest == "" {
-					w.Skip, w.Row.Verdict = true, "unknown_local"
+				w.Row.LocalDigest = localRepoDigest(images[containers[container].ImageID], w.Ref)
+				if w.Row.LocalDigest == "" {
+					w.Row.Verdict = "unknown_local"
 					break
 				}
 				r, cred, err := t.registryFor(ctx, tx, a.OrganizationID, w.Ref.Host, key)
 				switch {
 				case errors.Is(err, ErrNotFound) && !anonymous:
-					w.Skip, w.Row.Verdict, w.Row.Detail = true, "registry_error", "not_configured"
+					w.Row.Verdict, w.Row.Detail = "registry_error", "not_configured"
 				case errors.Is(err, ErrNotFound):
 				case err != nil:
 					return err
@@ -156,7 +159,6 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 					w.Cred, w.AllowPrivate = cred, r.AllowPrivate && privateAllowed
 				}
 			}
-			w.Row.LocalDigest = w.LocalDigest
 			work = append(work, w)
 		}
 		return nil
@@ -178,14 +180,13 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 	}
 	details := fmt.Sprintf("services=%d updates=%d errors=%d", len(work), updates, failures)
 	out := &UpdateCheck{InstanceID: instance, MappingVersion: version, Services: []ImageCheck{}}
-	err = t.withTenantTargetDetails(ctx, a, permissions.ApplicationDeploy, id.String()+"/updates", &details, func(tx *sql.Tx) error {
-		var v int
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT mapping_version FROM application_instances WHERE id=? AND organization_id=? AND environment_id=? AND application_id=?`), instance, a.OrganizationID, a.EnvironmentID, id.String()).Scan(&v)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && v != version) {
-			return ErrAdoptionChanged
-		}
+	err = t.withTenantTargetDetails(ctx, a, permissions.ApplicationDeploy, target, &details, func(tx *sql.Tx) error {
+		current, err := t.imageCheckState(ctx, tx, a, id.String(), instance)
 		if err != nil {
 			return err
+		}
+		if current != state {
+			return ErrAdoptionChanged
 		}
 		if err := t.clearImageChecks(ctx, tx, instance); err != nil {
 			return err
@@ -205,8 +206,36 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 	return out, nil
 }
 
+// imageCheckState is what the rows describe: the mapping version, the latest revision and the
+// instance's container and image IDs. An apply or a revision landing mid-check changes it. A
+// released instance is ErrAdoptionChanged.
+func (t *tenancyStore) imageCheckState(ctx context.Context, tx *sql.Tx, a TenantAccess, app, instance string) (string, error) {
+	var version, revision int
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.mapping_version,a.latest_revision FROM application_instances i JOIN applications a ON a.id=i.application_id WHERE i.id=? AND i.organization_id=? AND i.environment_id=? AND i.application_id=?`), instance, a.OrganizationID, a.EnvironmentID, app).Scan(&version, &revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrAdoptionChanged
+	}
+	if err != nil {
+		return "", err
+	}
+	state := fmt.Sprintf("%d %d", version, revision)
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,image_id FROM application_resources WHERE instance_id=? ORDER BY container_id`), instance)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var container, image string
+		if err := rows.Scan(&container, &image); err != nil {
+			return "", err
+		}
+		state += " " + container + "=" + image
+	}
+	return state, rows.Err()
+}
+
 // localRepoDigest returns the host image's digest for exactly the reference's repository, or ""
-// when there is none or more than one.
+// when there is none, more than one, or it is not a sha256 digest.
 func localRepoDigest(im protocol.Image, ref registry.Reference) string {
 	found := ""
 	for _, d := range im.Digests {
@@ -215,7 +244,7 @@ func localRepoDigest(im protocol.Image, ref registry.Reference) string {
 			continue
 		}
 		parsed, err := registry.ParseReference(name)
-		if err != nil || parsed.Host != ref.Host || parsed.Repository != ref.Repository {
+		if err != nil || parsed.Host != ref.Host || parsed.Repository != ref.Repository || !validSHA256(digest) {
 			continue
 		}
 		if found != "" {
@@ -234,7 +263,7 @@ func resolveImageChecks(ctx context.Context, resolver DigestResolver, work []ima
 	sem := make(chan struct{}, imageCheckConcurrency)
 	var wg sync.WaitGroup
 	for i := range work {
-		if work[i].Skip {
+		if work[i].Row.Verdict != "" {
 			continue
 		}
 		wg.Add(1)
@@ -253,7 +282,7 @@ func resolveImageChecks(ctx context.Context, resolver DigestResolver, work []ima
 			switch {
 			case err != nil:
 				w.Row.Detail = registryErrorDetail(err)
-			case digest == w.LocalDigest:
+			case digest == w.Row.LocalDigest:
 				w.Row.Verdict, w.Row.Detail, w.Row.RemoteDigest = "current", "", digest
 			default:
 				w.Row.Verdict, w.Row.Detail, w.Row.RemoteDigest = "update_available", "", digest
