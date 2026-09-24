@@ -449,14 +449,12 @@ func TestPlanRefusesWhenTheAgentNeverAnswers(t *testing.T) {
 	}
 }
 
-// A preflight with blockers of its own is refused on them: nothing is inspected and no attempt
-// is spent.
-func TestPlanSkipsInspectionForABlockedPreflight(t *testing.T) {
+// A preflight with blockers of its own is refused on them alone: the store adds no
+// inspection_unavailable on top, whatever the inspection said. The API still inspects, because
+// the preflight it reads is the latest revision's and the plan may be for an earlier one.
+func TestPlanNamesOnlyTheRealBlockersForABlockedPreflight(t *testing.T) {
 	h := newPlanHost(t, inspecting, "web")
-	api.SetPlanInspectorForTest(h.s, func(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
-		t.Error("inspected a blocked preflight")
-		return verifiedObservation(target), nil
-	})
+	api.SetPlanInspectorForTest(h.s, verifiedInspector)
 	h.snapshot.Containers[0].Mounts = nil // an agent that did not report mounts
 	raw, _ := json.Marshal(h.snapshot)
 	if _, err := h.st.Tenancy().AcceptInventory(context.Background(), h.ag.id, uint64(time.Now().Unix())+1, time.Now(), raw); err != nil {
@@ -465,9 +463,6 @@ func TestPlanSkipsInspectionForABlockedPreflight(t *testing.T) {
 	body := h.do(t, "POST", h.deployments, h.planBody, 409)
 	if !strings.Contains(body, "mounts_unreported") || strings.Contains(body, "inspection_unavailable") {
 		t.Fatalf("blockers: %s", body)
-	}
-	if slices.Contains(api.AttemptKeysForTest(h.s), "inspection:usr_planner") {
-		t.Fatal("an inspection attempt was spent")
 	}
 }
 

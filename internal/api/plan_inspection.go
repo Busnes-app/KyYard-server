@@ -15,13 +15,13 @@ const planInspectionBudget = 10 * time.Second
 
 // planInspections inspects each mapped service's container, in plan order and one at a time,
 // under one budget and one inspection attempt, so the store can refuse at plan time what the
-// agent would deny at apply. A failure of any kind leaves that container without an entry. A
-// preflight that is not executable, or an agent without container.inspect and
-// container.inspect.verdict, gets no request: the store refuses that plan anyway. The
-// observations are consumed by the plan and never stored.
+// agent would deny at apply. A failure of any kind leaves that container without an entry; an
+// agent without container.inspect and container.inspect.verdict gets no request. The preflight
+// here is the latest revision's, so it does not gate the fan-out: the store judges the revision
+// being planned. The observations are consumed by the plan and never stored.
 func (s *Server) planInspections(w http.ResponseWriter, r *http.Request, a store.TenantAccess, ep *store.Endpoint, pre *store.DeploymentPreflight) map[string]protocol.ContainerInspection {
 	out := map[string]protocol.ContainerInspection{}
-	if !pre.Executable || !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspect) || !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectVerdict) || !s.allowAttempt("inspection:"+a.ActorID, 30, time.Minute) {
+	if !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspect) || !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectVerdict) || !s.allowAttempt("inspection:"+a.ActorID, 30, time.Minute) {
 		return out
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), planInspectionBudget)
