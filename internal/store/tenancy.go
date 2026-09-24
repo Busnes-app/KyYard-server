@@ -71,12 +71,6 @@ func (t *tenancyStore) CreateOrganizationWithAdmin(ctx context.Context, o *Organ
 		return err
 	}
 	defer tx.Rollback()
-	if t.store.driver == "postgres" {
-		// Self-conflicting mode serializes creators so the name check below holds until commit.
-		if _, err := tx.ExecContext(ctx, `LOCK TABLE organizations IN SHARE ROW EXCLUSIVE MODE`); err != nil {
-			return err
-		}
-	}
 	var status string
 	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT status FROM users WHERE id=?`), adminUserID).Scan(&status)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -88,16 +82,18 @@ func (t *tenancyStore) CreateOrganizationWithAdmin(ctx context.Context, o *Organ
 	if status != "active" {
 		return ErrInvalid
 	}
-	var taken int
-	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM organizations WHERE name=?`), o.Name).Scan(&taken); err != nil {
-		return err
-	}
-	if taken > 0 {
-		return ErrAlreadyExists
-	}
 	o.CreatedAt = time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO organizations (id,name,created_at) VALUES (?,?,?)`), o.ID, o.Name, o.CreatedAt); err != nil {
+	// idx_organizations_name enforces exact-name uniqueness; a conflict inserts nothing.
+	result, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO organizations (id,name,created_at) VALUES (?,?,?) ON CONFLICT (name) DO NOTHING`), o.ID, o.Name, o.CreatedAt)
+	if err != nil {
 		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrAlreadyExists
 	}
 	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO organization_memberships (organization_id,user_id,role,status) VALUES (?,?,'organization_admin','active')`), o.ID, adminUserID); err != nil {
 		return err

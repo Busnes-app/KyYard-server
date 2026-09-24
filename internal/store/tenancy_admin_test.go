@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
@@ -94,5 +95,47 @@ func TestListOrganizations(t *testing.T) {
 		if got[i].ID != w.id || got[i].Name != w.name || got[i].Members != w.members || got[i].CreatedAt.IsZero() {
 			t.Fatalf("organization %d: got %+v, want %+v", i, got[i], w)
 		}
+	}
+}
+
+func TestCreateOrganizationWithAdminConcurrentSameName(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	ts := st.Tenancy()
+	tenantUser(t, st, "alice", "user", "local", "active")
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = ts.CreateOrganizationWithAdmin(ctx, &store.Organization{ID: newOrgID(), Name: "Race"}, "alice")
+		}()
+	}
+	wg.Wait()
+	ok, dup := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, store.ErrAlreadyExists):
+			dup++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if ok != 1 || dup != 1 {
+		t.Fatalf("want one success and one ErrAlreadyExists, got %v", errs)
+	}
+	orgs, err := ts.ListOrganizations(ctx)
+	mustTenant(t, err)
+	rows := 0
+	for _, o := range orgs {
+		if o.Name == "Race" {
+			rows++
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("want one Race row, got %d", rows)
 	}
 }
