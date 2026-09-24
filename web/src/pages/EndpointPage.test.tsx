@@ -97,3 +97,16 @@ it('pages host containers and resets pagination when searching', async () => {
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: '' } });
   expect(screen.getByText('1–25 of 52')).toBeTruthy();
 });
+
+it.each([['organization_admin', true], ['environment_admin', false], ['operator', false], ['developer', false], ['read_only', false], ['', false]])('offers Terminal to %s: %s', async (role, want) => {
+  const now = new Date().toISOString();
+  const snapshot = { generation: 1, observed_at: now, engine: { runtime: 'docker', version: '1', api_version: '1', os: 'linux', arch: 'x', kernel: 'k', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers: [{ id: 'c1', name: 'web', image: 'i', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: [] }], images: [], networks: [], volumes: [], truncated: [] };
+  const orgs = role ? [{ id: 'a', name: 'Team', role }] : [];
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/organizations' ? json(orgs) : String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot }) : String(input).endsWith('/samples') || String(input).includes('/commands') || String(input).endsWith('/applications') ? json([]) : json(endpoint));
+  vi.stubGlobal('fetch', fetcher);
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  fireEvent.click(await screen.findByLabelText('Actions for web'));
+  expect(fetcher).toHaveBeenCalledWith('/api/organizations');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Terminal' }) !== null).toBe(want));
+});

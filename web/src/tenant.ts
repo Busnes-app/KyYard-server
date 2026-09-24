@@ -31,6 +31,8 @@ export interface UpdateCheck { instance_id: string; mapping_version: number; ser
 export const privateDisabled = 'Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).';
 
 export const tenantRoles = ['organization_admin', 'environment_admin', 'operator', 'developer', 'read_only'] as const;
+// Mirrors permissions.Allows(role, ContainerExec): only organization admins may exec.
+export const canExec = (role: string | undefined) => role === 'organization_admin';
 
 // Every tenant screen shows exactly one of these; there is no client-side cache to go stale.
 export type LoadState = 'loading' | 'ready' | 'denied' | 'notfound' | 'offline' | 'error';

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Dashboard } from './Dashboard';
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -64,4 +64,10 @@ it('pages a large inventory and searches containers beyond the current page', as
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await screen.findByText('container-0');
   expect(screen.queryByRole('navigation', { name: 'Pagination' })).toBeNull();
+});
+it.each([['organization_admin', true], ['environment_admin', false], ['operator', false], ['developer', false], ['read_only', false]])('offers Terminal to %s: %s', async (role, want) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { containers: [{ id: 'c', name: 'web', image: 'nginx:1', state: 'running', ports: [] }] } }) : json([{ id: 'e', name: 'Docker host', state: 'active', runtime: 'docker', facts: {} }])));
+  render(<Dashboard />);
+  fireEvent.click(await screen.findByLabelText('Actions for web'));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Terminal' }) !== null).toBe(want));
 });

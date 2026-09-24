@@ -2,15 +2,17 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ApplicationPreflight } from './ApplicationPreflight';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-const data = { instance_id: 'i', endpoint_name: 'Docker', revision: 2, mapping_version: 1, received_at: '2026-09-18T12:00:00Z', executable: false, blockers: ['runtime_verification_required', 'mapping_requires_review'], services: Array.from({ length: 26 }, (_, i) => ({ name: `service-${i}`, reference: 'nginx:1', image_id: '', container_id: 'a'.repeat(64), blockers: ['image_not_reported'] })) };
+const data = { instance_id: 'i', endpoint_name: 'Docker', revision: 2, mapping_version: 1, received_at: '2026-09-18T12:00:00Z', executable: false, blockers: ['mapping_requires_review'], services: Array.from({ length: 26 }, (_, i) => ({ name: `service-${i}`, reference: 'nginx:1', image_id: '', container_id: 'a'.repeat(64), blockers: ['image_not_reported'] })) };
 it('loads on demand, pages results and never offers execution', async () => {
   const fetcher = vi.fn(async () => new Response(JSON.stringify(data)));
   vi.stubGlobal('fetch', fetcher);
   render(<ApplicationPreflight org="org" base="/app" instanceID="i" />);
   expect(fetcher).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
-  await screen.findByText('Deployment is not enabled');
+  await screen.findByRole('heading', { name: 'Deployment preflight' });
   expect(screen.getByText('Review and save service mapping for the latest definition.')).toBeTruthy();
+  expect(screen.queryByText(/Ready to plan/)).toBeNull();
+  expect(document.body.textContent).not.toContain('not available yet');
   expect(screen.getAllByRole('row')).toHaveLength(26);
   expect(screen.queryByText('service-25')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
@@ -18,6 +20,15 @@ it('loads on demand, pages results and never offers execution', async () => {
   expect(screen.queryByRole('button', { name: /apply|execute|deploy$/i })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Refresh preflight' }));
   expect(fetcher).toHaveBeenCalledWith('/app/preflight');
+});
+it('says ready to plan when no blocker remains', async () => {
+  const ready = { ...data, executable: true, blockers: [], services: [{ ...data.services[0], image_id: `sha256:${'c'.repeat(64)}`, blockers: [] }] };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(ready))));
+  render(<ApplicationPreflight org="org" base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  await screen.findByRole('heading', { name: 'Deployment preflight' });
+  expect(screen.getByText('Ready to plan: every service maps to an adopted container and its image is known on the host.')).toBeTruthy();
+  expect(document.body.textContent).not.toContain('runtime verification');
 });
 it('hides observations after adoption replacement and redacts error bodies', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...data, instance_id: 'replacement' }))));

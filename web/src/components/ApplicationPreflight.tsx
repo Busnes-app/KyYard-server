@@ -4,9 +4,8 @@ import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
-type Blocker = 'runtime_verification_required' | 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ';
+type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ';
 export const messages: Record<Blocker, string> = {
-  runtime_verification_required: 'Deployment execution is not available yet. Live inspection provides selected observations; configuration parity, secrets and safe replacement remain unverified.',
   mapping_requires_review: 'Review and save service mapping for the latest definition.',
   unassigned_adopted_containers: 'Some adopted containers are unassigned. Review service mapping before planning replacement.',
   image_inventory_incomplete: 'Image inventory is incomplete; image IDs cannot be resolved safely.',
@@ -42,17 +41,17 @@ function PreflightView({ base, instanceID, org }: { base: string; instanceID: st
     <p>Check confirmed service mappings, locally reported image IDs and published-port overlaps. All adopted identities must still be present in fresh, complete inventory. This does not pull images, approve deployment or change containers.</p>
     <StateNotice state={resource.state} onRetry={resource.reload} />
     {resource.state === 'ready' && data && (data.instance_id !== instanceID ? <p role="alert">Adoption changed. Refresh applications before running preflight.</p> : <>
-      <h3>Deployment is not enabled</h3>
+      <h3>Deployment preflight</h3>
       <p>{data.endpoint_name} · definition revision {data.revision} · mapping version {data.mapping_version}</p>
       <p>Inventory received {new Date(data.received_at).toLocaleString()}</p>
-      <ul className="ky-list">{data.blockers.map(b => <li key={b}>{messages[b] ?? 'Unrecognized preflight condition; deployment remains unavailable.'}</li>)}</ul>
+      {data.executable ? <p>Ready to plan: every service maps to an adopted container and its image is known on the host.</p> : <ul className="ky-list">{data.blockers.map(b => <li key={b}>{messages[b] ?? 'Unrecognized preflight condition; planning is unavailable.'}</li>)}</ul>}
       <p>Image matches use exact references from this host's inventory. IDs are observations, not saved deployment pins. Port checks exclude mapped containers that a future replacement would stop, conservatively treat wildcard addresses as overlapping, and cannot detect host processes or unreported bindings.</p>
       <button type="button" className="btn-secondary" onClick={() => { setSelected(null); resource.reload(); }}>Refresh preflight</button>
       {page.controls}
       <table className="ky-table ky-responsive-table"><thead><tr><th>Service / target</th><th>Local image</th><th>Preflight findings</th></tr></thead><tbody>{page.rows.map(s => <tr key={s.name}>
         <td data-label="Service / target"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.container_id || 'Unmapped'}</small></div></td>
         <td data-label="Local image"><div className="ky-resource-name"><span>{s.reference}</span><small>{s.image_id || 'Unresolved'}</small></div></td>
-        <td data-label="Preflight findings">{s.blockers.length ? <ul>{s.blockers.map(b => <li key={b}>{messages[b] ?? 'Unknown condition'}</li>)}</ul> : 'No additional inventory findings; runtime verification still required.'}{s.inspection_target && <button type="button" className="btn-secondary" onClick={() => setSelected(s)} aria-label={`Inspect ${s.name}`}>Inspect live container</button>}</td>
+        <td data-label="Preflight findings">{s.blockers.length ? <ul>{s.blockers.map(b => <li key={b}>{messages[b] ?? 'Unknown condition'}</li>)}</ul> : 'No findings.'}{s.inspection_target && <button type="button" className="btn-secondary" onClick={() => setSelected(s)} aria-label={`Inspect ${s.name}`}>Inspect live container</button>}</td>
       </tr>)}</tbody></table>
       {selected?.inspection_target && <ApplicationInspection key={`${data.endpoint_id}/${selected.name}`} org={org} endpoint={data.endpoint_id} service={selected.name} target={selected.inspection_target} onClose={() => setSelected(null)} />}
     </>)}

@@ -9,7 +9,7 @@ import { Server } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { envPath } from '../router';
-import { useTenantResource, type Endpoint, type Inventory, type Sample } from '../tenant';
+import { canExec, useTenantResource, type Endpoint, type Inventory, type MemberOrganization, type Sample } from '../tenant';
 import { displayName } from '../components/Endpoints';
 
 const bytes = (n: number) => n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GiB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(0)} MiB` : `${n} B`;
@@ -27,6 +27,8 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const commands = useTenantResource<{ id: string; action: string; outcome: string; detail?: string; container_id?: string; reference?: string }[]>(`${base}/commands?limit=20`);
   const ownership = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
   const samples = useTenantResource<Sample[]>(`${base}/samples`);
+  const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  const exec = canExec((Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role);
   const latest = new Map((Array.isArray(samples.data) ? samples.data : []).map((s) => [s.container_id, s]));
   // -1 is "no interval yet" and a missing row is "no data"; neither is zero usage.
   const usage = (c: { id: string; state: string }) => {
@@ -88,7 +90,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
           {view === 'containers' && <div id="endpoint-containers" tabIndex={-1}>
           <div className="ky-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{visibleContainers.length} containers</span></div>
           {selectedProject !== null && <p>Showing containers for <strong style={{ overflowWrap: 'anywhere' }}><bdi>{selectedProject}</bdi></strong>. <button className="btn-secondary" onClick={() => setProjectFilter(null)}>Show all containers</button></p>}
-          <Table key={JSON.stringify([base, search, selectedProject])} title="Containers" rows={visibleContainers} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'Status', 'Usage', 'Actions']} render={(c) => [<div className="ky-resource-name"><strong>{displayName(c.name)}</strong><span title={c.image}>{displayName(c.image)}</span><ContainerPorts ports={c.ports} />{c.compose_project && <small>{displayName(c.compose_project)}</small>}</div>, <span className={`badge ${c.state === 'running' ? 'badge-success' : c.state === 'exited' || c.state === 'dead' ? 'badge-danger' : 'badge-secondary'}`} title={c.status}>{displayName(c.state)}</span>, usage(c), <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onRefresh={commands.reload} />]} />
+          <Table key={JSON.stringify([base, search, selectedProject])} title="Containers" rows={visibleContainers} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'Status', 'Usage', 'Actions']} render={(c) => [<div className="ky-resource-name"><strong>{displayName(c.name)}</strong><span title={c.image}>{displayName(c.image)}</span><ContainerPorts ports={c.ports} />{c.compose_project && <small>{displayName(c.compose_project)}</small>}</div>, <span className={`badge ${c.state === 'running' ? 'badge-success' : c.state === 'exited' || c.state === 'dead' ? 'badge-danger' : 'badge-secondary'}`} title={c.status}>{displayName(c.state)}</span>, usage(c), <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onRefresh={commands.reload} canExec={exec} />]} />
           </div>}
           {view === 'images' && <><section className="panel"><h2>Pull an image</h2><ImageControls key={base} kind="pull" base={base} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onActivity={commands.reload} /><p>Use an explicit tag or digest. A pull downloads an image; it does not update running containers.</p></section>
           <Table title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID', 'Actions']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), <span title={i.id}>{i.id.slice(0, 19)}</span>, <ImageControls key={`${base}/${i.id}`} kind="remove" imageID={i.id} base={base} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onActivity={commands.reload} />]} />

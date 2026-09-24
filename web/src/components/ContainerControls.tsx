@@ -4,7 +4,7 @@ const ContainerTerminal = lazy(() => import('./ContainerTerminal').then((module)
 import type { Container } from '../tenant';
 
 interface Command { id: string; action: string; outcome: string; detail?: string }
-export function ContainerControls({ base, container, active, scope, onRefresh }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void }) {
+export function ContainerControls({ base, container, active, scope, onRefresh, canExec }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void; canExec: boolean }) {
   const actions = useRef<HTMLDetailsElement>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -65,13 +65,13 @@ export function ContainerControls({ base, container, active, scope, onRefresh }:
       }}>
       {container.state !== 'running' && <button className="btn-secondary" disabled={disabled} onClick={() => void act('start')}>Start</button>}
       {container.state === 'running' && <><button className="btn-secondary" disabled={disabled} onClick={() => void act('stop')}>Stop</button><button className="btn-secondary" disabled={disabled} onClick={() => void act('restart')}>Restart</button></>}
-      <button className="btn-secondary" disabled={!active || container.state !== 'running'} onClick={() => setShowTerminal(!showTerminal)}>{showTerminal ? 'Close terminal' : 'Terminal'}</button>
+      {canExec && <button className="btn-secondary" disabled={!active || container.state !== 'running'} onClick={() => setShowTerminal(!showTerminal)}>{showTerminal ? 'Close terminal' : 'Terminal'}</button>}
       <button className="btn-secondary" disabled={!active} onClick={() => setShowLogs(!showLogs)}>{showLogs ? 'Close logs' : 'Logs'}</button>
       <button className="btn-secondary" disabled={disabled || ['running', 'paused', 'restarting'].includes(container.state)} onClick={() => void act('remove')}>Remove</button>
       </div>
     </details>
     {message && <p role="status">{message}</p>}
-    {showTerminal && <dialog ref={terminalDialog} className="modal-window" aria-label={`Terminal for ${container.name}`} onCancel={(event) => { event.preventDefault(); setShowTerminal(false); }} onClose={() => setShowTerminal(false)} style={{ color: 'var(--ink-strong)', width: 'min(960px, calc(100vw - 32px))', maxWidth: 'none', maxHeight: 'calc(100dvh - 32px)', margin: 'auto' }}>
+    {canExec && showTerminal && <dialog ref={terminalDialog} className="modal-window" aria-label={`Terminal for ${container.name}`} onCancel={(event) => { event.preventDefault(); setShowTerminal(false); }} onClose={() => setShowTerminal(false)} style={{ color: 'var(--ink-strong)', width: 'min(960px, calc(100vw - 32px))', maxWidth: 'none', maxHeight: 'calc(100dvh - 32px)', margin: 'auto' }}>
       <button className="btn-secondary" onClick={() => setShowTerminal(false)}>Close terminal</button>
       <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${container.id}/${container.image_id}`} base={base} container={container} scope={scope} /></Suspense>
     </dialog>}

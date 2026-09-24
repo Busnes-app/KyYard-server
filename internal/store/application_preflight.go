@@ -131,7 +131,7 @@ func freshInventory(state, raw string, received, observed time.Time) (protocol.S
 // buildDeploymentPreflight checks spec against the mapping. latest says spec is the latest
 // revision; a prior one whose services differ from the mapped ones gets one blocker.
 func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snapshot protocol.Snapshot, latest bool) *DeploymentPreflight {
-	out := &DeploymentPreflight{InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Revision: m.Preview.Revision, MappingVersion: m.Version, Blockers: []string{"runtime_verification_required"}, Services: []PreflightService{}}
+	out := &DeploymentPreflight{InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Revision: m.Preview.Revision, MappingVersion: m.Version, Blockers: []string{}, Services: []PreflightService{}}
 	if m.Version == 0 || m.MappedRevision != m.Preview.Revision {
 		out.Blockers = append(out.Blockers, "mapping_requires_review")
 	}
@@ -199,6 +199,7 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 		}
 	}
 	desired := map[portKey]map[string]bool{}
+	blocked := false
 	for _, s := range spec.Services {
 		row := PreflightService{Name: s.Name, Reference: s.Image, ContainerID: m.Bindings[s.Name], Blockers: []string{}}
 		if target, ok := owned[row.ContainerID]; ok {
@@ -244,7 +245,9 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 			row.Blockers = append(row.Blockers, "desired_port_overlap")
 		}
 		out.Services = append(out.Services, row)
+		blocked = blocked || len(row.Blockers) > 0
 	}
+	out.Executable = !blocked && len(out.Blockers) == 0
 	return out
 }
 
