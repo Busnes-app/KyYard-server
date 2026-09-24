@@ -85,6 +85,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `application.adopt` / `import` | ✓ | ✓ | – | – | – | no | success |
 | `application.edit` (create a new revision from desired configuration) | ✓ | ✓ | – | ✓ | – | secret references only | success, target = revision |
 | `application.deploy` (preview, plan and apply an approved revision; implemented) | ✓ | ✓ | – | ✓ | – | no | audited by `SettleDeployment` in the settle transaction, result mapped to success/denied/failure/unknown |
+| `application.deploy` — checks image updates (`CheckImageUpdateAccess`/`CheckImageUpdates`, target `<app>/updates`; implemented) | ✓ | ✓ | – | ✓ | – | registry credential used internally, never returned | denials and failures on `<app>/updates`; one success row per completed check, details `services=N updates=N errors=N` |
 | `application.update` (manual image update, 0.1) | ✓ | ✓ | ✓ | – | – | no | success/failure |
 | `application.destroy` (remove application, keep data; implemented, `POST .../applications/{application}/removal`) | ✓ | ✓ | – | – | – | no | one row per removal (`withTenantTarget`); settle audits the same action for the agent's result, `outcome=abandoned/swept/not_sent` for a disconnect, sweep or undeliverable frame |
 | `secret.reveal` (internal imported-value resolution) | ✓ | – | – | – | – | plaintext, only after audit commits | success/failure |
