@@ -29,12 +29,13 @@ const replaceBudget = 2*operationBudget + 3*callBudget
 
 // Deploy replaces each service's mapped container with one created from the pinned image ID.
 // First every service's precondition and image (pull, for a service naming a digest), in plan
-// order; then per service rename, create, stop, start, remove. Renaming and creating while the
+// order, with each frame volume ensured after the precondition of the first service mounting
+// it; then per service rename, create, stop, start, remove. Renaming and creating while the
 // old container still runs means a name conflict or a refused create costs no downtime. The
 // first step that is not a success ends the run and every later step is recorded as skipped.
-// Nothing is rolled back: the steps say where the old container was left. No volume is
-// touched. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md and
-// 2026-09-23-pull-step-design.md.
+// Nothing is rolled back: the steps say where the old container was left. No volume is ever
+// removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
+// 2026-09-23-pull-step-design.md and 2026-09-24-volumes-design.md.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
@@ -43,7 +44,7 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest) 
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
-	r := &deployRun{c: c, parent: parent, req: req, res: res}
+	r := &deployRun{c: c, parent: parent, req: req, res: res, ensured: map[string]bool{}}
 	// The daemon default runtime is what a container created without one gets; read once per run.
 	ictx, icancel := context.WithTimeout(ctx, callBudget)
 	var info struct{ DefaultRuntime string }
@@ -72,8 +73,9 @@ type deployRun struct {
 	parent         context.Context
 	req            protocol.DeploymentRequest
 	res            protocol.DeploymentResult
-	defaultRuntime string    // "" when it could not be read; the first precondition then fails
-	pullDeadline   time.Time // shared by every pull; see pullPhase
+	defaultRuntime string          // "" when it could not be read; the first precondition then fails
+	pullDeadline   time.Time       // shared by every pull; see pullPhase
+	ensured        map[string]bool // volumes whose step is recorded
 }
 
 // step records one outcome. The first non-success fixes the run's outcome and detail.
@@ -115,7 +117,7 @@ type inspectedForDeploy struct {
 	Image   string
 	Name    string
 	Created time.Time
-	Mounts  *[]json.RawMessage
+	Mounts  *[]inspectedMount
 	Config  *struct {
 		imageDefaults
 		User string
@@ -136,6 +138,11 @@ type inspectedForDeploy struct {
 	NetworkSettings *struct {
 		Networks map[string]json.RawMessage
 	}
+}
+
+type inspectedMount struct {
+	Type, Source, Destination string
+	RW                        bool
 }
 
 // imageDefaults are the Config fields a container inherits from its image. A container whose
@@ -174,9 +181,9 @@ func (a imageDefaults) differs(b imageDefaults) string {
 const cannotExpress = "the container has configuration the definition cannot express: "
 
 // undescribed refuses the listed configuration recreation would drop, returning the denial
-// detail or "" when there is none. The definition expresses image, env, ports, restart and the
-// project network only; log configuration and settings outside this list and imageDefaults are
-// not compared.
+// detail or "" when there is none. The definition expresses image, env, ports, restart, the
+// project network and volume and bind mounts only; log configuration and settings outside this
+// list and imageDefaults are not compared.
 func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) string {
 	h, n := in.HostConfig, in.NetworkSettings
 	if h == nil || in.Config == nil || n == nil || in.Mounts == nil || h.Privileged == nil || h.AutoRemove == nil || h.ReadonlyRootfs == nil {
@@ -188,7 +195,7 @@ func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) s
 	}
 	_, onNetwork := n.Networks[network]
 	switch {
-	case len(*in.Mounts) > 0:
+	case slices.ContainsFunc(*in.Mounts, func(m inspectedMount) bool { return m.Type != "volume" && m.Type != "bind" }):
 		return cannotExpress + "mounts"
 	case len(h.Tmpfs) > 0:
 		return cannotExpress + "tmpfs"
@@ -275,6 +282,12 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		if detail := undescribed(before, r.req.Project+"_default", r.defaultRuntime); detail != "" {
 			return protocol.OutcomeDenied, detail
 		}
+		// Binds are preserve-only: a deploy never introduces a host path.
+		for _, m := range s.Mounts {
+			if m.Kind == protocol.MountBind && !slices.Contains(*before.Mounts, inspectedMount{Type: "bind", Source: m.Source, Destination: m.Target, RW: !m.ReadOnly}) {
+				return protocol.OutcomeDenied, "bind mount not present on the container"
+			}
+		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
 		defer icancel()
 		var im struct{ Config imageDefaults }
@@ -290,6 +303,7 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		networkMode = before.HostConfig.NetworkMode
 		return protocol.OutcomeSucceeded, ""
 	})
+	r.ensureVolumes(ctx, s)
 	if s.Pull != nil {
 		r.step(s.Name, protocol.StepPull, func() (string, string) {
 			outcome, detail, id := r.pull(ctx, s)
@@ -412,6 +426,12 @@ type endpointSettings struct {
 type networkingConfig struct {
 	EndpointsConfig map[string]endpointSettings `json:"EndpointsConfig"`
 }
+type mountSpec struct {
+	Type     string `json:"Type"`
+	Source   string `json:"Source"`
+	Target   string `json:"Target"`
+	ReadOnly bool   `json:"ReadOnly"`
+}
 type containerCreate struct {
 	Image        string              `json:"Image"`
 	Env          []string            `json:"Env"`
@@ -420,6 +440,7 @@ type containerCreate struct {
 	HostConfig   struct {
 		NetworkMode   string                   `json:"NetworkMode,omitempty"`
 		PortBindings  map[string][]portBinding `json:"PortBindings,omitempty"`
+		Mounts        []mountSpec              `json:"Mounts,omitempty"`
 		RestartPolicy struct {
 			Name              string `json:"Name"`
 			MaximumRetryCount int    `json:"MaximumRetryCount"`
@@ -454,6 +475,9 @@ func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, ne
 		key := strconv.Itoa(p.Container) + "/" + p.Protocol
 		body.ExposedPorts[key] = struct{}{}
 		body.HostConfig.PortBindings[key] = append(body.HostConfig.PortBindings[key], portBinding{HostIP: p.HostIP, HostPort: strconv.Itoa(p.Host)})
+	}
+	for _, m := range s.Mounts {
+		body.HostConfig.Mounts = append(body.HostConfig.Mounts, mountSpec{Type: m.Kind, Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
 	}
 	body.HostConfig.RestartPolicy.Name = s.Restart
 	if body.HostConfig.RestartPolicy.Name == "" {

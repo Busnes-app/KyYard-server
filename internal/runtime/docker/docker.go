@@ -158,6 +158,10 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		NetworkSettings struct {
 			Networks map[string]json.RawMessage `json:"Networks"`
 		} `json:"NetworkSettings"`
+		Mounts []struct {
+			Type, Name, Source, Destination string
+			RW                              bool
+		} `json:"Mounts"`
 	}
 	if err := c.get(ctx, "/containers/json?all=1", &containers); err != nil {
 		return nil, err
@@ -175,6 +179,21 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 			pc.Networks = append(pc.Networks, n)
 		}
 		sort.Strings(pc.Networks)
+		pc.Mounts = []protocol.Mount{}
+		for _, m := range ct.Mounts {
+			mount := protocol.Mount{Kind: protocol.MountOther, Source: m.Source, Target: m.Destination, ReadOnly: !m.RW}
+			switch m.Type {
+			case "volume":
+				mount.Kind, mount.Source = protocol.MountVolume, m.Name
+			case "bind":
+				mount.Kind = protocol.MountBind
+			}
+			pc.Mounts = append(pc.Mounts, mount)
+		}
+		sort.Slice(pc.Mounts, func(i, j int) bool { return pc.Mounts[i].Target < pc.Mounts[j].Target })
+		if len(pc.Mounts) > protocol.MaxMounts {
+			pc.Mounts, pc.MountsTruncated = pc.Mounts[:protocol.MaxMounts], true
+		}
 		pc.ComposeProject = ct.Labels["com.docker.compose.project"]
 		snap.Containers = append(snap.Containers, pc)
 	}

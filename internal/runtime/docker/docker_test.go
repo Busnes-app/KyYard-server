@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,7 +29,18 @@ func fakeEngine(t *testing.T, containers int) *httptest.Server {
 				if i > 0 {
 					b.WriteString(",")
 				}
-				b.WriteString(`{"Id":"c` + strings.Repeat("0", 3) + string(rune('a'+i%26)) + `","Names":["/web` + string(rune('a'+i%26)) + `"],"Image":"nginx:1","ImageID":"sha256:i1","State":"running","Status":"Up 2 hours","Created":1700000000,"Labels":{"com.docker.compose.project":"shop","env":"KEY=value"},"Ports":[{"IP":"0.0.0.0","PrivatePort":80,"PublicPort":8080,"Type":"tcp"}],"NetworkSettings":{"Networks":{"shop_default":{}}}}`)
+				mounts := `[]`
+				switch i {
+				case 0:
+					mounts = `[{"Type":"volume","Name":"shop_data","Source":"/var/lib/docker/volumes/shop_data/_data","Destination":"/data","RW":true},{"Type":"bind","Source":"/srv/cfg","Destination":"/etc/app","RW":false},{"Type":"tmpfs","Source":"","Destination":"/run","RW":true}]`
+				case 1:
+					var m []string
+					for j := 0; j < protocol.MaxMounts+8; j++ {
+						m = append(m, `{"Type":"volume","Name":"v","Destination":"/m`+strings.Repeat("x", j)+`","RW":true}`)
+					}
+					mounts = "[" + strings.Join(m, ",") + "]"
+				}
+				b.WriteString(`{"Id":"c` + strings.Repeat("0", 3) + string(rune('a'+i%26)) + `","Names":["/web` + string(rune('a'+i%26)) + `"],"Image":"nginx:1","ImageID":"sha256:i1","State":"running","Status":"Up 2 hours","Created":1700000000,"Labels":{"com.docker.compose.project":"shop","env":"KEY=value"},"Ports":[{"IP":"0.0.0.0","PrivatePort":80,"PublicPort":8080,"Type":"tcp"}],"NetworkSettings":{"Networks":{"shop_default":{}}},"Mounts":` + mounts + `}`)
 			}
 			b.WriteString("]")
 			_, _ = w.Write([]byte(b.String()))
@@ -63,6 +75,32 @@ func TestSnapshotMapsAndBoundsEngineData(t *testing.T) {
 	}
 	if snap.Truncated != nil {
 		t.Fatal("nothing should be truncated")
+	}
+}
+
+// Mounts arrive as kinds with the volume name or host path as source, capped per container.
+func TestSnapshotReportsMounts(t *testing.T) {
+	srv := fakeEngine(t, 3)
+	defer srv.Close()
+	snap, err := docker.NewHTTP(srv.Client(), srv.URL).Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, c := snap.Containers[0], snap.Containers[1], snap.Containers[2]
+	want := []protocol.Mount{{Kind: "volume", Source: "shop_data", Target: "/data"}, {Kind: "bind", Source: "/srv/cfg", Target: "/etc/app", ReadOnly: true}, {Kind: "other", Target: "/run"}}
+	if len(a.Mounts) != len(want) || a.MountsTruncated {
+		t.Fatalf("mounts: %+v", a.Mounts)
+	}
+	for _, m := range want {
+		if !slices.Contains(a.Mounts, m) {
+			t.Fatalf("mount %+v missing from %+v", m, a.Mounts)
+		}
+	}
+	if len(b.Mounts) != protocol.MaxMounts || !b.MountsTruncated {
+		t.Fatalf("cap: %d mounts, truncated %v", len(b.Mounts), b.MountsTruncated)
+	}
+	if c.Mounts == nil || len(c.Mounts) != 0 {
+		t.Fatalf("no mounts must be reported as an empty list: %#v", c.Mounts)
 	}
 }
 

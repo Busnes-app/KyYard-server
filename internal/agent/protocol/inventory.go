@@ -171,6 +171,49 @@ type Container struct {
 	Networks  []string          `json:"networks"`
 	// Managed is the Compose project label when present; ownership arrives with M6.
 	ComposeProject string `json:"compose_project,omitempty"`
+	// Mounts is nil when the agent did not report them (older than mounts), empty when there
+	// are none; MountsTruncated says entries past MaxMounts were dropped.
+	Mounts          []Mount `json:"mounts"`
+	MountsTruncated bool    `json:"mounts_truncated,omitempty"`
+}
+
+// MaxMounts bounds a container's reported mounts and a deployed service's mounts alike.
+const MaxMounts = 32
+
+const (
+	MountVolume = "volume"
+	MountBind   = "bind"
+	MountOther  = "other" // inventory only: tmpfs, npipe and anything else the runtime reports
+)
+
+// Mount is a volume (Source is its name) or a bind (Source is the host path) at Target.
+type Mount struct {
+	Kind     string `json:"kind"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
+
+// UnmarshalJSON caps mounts while decoding, like the snapshot's own lists.
+func (c *Container) UnmarshalJSON(data []byte) error {
+	type plain Container
+	var aux struct {
+		plain
+		Mounts json.RawMessage `json:"mounts"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*c = Container(aux.plain)
+	if len(aux.Mounts) == 0 {
+		return nil
+	}
+	mounts, cut, err := decodeBounded[Mount](aux.Mounts, MaxMounts)
+	if err != nil {
+		return err
+	}
+	c.Mounts, c.MountsTruncated = mounts, c.MountsTruncated || cut
+	return nil
 }
 
 type Image struct {
@@ -241,6 +284,16 @@ func Clamp(s *Snapshot) {
 		}
 		for j := range c.Networks {
 			c.Networks[j] = CleanText(c.Networks[j], MaxNameBytes)
+		}
+		if len(c.Mounts) > MaxMounts {
+			c.Mounts, c.MountsTruncated = c.Mounts[:MaxMounts], true
+		}
+		for j := range c.Mounts {
+			m := &c.Mounts[j]
+			if m.Kind != MountVolume && m.Kind != MountBind {
+				m.Kind = MountOther
+			}
+			m.Source, m.Target = CleanText(m.Source, MaxImageRefBytes), CleanText(m.Target, MaxImageRefBytes)
 		}
 		if c.Ports == nil {
 			c.Ports = []Port{}
@@ -318,8 +371,9 @@ func cleanList(in []string, max, each int) []string {
 	return out
 }
 
-// Shrink drops the tails of the largest lists, then labels, until the serialized snapshot
-// fits MaxSnapshotBytes, naming what it dropped. It returns the final encoding.
+// Shrink drops labels, then mounts (marking each container's list truncated), then the tails
+// of the largest lists, until the serialized snapshot fits MaxSnapshotBytes, naming what it
+// dropped. It returns the final encoding.
 func Shrink(s *Snapshot) []byte {
 	for {
 		raw, err := json.Marshal(s)
@@ -330,12 +384,10 @@ func Shrink(s *Snapshot) []byte {
 		for _, t := range s.Truncated {
 			truncated[t] = true
 		}
-		hasLabels := false
+		hasLabels, hasMounts := false, false
 		for i := range s.Containers {
-			if len(s.Containers[i].Labels) > 0 {
-				hasLabels = true
-				break
-			}
+			hasLabels = hasLabels || len(s.Containers[i].Labels) > 0
+			hasMounts = hasMounts || len(s.Containers[i].Mounts) > 0
 		}
 		switch {
 		case hasLabels:
@@ -343,6 +395,12 @@ func Shrink(s *Snapshot) []byte {
 				s.Containers[i].Labels = map[string]string{}
 			}
 			truncated["labels"] = true
+		case hasMounts:
+			for i := range s.Containers {
+				if c := &s.Containers[i]; len(c.Mounts) > 0 {
+					c.Mounts, c.MountsTruncated = []Mount{}, true
+				}
+			}
 		case len(s.Containers) >= len(s.Images) && len(s.Containers) >= len(s.Volumes) && len(s.Containers) > 0:
 			s.Containers, truncated["containers"] = s.Containers[:len(s.Containers)*3/4], true
 		case len(s.Images) >= len(s.Volumes) && len(s.Images) > 0:

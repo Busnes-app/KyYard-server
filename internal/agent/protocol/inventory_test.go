@@ -43,3 +43,63 @@ func TestShrinkFitsTheSharedLimitAndClampConforms(t *testing.T) {
 		t.Fatalf("rune-safe cut: %q", got)
 	}
 }
+
+// Mounts decode at most MaxMounts per container; an absent list stays nil (not reported),
+// an empty one stays empty (reported, none).
+func TestContainerMountsDecodeBounded(t *testing.T) {
+	var many []string
+	for i := 0; i < MaxMounts+8; i++ {
+		many = append(many, `{"kind":"volume","source":"v","target":"/m`+strings.Repeat("x", i)+`"}`)
+	}
+	raw := []byte(`{"generation":1,"containers":[{"id":"a","mounts":[` + strings.Join(many, ",") + `]},{"id":"b"},{"id":"c","mounts":[]},{"id":"d","mounts":null}]}`)
+	var s Snapshot
+	if err := UnmarshalSnapshotBounded(raw, &s); err != nil {
+		t.Fatal(err)
+	}
+	a, b, c, d := s.Containers[0], s.Containers[1], s.Containers[2], s.Containers[3]
+	if len(a.Mounts) != MaxMounts || !a.MountsTruncated || a.Mounts[0].Kind != MountVolume || a.Mounts[0].Target != "/m" {
+		t.Fatalf("capped: %d mounts, truncated %v, first %+v", len(a.Mounts), a.MountsTruncated, a.Mounts[0])
+	}
+	if b.Mounts != nil || b.MountsTruncated || c.Mounts == nil || len(c.Mounts) != 0 || c.MountsTruncated || d.Mounts != nil {
+		t.Fatalf("absent %v, empty %v, null %v", b.Mounts, c.Mounts, d.Mounts)
+	}
+	// The same bound applies to a plain decode, which is how a stored snapshot is read back.
+	var plain Container
+	if err := json.Unmarshal([]byte(`{"id":"a","mounts":[`+strings.Join(many, ",")+`]}`), &plain); err != nil || len(plain.Mounts) != MaxMounts || !plain.MountsTruncated {
+		t.Fatalf("plain decode: %v %d", err, len(plain.Mounts))
+	}
+	back, _ := json.Marshal(c)
+	if !strings.Contains(string(back), `"mounts":[]`) {
+		t.Fatalf("empty mounts must survive encoding: %s", back)
+	}
+}
+
+func TestClampMounts(t *testing.T) {
+	s := &Snapshot{Containers: []Container{{Mounts: make([]Mount, MaxMounts+1)}, {}}}
+	s.Containers[0].Mounts[0] = Mount{Kind: "tmpfs", Source: "/srv\nx", Target: "/‮t"}
+	s.Containers[0].Mounts[1] = Mount{Kind: MountBind, Source: "/srv", Target: "/t"}
+	Clamp(s)
+	c := s.Containers[0]
+	if len(c.Mounts) != MaxMounts || !c.MountsTruncated || c.Mounts[0].Kind != MountOther || c.Mounts[0].Source != "/srvx" || c.Mounts[0].Target != "/t" || c.Mounts[1].Kind != MountBind {
+		t.Fatalf("clamp: %d %v %+v", len(c.Mounts), c.MountsTruncated, c.Mounts[:2])
+	}
+	if s.Containers[1].Mounts != nil {
+		t.Fatal("clamp invented a mount list for a container that reported none")
+	}
+}
+
+// Mounts go before containers do: a host full of mounts keeps every container, each marked.
+func TestShrinkDropsMountsBeforeContainers(t *testing.T) {
+	s := &Snapshot{}
+	for i := 0; i < MaxContainers; i++ {
+		c := Container{ID: strings.Repeat("c", 64)}
+		for j := 0; j < MaxMounts; j++ {
+			c.Mounts = append(c.Mounts, Mount{Kind: MountBind, Source: strings.Repeat("s", MaxImageRefBytes), Target: strings.Repeat("t", MaxImageRefBytes)})
+		}
+		s.Containers = append(s.Containers, c)
+	}
+	Clamp(s)
+	if raw := Shrink(s); len(raw) > MaxSnapshotBytes || len(s.Containers) != MaxContainers || len(s.Containers[0].Mounts) != 0 || !s.Containers[0].MountsTruncated {
+		t.Fatalf("%d bytes, %d containers, %d mounts", len(raw), len(s.Containers), len(s.Containers[0].Mounts))
+	}
+}

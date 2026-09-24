@@ -374,7 +374,7 @@ func TestDeploymentResultValidation(t *testing.T) {
 
 // The largest result Deploy can produce must fit the frame, or an honest agent could not report.
 // Validate allows a detail only on the step that ended the run; succeeded and skipped steps carry
-// none. The run's own detail is at its maximum in every case.
+// none. The run's own detail is at its maximum in every case, and the frame's every volume adds a step.
 func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
 	steps := []string{StepPrecondition, StepPull, StepRename, StepCreate, StepStop, StepStart, StepRemove}
 	detail := strings.Repeat("d", MaxDeploymentStepDetailBytes)
@@ -388,6 +388,15 @@ func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
 					s.Detail = detail
 				}
 				r.Steps = append(r.Steps, s)
+			}
+			if i == 0 {
+				for v := 0; v < MaxDeploymentVolumes; v++ {
+					s := DeploymentStep{Service: name, Step: StepVolume, Outcome: stepOutcome(0, 1)}
+					if s.Outcome != OutcomeSucceeded && s.Outcome != OutcomeSkipped {
+						s.Detail = detail
+					}
+					r.Steps = append(r.Steps, s)
+				}
 			}
 			if i < identities {
 				r.Services = append(r.Services, DeploymentIdentity{Service: name, ContainerID: strings.Repeat("a", 64), ImageID: "sha256:" + strings.Repeat("b", 64), ImageDigest: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000})
@@ -421,5 +430,107 @@ func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
 			t.Fatalf("%s: %d bytes exceeds %d", name, len(raw), MaxDeploymentResultBytes)
 		}
 		t.Logf("%s: %d of %d bytes", name, len(raw), MaxDeploymentResultBytes)
+	}
+}
+
+// mounted gives service 0 a named volume and a read-only bind, with the volume to ensure.
+func mounted(r *DeploymentRequest) {
+	r.Services[0].Mounts = []Mount{{Kind: MountVolume, Source: "shop_data", Target: "/var/lib/data"}, {Kind: MountBind, Source: "/srv/shop/config", Target: "/etc/shop", ReadOnly: true}}
+	r.Volumes = []string{"shop_data"}
+}
+
+func TestDeploymentRequestMounts(t *testing.T) {
+	now := time.Now()
+	for name, mutate := range map[string]func(*DeploymentRequest){
+		"volume and bind": mounted,
+		"mounts at cap": func(r *DeploymentRequest) {
+			for i := 0; i < MaxMounts; i++ {
+				r.Services[0].Mounts = append(r.Services[0].Mounts, Mount{Kind: MountVolume, Source: "shop_data", Target: fmt.Sprintf("/m%d", i)})
+			}
+			r.Volumes = []string{"shop_data"}
+		},
+		"volumes at cap": func(r *DeploymentRequest) {
+			for i := 0; i < MaxDeploymentVolumes; i++ {
+				v := fmt.Sprintf("shop_v%d", i)
+				r.Services[0].Mounts = append(r.Services[0].Mounts, Mount{Kind: MountVolume, Source: v, Target: "/" + v})
+				r.Volumes = append(r.Volumes, v)
+			}
+			r.Services[0].Mounts = r.Services[0].Mounts[:MaxMounts]
+			withServices(r, 2)
+			r.Services[1].Mounts = nil
+			for _, v := range r.Volumes[MaxMounts:] {
+				r.Services[1].Mounts = append(r.Services[1].Mounts, Mount{Kind: MountVolume, Source: v, Target: "/" + v})
+			}
+		},
+		// Resolved host names are "<project>_<name>", each part up to 64 bytes.
+		"longest resolved name": func(r *DeploymentRequest) {
+			v := strings.Repeat("p", 64) + "_" + strings.Repeat("n", 64)
+			r.Services[0].Mounts, r.Volumes = []Mount{{Kind: MountVolume, Source: v, Target: "/data"}}, []string{v}
+		},
+		"same volume twice across services": func(r *DeploymentRequest) {
+			mounted(r)
+			withServices(r, 2)
+		},
+		"volume not ensured": func(r *DeploymentRequest) {
+			r.Services[0].Mounts = []Mount{{Kind: MountVolume, Source: "ext", Target: "/data"}}
+		},
+	} {
+		r := goodDeployment(now)
+		mutate(&r)
+		if err := r.Validate(now); err != nil {
+			t.Fatalf("%s refused: %v", name, err)
+		}
+	}
+	for name, mutate := range map[string]func(*DeploymentRequest){
+		"kind unset":        func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Kind = "" },
+		"kind tmpfs":        func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Kind = "tmpfs" },
+		"kind other":        func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Kind = "other" },
+		"volume name":       func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Source = "-data" },
+		"volume name slash": func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Source = "a/b" },
+		"volume name long": func(r *DeploymentRequest) {
+			mounted(r)
+			r.Services[0].Mounts[0].Source = strings.Repeat("v", 130)
+		},
+		"bind relative":     func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[1].Source = "srv/config" },
+		"bind not clean":    func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[1].Source = "/data/../etc" },
+		"bind trailing":     func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[1].Source = "/srv/config/" },
+		"bind control":      func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[1].Source = "/srv/con\nfig" },
+		"bind empty":        func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[1].Source = "" },
+		"target relative":   func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Target = "data" },
+		"target not clean":  func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Target = "/a/./b" },
+		"target root":       func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Target = "/" },
+		"target duplicate":  func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[1].Target = "/var/lib/data" },
+		"volume unused":     func(r *DeploymentRequest) { mounted(r); r.Volumes = append(r.Volumes, "shop_other") },
+		"volume only bound": func(r *DeploymentRequest) { mounted(r); r.Volumes = []string{"shop_data", "srv"} },
+		"volume duplicate":  func(r *DeploymentRequest) { mounted(r); r.Volumes = []string{"shop_data", "shop_data"} },
+		"volume bad name":   func(r *DeploymentRequest) { mounted(r); r.Volumes = []string{"shop data"} },
+		"33 mounts": func(r *DeploymentRequest) {
+			for i := 0; i <= MaxMounts; i++ {
+				r.Services[0].Mounts = append(r.Services[0].Mounts, Mount{Kind: MountVolume, Source: "shop_data", Target: fmt.Sprintf("/m%d", i)})
+			}
+			r.Volumes = []string{"shop_data"}
+		},
+		"65 volumes": func(r *DeploymentRequest) {
+			withServices(r, 3)
+			for i := 0; i <= MaxDeploymentVolumes; i++ {
+				v := fmt.Sprintf("shop_v%d", i)
+				s := &r.Services[i/MaxMounts]
+				s.Mounts = append(s.Mounts, Mount{Kind: MountVolume, Source: v, Target: "/" + v})
+				r.Volumes = append(r.Volumes, v)
+			}
+		},
+	} {
+		r := goodDeployment(now)
+		mutate(&r)
+		if r.Validate(now) == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+}
+
+func TestDeploymentResultVolumeStep(t *testing.T) {
+	r := DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: OutcomeFailed, Detail: "service web, step volume: volume create failed", Steps: []DeploymentStep{{Service: "web", Step: StepVolume, Outcome: OutcomeFailed, Detail: "volume create failed"}}}
+	if err := r.Validate(); err != nil {
+		t.Fatalf("volume step refused: %v", err)
 	}
 }

@@ -3,9 +3,11 @@ package protocol
 import (
 	"errors"
 	"net/netip"
+	"path"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -29,9 +31,12 @@ const (
 	MaxDeploymentStepDetailBytes    = 256
 	MaxRegistryAuthHosts            = 16
 	MaxRegistryAuthSecretBytes      = 4096
+	MaxDeploymentVolumes            = 64
+	MaxMountPathBytes               = 4096
 	StepPrecondition                = "precondition"
 	StepImage                       = "image"
 	StepPull                        = "pull"
+	StepVolume                      = "volume"
 	StepStop                        = "stop"
 	StepRename                      = "rename"
 	StepCreate                      = "create"
@@ -48,7 +53,9 @@ var (
 	deploymentProject = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	deploymentService = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 	deploymentEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-	deploymentSteps   = map[string]bool{StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true}
+	// Docker's volume name characters, long enough for a resolved "<project>_<name>" (64+1+64).
+	deploymentVolume  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,128}$`)
+	deploymentSteps   = map[string]bool{StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true}
 	deploymentRestart = map[string]bool{"": true, "no": true, "always": true, "unless-stopped": true, "on-failure": true}
 	resultOutcomes    = map[string]bool{OutcomeSucceeded: true, OutcomeFailed: true, OutcomeDenied: true, OutcomeTimedOut: true, OutcomeUnknown: true}
 )
@@ -62,6 +69,9 @@ type DeploymentRequest struct {
 	Services   []DeploymentService `json:"services"`
 	// Registries holds a credential per registry host some service pulls from; never logged.
 	Registries map[string]RegistryAuth `json:"registries,omitempty"`
+	// Volumes are the named volumes the agent ensures before any replacement, each one some
+	// service mounts.
+	Volumes []string `json:"volumes,omitempty"`
 }
 type DeploymentService struct {
 	Name          string            `json:"name"`
@@ -73,6 +83,8 @@ type DeploymentService struct {
 	Env           map[string]string `json:"env"`
 	// Pull, when set, has the agent pull the image first; ImageID is then empty.
 	Pull *ImagePull `json:"pull,omitempty"`
+	// Mounts are MountVolume or MountBind only; a bind must already be on the replaced container.
+	Mounts []Mount `json:"mounts,omitempty"`
 }
 
 // ImagePull names an image by host, repository and the digest it must resolve to. Tag, when
@@ -113,6 +125,31 @@ func (p ImagePull) valid() bool {
 	return ValidImageReference(p.Tag) && !strings.Contains(p.Tag, "@") && tag != "" && tagName == name
 }
 
+// cleanAbsolute is an absolute path in canonical form, not the root, without control characters.
+func cleanAbsolute(p string) bool {
+	return len(p) > 1 && len(p) <= MaxMountPathBytes && path.IsAbs(p) && path.Clean(p) == p && utf8.ValidString(p) && !strings.ContainsFunc(p, unicode.IsControl)
+}
+
+func validMounts(mounts []Mount, used map[string]bool) bool {
+	if len(mounts) > MaxMounts {
+		return false
+	}
+	targets := map[string]bool{}
+	for _, m := range mounts {
+		switch {
+		case !cleanAbsolute(m.Target) || targets[m.Target]:
+			return false
+		case m.Kind == MountVolume && deploymentVolume.MatchString(m.Source):
+			used[m.Source] = true
+		case m.Kind == MountBind && cleanAbsolute(m.Source):
+		default:
+			return false
+		}
+		targets[m.Target] = true
+	}
+	return true
+}
+
 func fullImageID(id string) bool {
 	return strings.HasPrefix(id, "sha256:") && fullDockerID.MatchString(strings.TrimPrefix(id, "sha256:"))
 }
@@ -134,7 +171,7 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 		port     int
 		protocol string
 	}
-	names, containers, replaces, bindings, pulled := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}, map[string]bool{}
+	names, containers, replaces, bindings, pulled, mounted := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}, map[string]bool{}, map[string]bool{}
 	for _, s := range r.Services {
 		image := (s.Pull == nil && fullImageID(s.ImageID)) || (s.Pull != nil && s.ImageID == "" && s.Pull.valid())
 		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] {
@@ -143,6 +180,9 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 		names[s.Name], containers[s.ContainerName], replaces[s.Replaces.ContainerID] = true, true, true
 		if s.Pull != nil {
 			pulled[s.Pull.Host()] = true
+		}
+		if !validMounts(s.Mounts, mounted) {
+			return errors.New("invalid mount")
 		}
 		if len(s.Ports) > MaxDeploymentPorts {
 			return errors.New("too many ports")
@@ -181,6 +221,17 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 				return errors.New("invalid environment value")
 			}
 		}
+	}
+	// Every volume to ensure is one some service mounts, once.
+	if len(r.Volumes) > MaxDeploymentVolumes {
+		return errors.New("too many volumes")
+	}
+	ensured := map[string]bool{}
+	for _, v := range r.Volumes {
+		if !mounted[v] || ensured[v] {
+			return errors.New("invalid volume")
+		}
+		ensured[v] = true
 	}
 	// No credential travels for a host nothing in this frame pulls from.
 	if len(r.Registries) > MaxRegistryAuthHosts {

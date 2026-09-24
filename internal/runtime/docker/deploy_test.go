@@ -52,12 +52,13 @@ type fakeDeployEngine struct {
 	pulledStatus     int            // GET /images/{host%2Frepo@digest}/json; 200 default
 	pulled           map[string]any // its body
 	tagStatus        int            // POST /images/{pulled}/tag; 201 default
+	volumeStatus     int            // POST /volumes/create; 201 default, as Docker answers for an existing name too
 	srv              *httptest.Server
 }
 
 func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
-	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200, tagStatus: 201,
+	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200, tagStatus: 201, volumeStatus: 201,
 		pullBody: `{"status":"Pulling from org/app"}` + "\n" + `{"status":"Digest: ` + pullDigest + `"}` + "\n",
 		pulled:   map[string]any{"Id": newImage, "RepoDigests": []string{"ghcr.io/org/app@" + pullDigest}}}
 	f.oldContainer = map[string]any{"Id": oldID, "Image": oldImage, "Name": "/shop-web-1", "Created": "2023-11-14T22:13:20Z", "Mounts": []any{},
@@ -106,12 +107,15 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "GET" && strings.Contains(p, "%2F") && strings.HasSuffix(p, "@"+pullDigest+"/json"):
 			w.WriteHeader(f.pulledStatus)
 			_ = json.NewEncoder(w).Encode(f.pulled)
+		case r.Method == "POST" && strings.HasSuffix(p, "/volumes/create"):
+			w.WriteHeader(f.volumeStatus)
+			_, _ = w.Write(body)
 		case r.Method == "POST" && strings.HasSuffix(p, "/images/"+newImage+"/tag"):
 			w.WriteHeader(f.tagStatus)
-		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/stop"):
+		case r.Method == "POST" && (strings.HasSuffix(p, "/containers/"+oldID+"/stop") || strings.HasSuffix(p, "/containers/"+otherOldID+"/stop")):
 			time.Sleep(f.stopDelay)
 			w.WriteHeader(f.stopStatus)
-		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/rename"):
+		case r.Method == "POST" && (strings.HasSuffix(p, "/containers/"+oldID+"/rename") || strings.HasSuffix(p, "/containers/"+otherOldID+"/rename")):
 			w.WriteHeader(f.renameStatus)
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/create"):
 			w.WriteHeader(f.createStatus)
@@ -121,7 +125,7 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+newID+"/json"):
 			w.WriteHeader(f.inspectNewStatus)
 			_, _ = w.Write([]byte(`{"Id":"` + newID + `","Image":"` + newImage + `","Created":"2024-01-01T00:00:01Z","Name":"/shop-web-1","State":{"Status":"running"}}`))
-		case r.Method == "DELETE" && strings.HasSuffix(p, "/containers/"+oldID):
+		case r.Method == "DELETE" && (strings.HasSuffix(p, "/containers/"+oldID) || strings.HasSuffix(p, "/containers/"+otherOldID)):
 			w.WriteHeader(f.removeStatus)
 		default:
 			w.WriteHeader(404)
@@ -328,7 +332,10 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 		"absent Privileged": {func(f *fakeDeployEngine) {
 			delete(f.oldContainer["HostConfig"].(map[string]any), "Privileged")
 		}, 1},
-		"mounts":         {func(f *fakeDeployEngine) { f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume"}} }, 1},
+		"tmpfs mount": {func(f *fakeDeployEngine) {
+			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "tmpfs", "Destination": "/run"}}
+		}, 1},
+		"npipe mount":    {func(f *fakeDeployEngine) { f.oldContainer["Mounts"] = []any{map[string]any{"Type": "npipe"}} }, 1},
 		"tmpfs":          {host("Tmpfs", map[string]string{"/run": "rw"}), 1},
 		"auto-remove":    {host("AutoRemove", true), 1},
 		"read-only root": {host("ReadonlyRootfs", true), 1},
