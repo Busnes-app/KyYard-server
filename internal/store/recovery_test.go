@@ -36,9 +36,15 @@ func planAdopted(t *testing.T, ts store.TenancyStore, a store.TenantAccess, appI
 	return d
 }
 
-// verifiedPlan adds what the API supplies to a plan request.
+// verifiedPlan adds what the API supplies to a plan request: the frame cap of an agent with
+// deployment.pull and a verified live inspection of every adopted container.
 func verifiedPlan(r store.PlanRequest, containers []store.AdoptedContainer) store.PlanRequest {
 	r.MaxFrameBytes = protocol.MaxDeploymentRequestBytes
+	r.Inspections = map[string]protocol.ContainerInspection{}
+	for _, c := range containers {
+		target := protocol.InspectionTarget{ContainerID: c.ID, ImageID: c.ImageID, CreatedUnix: c.CreatedAt.Unix()}
+		r.Inspections[c.ID] = protocol.ContainerInspection{Target: target, ObservedAt: time.Now().UTC(), ConfigurationVerified: true, Unsupported: []string{}}
+	}
 	return r
 }
 

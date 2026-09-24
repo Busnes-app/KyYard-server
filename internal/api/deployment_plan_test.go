@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -171,7 +172,9 @@ func TestPlanCountsOneInspectionAttempt(t *testing.T) {
 	if first != 2 {
 		t.Fatalf("the 30th attempt inspected %d services", first)
 	}
-	h.do(t, "POST", h.deployments, h.planBody, 201)
+	if b := h.refused(t); !slices.Equal(b.Blockers, []string{"inspection_unavailable"}) || len(b.Services) != 2 {
+		t.Fatalf("over the inspection limit: %+v", b)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if calls != first {
@@ -313,7 +316,8 @@ func TestPlanInspectionBudgetCancelsTheUnansweredGrant(t *testing.T) {
 	}
 	select {
 	case w := <-response:
-		if w.Code != 201 {
+		var b planBlocked
+		if w.Code != 409 || json.Unmarshal(w.Body.Bytes(), &b) != nil || b.Code != "preflight_blocked" || !slices.Equal(b.Blockers, []string{"inspection_unavailable"}) || len(b.Services) != 2 {
 			t.Fatalf("plan: %d %s", w.Code, w.Body.String())
 		}
 	case <-time.After(start.Add(api.PlanInspectionBudgetForTest + 2*time.Second).Sub(time.Now())):
@@ -323,5 +327,144 @@ func TestPlanInspectionBudgetCancelsTheUnansweredGrant(t *testing.T) {
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
 	if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeHeartbeat {
 		t.Fatalf("a spent budget still sent %s", f.Type)
+	}
+}
+
+// planBlocked is a 409 plan refusal as the API writes it.
+type planBlocked struct {
+	Code     string
+	Blockers []string
+	Services []struct {
+		Name        string
+		Blockers    []string
+		Unsupported []string
+	}
+}
+
+// refused posts the plan, expects 409 and checks the body names no container.
+func (h planHost) refused(t *testing.T) planBlocked {
+	t.Helper()
+	body := h.do(t, "POST", h.deployments, h.planBody, 409)
+	var b planBlocked
+	if err := json.Unmarshal([]byte(body), &b); err != nil || b.Code != "preflight_blocked" {
+		t.Fatalf("refusal: %s", body)
+	}
+	for _, target := range h.targets {
+		if strings.Contains(body, target.ContainerID) || strings.Contains(body, target.ImageID) {
+			t.Fatalf("the refusal named a container: %s", body)
+		}
+	}
+	return b
+}
+
+// online connects the host's agent over a real socket advertising capabilities.
+func (h planHost) online(t *testing.T, capabilities []string) (*agentSocket, context.Context) {
+	t.Helper()
+	srv := httptest.NewServer(h.s)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	sock, reason := connect(t, ctx, srv.URL, h.ag, h.ag.priv, protocol.Version)
+	if sock == nil {
+		t.Fatalf("connect refused: %s", reason)
+	}
+	t.Cleanup(func() { sock.conn.CloseNow() })
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities})
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+	if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeHeartbeat {
+		t.Fatalf("expected a heartbeat, got %s", f.Type)
+	}
+	return sock, ctx
+}
+
+// grant reads the next frame as an inspection grant.
+func grant(t *testing.T, ctx context.Context, sock *agentSocket) protocol.InspectionOpen {
+	t.Helper()
+	frame := readEnvelope(t, ctx, sock.conn)
+	var g protocol.InspectionOpen
+	if frame.Type != protocol.TypeInspectionOpen || json.Unmarshal(frame.Payload, &g) != nil {
+		t.Fatalf("expected an inspection grant, got %s", frame.Type)
+	}
+	return g
+}
+
+// What the live inspection reports refuses the plan, and the refusal names the service.
+func TestPlanRefusesOnTheLiveInspection(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web")
+	for name, tc := range map[string]struct {
+		inspect     func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error)
+		want        string
+		unsupported []string
+	}{
+		"no answer": {func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+			return protocol.ContainerInspection{}, errors.New("unavailable")
+		}, "inspection_unavailable", nil},
+		"unsupported": {func(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+			in := verifiedObservation(target)
+			in.ConfigurationVerified, in.Unsupported = false, []string{"privileged", "devices"}
+			return in, nil
+		}, "configuration_unsupported", []string{"privileged", "devices"}},
+		"another container": {func(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+			target.CreatedUnix++
+			return verifiedObservation(target), nil
+		}, "replacement_identity_changed", nil},
+	} {
+		api.SetPlanInspectorForTest(h.s, tc.inspect)
+		b := h.refused(t)
+		if !slices.Equal(b.Blockers, []string{tc.want}) || len(b.Services) != 1 || b.Services[0].Name != "web" || !slices.Equal(b.Services[0].Unsupported, tc.unsupported) {
+			t.Fatalf("%s: %+v", name, b)
+		}
+	}
+	api.SetPlanInspectorForTest(h.s, verifiedInspector)
+	h.do(t, "POST", h.deployments, h.planBody, 201)
+}
+
+// With no agent connected the plan is refused as uninspected, never planned blind.
+func TestPlanRefusesWhenTheAgentIsOffline(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web")
+	if b := h.refused(t); !slices.Equal(b.Blockers, []string{"inspection_unavailable"}) || len(b.Services) != 1 || b.Services[0].Name != "web" {
+		t.Fatalf("offline: %+v", b)
+	}
+}
+
+// An agent that never answers holds the plan no longer than the budget: the plan is refused and
+// the abandoned grant is cancelled on the agent (Review Focus 2).
+func TestPlanRefusesWhenTheAgentNeverAnswers(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web")
+	sock, ctx := h.online(t, inspecting)
+	start := time.Now()
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() { response <- tenantRequest(h.s, h.admin, "POST", h.deployments, h.planBody, true) }()
+	g := grant(t, ctx, sock)
+	w := <-response
+	if elapsed := time.Since(start); w.Code != 409 || !strings.Contains(w.Body.String(), "inspection_unavailable") || elapsed > api.PlanInspectionBudgetForTest+3*time.Second {
+		t.Fatalf("after %v: %d %s", elapsed, w.Code, w.Body.String())
+	}
+	frame := readEnvelope(t, ctx, sock.conn)
+	var stopped protocol.InspectionCancel
+	if frame.Type != protocol.TypeInspectionCancel || json.Unmarshal(frame.Payload, &stopped) != nil || stopped.Request != g.Request {
+		t.Fatalf("expected the grant's cancel, got %s", frame.Type)
+	}
+}
+
+// An agent built before verdicts answers with configuration_verified false and no unsupported
+// list. The server refuses that answer, so the plan is uninspected, never verified
+// (Review Focus 5).
+func TestPlanRefusesAnOlderAgentsInspection(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web")
+	sock, ctx := h.online(t, inspecting)
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() { response <- tenantRequest(h.s, h.admin, "POST", h.deployments, h.planBody, true) }()
+	g := grant(t, ctx, sock)
+	raw, _ := json.Marshal(verifiedObservation(g.Target))
+	var older map[string]any
+	if err := json.Unmarshal(raw, &older); err != nil {
+		t.Fatal(err)
+	}
+	delete(older, "unsupported")
+	older["configuration_verified"] = false
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInspectionResult, map[string]any{"request": g.Request, "status": "ok", "result": older})
+	if w := <-response; w.Code != 409 || !strings.Contains(w.Body.String(), "inspection_unavailable") {
+		t.Fatalf("an older agent's answer: %d %s", w.Code, w.Body.String())
 	}
 }

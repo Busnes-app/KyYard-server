@@ -35,8 +35,16 @@ func planFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, string, p
 	}
 	return st, a, app, endpoint, snapshot, m
 }
+
+// planRequest is what the API sends for m: the cap of an agent with deployment.pull and a
+// verified live inspection of every adopted container.
 func planRequest(m *ApplicationMapping) PlanRequest {
-	return PlanRequest{InstanceID: m.InstanceID, MappingVersion: m.Version, Revision: m.Preview.Revision, Confirm: m.Preview.Project, MaxFrameBytes: protocol.MaxDeploymentRequestBytes}
+	r := PlanRequest{InstanceID: m.InstanceID, MappingVersion: m.Version, Revision: m.Preview.Revision, Confirm: m.Preview.Project, MaxFrameBytes: protocol.MaxDeploymentRequestBytes, Inspections: map[string]protocol.ContainerInspection{}}
+	for _, c := range m.Preview.Containers {
+		target := protocol.InspectionTarget{ContainerID: c.ID, ImageID: c.ImageID, CreatedUnix: c.CreatedAt.Unix()}
+		r.Inspections[c.ID] = protocol.ContainerInspection{Target: target, ObservedAt: time.Now().UTC(), ConfigurationVerified: true, Unsupported: []string{}}
+	}
+	return r
 }
 
 func TestPlanDeploymentBindsIdentities(t *testing.T) {
@@ -644,6 +652,57 @@ func TestPlanDeploymentRequiresAgentCapabilities(t *testing.T) {
 		if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, tc.want) {
 			t.Fatalf("%s: %v", name, err)
 		}
+	}
+	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, planRequest(m), nil, imageCheckKey, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Each mapped service needs a live inspection of the container the preflight names, and that
+// inspection must find nothing a recreate would drop. The refusal names the service.
+func TestPlanDeploymentChecksTheLiveInspection(t *testing.T) {
+	st, a, app, endpoint, snapshot, m := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	c := snapshot.Containers[0]
+	target := protocol.InspectionTarget{ContainerID: c.ID, ImageID: c.ImageID, CreatedUnix: c.CreatedAt.Unix()}
+	moved := target
+	moved.CreatedUnix++
+	for name, tc := range map[string]struct {
+		inspections map[string]protocol.ContainerInspection
+		want        string
+		unsupported []string
+	}{
+		"none":             {map[string]protocol.ContainerInspection{}, "inspection_unavailable", nil},
+		"identity changed": {map[string]protocol.ContainerInspection{c.ID: {Target: moved, ConfigurationVerified: true, Unsupported: []string{}}}, "replacement_identity_changed", nil},
+		"unsupported":      {map[string]protocol.ContainerInspection{c.ID: {Target: target, Unsupported: []string{"privileged", "devices"}}}, "configuration_unsupported", []string{"privileged", "devices"}},
+	} {
+		r := planRequest(m)
+		r.Inspections = tc.inspections
+		_, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, imageCheckKey, false)
+		var blocked *PreflightBlockedError
+		if !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{tc.want}) || len(blocked.Services) != 1 {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if s := blocked.Services[0]; s.Name != "web" || !slices.Equal(s.Blockers, []string{tc.want}) || !slices.Equal(s.Unsupported, tc.unsupported) {
+			t.Fatalf("%s: service %+v", name, s)
+		}
+	}
+	if n := deploymentRows(t, st, app.ID); n != 0 {
+		t.Fatalf("a refused plan left %d rows", n)
+	}
+	// Without container.inspect there was nothing to ask: only the capability is named.
+	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityDeploymentApply}); err != nil {
+		t.Fatal(err)
+	}
+	r := planRequest(m)
+	r.Inspections = nil
+	var blocked *PreflightBlockedError
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, r, nil, imageCheckKey, false); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"agent_inspect_unsupported"}) || len(blocked.Services) != 0 {
+		t.Fatalf("no capability: %v", err)
 	}
 	if err := ts.SetEndpointCapabilities(ctx, endpoint, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}); err != nil {
 		t.Fatal(err)

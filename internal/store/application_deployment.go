@@ -100,7 +100,19 @@ type storedDeploymentResult struct {
 }
 
 // PreflightBlockedError names the findings that stopped a plan. A plan never guesses past them.
-type PreflightBlockedError struct{ Blockers []string }
+type PreflightBlockedError struct {
+	Blockers []string
+	// Services are the planned services that carry blockers of their own.
+	Services []BlockedService
+}
+
+// BlockedService names a service a refused plan blocked on: its own blockers and the codes a
+// live inspection reported, nothing else about it.
+type BlockedService struct {
+	Name        string   `json:"name"`
+	Blockers    []string `json:"blockers"`
+	Unsupported []string `json:"unsupported,omitempty"`
+}
 
 func (e *PreflightBlockedError) Error() string {
 	return "deployment preflight blocked: " + strings.Join(e.Blockers, ",")
@@ -132,7 +144,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 			if err != nil {
 				return err
 			}
-			if err := blocked(dr.blockers); err != nil {
+			if err := blocked(dr.blockers, dr.services...); err != nil {
 				return err
 			}
 			if err := t.checkFrame(ctx, tx, a, dr.d, key, r.MaxFrameBytes); err != nil {
@@ -150,6 +162,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	var pulled []int // plan service index per work item
 	var state string
 	var capabilities map[string]bool
+	var services []BlockedService
 	// A read: no lock and no success row, but a denial or failure audits the plan's target.
 	err = t.run(ctx, a, permissions.ApplicationDeploy, &target, nil, false, func(tx *sql.Tx) error {
 		dr, err := t.draftPlan(ctx, tx, a, id.String(), planID, r, false)
@@ -157,6 +170,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 			return err
 		}
 		d, m, blockers := dr.d, dr.m, dr.blockers
+		services = dr.services
 		capabilities = dr.capabilities
 		anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
 		if err != nil {
@@ -193,7 +207,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 			work = append(work, w)
 			pulled = append(pulled, i)
 		}
-		if err := blocked(blockers); err != nil {
+		if err := blocked(blockers, services...); err != nil {
 			return err
 		}
 		// draftPlan's preflight verified m against the latest revision and live inventory.
@@ -241,7 +255,7 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 		if current != state {
 			return ErrAdoptionChanged
 		}
-		if err := blocked(blockers); err != nil {
+		if err := blocked(blockers, services...); err != nil {
 			return err
 		}
 		now := time.Now().UTC()
@@ -263,12 +277,28 @@ func pinPull(ps *PlannedService, ref registry.Reference, digest string) {
 	ps.PullReference, ps.PullDigest = ref.Host+"/"+ref.Repository+"@"+digest, digest
 }
 
-func blocked(blockers []string) error {
+func blocked(blockers []string, services ...BlockedService) error {
 	if len(blockers) == 0 {
 		return nil
 	}
 	slices.Sort(blockers)
-	return &PreflightBlockedError{Blockers: slices.Compact(blockers)}
+	return &PreflightBlockedError{Blockers: slices.Compact(blockers), Services: services}
+}
+
+// inspectionBlockers checks a mapped service against the live inspection the API made of its
+// container at plan time, recording on row the codes of what a recreate would drop.
+func inspectionBlockers(row *PreflightService, inspections map[string]protocol.ContainerInspection) []string {
+	in, ok := inspections[row.ContainerID]
+	switch {
+	case !ok:
+		return []string{"inspection_unavailable"}
+	case in.Target != *row.InspectionTarget:
+		return []string{"replacement_identity_changed"}
+	case !in.ConfigurationVerified:
+		row.Unsupported = in.Unsupported
+		return []string{"configuration_unsupported"}
+	}
+	return nil
 }
 
 // lockApplication takes the application row lock settle, remap and revision append contend on
@@ -294,6 +324,8 @@ type draft struct {
 	m            *ApplicationMapping
 	blockers     []string
 	capabilities map[string]bool
+	// services are the services with blockers of their own, for the refusal.
+	services []BlockedService
 }
 
 // draftPlan runs the preflight (locking when the plan is written in the same transaction) and
@@ -321,9 +353,18 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 			digests[im.ID] = im.Digests[0]
 		}
 	}
+	inspected := capabilities[protocol.CapabilityContainerInspect]
+	var refused []BlockedService
 	for i, s := range spec.Services {
 		row := p.Services[i]
+		// Without container.inspect there was nothing to ask; agent_inspect_unsupported says why.
+		if inspected && row.InspectionTarget != nil {
+			row.Blockers = append(row.Blockers, inspectionBlockers(&row, r.Inspections)...)
+		}
 		blockers = append(blockers, row.Blockers...)
+		if len(row.Blockers) > 0 {
+			refused = append(refused, BlockedService{Name: row.Name, Blockers: row.Blockers, Unsupported: row.Unsupported})
+		}
 		refs := make([]string, 0, len(s.Environment))
 		for _, ref := range s.Environment {
 			refs = append(refs, ref.SecretRef)
@@ -349,7 +390,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 	blockers = append(blockers, capabilityBlockers(capabilities, plan)...)
 	now := time.Now().UTC()
 	d := &Deployment{ID: planID, ApplicationID: app, InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Kind: "apply", State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
-	return &draft{d: d, m: m, blockers: blockers, capabilities: capabilities}, nil
+	return &draft{d: d, m: m, blockers: blockers, capabilities: capabilities, services: refused}, nil
 }
 
 // endpointCapabilities is what the endpoint's agent advertised at its last connect.

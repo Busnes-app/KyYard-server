@@ -42,6 +42,8 @@ type PreflightService struct {
 	DroppedBinds      []protocol.Mount `json:"dropped_binds"`
 	DroppedMounts     []protocol.Mount `json:"dropped_mounts"`
 	UnsupportedMounts []protocol.Mount `json:"unsupported_mounts"`
+	// Unsupported are the codes a plan-time live inspection reported (configuration_unsupported).
+	Unsupported []string `json:"unsupported,omitempty"`
 }
 
 // anonymousVolume is the name Docker gives a volume nobody named.
