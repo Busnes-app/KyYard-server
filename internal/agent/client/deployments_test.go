@@ -375,7 +375,21 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 			if withRemove {
 				oversized = protocol.TypeDeploymentRemove
 			}
-			if err := write(ctx, conn, oversized, strings.Repeat("a", protocol.MaxDeploymentRequestBytes)); err != nil {
+			// A payload of exactly the cap is read and answered; one byte more closes the session.
+			if err := write(ctx, conn, oversized, strings.Repeat("a", protocol.MaxDeploymentRequestBytes-2)); err != nil {
+				return err
+			}
+			for {
+				f, err := read(ctx, conn)
+				if err != nil {
+					return err
+				}
+				var res protocol.DeploymentResult
+				if f.Type == protocol.TypeDeploymentResult && json.Unmarshal(f.Payload, &res) == nil && res.Outcome == protocol.OutcomeDenied {
+					break
+				}
+			}
+			if err := write(ctx, conn, oversized, strings.Repeat("a", protocol.MaxDeploymentRequestBytes-1)); err != nil {
 				return err
 			}
 			for {

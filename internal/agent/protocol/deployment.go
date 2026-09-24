@@ -16,7 +16,7 @@ const (
 	TypeDeploymentApply          = "deployment.apply"
 	TypeDeploymentResult         = "deployment.result"
 	CapabilityDeploymentApply    = "deployment.apply"
-	MaxDeploymentRequestBytes    = 192 << 10
+	MaxDeploymentRequestBytes    = 320 << 10
 	MaxDeploymentResultBytes     = 160 << 10
 	DeploymentLifetime           = 15 * time.Minute
 	MaxDeploymentServices        = 100
@@ -25,8 +25,11 @@ const (
 	MaxDeploymentEnvBytes        = 64 << 10
 	MaxDeploymentPorts           = 64
 	MaxDeploymentStepDetailBytes = 256
+	MaxRegistryAuthHosts         = 16
+	MaxRegistryAuthSecretBytes   = 4096
 	StepPrecondition             = "precondition"
 	StepImage                    = "image"
+	StepPull                     = "pull"
 	StepStop                     = "stop"
 	StepRename                   = "rename"
 	StepCreate                   = "create"
@@ -43,7 +46,7 @@ var (
 	deploymentProject = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	deploymentService = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 	deploymentEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-	deploymentSteps   = map[string]bool{StepPrecondition: true, StepImage: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true}
+	deploymentSteps   = map[string]bool{StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true}
 	deploymentRestart = map[string]bool{"": true, "no": true, "always": true, "unless-stopped": true, "on-failure": true}
 	resultOutcomes    = map[string]bool{OutcomeSucceeded: true, OutcomeFailed: true, OutcomeDenied: true, OutcomeTimedOut: true, OutcomeUnknown: true}
 )
@@ -55,6 +58,8 @@ type DeploymentRequest struct {
 	Revision   int                 `json:"revision"`
 	Deadline   time.Time           `json:"deadline"`
 	Services   []DeploymentService `json:"services"`
+	// Registries holds a credential per registry host some service pulls from; never logged.
+	Registries map[string]RegistryAuth `json:"registries,omitempty"`
 }
 type DeploymentService struct {
 	Name          string            `json:"name"`
@@ -64,6 +69,36 @@ type DeploymentService struct {
 	Restart       string            `json:"restart"`
 	Ports         []Port            `json:"ports"`
 	Env           map[string]string `json:"env"`
+	// Pull, when set, has the agent pull the image first; ImageID is then empty.
+	Pull *ImagePull `json:"pull,omitempty"`
+}
+
+// ImagePull names an image by host, repository and the digest it must resolve to.
+type ImagePull struct {
+	Reference string `json:"reference"`
+	Digest    string `json:"digest"`
+}
+type RegistryAuth struct {
+	Username string `json:"username"`
+	Secret   string `json:"secret"`
+}
+
+// Host is the registry host Reference names (internal/registry.ParseReference's rule), or ""
+// when it names none or is invalid.
+func (p ImagePull) Host() string {
+	if !ValidImageReference(p.Reference) {
+		return ""
+	}
+	name, _ := SplitImageReference(p.Reference)
+	if first, _, ok := strings.Cut(name, "/"); ok && (strings.ContainsAny(first, ".:") || first == "localhost") {
+		return first
+	}
+	return ""
+}
+
+func (p ImagePull) valid() bool {
+	_, digest := SplitImageReference(p.Reference)
+	return p.Host() != "" && imageID.MatchString(digest) && digest == p.Digest
 }
 
 func fullImageID(id string) bool {
@@ -87,12 +122,16 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 		port     int
 		protocol string
 	}
-	names, containers, replaces, bindings := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}
+	names, containers, replaces, bindings, pulled := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}, map[string]bool{}
 	for _, s := range r.Services {
-		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !fullImageID(s.ImageID) || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] {
+		image := (s.Pull == nil && fullImageID(s.ImageID)) || (s.Pull != nil && s.ImageID == "" && s.Pull.valid())
+		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] {
 			return errors.New("invalid deployment service")
 		}
 		names[s.Name], containers[s.ContainerName], replaces[s.Replaces.ContainerID] = true, true, true
+		if s.Pull != nil {
+			pulled[s.Pull.Host()] = true
+		}
 		if len(s.Ports) > MaxDeploymentPorts {
 			return errors.New("too many ports")
 		}
@@ -131,6 +170,15 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 			}
 		}
 	}
+	// No credential travels for a host nothing in this frame pulls from.
+	if len(r.Registries) > MaxRegistryAuthHosts {
+		return errors.New("too many registry credentials")
+	}
+	for host, auth := range r.Registries {
+		if !pulled[host] || auth.Secret == "" || len(auth.Secret) > MaxRegistryAuthSecretBytes || !utf8.ValidString(auth.Secret) || strings.ContainsRune(auth.Secret, 0) || len(auth.Username) > 255 {
+			return errors.New("invalid registry auth")
+		}
+	}
 	return nil
 }
 
@@ -152,6 +200,7 @@ type DeploymentIdentity struct {
 	ContainerID string `json:"container_id"`
 	ImageID     string `json:"image_id"`
 	CreatedUnix int64  `json:"created_unix"`
+	ImageDigest string `json:"image_digest,omitempty"` // the pulled repository digest
 }
 
 func (r DeploymentResult) Validate() error {
@@ -165,7 +214,7 @@ func (r DeploymentResult) Validate() error {
 		}
 	}
 	for _, id := range r.Services {
-		if !deploymentService.MatchString(id.Service) || (InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil {
+		if !deploymentService.MatchString(id.Service) || (InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil || (id.ImageDigest != "" && !imageID.MatchString(id.ImageDigest)) {
 			return errors.New("invalid deployment identity")
 		}
 	}
