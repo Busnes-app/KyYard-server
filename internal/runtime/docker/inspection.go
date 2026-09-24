@@ -55,17 +55,27 @@ type inspectedContainer struct {
 
 // InspectContainer reads a bounded, redacted observation through Engine v1.41.
 // It performs GETs only, follows the pinned image ID rather than a tag, and
-// rechecks selected container fields after the image read. Callers own scope,
-// authorization/admission through the agent inspection transport.
+// rechecks selected container fields after the image read. It also decodes the
+// container into inspectedForDeploy and reports, as codes only, what a recreate
+// from the definition would drop. Callers own scope, authorization/admission
+// through the agent inspection transport.
 func (c *Client) InspectContainer(parent context.Context, target protocol.InspectionTarget) (*protocol.ContainerInspection, error) {
 	if err := target.Validate(); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(parent, callBudget)
 	defer cancel()
+	daemonRuntime, err := c.inspectionRuntime(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var before, after inspectedContainer
+	var full, fullAfter inspectedForDeploy
+	var labels struct {
+		Config *struct{ Labels map[string]string }
+	}
 	path := "/containers/" + target.ContainerID + "/json"
-	if err := c.inspectionGet(ctx, path, &before); err != nil {
+	if err := c.inspectionGet(ctx, path, &before, &full, &labels); err != nil {
 		return nil, err
 	}
 	if before.ID != target.ContainerID || before.Image != target.ImageID || before.Created.Unix() != target.CreatedUnix {
@@ -75,10 +85,14 @@ func (c *Client) InspectContainer(parent context.Context, target protocol.Inspec
 	if err != nil {
 		return nil, err
 	}
+	if !reported(full) {
+		return nil, ErrInspectionInvalid
+	}
 	var im struct {
 		ID                    string `json:"Id"`
 		OS                    string `json:"Os"`
 		Architecture, Variant string
+		Config                imageDefaults
 	}
 	if err = c.inspectionGet(ctx, "/images/"+target.ImageID+"/json", &im); err != nil {
 		return nil, err
@@ -89,15 +103,25 @@ func (c *Client) InspectContainer(parent context.Context, target protocol.Inspec
 	if !platformPart.MatchString(im.OS) || !platformPart.MatchString(im.Architecture) || (im.Variant != "" && !platformPart.MatchString(im.Variant)) {
 		return nil, ErrInspectionInvalid
 	}
-	if err = c.inspectionGet(ctx, path, &after); err != nil {
+	if err = c.inspectionGet(ctx, path, &after, &fullAfter); err != nil {
 		return nil, err
 	}
-	if !reflect.DeepEqual(before, after) {
+	if !reflect.DeepEqual(before, after) || !reported(fullAfter) || !sameConfiguration(full, fullAfter) {
 		return nil, ErrInspectionChanged
 	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	// No Compose label: "" matches no network, so network is reported unless the container is on bridge only.
+	projectNetwork := ""
+	if labels.Config != nil && labels.Config.Labels["com.docker.compose.project"] != "" {
+		projectNetwork = labels.Config.Labels["com.docker.compose.project"] + "_default"
+	}
+	out.Unsupported = undescribed(full, projectNetwork, daemonRuntime)
+	if full.Config.differs(im.Config) {
+		out.Unsupported = append(out.Unsupported, "image_config")
+	}
+	out.ConfigurationVerified = len(out.Unsupported) == 0
 	out.Target = target
 	out.ImagePlatform = protocol.ImagePlatform{OS: im.OS, Architecture: im.Architecture, Variant: im.Variant}
 	out.ObservedAt = time.Now().UTC()
@@ -106,7 +130,8 @@ func (c *Client) InspectContainer(parent context.Context, target protocol.Inspec
 
 // A separate small read budget avoids changing the fleet snapshot contract.
 // Never wrap daemon, decode or transport errors: they can contain configuration.
-func (c *Client) inspectionGet(ctx context.Context, path string, out any) error {
+// The body is decoded into each of outs.
+func (c *Client) inspectionGet(ctx context.Context, path string, outs ...any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
 		return ErrInspectionUnavailable
@@ -132,10 +157,34 @@ func (c *Client) inspectionGet(ctx context.Context, path string, out any) error 
 		}
 		return ErrInspectionUnavailable
 	}
-	if len(body) > maxInspectionBody || json.Unmarshal(body, out) != nil {
+	if len(body) > maxInspectionBody {
 		return ErrInspectionInvalid
 	}
+	for _, out := range outs {
+		if json.Unmarshal(body, out) != nil {
+			return ErrInspectionInvalid
+		}
+	}
 	return nil
+}
+
+// inspectionRuntime is the daemon's DefaultRuntime, what a container created without one gets,
+// read at most once a minute per client.
+func (c *Client) inspectionRuntime(ctx context.Context) (string, error) {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
+	if c.runtimeName != "" && time.Since(c.runtimeRead) < time.Minute {
+		return c.runtimeName, nil
+	}
+	var info struct{ DefaultRuntime string }
+	if err := c.inspectionGet(ctx, "/info", &info); err != nil {
+		return "", err
+	}
+	if info.DefaultRuntime == "" {
+		return "", ErrInspectionUnavailable
+	}
+	c.runtimeName, c.runtimeRead = info.DefaultRuntime, time.Now()
+	return c.runtimeName, nil
 }
 
 func inspectionFacts(raw inspectedContainer) (*protocol.ContainerInspection, error) {

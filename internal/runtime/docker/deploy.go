@@ -222,6 +222,12 @@ func reported(in inspectedForDeploy) bool {
 	return h != nil && in.Config != nil && in.NetworkSettings != nil && in.Mounts != nil && h.Privileged != nil && h.AutoRemove != nil && h.ReadonlyRootfs != nil
 }
 
+// sameConfiguration compares what recreation depends on: Config, HostConfig and Mounts. State
+// and NetworkSettings change on their own (a restart) and are not compared.
+func sameConfiguration(a, b inspectedForDeploy) bool {
+	return reflect.DeepEqual(a.Config, b.Config) && reflect.DeepEqual(a.HostConfig, b.HostConfig) && reflect.DeepEqual(a.Mounts, b.Mounts)
+}
+
 // undescribed lists, as codes of protocol.UnsupportedCodes in its order, the configuration
 // recreation would drop. The definition expresses image, env, ports, restart, the project
 // network and volume and bind mounts only; log configuration and settings outside this list
