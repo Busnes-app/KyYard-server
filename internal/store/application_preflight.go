@@ -36,7 +36,7 @@ type PreflightService struct {
 	Blockers         []string                   `json:"blockers"`
 }
 
-// PreflightApplication is a diagnostic only, never a deploy approval. Inventory
+// PreflightApplication reports whether a plan may be minted; it approves nothing. Inventory
 // omits host processes and configuration needed to safely replace a container.
 // See docs/application-schema.md, Deployment preflight.
 func (t *tenancyStore) PreflightApplication(ctx context.Context, a TenantAccess, app string) (*DeploymentPreflight, error) {

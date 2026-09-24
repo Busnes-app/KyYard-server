@@ -11,7 +11,7 @@ it('loads on demand, pages results and never offers execution', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
   await screen.findByRole('heading', { name: 'Deployment preflight' });
   expect(screen.getByText('Review and save service mapping for the latest definition.')).toBeTruthy();
-  expect(screen.queryByText(/Ready to plan/)).toBeNull();
+  expect(screen.queryByText(/eady to plan/)).toBeNull();
   expect(document.body.textContent).not.toContain('not available yet');
   expect(screen.getAllByRole('row')).toHaveLength(26);
   expect(screen.queryByText('service-25')).toBeNull();
@@ -29,6 +29,14 @@ it('says ready to plan when no blocker remains', async () => {
   await screen.findByRole('heading', { name: 'Deployment preflight' });
   expect(screen.getByText('Ready to plan: every service maps to an adopted container and its image is known on the host.')).toBeTruthy();
   expect(document.body.textContent).not.toContain('runtime verification');
+});
+it('says not ready when only service findings remain', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...data, blockers: [], services: data.services.slice(0, 1) }))));
+  render(<ApplicationPreflight org="org" base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  expect(await screen.findByText('Not ready to plan.')).toBeTruthy();
+  expect(screen.getByText(data.services[0]!.name)).toBeTruthy();
+  expect(screen.queryByText(/Ready to plan/)).toBeNull();
 });
 it('hides observations after adoption replacement and redacts error bodies', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...data, instance_id: 'replacement' }))));

@@ -44,7 +44,7 @@ function PreflightView({ base, instanceID, org }: { base: string; instanceID: st
       <h3>Deployment preflight</h3>
       <p>{data.endpoint_name} · definition revision {data.revision} · mapping version {data.mapping_version}</p>
       <p>Inventory received {new Date(data.received_at).toLocaleString()}</p>
-      {data.executable ? <p>Ready to plan: every service maps to an adopted container and its image is known on the host.</p> : <ul className="ky-list">{data.blockers.map(b => <li key={b}>{messages[b] ?? 'Unrecognized preflight condition; planning is unavailable.'}</li>)}</ul>}
+      {data.executable ? <p>Ready to plan: every service maps to an adopted container and its image is known on the host.</p> : data.blockers.length === 0 ? <p>Not ready to plan.</p> : <ul className="ky-list">{data.blockers.map(b => <li key={b}>{messages[b] ?? 'Unrecognized preflight condition; planning is unavailable.'}</li>)}</ul>}
       <p>Image matches use exact references from this host's inventory. IDs are observations, not saved deployment pins. Port checks exclude mapped containers that a future replacement would stop, conservatively treat wildcard addresses as overlapping, and cannot detect host processes or unreported bindings.</p>
       <button type="button" className="btn-secondary" onClick={() => { setSelected(null); resource.reload(); }}>Refresh preflight</button>
       {page.controls}
