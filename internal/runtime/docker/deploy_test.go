@@ -21,6 +21,7 @@ const (
 	oldImage     = "sha256:d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
 	newImage     = "sha256:e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
 	deploymentID = "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b"
+	otherOldID   = "a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6"
 	pullDigest   = "sha256:a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
 )
 
@@ -45,6 +46,7 @@ type fakeDeployEngine struct {
 	startStatus      int
 	removeStatus     int
 	pullStatus       int            // POST /images/create; 200 default
+	pullStatusFor    map[string]int // per fromImage, overriding pullStatus
 	pullBody         string         // its progress stream
 	pullAuth         []string       // X-Registry-Auth of each pull, "" when absent
 	pulledStatus     int            // GET /images/{host%2Frepo@digest}/json; 200 default
@@ -77,6 +79,13 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+oldID+"/json"):
 			w.WriteHeader(f.oldStatus)
 			_ = json.NewEncoder(w).Encode(f.oldContainer)
+		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+otherOldID+"/json"):
+			other := map[string]any{}
+			for k, v := range f.oldContainer {
+				other[k] = v
+			}
+			other["Id"], other["Name"] = otherOldID, "/shop-db-1"
+			_ = json.NewEncoder(w).Encode(other)
 		case r.Method == "GET" && strings.HasSuffix(p, "/images/"+oldImage+"/json"):
 			w.WriteHeader(f.oldImageStatus)
 			_ = json.NewEncoder(w).Encode(map[string]any{"Id": oldImage, "Config": f.oldImageConfig})
@@ -87,6 +96,10 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			f.mu.Lock()
 			f.pullAuth = append(f.pullAuth, r.Header.Get("X-Registry-Auth"))
 			f.mu.Unlock()
+			if status, ok := f.pullStatusFor[r.URL.Query().Get("fromImage")]; ok {
+				w.WriteHeader(status)
+				return
+			}
 			w.WriteHeader(f.pullStatus)
 			_, _ = w.Write([]byte(f.pullBody))
 		case r.Method == "GET" && strings.Contains(p, "%2F") && strings.HasSuffix(p, "@"+pullDigest+"/json"):
@@ -515,21 +528,30 @@ func TestDeployIdentityReadFailureNamesTheContainer(t *testing.T) {
 	}
 }
 
-func TestDeployTwoServicesSecondFails(t *testing.T) {
+// Every precondition runs before any container is touched: a refused second service leaves the
+// first unreplaced.
+func TestDeployTwoServicesSecondRefusedTouchesNothing(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	db := webService()
 	db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", strings.Repeat("f", 64), nil
 	res := f.client().Deploy(context.Background(), request(webService(), db))
-	if res.Outcome != protocol.OutcomeDenied || len(res.Services) != 1 || res.Services[0].Service != "web" {
-		t.Fatalf("partial: %+v", res)
+	if res.Outcome != protocol.OutcomeDenied || len(res.Services) != 0 {
+		t.Fatalf("outcome: %+v", res)
 	}
-	for _, s := range res.Steps[:7] {
-		if s.Outcome != protocol.OutcomeSucceeded {
-			t.Fatalf("web step: %+v", s)
+	got := []string{}
+	for _, s := range res.Steps {
+		got = append(got, s.Service+" "+s.Step+" "+s.Outcome)
+	}
+	want := "web precondition succeeded,web image succeeded,db precondition denied,db image skipped," +
+		"web rename skipped,web create skipped,web stop skipped,web start skipped,web remove skipped," +
+		"db rename skipped,db create skipped,db stop skipped,db start skipped,db remove skipped"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("steps:\n got %v\nwant %v", got, want)
+	}
+	for _, c := range f.steps() {
+		if !strings.HasPrefix(c, "GET ") {
+			t.Fatalf("a container was touched: %v", f.steps())
 		}
-	}
-	if res.Steps[7].Service != "db" || res.Steps[7].Outcome != protocol.OutcomeDenied {
-		t.Fatalf("db precondition: %+v", res.Steps[7])
 	}
 	infos := 0
 	for _, c := range f.steps() {

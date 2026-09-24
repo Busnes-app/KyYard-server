@@ -1,11 +1,9 @@
 package docker
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,20 +12,26 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
-// maxPullStreamBytes bounds one progress line; the stream itself is read to its end.
-const maxPullStreamBytes = 1 << 20
-
-var errPullStream = errors.New("the pull progress stream ended early")
+// pullWindow is the time one pull (and its inspect) may take: what remains before the deadline
+// once every service's replacement is reserved, since all pulls run before any replacement.
+// ok is false when less than callBudget would remain, and nothing is pulled for a replacement
+// that could not fit.
+func pullWindow(remaining time.Duration, services int) (window time.Duration, ok bool) {
+	window = remaining - time.Duration(services)*replaceBudget
+	return window, window >= callBudget
+}
 
 // pull fetches s.Pull by digest with the frame's credential for its host, then proves the
 // image the daemon now holds is that repository at that digest. It returns the image ID the
 // replacement is created from. Details are fixed: daemon text can echo the registry's answer.
 func (r *deployRun) pull(ctx context.Context, s protocol.DeploymentService) (outcome, detail, imageID string) {
-	name, digest, _ := strings.Cut(s.Pull.Reference, "@")
-	// The replacement's own budget is kept back; a slow registry never eats it.
-	budget := max(time.Until(r.req.Deadline)-replaceBudget, callBudget)
-	pctx, cancel := context.WithTimeout(ctx, budget)
+	window, ok := pullWindow(time.Until(r.req.Deadline), len(r.req.Services))
+	if !ok {
+		return protocol.OutcomeTimedOut, "not enough time left before the deadline to pull and replace safely", ""
+	}
+	pctx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
+	name, digest, _ := strings.Cut(s.Pull.Reference, "@")
 	q := url.Values{"fromImage": {name}, "tag": {digest}}
 	req, err := http.NewRequestWithContext(pctx, http.MethodPost, r.c.base+"/images/create?"+q.Encode(), nil)
 	if err != nil {
@@ -39,7 +43,8 @@ func (r *deployRun) pull(ctx context.Context, s protocol.DeploymentService) (out
 			Password string `json:"password"`
 			Server   string `json:"serveraddress"`
 		}{auth.Username, auth.Secret, s.Pull.Host()})
-		req.Header.Set("X-Registry-Auth", base64.StdEncoding.EncodeToString(raw))
+		// URL-safe: the daemon decodes with base64.URLEncoding and pulls anonymously on failure.
+		req.Header.Set("X-Registry-Auth", base64.URLEncoding.EncodeToString(raw))
 	}
 	resp, err := r.c.http.Do(req)
 	if err != nil {
@@ -56,28 +61,20 @@ func (r *deployRun) pull(ctx context.Context, s protocol.DeploymentService) (out
 		return protocol.OutcomeFailed, "pull failed", ""
 	}
 	// A pull reports late failures as an error line inside the 200.
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64<<10), maxPullStreamBytes)
-	for scanner.Scan() {
-		var line struct {
-			Error json.RawMessage `json:"error"`
-		}
-		if json.Unmarshal(scanner.Bytes(), &line) == nil && line.Error != nil {
-			return protocol.OutcomeFailed, "pull failed", ""
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		o, d := r.outcomeFor(pctx, errPullStream, 0)
+	failure, err := scanPullStream(resp.Body)
+	if err != nil {
+		o, d := r.outcomeFor(pctx, err, 0)
 		return o, d, ""
 	}
-	ictx, icancel := context.WithTimeout(ctx, callBudget)
-	defer icancel()
+	if failure != "" {
+		return protocol.OutcomeFailed, "pull failed", ""
+	}
 	var im struct {
 		ID          string `json:"Id"`
 		RepoDigests []string
 	}
-	if err := r.c.get(ictx, "/images/"+url.PathEscape(s.Pull.Reference)+"/json", &im); err != nil {
-		o, d := r.outcomeFor(ictx, err, statusOf(err))
+	if err := r.c.get(pctx, "/images/"+url.PathEscape(s.Pull.Reference)+"/json", &im); err != nil {
+		o, d := r.outcomeFor(pctx, err, statusOf(err))
 		return o, d, ""
 	}
 	if len(im.ID) == 71 && strings.HasPrefix(im.ID, "sha256:") && protocol.ValidImageReference(im.ID) {

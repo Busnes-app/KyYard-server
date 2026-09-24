@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
@@ -20,7 +21,8 @@ func pulledService(reference string) protocol.DeploymentService {
 func TestDeployPullsThePinnedDigest(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	req := request(pulledService("ghcr.io/org/app"))
-	req.Registries = map[string]protocol.RegistryAuth{"ghcr.io": {Username: "u", Secret: "s"}}
+	// "a?" puts a '/' in the standard alphabet; the daemon decodes URL-safe and would drop it.
+	req.Registries = map[string]protocol.RegistryAuth{"ghcr.io": {Username: "u", Secret: "a?"}}
 	res := f.client().Deploy(context.Background(), req)
 	if res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("outcome: %+v", res)
@@ -33,8 +35,8 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 	if q, _ := url.ParseQuery(f.calls[3].Query); len(q) != 2 || q.Get("fromImage") != "ghcr.io/org/app" || q.Get("tag") != pullDigest {
 		t.Fatalf("pull query: %q", f.calls[3].Query)
 	}
-	raw, err := base64.StdEncoding.DecodeString(f.pullAuth[0])
-	if err != nil || string(raw) != `{"username":"u","password":"s","serveraddress":"ghcr.io"}` {
+	raw, err := base64.URLEncoding.DecodeString(f.pullAuth[0])
+	if err != nil || string(raw) != `{"username":"u","password":"a?","serveraddress":"ghcr.io"}` {
 		t.Fatalf("X-Registry-Auth: %q %v", raw, err)
 	}
 	var body struct{ Image string }
@@ -103,7 +105,12 @@ func TestDeployPullFailuresTouchNothing(t *testing.T) {
 		"stream error": {func(f *fakeDeployEngine) {
 			f.pullBody = `{"status":"Pulling"}` + "\n" + `{"error":"` + daemonText + `"}` + "\n"
 		}, "pull failed"},
-		"mismatch": {func(f *fakeDeployEngine) { f.pulled["RepoDigests"] = []string{daemonText + "@" + pullDigest} }, "pulled image does not match"},
+		"mismatch":    {func(f *fakeDeployEngine) { f.pulled["RepoDigests"] = []string{daemonText + "@" + pullDigest} }, "pulled image does not match"},
+		"id shape":    {func(f *fakeDeployEngine) { f.pulled["Id"] = "abc" }, "pulled image does not match"},
+		"inspect 404": {func(f *fakeDeployEngine) { f.pulledStatus = 404 }, "the runtime refused with status 404"},
+		"inspect 500": {func(f *fakeDeployEngine) { f.pulledStatus = 500 }, "the runtime refused with status 500"},
+		// A line past the per-line bound ends the scan with an error, never a success.
+		"stream cut": {func(f *fakeDeployEngine) { f.pullBody = `{"status":"` + strings.Repeat("x", 1<<20+1) + `"}` + "\n" }, "the runtime call failed"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -132,6 +139,61 @@ func TestDeployPullFailuresTouchNothing(t *testing.T) {
 			}
 			if err := res.Validate(); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// All pulls run before any replacement: a second service's refused pull leaves the first
+// service's container untouched although its own pull succeeded.
+func TestDeploySecondPullFailureTouchesNothing(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.pullStatusFor = map[string]int{"ghcr.io/org/db": 401}
+	db := pulledService("ghcr.io/org/db")
+	db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", otherOldID, nil
+	res := f.client().Deploy(context.Background(), request(pulledService("ghcr.io/org/app"), db))
+	if res.Outcome != protocol.OutcomeFailed || res.Detail != "service db, step pull: unauthorized" || len(res.Services) != 0 {
+		t.Fatalf("%+v", res)
+	}
+	for _, c := range f.steps() {
+		if !strings.HasPrefix(c, "GET ") && c != "POST /images/create" {
+			t.Fatalf("a container was touched: %v", f.steps())
+		}
+	}
+	got := []string{}
+	for _, s := range res.Steps {
+		got = append(got, s.Service+" "+s.Step+" "+s.Outcome)
+	}
+	if strings.Join(got[:4], ",") != "web precondition succeeded,web pull succeeded,db precondition succeeded,db pull failed" || len(got) != 14 {
+		t.Fatalf("steps: %v", got)
+	}
+}
+
+// A pull that would leave too little time for every replacement is refused before it is sent.
+func TestDeployPullRefusedWithoutTimeToReplace(t *testing.T) {
+	const replace = 2*30*time.Second + 3*20*time.Second // replaceBudget
+	for name, tc := range map[string]struct {
+		services []protocol.DeploymentService
+		left     time.Duration
+	}{
+		"one service":  {[]protocol.DeploymentService{pulledService("ghcr.io/org/app")}, replace + 10*time.Second},
+		"two services": {[]protocol.DeploymentService{pulledService("ghcr.io/org/app"), webService()}, 2*replace + 10*time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeDeployEngine(t)
+			if len(tc.services) == 2 {
+				tc.services[1].Name, tc.services[1].ContainerName, tc.services[1].Replaces.ContainerID, tc.services[1].Ports = "db", "shop-db-1", otherOldID, nil
+			}
+			req := request(tc.services...)
+			req.Deadline = time.Now().Add(tc.left)
+			res := f.client().Deploy(context.Background(), req)
+			if res.Outcome != protocol.OutcomeTimedOut || res.Steps[1].Step != protocol.StepPull || res.Steps[1].Outcome != protocol.OutcomeTimedOut {
+				t.Fatalf("%+v", res)
+			}
+			for _, c := range f.steps() {
+				if !strings.HasPrefix(c, "GET ") {
+					t.Fatalf("pulled or touched a container: %v", f.steps())
+				}
 			}
 		})
 	}
