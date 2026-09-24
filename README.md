@@ -165,6 +165,27 @@ operation; platform administrators need explicit membership too. Membership admi
 organization in the header, then manage environments, members and audit history under
 `/organizations/{organization}`. Links are deep-linkable and survive sign-in. Provider settings are available under Settings → Single sign-on.
 
+### Organizations and accounts
+
+The first platform administrator is the bootstrap `admin` from first start, or one made with
+`kyyard-server init-admin` (which also resets an existing account's password). Everything
+after that is in the UI: **Settings → Administration**, shown to platform administrators only.
+
+- **Create user** makes a local account with platform role User or Platform administrator. The
+  server generates a 24-character temporary password and shows it once, with Copy; it is not
+  shown again, logged or audited. Hand it over out of band. The account must replace it at
+  first sign-in.
+- **Create organization** takes a name and a first administrator chosen from active users. The
+  organization and that administrator's membership are created together; the creator is not
+  made a member unless named.
+- The organization's administrator adds everyone else on the organization's **Members** page,
+  by user ID (`usr_…`), with an organization role. Administration does not show IDs: a signed-in
+  account reads its own at `/api/auth/me`, and a platform administrator can read every one at
+  `/api/admin/users`. A platform role grants no organization access.
+
+Both creations are recorded in platform audit (`organization.create`, `user.create`), which has
+no screen yet. Accounts and organizations cannot be disabled or deleted from the UI yet.
+
 ### Tenant API
 
 Use `/api/organizations/{organization}` (`org_initial` for the default organization):
@@ -489,8 +510,8 @@ commands, anchors and aliases, are rejected rather than silently dropped.
 
 All environment values are encrypted. Saved configuration shows keys and references,
 not values. Administrators can import and discard drafts; discard deletes their
-saved history and changes no running containers. Editing and deployment
-will follow in later application milestones. See [the application contract](docs/application-schema.md)
+saved history and changes no running containers. Editing, adoption and deployment
+follow below. See [the application contract](docs/application-schema.md)
 for the implemented limits and the separate target Compose feature set.
 
 To adopt an existing project, open an application's configuration, choose its host
@@ -523,9 +544,12 @@ are not compared. This does not deploy or authorize changes.
 Use **Deployment preflight** to check the saved mapping, resolve exact image
 references from the host's image inventory and find reported published-port
 overlaps. Missing images/references require pulling or correcting the definition,
-then refreshing inventory. This is a read-only diagnostic: runtime configuration,
-host processes and unreported port bindings remain unverified. Reported image IDs
-are not saved deployment pins. **Deployment is not enabled yet.**
+then refreshing inventory. Preflight is read-only: runtime configuration, host
+processes and unreported port bindings are not checked, and reported image IDs are
+not saved deployment pins. With no findings left it says **Ready to plan**; otherwise
+it lists what to fix, or says **Not ready to plan.** when only per-service findings
+remain in the table. **Deployment plan** then pins the images and replaced containers,
+and **Apply deployment** runs it on the host.
 
 The authenticated container inspection API is
 `GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/inspection`.
