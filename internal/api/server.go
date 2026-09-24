@@ -54,8 +54,11 @@ type Server struct {
 	imageChecks sync.Map
 	// digestResolver answers update checks and update plans; nil means the real registry client.
 	digestResolver store.DigestResolver
-	// registrySlots bounds update checks and update plans in flight across the server.
+	// registrySlots bounds update checks and update plans in flight across the server;
+	// registryHeld counts each organization's share of them, under registryMu.
 	registrySlots chan struct{}
+	registryMu    sync.Mutex
+	registryHeld  map[string]int
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -157,9 +160,9 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		mux:      http.NewServeMux(),
 		logs:     newLogRegistry(),
 		attempts: make(map[string]attemptWindow),
-		// registrySlots bounds registry work across the server: each check or update plan may hold
-		// a registry connection per service for up to store.ImageCheckDeadline.
-		registrySlots: make(chan struct{}, 4),
+		// Each check or update plan may hold a registry connection per service for up to
+		// store.ImageCheckDeadline.
+		registrySlots: make(chan struct{}, registrySlotsTotal),
 	}
 
 	s.routes()

@@ -2,6 +2,8 @@ package api_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -146,26 +148,62 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 		t.Fatal("the stored credential did not reach the resolver")
 	}
 
-	// Four registry calls in flight, a check and three plans, fill the server; a fifth is 429
-	// and a plan with no update is not counted.
-	gated := &fakeDigests{digest: remote, gate: make(chan struct{}), entered: make(chan struct{}, 4)}
-	api.SetDigestResolverForTest(s, gated)
-	results := make(chan *httptest.ResponseRecorder, 4)
+	// Organization b: an adopted, mapped application whose registry answers at once.
+	must(ts.CreateOrganization(ctx, &store.Organization{ID: "b", Name: "B"}))
+	must(ts.CreateEnvironment(ctx, &store.Environment{ID: "env-b", OrganizationID: "b", Name: "Prod"}))
+	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "b", UserID: "usr_updater", Role: store.RoleOrganizationAdmin, Status: "active"}))
+	request("PUT", "/api/organizations/b/registries", `{"host":"ghcr.io","name":"GitHub","username":"bot","credential":"`+secret+`","allow_private":false}`, 200)
+	accessB := store.TenantAccess{ActorID: "usr_updater", OrganizationID: "b", EnvironmentID: "env-b"}
+	tok, err := ts.CreateEnrollmentToken(ctx, accessB, "docker", "")
+	must(err)
+	pubB, privB, _ := ed25519.GenerateKey(rand.Reader)
+	epB, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pubB, Proof: ed25519.Sign(privB, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host-b"})
+	must(err)
+	must(ts.ApproveEndpoint(ctx, accessB, epB.ID, epB.Fingerprint))
+	containerB, imageB := strings.Repeat("1", 64), "sha256:"+strings.Repeat("2", 64)
+	snapshotB, _ := json.Marshal(protocol.Snapshot{
+		Engine:     protocol.Engine{Version: "1"},
+		Images:     []protocol.Image{{ID: imageB, Tags: []string{"ghcr.io/orgb/web:1"}, Digests: []string{"ghcr.io/orgb/web@" + local}}},
+		Containers: []protocol.Container{{ID: containerB, Name: "shop-web", ImageID: imageB, ComposeProject: "shop", CreatedAt: created}},
+	})
+	_, err = ts.AcceptInventory(ctx, epB.ID, uint64(time.Now().Unix()), time.Now(), snapshotB)
+	must(err)
+	baseB := "/api/organizations/b/environments/env-b/applications"
+	importB, _ := json.Marshal(map[string]string{"name": "shop", "compose": "services: {web: {image: ghcr.io/orgb/web:1}}"})
+	var appB store.Application
+	must(json.Unmarshal([]byte(request("POST", baseB, string(importB), 201)), &appB))
+	must(json.Unmarshal([]byte(request("GET", baseB+"/"+appB.ID+"/adoption?endpoint="+epB.ID+"&project=shop", "", 200)), &preview))
+	adoptB, _ := json.Marshal(store.AdoptionRequest{EndpointID: epB.ID, Project: "shop", Digest: preview.Digest, Confirm: "shop"})
+	var instanceB store.ApplicationInstance
+	must(json.Unmarshal([]byte(request("POST", baseB+"/"+appB.ID+"/adoption", string(adoptB), 201)), &instanceB))
+	var mappedB store.ApplicationMapping
+	must(json.Unmarshal([]byte(request("GET", baseB+"/"+appB.ID+"/mapping", "", 200)), &mappedB))
+	mapB, _ := json.Marshal(store.MappingRequest{InstanceID: instanceB.ID, Version: mappedB.Version, Digest: mappedB.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": containerB}})
+	request("PUT", baseB+"/"+appB.ID+"/mapping", string(mapB), 204)
+
+	// Organization a's quota is two registry calls in flight, a check and a plan; a third is 429
+	// and a plan with no update is not counted. Organization b still gets through.
+	gated := &fakeDigests{digest: remote, gate: make(chan struct{}), entered: make(chan struct{}, 2)}
+	api.SetDigestResolverForTest(s, routeDigests{"orgb/web": fake, "": gated})
+	results := make(chan *httptest.ResponseRecorder, 2)
 	var release sync.Once
 	open := func() { release.Do(func() { close(gated.gate) }) }
 	t.Cleanup(open)
 	// The goroutines only request; every check runs here, where t.Fatal is allowed.
 	go func() { results <- tenantRequest(s, admin, "POST", check, "", true) }()
 	<-gated.entered
-	for range 3 {
-		go func() { results <- tenantRequest(s, admin, "POST", deployments, string(planBody), true) }()
-		<-gated.entered
-	}
+	go func() { results <- tenantRequest(s, admin, "POST", deployments, string(planBody), true) }()
+	<-gated.entered
 	w := send("POST", deployments, string(planBody))
 	if w.Code != 429 || w.Header().Get("Retry-After") != "5" {
-		t.Fatalf("over the cap: %d %v %s", w.Code, w.Header(), w.Body.String())
+		t.Fatalf("over the organization's quota: %d %v %s", w.Code, w.Header(), w.Body.String())
 	}
 	code(w.Body.String(), "too_many_checks")
+	var checkedB store.UpdateCheck
+	must(json.Unmarshal([]byte(request("POST", baseB+"/"+appB.ID+"/updates/check", "", 200)), &checkedB))
+	if len(checkedB.Services) != 1 || checkedB.Services[0].RemoteDigest != remote {
+		t.Fatalf("organization b's check: %+v", checkedB)
+	}
 	// Authorization answers before the cap: a member who may not deploy is 403, audited, not 429.
 	w = tenantRequest(s, viewer, "POST", deployments, string(planBody), true)
 	if w.Code != 403 {
@@ -174,7 +212,7 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 	code(w.Body.String(), "tenant_access_denied")
 	request("POST", deployments, string(plainBody), 201)
 	open()
-	for range 4 {
+	for range 2 {
 		w := <-results
 		if (w.Code != 200 && w.Code != 201) || strings.Contains(w.Body.String(), secret) {
 			t.Fatalf("a request under the cap: %d %s", w.Code, w.Body.String())
@@ -255,4 +293,14 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 	if frame.Type != protocol.TypeDeploymentApply || len(sent.Services) != 1 || sent.Services[0].Pull == nil || sent.Services[0].Pull.Digest != remote || sent.Registries["ghcr.io"].Secret != secret {
 		t.Fatalf("the pull frame: %s", frame.Type)
 	}
+}
+
+// routeDigests sends a Head to the resolver named by its repository, "" for any other.
+type routeDigests map[string]store.DigestResolver
+
+func (r routeDigests) Head(ctx context.Context, ref registry.Reference, cred *registry.Credential, allowPrivate bool) (string, error) {
+	if next, ok := r[ref.Repository]; ok {
+		return next.Head(ctx, ref, cred, allowPrivate)
+	}
+	return r[""].Head(ctx, ref, cred, allowPrivate)
 }

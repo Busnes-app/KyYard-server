@@ -16,16 +16,38 @@ var (
 	errTooManyChecks   = errors.New("too many registry checks in flight")
 )
 
-// acquireRegistrySlot takes one of the server's registry slots, or answers 429.
-func (s *Server) acquireRegistrySlot(w http.ResponseWriter) (release func(), ok bool) {
-	select {
-	case s.registrySlots <- struct{}{}:
-		return func() { <-s.registrySlots }, true
-	default:
-		w.Header().Set("Retry-After", "5")
-		s.tenantError(w, errTooManyChecks)
-		return nil, false
+// Registry work in flight: an organization's quota comes first, so one tenant cannot hold the
+// whole pool; the pool fits registrySlotsTotal/registrySlotsPerOrganization busy organizations.
+const (
+	registrySlotsPerOrganization = 2
+	registrySlotsTotal           = 8
+)
+
+// acquireRegistrySlot takes one of org's registry slots and one of the server's, or answers 429.
+func (s *Server) acquireRegistrySlot(w http.ResponseWriter, org string) (release func(), ok bool) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	if s.registryHeld == nil {
+		s.registryHeld = map[string]int{}
 	}
+	if s.registryHeld[org] < registrySlotsPerOrganization {
+		select {
+		case s.registrySlots <- struct{}{}:
+			s.registryHeld[org]++
+			return func() {
+				s.registryMu.Lock()
+				defer s.registryMu.Unlock()
+				if s.registryHeld[org]--; s.registryHeld[org] == 0 {
+					delete(s.registryHeld, org)
+				}
+				<-s.registrySlots
+			}, true
+		default:
+		}
+	}
+	w.Header().Set("Retry-After", "5")
+	s.tenantError(w, errTooManyChecks)
+	return nil, false
 }
 
 // extendRegistryDeadline outlasts the server's WriteTimeout, which is shorter than registry
@@ -80,7 +102,7 @@ func (s *Server) handleCheckImageUpdates(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer s.imageChecks.Delete(key)
-	release, ok := s.acquireRegistrySlot(w)
+	release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
 	if !ok {
 		return
 	}

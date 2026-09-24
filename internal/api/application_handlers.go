@@ -217,7 +217,7 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 			s.tenantError(w, err)
 			return
 		}
-		release, ok := s.acquireRegistrySlot(w)
+		release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
 		if !ok {
 			return
 		}
