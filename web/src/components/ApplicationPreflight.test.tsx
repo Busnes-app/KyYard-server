@@ -118,3 +118,31 @@ it('aborts an outstanding request on dismissal and ignores its late response', a
   finish(new Response(JSON.stringify(inspection)));
   expect(screen.queryByRole('dialog')).toBeNull();
 });
+it('shows mounts, the volume blocker texts and the mounts a recreate drops', async () => {
+  const mounted = { ...data, services: [
+    { ...data.services[0], name: 'db', blockers: ['bind_mount_new'], mounts: [{ kind: 'volume', source: 'shop_db_data', target: '/var/lib/postgresql/data' }, { kind: 'bind', source: '/srv/new', target: '/new', read_only: true }], dropped_mounts: [{ kind: 'bind', source: '/srv/old', target: '/old' }, { kind: 'volume', source: 'shop_cache', target: '/cache' }], dropped_binds: [{ kind: 'bind', source: '/srv/old', target: '/old' }] },
+    { ...data.services[1], name: 'web', blockers: ['mounts_unreported'], mounts: [], dropped_mounts: [], dropped_binds: [] },
+  ] };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(mounted))));
+  render(<ApplicationPreflight org="org" base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  await screen.findByRole('heading', { name: 'Deployment preflight' });
+  expect(screen.getByText('This revision adds a host path the running container does not have; KyYard never introduces bind mounts. Mount it by hand first, or drop it from the definition.')).toBeTruthy();
+  expect(screen.getByText("The agent has not reported this container's mounts, or reported only part of them. Upgrade the host agent to this release, then check again.")).toBeTruthy();
+  expect(screen.getByText('shop_db_data → /var/lib/postgresql/data')).toBeTruthy();
+  expect(screen.getByText('/srv/new → /new').parentElement?.querySelector('.badge')?.textContent).toBe('ro');
+  expect(screen.getAllByText('Will be dropped by the recreate:')).toHaveLength(1);
+  expect(screen.getByText('/srv/old → /old')).toBeTruthy();
+  expect(screen.getByText('shop_cache → /cache')).toBeTruthy();
+});
+it('shows unsupported mounts and the missing-volume text', async () => {
+  const unsupported = { ...data, services: [{ ...data.services[0], name: 'db', blockers: ['mount_unsupported', 'volume_missing'], mounts: [], dropped_mounts: [], unsupported_mounts: [{ kind: 'other', source: '', target: '/scratch' }] }] };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(unsupported))));
+  render(<ApplicationPreflight org="org" base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment preflight' }));
+  await screen.findByRole('heading', { name: 'Deployment preflight' });
+  expect(screen.getByText('This container has mounts KyYard cannot recreate (anonymous volumes or unsupported mount types). Recreate it by hand with named volumes first.')).toBeTruthy();
+  expect(screen.getByText('An external volume this revision names does not exist on the host. Create it there first.')).toBeTruthy();
+  expect(screen.getByText('Cannot be recreated:')).toBeTruthy();
+  expect(screen.getByText('→ /scratch').parentElement?.textContent).toContain('other');
+});

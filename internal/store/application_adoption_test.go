@@ -20,15 +20,26 @@ func adoptionFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, strin
 // set, puts those images in the inventory with their repository digests.
 func adoptionFixtureWith(t *testing.T, services []ApplicationService, digests map[string][]string) (*SQLStore, TenantAccess, *Application, string, protocol.Snapshot) {
 	t.Helper()
+	return adoptionFixtureSpec(t, ApplicationSpec{Kind: "compose.v1", Services: services}, digests, nil)
+}
+
+// adoptionFixtureSpec is adoptionFixtureWith for a whole spec. Each container reports
+// mounts[service], or no mounts when the service has no entry; a nil entry is an agent that
+// does not report mounts.
+func adoptionFixtureSpec(t *testing.T, spec ApplicationSpec, digests map[string][]string, mounts map[string][]protocol.Mount) (*SQLStore, TenantAccess, *Application, string, protocol.Snapshot) {
+	t.Helper()
 	st, a := tenantAtomicStore(t)
 	ctx := context.Background()
-	app, err := st.Tenancy().CreateApplication(ctx, a, "shop", ApplicationSpec{Kind: "compose.v1", Services: services})
+	app, err := st.Tenancy().CreateApplication(ctx, a, "shop", spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot := protocol.Snapshot{Engine: protocol.Engine{Version: "1"}}
-	for i, s := range services {
-		c := protocol.Container{ID: strings.Repeat("a", 63) + string("a0123456789"[i]), Name: "shop-" + s.Name, ImageID: "sha256:" + strings.Repeat("b", 63) + string("b0123456789"[i]), CreatedAt: time.Now().UTC().Add(-time.Hour), ComposeProject: "shop"}
+	for i, s := range spec.Services {
+		c := protocol.Container{ID: strings.Repeat("a", 63) + string("a0123456789"[i]), Name: "shop-" + s.Name, ImageID: "sha256:" + strings.Repeat("b", 63) + string("b0123456789"[i]), CreatedAt: time.Now().UTC().Add(-time.Hour), ComposeProject: "shop", Mounts: []protocol.Mount{}}
+		if m, ok := mounts[s.Name]; ok {
+			c.Mounts = m
+		}
 		snapshot.Containers = append(snapshot.Containers, c)
 		if digests != nil {
 			snapshot.Images = append(snapshot.Images, protocol.Image{ID: c.ImageID, Digests: digests[s.Name]})

@@ -81,7 +81,7 @@ func TestApplicationImportRoutes(t *testing.T) {
 	must(err)
 	must(ts.ApproveEndpoint(ctx, a, ep.ID, ep.Fingerprint))
 	created := time.Now().UTC()
-	snapshot, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created}}})
+	snapshot, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created, Mounts: []protocol.Mount{}}}})
 	_, err = ts.AcceptInventory(ctx, ep.ID, uint64(time.Now().Unix()), time.Now(), snapshot)
 	must(err)
 	adoption := base + "/" + app.ID + "/adoption"
@@ -122,7 +122,7 @@ func TestApplicationImportRoutes(t *testing.T) {
 	if !strings.Contains(blocked, `"preflight_blocked"`) || !strings.Contains(blocked, "image_not_reported") {
 		t.Fatalf("blocked body: %s", blocked)
 	}
-	withImage, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:1"}}}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created}}})
+	withImage, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:1"}}}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: created, Mounts: []protocol.Mount{}}}})
 	_, err = ts.AcceptInventory(ctx, ep.ID, uint64(time.Now().Unix())+1, time.Now(), withImage)
 	must(err)
 	if got := request(admin, "GET", preflight, "", 200); !strings.Contains(got, `"executable":true`) || !strings.Contains(got, `"blockers":[]`) {

@@ -56,7 +56,7 @@ func ParseCompose(source string) (*Import, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = fields(root, "services"); err != nil {
+	if err = fields(root, "services", "volumes"); err != nil {
 		return nil, err
 	}
 	servicesNode := root["services"]
@@ -71,18 +71,47 @@ func ParseCompose(source string) (*Import, error) {
 		return nil, refusal(servicesNode, "Expected 1–100 services")
 	}
 	out := &Import{Spec: store.ApplicationSpec{Kind: "compose.v1"}, Values: map[string]string{}}
-	names := make([]string, 0, len(services))
-	for name := range services {
-		names = append(names, name)
+	declared := map[string]bool{}
+	if top := root["volumes"]; top != nil {
+		entries, err := mapping(top)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > 64 {
+			return nil, refusal(top, "At most 64 volumes may be declared")
+		}
+		for i := 0; i < len(top.Content); i += 2 {
+			key, n := top.Content[i], top.Content[i+1]
+			if !store.ValidVolumeName(key.Value) {
+				return nil, refusal(key, "Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}")
+			}
+			v := store.DeclaredVolume{Name: key.Value}
+			if n.Tag != "!!null" {
+				config, err := mapping(n)
+				if err != nil {
+					return nil, err
+				}
+				if err = fields(config, "external"); err != nil {
+					return nil, err
+				}
+				if n := config["external"]; n != nil {
+					if v.External, err = boolean(n); err != nil {
+						return nil, err
+					}
+				}
+			}
+			declared[v.Name] = true
+			out.Spec.Volumes = append(out.Spec.Volumes, v)
+		}
+		sort.Slice(out.Spec.Volumes, func(i, j int) bool { return out.Spec.Volumes[i].Name < out.Spec.Volumes[j].Name })
 	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range sortedKeys(services) {
 		node := services[name]
 		config, err := mapping(node)
 		if err != nil {
 			return nil, err
 		}
-		if err = fields(config, "image", "environment", "ports", "restart"); err != nil {
+		if err = fields(config, "image", "environment", "ports", "restart", "volumes"); err != nil {
 			return nil, err
 		}
 		image, err := literal(config["image"])
@@ -141,6 +170,11 @@ func ParseCompose(source string) (*Import, error) {
 				service.Ports = append(service.Ports, port)
 			}
 		}
+		if n := config["volumes"]; n != nil {
+			if service.Volumes, err = volumes(n, declared); err != nil {
+				return nil, err
+			}
+		}
 		if env := config["environment"]; env != nil {
 			values := map[string]string{}
 			switch env.Kind {
@@ -184,11 +218,132 @@ func ParseCompose(source string) (*Import, error) {
 		out.Spec.Services = append(out.Spec.Services, service)
 	}
 	if err := store.ValidateApplicationSpec(out.Spec); err != nil {
-		return nil, &Diagnostic{Reason: "Invalid service name, image, restart policy, port, environment key, or specification size"}
+		return nil, &Diagnostic{Reason: "Invalid service name, image, restart policy, port, environment key, volume, or specification size"}
 	}
 	return out, nil
 }
 
+const (
+	relativeBind    = "Relative and home-relative bind mounts are unsupported; write the absolute path"
+	anonymousVolume = "Anonymous volumes are unsupported; declare a named volume"
+	normalizedPath  = "Paths must be absolute and normalized (no trailing slash, surrounding spaces, . or ..)"
+)
+
+// volumes parses short (SOURCE:TARGET[:ro|rw]) and long syntax. Relative and home binds
+// need a working directory KyYard does not have, so they are refused rather than guessed.
+func volumes(n *yaml.Node, declared map[string]bool) ([]store.ApplicationVolume, error) {
+	if n.Kind != yaml.SequenceNode || len(n.Content) > 32 {
+		return nil, refusal(n, "volumes must be a list of at most 32 entries")
+	}
+	out := make([]store.ApplicationVolume, 0, len(n.Content))
+	targets := map[string]bool{}
+	for _, entry := range n.Content {
+		v := store.ApplicationVolume{Kind: "named"}
+		at, targetAt := entry, entry
+		if entry.Kind == yaml.MappingNode {
+			m, err := mapping(entry)
+			if err != nil {
+				return nil, err
+			}
+			if err = fields(m, "type", "source", "target", "read_only"); err != nil {
+				return nil, err
+			}
+			kind, source, target := m["type"], m["source"], m["target"]
+			if kind == nil || target == nil {
+				return nil, refusal(entry, "Long-syntax volumes require type and target")
+			}
+			typ, err := literal(kind)
+			if err != nil {
+				return nil, err
+			}
+			switch typ {
+			case "volume":
+			case "bind":
+				v.Kind = "bind"
+			default:
+				return nil, refusal(kind, "Volume type must be volume or bind")
+			}
+			if source == nil {
+				return nil, refusal(entry, anonymousVolume)
+			}
+			at, targetAt = source, target
+			if v.Source, err = literal(source); err != nil {
+				return nil, err
+			}
+			if v.Target, err = literal(target); err != nil {
+				return nil, err
+			}
+			if ro := m["read_only"]; ro != nil {
+				if v.ReadOnly, err = boolean(ro); err != nil {
+					return nil, err
+				}
+			}
+			if v.Kind == "bind" && !strings.HasPrefix(v.Source, "/") {
+				return nil, refusal(source, relativeBind)
+			}
+		} else {
+			s, err := literal(entry)
+			if err != nil {
+				return nil, err
+			}
+			// A leading drive letter is a Windows path, as Compose reads it.
+			windows := len(s) > 1 && s[1] == ':' && ('a' <= s[0]|0x20 && s[0]|0x20 <= 'z')
+			if windows || strings.HasPrefix(s, ".") || strings.HasPrefix(s, "~") {
+				return nil, refusal(entry, relativeBind)
+			}
+			parts := strings.SplitN(s, ":", 3)
+			if len(parts) == 1 {
+				return nil, refusal(entry, anonymousVolume)
+			}
+			v.Source, v.Target = parts[0], parts[1]
+			if len(parts) == 3 {
+				switch parts[2] {
+				case "ro":
+					v.ReadOnly = true
+				case "rw":
+				default:
+					return nil, refusal(entry, "Volume mode must be ro or rw")
+				}
+			}
+			if strings.HasPrefix(v.Source, "/") {
+				v.Kind = "bind"
+			}
+		}
+		switch {
+		case v.Source == "" || v.Target == "":
+			return nil, refusal(at, "Volume source and target are required")
+		case v.Kind == "named" && !declared[v.Source]:
+			return nil, refusal(at, "Named volumes must be declared under top-level volumes")
+		case v.Kind == "bind" && !store.CleanAbsolutePath(v.Source):
+			return nil, refusal(at, normalizedPath)
+		case !store.CleanAbsolutePath(v.Target):
+			return nil, refusal(targetAt, normalizedPath)
+		case v.Target == "/":
+			return nil, refusal(targetAt, "A volume cannot be mounted at /")
+		case targets[v.Target]:
+			return nil, refusal(targetAt, "Duplicate volume target")
+		}
+		targets[v.Target] = true
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func boolean(n *yaml.Node) (bool, error) {
+	var b bool
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!bool" || n.Decode(&b) != nil {
+		return false, refusal(n, "An explicit true or false is required")
+	}
+	return b, nil
+}
+func sortedKeys(m map[string]*yaml.Node) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 func literal(n *yaml.Node) (string, error) {
 	if n == nil {
 		return "", &Diagnostic{Reason: "An explicit image is required"}

@@ -23,7 +23,9 @@ import (
 // removed first: on the containerd image store removing the digest reference also drops every
 // tag on it (alpine:3.24, which the other regressions run with --pull never). The pull tags the
 // pulled image alpine:3.24: the same image, so the tag does not move, but the test proves the
-// call succeeded and the tag names the pulled ID.
+// call succeeded and the tag names the pulled ID. The web service carries a named volume
+// (kyyard_it_data, written by a one-off container first) and a read-only bind of a temporary
+// directory: the recreate must keep both, and the file must read back from the new container.
 func TestDeployRealDocker(t *testing.T) {
 	image := os.Getenv("KY_TEST_DOCKER_DEPLOY_IMAGE")
 	if image == "" {
@@ -37,9 +39,16 @@ func TestDeployRealDocker(t *testing.T) {
 	network := project + "_default"
 	fixtureImage := project + ":local"
 	builder := project + "-build"
+	volume := "kyyard_it_data"
+	bindDir := t.TempDir()
 	docker := func(args ...string) (string, error) {
 		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 		return strings.TrimSpace(string(out)), err
+	}
+	removeFixtureVolume := func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer ccancel()
+		_ = exec.CommandContext(cctx, "docker", "volume", "rm", volume).Run()
 	}
 	removeFixtureContainers := func() {
 		cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -60,14 +69,16 @@ func TestDeployRealDocker(t *testing.T) {
 		_ = exec.CommandContext(cctx, "docker", "rm", "-fv", builder).Run()
 		_ = exec.CommandContext(cctx, "docker", "rmi", "-f", fixtureImage).Run()
 	}
-	// Idempotent setup: a prior aborted run may have left the container or network behind.
+	// Idempotent setup: a prior aborted run may have left the container, network or volume behind.
 	removeFixtureContainers()
 	removeFixtureImage()
 	removeFixtureNetwork()
+	removeFixtureVolume()
 	t.Cleanup(func() {
 		removeFixtureContainers()
 		removeFixtureImage()
 		removeFixtureNetwork()
+		removeFixtureVolume()
 	})
 	if out, err := docker("create", "--pull", "never", "--name", builder, image); err != nil {
 		t.Fatalf("fixture image source: %v: %s", err, out)
@@ -81,7 +92,12 @@ func TestDeployRealDocker(t *testing.T) {
 	if out, err := docker("network", "create", network); err != nil {
 		t.Fatalf("fixture network: %v: %s", err, out)
 	}
+	// The one-off carries the project label so an aborted run's leftover is cleaned up with the rest.
+	if out, err := docker("run", "--rm", "--pull", "never", "--label", "com.docker.compose.project="+project, "-v", volume+":/data", image, "sh", "-c", "echo persisted > /data/marker"); err != nil {
+		t.Fatalf("volume fixture: %v: %s", err, out)
+	}
 	oldID, err := docker("run", "-d", "--pull", "never", "--name", name, "--network", network, "--network-alias", "web",
+		"-v", volume+":/data", "-v", bindDir+":/cfg:ro",
 		"--label", "com.docker.compose.project="+project, "--label", "com.docker.compose.service=web", fixtureImage)
 	if err != nil {
 		t.Fatalf("fixture: %v: %s", err, oldID)
@@ -101,7 +117,8 @@ func TestDeployRealDocker(t *testing.T) {
 		Name: "web", ContainerName: name, ImageID: identity.Image,
 		Replaces: protocol.InspectionTarget{ContainerID: oldID, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()},
 		Restart:  "unless-stopped", Env: map[string]string{"TOKEN": "deploy-secret-canary"},
-	}}}
+		Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: volume, Target: "/data"}, {Kind: protocol.MountBind, Source: bindDir, Target: "/cfg", ReadOnly: true}},
+	}}, Volumes: []string{volume}}
 	pulledRef := "docker.io/library/alpine@" + pullDigest
 	if pullDigest != "" {
 		workerName := project + "-worker-1"
@@ -178,6 +195,20 @@ func TestDeployRealDocker(t *testing.T) {
 	}
 	if _, err = docker("inspect", oldID); err == nil {
 		t.Fatal("old container survived removal")
+	}
+	if out, err := docker("exec", res.Services[0].ContainerID, "cat", "/data/marker"); err != nil || out != "persisted" {
+		t.Fatalf("volume data after recreate: %v %q", err, out)
+	}
+	type mount struct {
+		Type, Name, Source, Destination string
+		RW                              bool
+	}
+	var mounts []mount
+	out, err := docker("inspect", "--format", "{{json .Mounts}}", res.Services[0].ContainerID)
+	if err != nil || json.Unmarshal([]byte(out), &mounts) != nil || len(mounts) != 2 ||
+		!slices.ContainsFunc(mounts, func(m mount) bool { return m.Type == "bind" && m.Source == bindDir && m.Destination == "/cfg" && !m.RW }) ||
+		!slices.ContainsFunc(mounts, func(m mount) bool { return m.Type == "volume" && m.Name == volume && m.Destination == "/data" && m.RW }) {
+		t.Fatalf("mounts after recreate: %v %s", err, out)
 	}
 }
 

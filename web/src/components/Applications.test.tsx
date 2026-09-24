@@ -111,3 +111,18 @@ it('says a removal was sent and reloads the instances', async () => {
   expect(await screen.findByText('Removal sent; watch Deployment history for progress.')).toBeTruthy();
   expect(instanceReads).toBeGreaterThan(before);
 });
+it('lists each service volume with its kind and a read-only mark', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/revisions/')) return json({ digest: 'digest', spec: { services: [{ name: 'db', image: 'postgres:17', volumes: [{ kind: 'named', source: 'db', target: '/var/lib/postgresql/data' }, { kind: 'bind', source: '/srv/conf', target: '/etc/app', read_only: true }] }], volumes: [{ name: 'db' }] } });
+    if (url.includes('/instances')) return json([]);
+    return json([{ id: 'app', name: 'shop', latest_revision: 1 }]);
+  }));
+  render(<Applications org="a" env="env" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'View configuration for shop' }));
+  const named = await screen.findByText('db → /var/lib/postgresql/data');
+  expect(named.parentElement?.textContent).toContain('volume');
+  expect(named.parentElement?.textContent).not.toContain('ro');
+  const bind = screen.getByText('/srv/conf → /etc/app');
+  expect(bind.parentElement?.textContent).toContain('bind');
+  expect(bind.parentElement?.querySelector('.badge')?.textContent).toBe('ro');
+});

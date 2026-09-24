@@ -52,12 +52,16 @@ type fakeDeployEngine struct {
 	pulledStatus     int            // GET /images/{host%2Frepo@digest}/json; 200 default
 	pulled           map[string]any // its body
 	tagStatus        int            // POST /images/{pulled}/tag; 201 default
+	volumeStatus     int            // POST /volumes/create; 201 default, as Docker answers for an existing name too
+	volumes          map[string]any // existing volumes by name: GET /volumes/{name} answers 200 with it, else 404
+	createdInstead   map[string]any // what POST /volumes/create answers with, as if another client created the name first
+	otherMounts      []any          // the second fixture container's Mounts; the first's when nil
 	srv              *httptest.Server
 }
 
 func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
-	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200, tagStatus: 201,
+	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200, tagStatus: 201, volumeStatus: 201,
 		pullBody: `{"status":"Pulling from org/app"}` + "\n" + `{"status":"Digest: ` + pullDigest + `"}` + "\n",
 		pulled:   map[string]any{"Id": newImage, "RepoDigests": []string{"ghcr.io/org/app@" + pullDigest}}}
 	f.oldContainer = map[string]any{"Id": oldID, "Image": oldImage, "Name": "/shop-web-1", "Created": "2023-11-14T22:13:20Z", "Mounts": []any{},
@@ -86,6 +90,9 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 				other[k] = v
 			}
 			other["Id"], other["Name"] = otherOldID, "/shop-db-1"
+			if f.otherMounts != nil {
+				other["Mounts"] = f.otherMounts
+			}
 			_ = json.NewEncoder(w).Encode(other)
 		case r.Method == "GET" && strings.HasSuffix(p, "/images/"+oldImage+"/json"):
 			w.WriteHeader(f.oldImageStatus)
@@ -106,12 +113,35 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "GET" && strings.Contains(p, "%2F") && strings.HasSuffix(p, "@"+pullDigest+"/json"):
 			w.WriteHeader(f.pulledStatus)
 			_ = json.NewEncoder(w).Encode(f.pulled)
+		case r.Method == "GET" && strings.Contains(p, "/volumes/"):
+			v, ok := f.volumes[p[strings.LastIndex(p, "/")+1:]]
+			if !ok {
+				w.WriteHeader(404)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(v)
+		case r.Method == "POST" && strings.HasSuffix(p, "/volumes/create"):
+			// Docker answers 201 with the existing volume when the name is taken.
+			var in struct {
+				Name   string
+				Labels map[string]string
+			}
+			_ = json.Unmarshal(body, &in)
+			v, ok := f.volumes[in.Name]
+			if !ok {
+				v = map[string]any{"Name": in.Name, "Driver": "local", "Labels": in.Labels, "Options": nil}
+			}
+			if f.createdInstead != nil {
+				v = f.createdInstead
+			}
+			w.WriteHeader(f.volumeStatus)
+			_ = json.NewEncoder(w).Encode(v)
 		case r.Method == "POST" && strings.HasSuffix(p, "/images/"+newImage+"/tag"):
 			w.WriteHeader(f.tagStatus)
-		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/stop"):
+		case r.Method == "POST" && (strings.HasSuffix(p, "/containers/"+oldID+"/stop") || strings.HasSuffix(p, "/containers/"+otherOldID+"/stop")):
 			time.Sleep(f.stopDelay)
 			w.WriteHeader(f.stopStatus)
-		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/rename"):
+		case r.Method == "POST" && (strings.HasSuffix(p, "/containers/"+oldID+"/rename") || strings.HasSuffix(p, "/containers/"+otherOldID+"/rename")):
 			w.WriteHeader(f.renameStatus)
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/create"):
 			w.WriteHeader(f.createStatus)
@@ -121,7 +151,7 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+newID+"/json"):
 			w.WriteHeader(f.inspectNewStatus)
 			_, _ = w.Write([]byte(`{"Id":"` + newID + `","Image":"` + newImage + `","Created":"2024-01-01T00:00:01Z","Name":"/shop-web-1","State":{"Status":"running"}}`))
-		case r.Method == "DELETE" && strings.HasSuffix(p, "/containers/"+oldID):
+		case r.Method == "DELETE" && (strings.HasSuffix(p, "/containers/"+oldID) || strings.HasSuffix(p, "/containers/"+otherOldID)):
 			w.WriteHeader(f.removeStatus)
 		default:
 			w.WriteHeader(404)
@@ -328,23 +358,42 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 		"absent Privileged": {func(f *fakeDeployEngine) {
 			delete(f.oldContainer["HostConfig"].(map[string]any), "Privileged")
 		}, 1},
-		"mounts":         {func(f *fakeDeployEngine) { f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume"}} }, 1},
-		"tmpfs":          {host("Tmpfs", map[string]string{"/run": "rw"}), 1},
-		"auto-remove":    {host("AutoRemove", true), 1},
-		"read-only root": {host("ReadonlyRootfs", true), 1},
-		"privileged":     {host("Privileged", true), 1},
-		"cap add":        {host("CapAdd", []string{"NET_ADMIN"}), 1},
-		"cap drop":       {host("CapDrop", []string{"ALL"}), 1},
-		"security opt":   {host("SecurityOpt", []string{"no-new-privileges"}), 1},
-		"devices":        {host("Devices", []any{map[string]any{"PathOnHost": "/dev/fuse"}}), 1},
-		"pid mode":       {host("PidMode", "host"), 1},
-		"ipc mode host":  {host("IpcMode", "host"), 1},
-		"ipc container":  {host("IpcMode", "container:"+oldID), 1},
-		"user":           {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["User"] = "1000" }, 1},
-		"network mode":   {host("NetworkMode", "host"), 1},
-		"two networks":   {networks("bridge", "shop_default"), 1},
-		"other network":  {networks("shop_default"), 1},
-		"cmd":            {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["Cmd"] = []string{"sleep", "300"} }, 2},
+		"tmpfs mount": {func(f *fakeDeployEngine) {
+			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "tmpfs", "Destination": "/run"}}
+		}, 1},
+		"npipe mount": {func(f *fakeDeployEngine) { f.oldContainer["Mounts"] = []any{map[string]any{"Type": "npipe"}} }, 1},
+		"anonymous volume": {func(f *fakeDeployEngine) {
+			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume", "Name": strings.Repeat("9f", 32), "Destination": "/var/lib/postgresql/data", "RW": true}}
+		}, 1},
+		"volumes from":  {host("VolumesFrom", []string{"shop-data-1"}), 1},
+		"volume driver": {host("VolumeDriver", "nfs"), 1},
+		"bind propagation": {func(f *fakeDeployEngine) {
+			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "bind", "Source": "/srv", "Destination": "/srv", "RW": true, "Propagation": "rshared"}}
+		}, 1},
+		"volume nocopy mode": {func(f *fakeDeployEngine) {
+			f.oldContainer["Mounts"] = []any{map[string]any{"Type": "volume", "Name": "shop_data", "Destination": "/data", "RW": true, "Mode": "nocopy"}}
+		}, 1},
+		"volume subpath":       {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"Subpath": "app"}}}), 1},
+		"volume nocopy":        {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"NoCopy": true}}}), 1},
+		"volume driver config": {host("Mounts", []any{map[string]any{"Type": "volume", "Source": "shop_data", "Target": "/data", "VolumeOptions": map[string]any{"DriverConfig": map[string]any{"Name": "nfs"}}}}), 1},
+		"bind non-recursive":   {host("Mounts", []any{map[string]any{"Type": "bind", "Source": "/srv", "Target": "/srv", "BindOptions": map[string]any{"NonRecursive": true}}}), 1},
+		"bind api propagation": {host("Mounts", []any{map[string]any{"Type": "bind", "Source": "/srv", "Target": "/srv", "BindOptions": map[string]any{"Propagation": "rslave"}}}), 1},
+		"tmpfs":                {host("Tmpfs", map[string]string{"/run": "rw"}), 1},
+		"auto-remove":          {host("AutoRemove", true), 1},
+		"read-only root":       {host("ReadonlyRootfs", true), 1},
+		"privileged":           {host("Privileged", true), 1},
+		"cap add":              {host("CapAdd", []string{"NET_ADMIN"}), 1},
+		"cap drop":             {host("CapDrop", []string{"ALL"}), 1},
+		"security opt":         {host("SecurityOpt", []string{"no-new-privileges"}), 1},
+		"devices":              {host("Devices", []any{map[string]any{"PathOnHost": "/dev/fuse"}}), 1},
+		"pid mode":             {host("PidMode", "host"), 1},
+		"ipc mode host":        {host("IpcMode", "host"), 1},
+		"ipc container":        {host("IpcMode", "container:"+oldID), 1},
+		"user":                 {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["User"] = "1000" }, 1},
+		"network mode":         {host("NetworkMode", "host"), 1},
+		"two networks":         {networks("bridge", "shop_default"), 1},
+		"other network":        {networks("shop_default"), 1},
+		"cmd":                  {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["Cmd"] = []string{"sleep", "300"} }, 2},
 		"entrypoint": {func(f *fakeDeployEngine) {
 			f.oldContainer["Config"].(map[string]any)["Entrypoint"] = []string{"/bin/sh", "-c"}
 		}, 2},

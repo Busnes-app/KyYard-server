@@ -61,7 +61,7 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 		gen++
 		writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{
 			Generation: gen, Engine: protocol.Engine{Version: "1"},
-			Containers: []protocol.Container{{ID: id, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: at, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}},
+			Containers: []protocol.Container{{ID: id, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: at, Mounts: []protocol.Mount{}, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}},
 			Images:     []protocol.Image{{ID: newImage, Tags: []string{"nginx:1"}, Digests: []string{}}},
 			Networks:   []protocol.Network{}, Volumes: []protocol.Volume{},
 		})
