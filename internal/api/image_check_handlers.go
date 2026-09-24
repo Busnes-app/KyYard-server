@@ -11,7 +11,34 @@ import (
 	"github.com/google/uuid"
 )
 
-var errCheckInProgress = errors.New("image update check in progress")
+var (
+	errCheckInProgress = errors.New("image update check in progress")
+	errTooManyChecks   = errors.New("too many registry checks in flight")
+)
+
+// acquireRegistrySlot takes one of the server's registry slots, or answers 429.
+func (s *Server) acquireRegistrySlot(w http.ResponseWriter) (release func(), ok bool) {
+	select {
+	case s.registrySlots <- struct{}{}:
+		return func() { <-s.registrySlots }, true
+	default:
+		s.tenantError(w, errTooManyChecks)
+		return nil, false
+	}
+}
+
+// extendRegistryDeadline outlasts the server's WriteTimeout, which is shorter than registry
+// work may run.
+func extendRegistryDeadline(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(store.ImageCheckDeadline + 5*time.Second))
+}
+
+func (s *Server) resolver() store.DigestResolver {
+	if s.digestResolver == nil {
+		return registryResolver{}
+	}
+	return s.digestResolver
+}
 
 // registryResolver adapts internal/registry to store.DigestResolver: one client per call so a
 // private-address allowance never leaks between hosts.
@@ -52,13 +79,13 @@ func (s *Server) handleCheckImageUpdates(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer s.imageChecks.Delete(key)
-	// The server's WriteTimeout is shorter than a check may run.
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(store.ImageCheckDeadline + 5*time.Second))
-	resolver := s.digestResolver
-	if resolver == nil {
-		resolver = registryResolver{}
+	release, ok := s.acquireRegistrySlot(w)
+	if !ok {
+		return
 	}
-	out, err := s.store.Tenancy().CheckImageUpdates(r.Context(), a, app, resolver, s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
+	defer release()
+	extendRegistryDeadline(w)
+	out, err := s.store.Tenancy().CheckImageUpdates(r.Context(), a, app, s.resolver(), s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
 	if err != nil {
 		s.tenantError(w, err)
 		return

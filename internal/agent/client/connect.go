@@ -267,7 +267,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 		capabilities = append(capabilities, "container.exec")
 	}
 	if opts.Deploy != nil {
-		capabilities = append(capabilities, protocol.CapabilityDeploymentApply)
+		capabilities = append(capabilities, protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull)
 	}
 	if opts.Remove != nil {
 		capabilities = append(capabilities, protocol.CapabilityDeploymentRemove)

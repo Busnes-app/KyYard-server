@@ -21,10 +21,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// fakeDigests answers every Head with digest. With gate set, it reports entry on entered and
-// holds until gate closes or ctx ends.
+// fakeDigests answers every Head with digest, or err when set. With gate set, it reports entry
+// on entered and holds until gate closes or ctx ends.
 type fakeDigests struct {
 	digest  string
+	err     error
 	gate    chan struct{}
 	entered chan struct{}
 	mu      sync.Mutex
@@ -44,6 +45,9 @@ func (f *fakeDigests) Head(ctx context.Context, _ registry.Reference, cred *regi
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
+	}
+	if f.err != nil {
+		return "", f.err
 	}
 	return f.digest, nil
 }

@@ -211,11 +211,15 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
-	resolver := s.digestResolver
-	if resolver == nil {
-		resolver = registryResolver{}
+	if len(input.Update) > 0 {
+		release, ok := s.acquireRegistrySlot(w)
+		if !ok {
+			return
+		}
+		defer release()
+		extendRegistryDeadline(w)
 	}
-	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input, resolver, s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
+	d, err := s.store.Tenancy().PlanDeployment(r.Context(), a, r.PathValue("application"), input, s.resolver(), s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
 	if err != nil {
 		s.tenantError(w, err)
 		return
@@ -262,6 +266,11 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 	}
 	if !slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentApply) {
 		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable deployments")
+		return
+	}
+	pulls := slices.ContainsFunc(plan.Plan.Services, func(ps store.PlannedService) bool { return ps.PullDigest != "" })
+	if pulls && !slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentPull) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable deployments that pull images")
 		return
 	}
 	if !s.Connected(plan.EndpointID) {

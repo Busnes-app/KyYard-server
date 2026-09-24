@@ -343,7 +343,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 				case protocol.TypeHello:
 					var hello protocol.Hello
 					_ = json.Unmarshal(f.Payload, &hello)
-					advertised = slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentApply)
+					advertised = slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentApply) && slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentPull)
 					advertisedRemove = slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentRemove)
 					if err := write(ctx, conn, protocol.TypeDeploymentApply, req); err != nil {
 						return err
@@ -626,5 +626,50 @@ func TestDeployerRemovalRefusals(t *testing.T) {
 	d.handleRemoval(context.Background(), "ep_1", []byte("{"), out)
 	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied {
 		t.Fatalf("unreadable: %+v", res)
+	}
+}
+
+// A credentialed pull leaves the secret nowhere after the run: not in the ledger file, not in
+// the in-memory ledger, and the runner has cleared the frame's credential map.
+func TestDeployerNeverKeepsTheRegistryCredential(t *testing.T) {
+	const secret = "topsecret"
+	dir := t.TempDir()
+	var held map[string]protocol.RegistryAuth
+	digest := "sha256:" + strings.Repeat("d", 64)
+	d := newDeployer(context.Background(), dir, &Options{Deploy: func(_ context.Context, req protocol.DeploymentRequest) protocol.DeploymentResult {
+		held = req.Registries
+		s := req.Services[0]
+		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded,
+			Steps:    []protocol.DeploymentStep{{Service: s.Name, Step: protocol.StepPull, Outcome: protocol.OutcomeSucceeded}},
+			Services: []protocol.DeploymentIdentity{{Service: s.Name, ContainerID: strings.Repeat("e", 64), ImageID: "sha256:" + strings.Repeat("f", 64), CreatedUnix: 1700000100, ImageDigest: digest}}}
+	}})
+	out := make(chan outFrame, 1)
+	defer d.attach(context.Background(), out)()
+	req := testRequest("ep_1")
+	req.Services[0].ImageID = ""
+	req.Services[0].Pull = &protocol.ImagePull{Reference: "ghcr.io/org/web@" + digest, Digest: digest}
+	req.Registries = map[string]protocol.RegistryAuth{"ghcr.io": {Username: "u", Secret: secret}}
+	if err := req.Validate(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(req)
+	d.handleApply(context.Background(), "ep_1", raw, out)
+	res := readResult(t, out)
+	d.wait()
+	if res.Outcome != protocol.OutcomeSucceeded || strings.Contains(payloadText(resultFrame(res)), secret) {
+		t.Fatalf("result: %+v", res)
+	}
+	stored, err := os.ReadFile(filepath.Join(dir, "deployments.json"))
+	if err != nil || strings.Contains(string(stored), secret) || strings.Contains(string(stored), "registries") {
+		t.Fatalf("ledger: %v %s", err, stored)
+	}
+	d.mu.Lock()
+	memory, _ := json.Marshal(d.done)
+	d.mu.Unlock()
+	if strings.Contains(string(memory), secret) || strings.Contains(string(memory), "registries") {
+		t.Fatalf("in-memory ledger: %s", memory)
+	}
+	if held == nil || len(held) != 0 {
+		t.Fatalf("the runner kept the credential map: %v", held)
 	}
 }

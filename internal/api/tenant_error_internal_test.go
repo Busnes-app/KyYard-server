@@ -18,6 +18,7 @@ func TestTenantErrorCodes(t *testing.T) {
 		{store.ErrRegistryNotConfigured, 409, "registry_not_configured", "No registry is configured for this image's host and anonymous pulls are off"},
 		{store.ErrMappingRequired, 409, "mapping_required", "Map the application's services to adopted containers first"},
 		{errCheckInProgress, 409, "check_in_progress", "An update check for this application is already running"},
+		{errTooManyChecks, 429, "too_many_checks", "Too many registry checks are running; try again in a moment"},
 		{store.ErrPrivateRegistriesDisabled, 403, "private_registries_disabled", "Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE)"},
 	} {
 		w := httptest.NewRecorder()

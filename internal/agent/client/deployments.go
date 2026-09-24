@@ -133,6 +133,7 @@ func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, pa
 			for i := range req.Services {
 				clear(req.Services[i].Env)
 			}
+			clear(req.Registries)
 			return res
 		}
 	}

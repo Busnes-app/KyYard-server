@@ -16,6 +16,7 @@ const (
 	TypeDeploymentApply          = "deployment.apply"
 	TypeDeploymentResult         = "deployment.result"
 	CapabilityDeploymentApply    = "deployment.apply"
+	CapabilityDeploymentPull     = "deployment.pull" // the agent runs a service's Pull step
 	MaxDeploymentRequestBytes    = 320 << 10
 	MaxDeploymentResultBytes     = 160 << 10
 	DeploymentLifetime           = 15 * time.Minute
