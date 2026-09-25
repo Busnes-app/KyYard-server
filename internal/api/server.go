@@ -65,6 +65,8 @@ type Server struct {
 	registryHeld  map[string]int
 	// policies is the update-policy scheduler's in-memory state (policies.go).
 	policies policyScheduler
+	// validations is the health-validation loop's in-memory state (validations.go).
+	validations validationLoop
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is

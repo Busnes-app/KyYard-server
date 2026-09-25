@@ -33,21 +33,26 @@ const MaxInspectionEntries = 64
 // Unsupported names, as codes from UnsupportedCodes, configuration a recreate from the
 // definition would drop; ConfigurationVerified is true exactly when it is empty.
 type ContainerInspection struct {
-	Target                InspectionTarget `json:"target"`
-	ObservedAt            time.Time        `json:"observed_at"`
-	State                 string           `json:"state"`
-	ImagePlatform         ImagePlatform    `json:"image_platform"`
-	RestartPolicy         string           `json:"restart_policy"`
-	RestartRetries        int              `json:"restart_retries"`
-	Ports                 []Port           `json:"ports"`
-	Mounts                MountCounts      `json:"mounts"`
-	NetworkMode           string           `json:"network_mode"`
-	NetworkCount          int              `json:"network_count"`
-	Privileged            bool             `json:"privileged"`
-	ReadOnlyRootFS        bool             `json:"read_only_rootfs"`
-	AutoRemove            bool             `json:"auto_remove"`
-	Unsupported           []string         `json:"unsupported"`
-	ConfigurationVerified bool             `json:"configuration_verified"`
+	Target     InspectionTarget `json:"target"`
+	ObservedAt time.Time        `json:"observed_at"`
+	State      string           `json:"state"`
+	// Health is Docker's State.Health.Status, "none" without a healthcheck; RestartCount is the
+	// runtime's restart count. Both are set exactly when the agent advertises
+	// CapabilityContainerInspectHealth. The healthcheck's command and log never enter this type.
+	Health                string        `json:"health"`
+	RestartCount          int           `json:"restart_count"`
+	ImagePlatform         ImagePlatform `json:"image_platform"`
+	RestartPolicy         string        `json:"restart_policy"`
+	RestartRetries        int           `json:"restart_retries"`
+	Ports                 []Port        `json:"ports"`
+	Mounts                MountCounts   `json:"mounts"`
+	NetworkMode           string        `json:"network_mode"`
+	NetworkCount          int           `json:"network_count"`
+	Privileged            bool          `json:"privileged"`
+	ReadOnlyRootFS        bool          `json:"read_only_rootfs"`
+	AutoRemove            bool          `json:"auto_remove"`
+	Unsupported           []string      `json:"unsupported"`
+	ConfigurationVerified bool          `json:"configuration_verified"`
 }
 type ImagePlatform struct {
 	OS           string `json:"os"`
@@ -92,7 +97,12 @@ const (
 	// CapabilityContainerInspectVerdict marks an agent whose inspections carry the unsupported
 	// codes and configuration_verified; plans need it, the inspection dialog does not.
 	CapabilityContainerInspectVerdict = "container.inspect.verdict"
-	MaxUnsupported                    = 32
+	// CapabilityContainerInspectHealth marks an agent whose inspections carry health and
+	// restart_count; health validation needs it.
+	CapabilityContainerInspectHealth = "container.inspect.health"
+	// MaxRestartCount bounds a reported restart count.
+	MaxRestartCount = 1_000_000
+	MaxUnsupported  = 32
 )
 
 type InspectionOpen struct {
@@ -122,8 +132,10 @@ type InspectionResult struct {
 
 var inspectionPlatform = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 
-// Validate bounds an untrusted agent result before it reaches an HTTP response.
-func (r ContainerInspection) Validate(target InspectionTarget, now time.Time) error {
+// Validate bounds an untrusted agent result before it reaches an HTTP response. health says the
+// answering agent advertised CapabilityContainerInspectHealth: health and restart_count are then
+// required and bounded, and otherwise absent.
+func (r ContainerInspection) Validate(target InspectionTarget, now time.Time, health bool) error {
 	invalid := errors.New("invalid inspection result")
 	if r.Target != target || target.Validate() != nil || r.ConfigurationVerified != (len(r.Unsupported) == 0) || !knownCodes(r.Unsupported) || r.ObservedAt.Before(now.Add(-InspectionLifetime)) || r.ObservedAt.After(now.Add(5*time.Second)) {
 		return invalid
@@ -141,6 +153,18 @@ func (r ContainerInspection) Validate(target InspectionTarget, now time.Time) er
 	switch r.NetworkMode {
 	case "default", "bridge", "host", "none", "container", "custom":
 	default:
+		return invalid
+	}
+	if health {
+		switch r.Health {
+		case "none", "starting", "healthy", "unhealthy":
+		default:
+			return invalid
+		}
+		if r.RestartCount < 0 || r.RestartCount > MaxRestartCount {
+			return invalid
+		}
+	} else if r.Health != "" || r.RestartCount != 0 {
 		return invalid
 	}
 	if r.RestartRetries < 0 || r.RestartRetries > 2147483647 || r.NetworkCount < 0 || r.NetworkCount > MaxInspectionEntries || len(r.Ports) > MaxInspectionEntries {

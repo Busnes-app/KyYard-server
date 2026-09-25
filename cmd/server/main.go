@@ -139,6 +139,8 @@ func runServer() {
 	go backupLoop(ctx, cfg, st, backupDone)
 	policiesDone := make(chan struct{})
 	go srv.RunPolicies(ctx, policiesDone)
+	validationsDone := make(chan struct{})
+	go srv.RunValidations(ctx, validationsDone)
 	go pruneLoop(ctx, st)
 
 	addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
@@ -173,9 +175,10 @@ func runServer() {
 	cancel()
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), backupWaitTimeout)
 	defer waitCancel()
-	// A policy run in flight finishes before the store closes: its apply is recorded before its
-	// frame leaves. A run's worst case (under 3 minutes) fits the same budget.
-	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; <-policiesDone; srv.WaitDetached() })
+	// A policy run and a validation tick in flight finish before the store closes: each records
+	// its apply before the frame leaves. A run's worst case (under 3 minutes) and a tick's (its
+	// rollback's inspections, plan and apply: seconds) fit the same budget.
+	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; <-policiesDone; <-validationsDone; srv.WaitDetached() })
 	log.Println("[KYYARD] Server stopped")
 }
 

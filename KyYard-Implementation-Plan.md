@@ -261,7 +261,9 @@ Implemented M7a PR D2 (`feat/bookkeeping`): deployment step and result outcomes 
 
 Implemented M7b PR 18 (`feat/update-policies`): per-application update policies with a weekly maintenance window in an IANA zone (wall clock; a DST-skipped start does not run, an overlap runs once), modes `apply` and `plan_only`, created and edited by organization administrators (`application.policy`). A scheduler inside the server runs each window once (`UNIQUE (policy_id, occurrence)`), as the policy's last editor with `application.deploy` re-checked, one run per endpoint and two server-wide, recording missed and busy windows; three failed windows or a lapsed creator pause the policy until resumed; a crash mid-run fails the run at the next start. Spec `docs/superpowers/specs/2026-09-25-update-policies-design.md`.
 
-Next: M7b PR 19 (health validation and eligible rollback).
+Implemented M7b PR 19 (`feat/health-validation`): every succeeded apply is validated for 30 s grace plus a 2-minute window through `container.inspect.health` inspections (health and restart count), with a recorded verdict; an update a policy applied that fails is rolled back to the prior apply's pinned images when they are on the host and the prior definition validates, or stops with the reason, and the policy pauses either way until resumed; manual applies are judged, never rolled back. Spec `docs/superpowers/specs/2026-09-25-health-validation-design.md`. M7b is complete.
+
+Next: M8 (Kubernetes and migration).
 
 The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

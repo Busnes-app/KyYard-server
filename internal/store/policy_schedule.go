@@ -271,7 +271,7 @@ func (t *tenancyStore) finishPolicyRun(ctx context.Context, tx *sql.Tx, run, out
 	if deployment != "" {
 		dep = deployment
 	}
-	res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE policy_runs SET outcome=?,deployment_id=?,detail=?,finished_at=? WHERE id=? AND outcome=''`), outcome, dep, protocol.CleanText(detail, 255), now, run)
+	res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE policy_runs SET outcome=?,deployment_id=COALESCE(?,deployment_id),detail=?,finished_at=? WHERE id=? AND outcome=''`), outcome, dep, protocol.CleanText(detail, 255), now, run)
 	if err != nil {
 		return err
 	}
@@ -358,6 +358,24 @@ func (t *tenancyStore) reconcilePolicyRuns(ctx context.Context, tx *sql.Tx) erro
 		if err := t.finishPolicyRun(ctx, tx, id, RunFailed, "", PolicyDetailRestarted, now); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// AttachPolicyRunDeployment names the deployment an open run is about to send, before the frame
+// leaves, for the run's record; whether the apply is automated is deployments.policy_run_id, which
+// ApplyPolicyDeployment writes. A finished or missing run is ErrNotFound.
+func (t *tenancyStore) AttachPolicyRunDeployment(ctx context.Context, run, deployment string) error {
+	res, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE policy_runs SET deployment_id=? WHERE id=? AND outcome=''`), deployment, run)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
 	}
 	return nil
 }

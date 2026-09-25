@@ -18,14 +18,19 @@ import (
 // executes. The values it resolves exist only in the returned request. maxFrameBytes is the
 // largest frame the endpoint's agent accepts. See docs/application-schema.md, Deploy.
 func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error) {
-	return t.applyDeployment(ctx, a, app, id, confirm, key, maxFrameBytes, nil)
+	return t.applyDeployment(ctx, a, app, id, confirm, key, maxFrameBytes, nil, nil)
 }
 
 // ApplyPolicyDeployment is ApplyDeployment for a policy run: inside the same transaction, after
 // the application lock, policy must still exist, be active, in apply mode and act as a.ActorID,
-// or the row stays planned and the call is ErrPolicyChanged.
-func (t *tenancyStore) ApplyPolicyDeployment(ctx context.Context, a TenantAccess, policy, app, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error) {
-	return t.applyDeployment(ctx, a, app, id, confirm, key, maxFrameBytes, func(tx *sql.Tx) error {
+// or the row stays planned and the call is ErrPolicyChanged. The row records run as the policy run
+// that applied it, which makes its validation automated; a rollback passes no run.
+func (t *tenancyStore) ApplyPolicyDeployment(ctx context.Context, a TenantAccess, policy, run, app, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error) {
+	var runID any
+	if run != "" {
+		runID = run
+	}
+	return t.applyDeployment(ctx, a, app, id, confirm, key, maxFrameBytes, runID, func(tx *sql.Tx) error {
 		lock := ""
 		if t.store.driver == "postgres" {
 			lock = " FOR UPDATE"
@@ -39,8 +44,9 @@ func (t *tenancyStore) ApplyPolicyDeployment(ctx context.Context, a TenantAccess
 	})
 }
 
-// applyDeployment is ApplyDeployment with guard, when non-nil, run after the application lock.
-func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte, maxFrameBytes int, guard func(*sql.Tx) error) (*Deployment, *protocol.DeploymentRequest, error) {
+// applyDeployment is ApplyDeployment with guard, when non-nil, run after the application lock, and
+// run (a policy run ID or nil) written with the flip to applying.
+func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte, maxFrameBytes int, run any, guard func(*sql.Tx) error) (*Deployment, *protocol.DeploymentRequest, error) {
 	appID, err := uuid.Parse(app)
 	if err != nil || a.EnvironmentID == "" || len(key) != 32 {
 		return nil, nil, ErrInvalid
@@ -113,7 +119,7 @@ func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app,
 		if frameBlocker(frame, now, maxFrameBytes) != "" {
 			return ErrInvalid
 		}
-		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=? WHERE id=? AND state='planned'`), a.ActorID, now, frame.Deadline, d.ID)
+		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=?,policy_run_id=? WHERE id=? AND state='planned'`), a.ActorID, now, frame.Deadline, run, d.ID)
 		if err != nil {
 			return err
 		}
@@ -411,6 +417,10 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 	}
 	if kind == "apply" && res.Outcome == protocol.OutcomeSucceeded {
 		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE application_instances SET previous_revision=current_revision,current_revision=? WHERE id=?`), revision, instance); err != nil {
+			return err
+		}
+		// Every succeeded apply is validated, opened in the transaction that settles it.
+		if err := t.insertValidation(ctx, tx, org, env, appID, instance, endpointID, res.Deployment, correlation, now); err != nil {
 			return err
 		}
 	}

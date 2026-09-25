@@ -92,7 +92,7 @@ func (s *inspections) run(ctx context.Context, req protocol.InspectionOpen, stop
 	defer func() { stop(); s.mu.Lock(); delete(s.live, req.Request); s.mu.Unlock(); <-s.slots }()
 	result, err := s.opts.Inspect(ctx, req.Target)
 	reply := protocol.InspectionResult{Request: req.Request, Status: "unavailable"}
-	if err == nil && result != nil && result.Validate(req.Target, time.Now()) == nil {
+	if err == nil && result != nil && result.Validate(req.Target, time.Now(), true) == nil {
 		reply.Status = "ok"
 		reply.Result = result
 	}
