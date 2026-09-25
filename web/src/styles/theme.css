@@ -45,6 +45,62 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
+[data-theme="cyber"] {
+  --bg: #05070a;
+  --panel: #0d121d;
+  --panel-hover: #131b2a;
+  --ink: #aab7c8;
+  --ink-strong: #eef6f5;
+  --accent: #00d9bd;
+  --accent-soft: rgba(0, 255, 204, 0.18);
+  --line: #1e293b;
+  --line-strong: #00ffcc44;
+  --danger: #ff0055;
+  --success: #00ff66;
+}
+
+[data-theme="nord"] {
+  --bg: #2e3440;
+  --panel: #3b4252;
+  --panel-hover: #434c5e;
+  --ink: #d8dee9;
+  --ink-strong: #eceff4;
+  --accent: #88c0d0;
+  --accent-soft: rgba(136, 192, 208, 0.2);
+  --line: #4c566a;
+  --line-strong: #5e81ac;
+  --danger: #bf616a;
+  --success: #a3be8c;
+}
+
+[data-theme="paper"] {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --panel-hover: #f1f5f9;
+  --ink: #64748b;
+  --ink-strong: #0f172a;
+  --accent: #0284c7;
+  --accent-soft: rgba(2, 132, 199, 0.12);
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --danger: #dc2626;
+  --success: #16a34a;
+}
+
+[data-theme="oled"] {
+  --bg: #000000;
+  --panel: #111111;
+  --panel-hover: #1a1a1a;
+  --ink: #a1a1aa;
+  --ink-strong: #fafafa;
+  --accent: #4deeea;
+  --accent-soft: rgba(77, 238, 234, 0.15);
+  --line: #222222;
+  --line-strong: #333333;
+  --danger: #ef4444;
+  --success: #10b981;
+}
+
 /* ---------- Global Layout ---------- */
 
 * {
@@ -60,6 +116,38 @@ body {
   min-height: 100vh;
   transition: background 0.2s ease, color 0.2s ease;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Shared Busnes application shell. The selected page uses the slim accent rail
+   shown in KyIdentity; the filled surface stays quiet so navigation remains easy
+   to scan in both light and dark themes. */
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 15.5rem minmax(0, 1fr); }
+.app-header { display: flex; flex-direction: column; gap: 1.25rem; position: sticky; top: 0; height: 100vh; padding: 1.25rem 1rem; background: linear-gradient(180deg, var(--sidebar-start, var(--panel)), var(--sidebar-end, var(--panel))); border-right: 1px solid var(--line); z-index: 10; }
+.app-brand { display: flex; align-items: center; gap: .7rem; padding: .25rem .5rem 1rem; color: var(--ink-strong); font-size: 1.15rem; font-weight: 700; letter-spacing: -.02em; }
+.app-brand img { border-radius: .45rem; flex: none; }
+.app-nav { display: flex; flex-direction: column; gap: .2rem; }
+.app-nav button { position: relative; justify-content: flex-start; width: 100%; border: 0; border-left: 3px solid transparent; border-radius: .45rem; padding: .6rem .65rem; background: transparent; color: var(--ink); font-size: .86rem; text-align: left; }
+.app-nav button:hover { background: var(--panel-hover); color: var(--ink-strong); }
+.app-nav button.active { border-left-color: var(--accent); background: var(--accent-soft); color: var(--ink-strong); }
+.app-header-actions { display: flex; flex-direction: column; gap: .65rem; margin-top: auto; }
+.app-pair { justify-content: flex-start; width: 100%; font-size: .82rem; }
+.app-user { display: flex; align-items: center; gap: .55rem; border-top: 1px solid var(--line); padding-top: .8rem; }
+.app-user-copy { min-width: 0; flex: 1; font-size: .8rem; }
+.app-user-copy > div:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-user-copy > div:last-child { color: var(--ink); font-size: .7rem; }
+.app-logout { padding: .45rem; color: var(--danger); }
+.app-main { min-width: 0; }
+@media (max-width: 720px) {
+  .app-shell { display: block; }
+  .app-header { position: sticky; height: auto; padding: .75rem 1rem; border-right: 0; border-bottom: 1px solid var(--line); }
+  .app-brand { padding: 0; }
+  .app-nav { flex-direction: row; overflow-x: auto; }
+  .app-nav button { width: auto; flex: 0 0 auto; border-left: 0; border-bottom: 3px solid transparent; white-space: nowrap; }
+  .app-nav button.active { border-bottom-color: var(--accent); }
+  .app-header-actions { flex-direction: row; margin-top: 0; align-items: center; }
+  .app-pair { width: auto; }
+  .app-user { border-top: 0; border-left: 1px solid var(--line); padding: 0 0 0 .65rem; }
+  .app-user-copy { display: none; }
 }
 
 code, pre, .font-mono {
@@ -121,7 +209,7 @@ button:disabled, .btn:disabled {
 
 .btn-danger {
   background: var(--danger);
-  color: #ffffff;
+  color: var(--button-text, #ffffff);
 }
 
 input, select, textarea {
@@ -330,7 +418,7 @@ details[open] > summary { margin-bottom: 16px; }
 .ky-nav { display: flex; flex-direction: column; gap: 6px; overflow: visible; }
 .ky-nav-link { min-height: 44px; padding: 11px 14px; gap: 10px; font-size: 14px; color: var(--ink); border-radius: 8px; }
 .ky-nav-link:hover { background: var(--panel-hover); }
-.ky-nav-link.active { color: var(--ink-strong); background: var(--accent-soft); border-color: transparent; }
+.ky-nav-link.active { color: var(--ink-strong); background: var(--accent-soft); border-color: transparent; border-left-color: var(--accent); }
 .ky-nav-link.active svg { color: var(--accent); }
 .ky-account { margin-top: auto; display: flex; flex-direction: column; align-items: stretch; gap: 12px; padding-top: 18px; border-top: 1px solid var(--line); min-width: 0; }
 .ky-account-name, .ky-workspace { overflow-wrap: anywhere; padding: 0 12px; font-size: 13px; }
