@@ -35,18 +35,7 @@ func (s *Server) inspectForPlan(ctx context.Context, a store.TenantAccess, ep *s
 	ctx, cancel := context.WithTimeout(ctx, planInspectionBudget)
 	defer cancel()
 	started()
-	inspect := s.planInspector
-	if inspect == nil {
-		inspect = func(ctx context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
-			s.agents.mu.Lock()
-			agent := s.agents.conns[ep.ID]
-			s.agents.mu.Unlock()
-			if agent == nil {
-				return protocol.ContainerInspection{}, store.ErrEndpointOffline
-			}
-			return s.inspect(ctx, agent, a.ActorID, a.OrganizationID, target, func() bool { return allowed(ctx) })
-		}
-	}
+	health := slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectHealth)
 	for _, svc := range pre.Services {
 		if ctx.Err() != nil {
 			break // the budget is spent: open no admission, send no expired grant
@@ -54,9 +43,24 @@ func (s *Server) inspectForPlan(ctx context.Context, a store.TenantAccess, ep *s
 		if svc.InspectionTarget == nil {
 			continue
 		}
-		if in, err := inspect(ctx, *svc.InspectionTarget); err == nil {
+		if in, err := s.observe(ctx, ep.ID, a.ActorID, a.OrganizationID, *svc.InspectionTarget, health, func() bool { return allowed(ctx) }); err == nil {
 			out[svc.InspectionTarget.ContainerID] = in
 		}
 	}
 	return out
+}
+
+// observe is one inspection of target on endpoint as actor through the plan-time primitive: the
+// test hook when set, else the endpoint's current agent. Plans and health validation share it.
+func (s *Server) observe(ctx context.Context, endpoint, actor, org string, target protocol.InspectionTarget, health bool, allowed func() bool) (protocol.ContainerInspection, error) {
+	if s.planInspector != nil {
+		return s.planInspector(ctx, target)
+	}
+	s.agents.mu.Lock()
+	agent := s.agents.conns[endpoint]
+	s.agents.mu.Unlock()
+	if agent == nil {
+		return protocol.ContainerInspection{}, store.ErrEndpointOffline
+	}
+	return s.inspect(ctx, agent, actor, org, target, health, allowed)
 }

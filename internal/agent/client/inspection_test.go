@@ -144,7 +144,7 @@ func TestInspectionTransportKeepsHeartbeatsResponsive(t *testing.T) {
 			case protocol.TypeHello:
 				var hello protocol.Hello
 				json.Unmarshal(frame.Payload, &hello)
-				advertised = slices.Contains(hello.Capabilities, "container.inspect") && slices.Contains(hello.Capabilities, "container.inspect.verdict")
+				advertised = slices.Contains(hello.Capabilities, "container.inspect") && slices.Contains(hello.Capabilities, "container.inspect.verdict") && slices.Contains(hello.Capabilities, "container.inspect.health")
 			case protocol.TypeHeartbeat:
 				beats++
 				if err = write(ctx, conn, protocol.TypeHeartbeat, nil); err != nil {
@@ -192,5 +192,29 @@ func TestInspectionTransportKeepsHeartbeatsResponsive(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("agent survived cancellation")
+	}
+}
+
+// An agent that inspects advertises container.inspect.health, so it answers only an observation
+// that carries health; one without is withheld like any invalid result.
+func TestInspectionTransportAnswersWithHealth(t *testing.T) {
+	for name, tc := range map[string]struct {
+		health string
+		want   string
+	}{"with health": {"healthy", "ok"}, "without health": {"", "unavailable"}} {
+		t.Run(name, func(t *testing.T) {
+			req := inspectionRequest()
+			out := make(chan outFrame, 8)
+			opts := &Options{inspectionSlots: make(chan struct{}, 2), Inspect: func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error) {
+				return &protocol.ContainerInspection{Target: req.Target, ObservedAt: time.Now(), State: "running", RestartPolicy: "no", NetworkMode: "bridge", ImagePlatform: protocol.ImagePlatform{OS: "linux", Architecture: "amd64"}, Ports: []protocol.Port{}, Unsupported: []string{}, ConfigurationVerified: true, Health: tc.health}, nil
+			}}
+			s := newInspections(context.Background(), req.Endpoint, req.Connection, opts, out)
+			if err := s.handle(execFrame(protocol.TypeInspectionOpen, req), true); err != nil {
+				t.Fatal(err)
+			}
+			if reply := nextExecFrame(t, out, protocol.TypeInspectionResult).Payload.(protocol.InspectionResult); reply.Status != tc.want {
+				t.Fatalf("status %q, want %q", reply.Status, tc.want)
+			}
+		})
 	}
 }

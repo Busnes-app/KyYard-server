@@ -29,10 +29,16 @@ var (
 const maxInspectionBody = 1 << 20
 
 type inspectedContainer struct {
-	ID         string `json:"Id"`
-	Image      string
-	Created    time.Time
-	State      *struct{ Status string }
+	ID           string `json:"Id"`
+	Image        string
+	Created      time.Time
+	RestartCount int
+	State        *struct {
+		Status string
+		// Health is absent without a healthcheck. Only its status is read: its log carries the
+		// healthcheck command's output.
+		Health *struct{ Status string }
+	}
 	Config     *struct{} // Require presence, but never decode secret-bearing fields.
 	HostConfig *struct {
 		NetworkMode   string
@@ -216,6 +222,19 @@ func inspectionFacts(raw inspectedContainer) (*protocol.ContainerInspection, err
 	default:
 		return nil, ErrInspectionInvalid
 	}
+	out.Health = "none"
+	if raw.State.Health != nil {
+		out.Health = raw.State.Health.Status
+	}
+	switch out.Health {
+	case "none", "starting", "healthy", "unhealthy":
+	default:
+		return nil, ErrInspectionInvalid
+	}
+	if raw.RestartCount < 0 || raw.RestartCount > protocol.MaxRestartCount {
+		return nil, ErrInspectionInvalid
+	}
+	out.RestartCount = raw.RestartCount
 	switch out.RestartPolicy {
 	case "", "no":
 		out.RestartPolicy = "no"

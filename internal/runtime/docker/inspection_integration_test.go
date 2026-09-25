@@ -23,7 +23,7 @@ func TestInspectionRealDocker(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	raw, err := exec.CommandContext(ctx, "docker", "run", "-d", "--pull", "never", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/scratch:ro", "--env", "TOKEN=inspection-secret-canary", "--label", "private=inspection-secret-canary", image, "sh", "-c", "sleep 120").CombinedOutput()
+	raw, err := exec.CommandContext(ctx, "docker", "run", "-d", "--pull", "never", "--no-healthcheck", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/scratch:ro", "--env", "TOKEN=inspection-secret-canary", "--label", "private=inspection-secret-canary", image, "sh", "-c", "sleep 120").CombinedOutput()
 	if err != nil {
 		t.Fatalf("fixture: %v: %s", err, raw)
 	}
@@ -60,7 +60,10 @@ func TestInspectionRealDocker(t *testing.T) {
 			t.Fatalf("unsupported %v lacks %s", out.Unsupported, code)
 		}
 	}
-	if out.Validate(target, time.Now()) != nil {
+	if out.Health != "none" || out.RestartCount != 0 {
+		t.Fatalf("a container without a healthcheck: health %q, restarts %d", out.Health, out.RestartCount)
+	}
+	if out.Validate(target, time.Now(), true) != nil {
 		t.Fatalf("real inspection invalid: %+v", out)
 	}
 	serialized, _ := json.Marshal(out)
@@ -70,5 +73,44 @@ func TestInspectionRealDocker(t *testing.T) {
 	target.CreatedUnix++
 	if out, err = c.InspectContainer(ctx, target); out != nil || !errors.Is(err, ErrInspectionChanged) {
 		t.Fatalf("stale target accepted: %v %v", out, err)
+	}
+
+	// A healthcheck Docker has run reports its status; its command and log never leave the adapter.
+	raw, err = exec.CommandContext(ctx, "docker", "run", "-d", "--pull", "never", "--network", "none", "--health-cmd", "true", "--health-interval", "1s", "--health-retries", "1", "--health-start-period", "0s", image, "sh", "-c", "sleep 120").CombinedOutput()
+	if err != nil {
+		t.Fatalf("healthcheck fixture: %v: %s", err, raw)
+	}
+	checked := strings.TrimSpace(string(raw))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, "docker", "rm", "-fv", checked).CombinedOutput(); err != nil {
+			t.Errorf("healthcheck fixture cleanup: %v: %s", err, out)
+		}
+	})
+	for {
+		status, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Health.Status}}", checked).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(status)) == "healthy" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("the healthcheck never passed")
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	raw, err = exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .}}", checked).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(raw, &identity); err != nil {
+		t.Fatal("healthcheck fixture identity unreadable")
+	}
+	target = protocol.InspectionTarget{ContainerID: checked, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}
+	if out, err = c.InspectContainer(ctx, target); err != nil || out.Health != "healthy" || out.RestartCount != 0 || out.Validate(target, time.Now(), true) != nil {
+		t.Fatalf("healthcheck inspection: %+v %v", out, err)
 	}
 }

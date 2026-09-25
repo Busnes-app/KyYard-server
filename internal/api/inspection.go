@@ -118,8 +118,9 @@ var (
 // inspect asks agent for one validated observation of target on behalf of actor. It holds an
 // admission slot throughout, expires the grant at the earlier of ctx's deadline and
 // InspectionLifetime, re-checks the agent and allowed every second and on the answer, and
-// cancels the grant on the agent only when it gave up before an answer.
-func (s *Server) inspect(ctx context.Context, agent *agentConn, actor, org string, target protocol.InspectionTarget, allowed func() bool) (protocol.ContainerInspection, error) {
+// cancels the grant on the agent only when it gave up before an answer. health is whether the
+// endpoint advertises container.inspect.health, which decides what a valid answer carries.
+func (s *Server) inspect(ctx context.Context, agent *agentConn, actor, org string, target protocol.InspectionTarget, health bool, allowed func() bool) (protocol.ContainerInspection, error) {
 	var none protocol.ContainerInspection
 	p := s.inspections.open(agent, actor, org)
 	if p == nil {
@@ -182,7 +183,7 @@ func (s *Server) inspect(ctx context.Context, agent *agentConn, actor, org strin
 			case "unavailable":
 				return none, errInspectionUnavailable
 			case "ok":
-				if reply.Result != nil && reply.Result.Validate(target, time.Now()) == nil {
+				if reply.Result != nil && reply.Result.Validate(target, time.Now(), health) == nil {
 					return *reply.Result, nil
 				}
 			}
@@ -223,7 +224,7 @@ func (s *Server) handleContainerInspection(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(protocol.InspectionLifetime + 2*time.Second))
-	result, err := s.inspect(r.Context(), agent, a.ActorID, a.OrganizationID, target, func() bool { return s.inspectionAllowed(r, a, endpoint) })
+	result, err := s.inspect(r.Context(), agent, a.ActorID, a.OrganizationID, target, slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectHealth), func() bool { return s.inspectionAllowed(r, a, endpoint) })
 	switch err {
 	case nil, errInspectionBusy, errInspectionUnavailable, errInspectionInvalid:
 		// The agent answered: the answer counts only for the target still recorded.
