@@ -497,7 +497,7 @@ On PostgreSQL run the same statements with `psql`. A single sign-on login whose 
 matches an existing account ignoring case is refused with "The username … is taken by another
 account": KyYard never links a provider's claimed name to an account it did not create.
 
-### After the Busnes-app owner move
+## Upgrading after the Busnes-app owner move
 
 The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr.io/busnes-app/kyyard`. The project no longer controls `ghcr.io/busness-app`; GHCR does not redirect it, and anything served under that name must be treated as untrusted. If `KY_IMAGE` in `.env` still names the old namespace, re-pinning is required, not optional: inspect `git remote -v` before any `git pull`, `make ci`, or `docker compose` command, and replace a retired-owner remote with `https://github.com/Busnes-app/KyYard-server.git` (prefer a fresh clone plus a known commit). Then remove `KY_IMAGE` to follow the compose default or verify and pin a digest using `docs/RESTORE.md` before pulling.
 
