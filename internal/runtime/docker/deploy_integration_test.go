@@ -113,7 +113,7 @@ func TestDeployRealDocker(t *testing.T) {
 	if err = json.Unmarshal([]byte(raw), &identity); err != nil {
 		t.Fatal(err)
 	}
-	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, Revision: 3, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
+	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: project, Revision: 3, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
 		Name: "web", ContainerName: name, ImageID: identity.Image,
 		Replaces: protocol.InspectionTarget{ContainerID: oldID, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()},
 		Restart:  "unless-stopped", Env: map[string]string{"TOKEN": "deploy-secret-canary"},
@@ -134,6 +134,7 @@ func TestDeployRealDocker(t *testing.T) {
 		req.Services = append(req.Services, protocol.DeploymentService{
 			Name: "worker", ContainerName: workerName, Pull: &protocol.ImagePull{Reference: pulledRef, Digest: pullDigest, Tag: "docker.io/library/alpine:3.24"},
 			Replaces: protocol.InspectionTarget{ContainerID: workerID, ImageID: identity.Image, CreatedUnix: worker.Created.Unix()},
+			Mounts:   []protocol.Mount{},
 		})
 	}
 	res := New("/var/run/docker.sock").Deploy(ctx, req, func() {})
@@ -288,7 +289,7 @@ func TestRemoveRealDocker(t *testing.T) {
 	if anonymous == "" {
 		t.Fatalf("fixture has no anonymous volume: %s", raw)
 	}
-	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: project, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute),
+	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: project, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute),
 		Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: id, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}}}}
 	res := New("/var/run/docker.sock").Remove(ctx, req, func() {})
 	if serialized, _ := json.Marshal(res); res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
@@ -323,7 +324,7 @@ func TestDeployAnswerAfterCancelIsFailed(t *testing.T) {
 		"status":       {nil, 409, protocol.OutcomeFailed},
 		"no answer":    {context.Canceled, 0, protocol.OutcomeUnknown},
 	} {
-		if outcome, _ := r.outcomeFor(parent, tc.err, tc.status); outcome != tc.outcome {
+		if outcome, _, _ := r.outcomeFor(parent, tc.err, tc.status); outcome != tc.outcome {
 			t.Fatalf("%s: %s, want %s", name, outcome, tc.outcome)
 		}
 	}
@@ -389,7 +390,7 @@ func TestRecheckRealDocker(t *testing.T) {
 	if err = json.Unmarshal([]byte(raw), &identity); err != nil {
 		t.Fatal(err)
 	}
-	req := protocol.DeploymentRequest{Deployment: "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c", Endpoint: "ep_1", Project: project, Revision: 2, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
+	req := protocol.DeploymentRequest{Deployment: "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: project, Revision: 2, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{
 		Name: "web", ContainerName: name, ImageID: identity.Image, Restart: "no", Mounts: []protocol.Mount{},
 		Replaces: protocol.InspectionTarget{ContainerID: oldID, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()},
 	}}}
@@ -399,7 +400,7 @@ func TestRecheckRealDocker(t *testing.T) {
 		}
 	})
 	serialized, _ := json.Marshal(res)
-	if res.Outcome != protocol.OutcomeDenied || len(res.Steps) < 3 || res.Steps[2].Step != protocol.StepRecheck || res.Steps[2].Detail != "the container changed after the precondition" {
+	if res.Outcome != protocol.OutcomeDenied || len(res.Steps) < 3 || res.Steps[2].Step != protocol.StepRecheck || res.Steps[2].Code != "configuration_drift" || res.Code != protocol.ResultStepFailed {
 		t.Fatalf("recheck: %s", serialized)
 	}
 	if out, err := docker("inspect", "--format", "{{.Id}} {{.State.Running}}", name); err != nil || out != oldID+" true" {

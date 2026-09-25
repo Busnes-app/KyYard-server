@@ -95,7 +95,7 @@ func TestDeployPullVerifiesDockerHubSpelling(t *testing.T) {
 			if res.Outcome != tc.outcome {
 				t.Fatalf("%+v", res)
 			}
-			if tc.outcome == protocol.OutcomeFailed && (res.Steps[1].Step != protocol.StepPull || res.Steps[1].Detail != "pulled image does not match") {
+			if tc.outcome == protocol.OutcomeFailed && (res.Steps[1].Step != protocol.StepPull || res.Steps[1].Code != "pull_digest_mismatch") {
 				t.Fatalf("pull step: %+v", res.Steps[1])
 			}
 		})
@@ -110,21 +110,21 @@ func TestDeployPullFailuresTouchNothing(t *testing.T) {
 		mutate func(*fakeDeployEngine)
 		detail string
 	}{
-		"401": {func(f *fakeDeployEngine) { f.pullStatus, f.pullBody = 401, daemonText }, "unauthorized"},
-		"403": {func(f *fakeDeployEngine) { f.pullStatus, f.pullBody = 403, daemonText }, "unauthorized"},
-		"404": {func(f *fakeDeployEngine) { f.pullStatus, f.pullBody = 404, daemonText }, "not found"},
-		"500": {func(f *fakeDeployEngine) { f.pullStatus, f.pullBody = 500, daemonText }, "pull failed"},
+		"401": {func(f *fakeDeployEngine) { f.pullStatus, f.pullBody = 401, daemonText }, "pull_unauthorized"},
+		"403": {func(f *fakeDeployEngine) { f.pullStatus, f.pullBody = 403, daemonText }, "pull_unauthorized"},
+		"404": {func(f *fakeDeployEngine) { f.pullStatus, f.pullBody = 404, daemonText }, "pull_not_found"},
+		"500": {func(f *fakeDeployEngine) { f.pullStatus, f.pullBody = 500, daemonText }, "pull_failed"},
 		"stream error": {func(f *fakeDeployEngine) {
 			f.pullBody = `{"status":"Pulling"}` + "\n" + `{"error":"` + daemonText + `"}` + "\n"
-		}, "pull failed"},
-		"mismatch":    {func(f *fakeDeployEngine) { f.pulled["RepoDigests"] = []string{daemonText + "@" + pullDigest} }, "pulled image does not match"},
-		"id shape":    {func(f *fakeDeployEngine) { f.pulled["Id"] = "abc" }, "pulled image does not match"},
-		"inspect 404": {func(f *fakeDeployEngine) { f.pulledStatus = 404 }, "the runtime refused with status 404"},
-		"inspect 500": {func(f *fakeDeployEngine) { f.pulledStatus = 500 }, "the runtime refused with status 500"},
-		"tag 500":     {func(f *fakeDeployEngine) { f.tagStatus = 500 }, "tag failed"},
-		"tag 404":     {func(f *fakeDeployEngine) { f.tagStatus = 404 }, "tag failed"},
+		}, "pull_failed"},
+		"mismatch":    {func(f *fakeDeployEngine) { f.pulled["RepoDigests"] = []string{daemonText + "@" + pullDigest} }, "pull_digest_mismatch"},
+		"id shape":    {func(f *fakeDeployEngine) { f.pulled["Id"] = "abc" }, "pull_digest_mismatch"},
+		"inspect 404": {func(f *fakeDeployEngine) { f.pulledStatus = 404 }, "runtime_status: 404"},
+		"inspect 500": {func(f *fakeDeployEngine) { f.pulledStatus = 500 }, "runtime_status: 500"},
+		"tag 500":     {func(f *fakeDeployEngine) { f.tagStatus = 500 }, "pull_failed"},
+		"tag 404":     {func(f *fakeDeployEngine) { f.tagStatus = 404 }, "pull_failed"},
 		// A line past the per-line bound ends the scan with an error, never a success.
-		"stream cut": {func(f *fakeDeployEngine) { f.pullBody = `{"status":"` + strings.Repeat("x", 1<<20+1) + `"}` + "\n" }, "the runtime call failed"},
+		"stream cut": {func(f *fakeDeployEngine) { f.pullBody = `{"status":"` + strings.Repeat("x", 1<<20+1) + `"}` + "\n" }, "runtime_error"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -132,7 +132,7 @@ func TestDeployPullFailuresTouchNothing(t *testing.T) {
 			req := request(pulledService("ghcr.io/org/app"))
 			req.Registries = map[string]protocol.RegistryAuth{"ghcr.io": {Username: "user-canary", Secret: "secret-canary"}}
 			res := f.client().Deploy(context.Background(), req, func() {})
-			if res.Outcome != protocol.OutcomeFailed || res.Steps[1].Step != protocol.StepPull || res.Steps[1].Outcome != protocol.OutcomeFailed || res.Steps[1].Detail != tc.detail || len(res.Services) != 0 {
+			if res.Outcome != protocol.OutcomeFailed || res.Steps[1].Step != protocol.StepPull || res.Steps[1].Outcome != protocol.OutcomeFailed || stepText(res.Steps[1]) != tc.detail || len(res.Services) != 0 {
 				t.Fatalf("%+v", res)
 			}
 			for _, s := range res.Steps[2:] {
@@ -166,7 +166,7 @@ func TestDeploySecondPullFailureTouchesNothing(t *testing.T) {
 	db := pulledService("ghcr.io/org/db")
 	db.Name, db.ContainerName, db.Replaces.ContainerID, db.Ports = "db", "shop-db-1", otherOldID, nil
 	res := f.client().Deploy(context.Background(), request(pulledService("ghcr.io/org/app"), db), func() {})
-	if res.Outcome != protocol.OutcomeFailed || res.Detail != "service db, step pull: unauthorized" || len(res.Services) != 0 {
+	if res.Outcome != protocol.OutcomeFailed || res.Code != protocol.ResultStepFailed || res.Steps[3].Code != "pull_unauthorized" || len(res.Services) != 0 {
 		t.Fatalf("%+v", res)
 	}
 	for _, c := range f.steps() {
@@ -202,7 +202,7 @@ func TestDeployPullRefusedWithoutTimeToReplace(t *testing.T) {
 			req := request(tc.services...)
 			req.Deadline = time.Now().Add(tc.left)
 			res := f.client().Deploy(context.Background(), req, func() {})
-			if res.Outcome != protocol.OutcomeTimedOut || res.Steps[1].Step != protocol.StepPull || res.Steps[1].Outcome != protocol.OutcomeTimedOut {
+			if res.Outcome != protocol.OutcomeTimedOut || res.Steps[1].Step != protocol.StepPull || res.Steps[1].Outcome != protocol.OutcomeTimedOut || res.Steps[1].Code != "deadline" {
 				t.Fatalf("%+v", res)
 			}
 			for _, c := range f.steps() {

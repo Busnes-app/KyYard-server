@@ -68,7 +68,7 @@ func (f *fakeRemoveEngine) steps() []string {
 	return out
 }
 func removal(ids ...string) protocol.RemovalRequest {
-	req := protocol.RemovalRequest{Deployment: deploymentID, Endpoint: "ep_1", Project: "shop", IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute)}
+	req := protocol.RemovalRequest{Deployment: deploymentID, RequestID: requestID, Endpoint: "ep_1", Project: "shop", IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute)}
 	for i, id := range ids {
 		req.Containers = append(req.Containers, protocol.RemovalTarget{Service: []string{"web", "db"}[i], Target: protocol.InspectionTarget{ContainerID: id, ImageID: oldImage, CreatedUnix: 1700000000}})
 	}
@@ -85,7 +85,7 @@ func outcomes(res protocol.DeploymentResult) string {
 func TestRemoveStopsThenDeletesEachTarget(t *testing.T) {
 	f := newFakeRemoveEngine(t)
 	res := f.client().Remove(context.Background(), removal(oldID, secondID), func() {})
-	if res.Outcome != protocol.OutcomeSucceeded || res.Deployment != deploymentID || res.Detail != "" || len(res.Services) != 0 {
+	if res.Outcome != protocol.OutcomeSucceeded || res.Deployment != deploymentID || res.Code != "" || res.RequestID != requestID || len(res.Services) != 0 {
 		t.Fatalf("outcome: %+v", res)
 	}
 	want := []string{"GET /containers/" + oldID + "/json", "POST /containers/" + oldID + "/stop", "DELETE /containers/" + oldID,
@@ -133,7 +133,7 @@ func TestRemoveRefusesAContainerThatIsNotTheDecidedOne(t *testing.T) {
 		f := newFakeRemoveEngine(t)
 		f.containers[oldID][field] = v
 		res := f.client().Remove(context.Background(), removal(oldID, secondID), func() {})
-		if res.Outcome != protocol.OutcomeDenied || res.Steps[0].Detail != "the container is not the one this plan was decided about" || len(f.calls) != 1 {
+		if res.Outcome != protocol.OutcomeDenied || res.Steps[0].Code != "identity_mismatch" || len(f.calls) != 1 {
 			t.Fatalf("%s mismatch: %+v calls=%v", field, res, f.steps())
 		}
 		if got := outcomes(res); got != "web/precondition=denied,web/stop=skipped,web/remove=skipped,db/precondition=skipped,db/stop=skipped,db/remove=skipped" {
@@ -152,6 +152,9 @@ func TestRemoveStepFailuresStopTheRun(t *testing.T) {
 	if res.Outcome != protocol.OutcomeFailed || outcomes(res) != "web/precondition=succeeded,web/stop=failed,web/remove=skipped" || len(f.calls) != 2 {
 		t.Fatalf("stop 500: %s %+v", outcomes(res), f.steps())
 	}
+	if res.Steps[1].Code != "runtime_status" || res.Steps[1].Detail != "500" {
+		t.Fatalf("stop 500 step: %+v", res.Steps[1])
+	}
 	f = newFakeRemoveEngine(t)
 	f.stopStatus = 304
 	if res = f.client().Remove(context.Background(), removal(oldID), func() {}); res.Outcome != protocol.OutcomeSucceeded {
@@ -165,7 +168,7 @@ func TestRemoveStepFailuresStopTheRun(t *testing.T) {
 	f = newFakeRemoveEngine(t)
 	f.removeStatus = 409
 	res = f.client().Remove(context.Background(), removal(oldID), func() {})
-	if res.Outcome != protocol.OutcomeFailed || res.Steps[2].Detail != "the runtime refused: something still depends on this container" {
+	if res.Outcome != protocol.OutcomeFailed || res.Steps[2].Code != "dependents" {
 		t.Fatalf("remove 409: %+v", res)
 	}
 	if err := res.Validate(); err != nil {
@@ -178,7 +181,7 @@ func TestRemoveRefusesToStartWithoutTimeToFinish(t *testing.T) {
 	req := removal(oldID)
 	req.Deadline = time.Now().Add(60 * time.Second)
 	res := f.client().Remove(context.Background(), req, func() {})
-	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[1].Step != protocol.StepStop || res.Steps[1].Detail != "not enough time left before the deadline to remove this container safely" || res.Steps[2].Outcome != protocol.OutcomeSkipped {
+	if res.Outcome != protocol.OutcomeTimedOut || res.Steps[1].Step != protocol.StepStop || res.Steps[1].Code != "deadline" || res.Steps[2].Outcome != protocol.OutcomeSkipped {
 		t.Fatalf("guard: %+v", res)
 	}
 	if got := f.steps(); len(got) != 1 || got[0] != "GET /containers/"+oldID+"/json" {
@@ -191,7 +194,7 @@ func TestRemoveRefusesAnInvalidRequestWithoutCalling(t *testing.T) {
 	req := removal(oldID)
 	req.Containers[0].Target.ContainerID = "../x"
 	res := f.client().Remove(context.Background(), req, func() {})
-	if res.Outcome != protocol.OutcomeDenied || len(f.calls) != 0 || len(res.Steps) != 0 {
+	if res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || len(f.calls) != 0 || len(res.Steps) != 0 {
 		t.Fatalf("invalid request: %+v calls=%d", res, len(f.calls))
 	}
 }
@@ -200,7 +203,7 @@ func TestRemoveTwoTargetsSecondMismatched(t *testing.T) {
 	f := newFakeRemoveEngine(t)
 	f.containers[secondID]["Image"] = newImage
 	res := f.client().Remove(context.Background(), removal(oldID, secondID), func() {})
-	if res.Outcome != protocol.OutcomeDenied || !strings.HasPrefix(res.Detail, "service db, step precondition:") {
+	if res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultStepFailed || res.Steps[3].Code != "identity_mismatch" {
 		t.Fatalf("partial: %+v", res)
 	}
 	if got := outcomes(res); got != "web/precondition=succeeded,web/stop=succeeded,web/remove=succeeded,db/precondition=denied,db/stop=skipped,db/remove=skipped" {
@@ -217,7 +220,7 @@ func TestRemoveReportsClockSkewWithoutCalling(t *testing.T) {
 	req.IssuedAt = time.Now().Add(protocol.MaxClockSkew + time.Minute)
 	req.Deadline = req.IssuedAt.Add(time.Minute)
 	res := f.client().Remove(context.Background(), req, func() {})
-	if res.Outcome != protocol.OutcomeFailed || res.Detail != "clock skew exceeds 5 minutes" || len(f.calls) != 0 {
+	if res.Outcome != protocol.OutcomeFailed || res.Code != protocol.ResultClockSkew || res.RequestID != requestID || len(f.calls) != 0 {
 		t.Fatalf("skewed removal: %+v", res)
 	}
 }

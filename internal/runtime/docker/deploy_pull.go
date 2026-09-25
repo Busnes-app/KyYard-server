@@ -22,11 +22,11 @@ func pullPhase(remaining time.Duration) time.Duration {
 
 // pull fetches s.Pull by digest with the frame's credential for its host, proves the image the
 // daemon now holds is that repository at that digest, and tags it with s.Pull.Tag so the
-// host's tag follows the update. It returns the image ID the replacement is created from.
-// Details are fixed: daemon text can echo the registry's answer.
-func (r *deployRun) pull(ctx context.Context, s protocol.DeploymentService) (outcome, detail, imageID string) {
+// host's tag follows the update. It returns the step's answer and the image ID the replacement
+// is created from. Codes are fixed: daemon text can echo the registry's answer.
+func (r *deployRun) pull(ctx context.Context, s protocol.DeploymentService) (outcome, code, detail, imageID string) {
 	if time.Until(r.pullDeadline) < callBudget {
-		return protocol.OutcomeTimedOut, "not enough time left before the deadline to pull and replace safely", ""
+		return protocol.OutcomeTimedOut, "deadline", "", ""
 	}
 	pctx, cancel := context.WithDeadline(ctx, r.pullDeadline)
 	defer cancel()
@@ -34,7 +34,7 @@ func (r *deployRun) pull(ctx context.Context, s protocol.DeploymentService) (out
 	q := url.Values{"fromImage": {name}, "tag": {digest}}
 	req, err := http.NewRequestWithContext(pctx, http.MethodPost, r.c.base+"/images/create?"+q.Encode(), nil)
 	if err != nil {
-		return protocol.OutcomeFailed, "pull failed", ""
+		return protocol.OutcomeFailed, "pull_failed", "", ""
 	}
 	if auth, ok := r.req.Registries[s.Pull.Host()]; ok {
 		raw, _ := json.Marshal(struct {
@@ -47,34 +47,34 @@ func (r *deployRun) pull(ctx context.Context, s protocol.DeploymentService) (out
 	}
 	resp, err := r.c.http.Do(req)
 	if err != nil {
-		o, d := r.outcomeFor(pctx, err, 0)
-		return o, d, ""
+		o, c, d := r.outcomeFor(pctx, err, 0)
+		return o, c, d, ""
 	}
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
-		return protocol.OutcomeFailed, "unauthorized", ""
+		return protocol.OutcomeFailed, "pull_unauthorized", "", ""
 	case resp.StatusCode == http.StatusNotFound:
-		return protocol.OutcomeFailed, "not found", ""
+		return protocol.OutcomeFailed, "pull_not_found", "", ""
 	case resp.StatusCode != http.StatusOK:
-		return protocol.OutcomeFailed, "pull failed", ""
+		return protocol.OutcomeFailed, "pull_failed", "", ""
 	}
 	// A pull reports late failures as an error line inside the 200.
 	failure, err := scanPullStream(resp.Body)
 	if err != nil {
-		o, d := r.outcomeFor(pctx, err, 0)
-		return o, d, ""
+		o, c, d := r.outcomeFor(pctx, err, 0)
+		return o, c, d, ""
 	}
 	if failure != "" {
-		return protocol.OutcomeFailed, "pull failed", ""
+		return protocol.OutcomeFailed, "pull_failed", "", ""
 	}
 	var im struct {
 		ID          string `json:"Id"`
 		RepoDigests []string
 	}
 	if err := r.c.get(pctx, "/images/"+url.PathEscape(s.Pull.Reference)+"/json", &im); err != nil {
-		o, d := r.outcomeFor(pctx, err, statusOf(err))
-		return o, d, ""
+		o, c, d := r.outcomeFor(pctx, err, statusOf(err))
+		return o, c, d, ""
 	}
 	if len(im.ID) == 71 && strings.HasPrefix(im.ID, "sha256:") && protocol.ValidImageReference(im.ID) {
 		if slices.ContainsFunc(im.RepoDigests, func(rd string) bool {
@@ -84,24 +84,25 @@ func (r *deployRun) pull(ctx context.Context, s protocol.DeploymentService) (out
 			return r.tag(pctx, s.Pull.Tag, im.ID)
 		}
 	}
-	return protocol.OutcomeFailed, "pulled image does not match", ""
+	return protocol.OutcomeFailed, "pull_digest_mismatch", "", ""
 }
 
-// tag points tagRef at the verified pulled image; the Engine answers 201.
-func (r *deployRun) tag(ctx context.Context, tagRef, id string) (outcome, detail, imageID string) {
+// tag points tagRef at the verified pulled image; the Engine answers 201. A refused tag is part
+// of the pull step: pull_failed.
+func (r *deployRun) tag(ctx context.Context, tagRef, id string) (outcome, code, detail, imageID string) {
 	if tagRef == "" {
-		return protocol.OutcomeSucceeded, "", id
+		return protocol.OutcomeSucceeded, "", "", id
 	}
 	repo, tag := protocol.SplitImageReference(tagRef)
 	status, err := r.c.post(ctx, "/images/"+url.PathEscape(id)+"/tag?repo="+url.QueryEscape(repo)+"&tag="+url.QueryEscape(tag))
 	if err != nil {
-		o, d := r.outcomeFor(ctx, err, 0)
-		return o, d, ""
+		o, c, d := r.outcomeFor(ctx, err, 0)
+		return o, c, d, ""
 	}
 	if status != http.StatusCreated {
-		return protocol.OutcomeFailed, "tag failed", ""
+		return protocol.OutcomeFailed, "pull_failed", "", ""
 	}
-	return protocol.OutcomeSucceeded, "", id
+	return protocol.OutcomeSucceeded, "", "", id
 }
 
 // canonicalRepository spells a Docker Hub repository the way the daemon reports it.

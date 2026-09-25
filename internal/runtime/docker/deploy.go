@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -42,13 +41,9 @@ const replaceBudget = 2*operationBudget + 4*callBudget
 // started is called once, immediately before the first phase-two call (after the first recheck's
 // deadline guard); a run that ends in phase one never calls it.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
-	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
-		res.Outcome, res.Detail = protocol.OutcomeDenied, "the deployment request is invalid"
-		if errors.Is(err, protocol.ErrClockSkew) {
-			res.Outcome, res.Detail = protocol.OutcomeFailed, protocol.ErrClockSkew.Error()
-		}
-		return res
+		return refused(res, err)
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
@@ -97,36 +92,57 @@ func (r *deployRun) begin() {
 	}
 }
 
-// step records one outcome. The first non-success fixes the run's outcome and detail.
-func (r *deployRun) step(service, step string, run func() (string, string)) {
+// refused answers a frame Validate refused, with no step run: invalid_request, or clock_skew
+// failed. A request ID that is not valid is not echoed.
+func refused(res protocol.DeploymentResult, err error) protocol.DeploymentResult {
+	if !protocol.ValidRequestID(res.RequestID) {
+		res.RequestID = ""
+	}
+	res.Outcome, res.Code = protocol.OutcomeDenied, protocol.ResultInvalidRequest
+	if errors.Is(err, protocol.ErrClockSkew) {
+		res.Outcome, res.Code = protocol.OutcomeFailed, protocol.ResultClockSkew
+	}
+	return res
+}
+
+// step records one outcome with its code and the code's parameter. The first non-success fixes
+// the run's outcome, coded step_failed: the steps say which.
+func (r *deployRun) step(service, step string, run func() (outcome, code, detail string)) {
 	if r.res.Outcome != "" {
 		r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: service, Step: step, Outcome: protocol.OutcomeSkipped})
 		return
 	}
-	outcome, detail := run()
-	r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: service, Step: step, Outcome: outcome, Detail: bound(detail, protocol.MaxDeploymentStepDetailBytes)})
+	outcome, code, detail := run()
+	s := protocol.DeploymentStep{Service: service, Step: step, Outcome: outcome}
 	if outcome != protocol.OutcomeSucceeded {
-		r.res.Outcome, r.res.Detail = outcome, bound(fmt.Sprintf("service %s, step %s: %s", service, step, detail), protocol.MaxResultDetailBytes)
+		s.Code, s.Detail = code, detail
+		r.res.Outcome, r.res.Code = outcome, protocol.ResultStepFailed
 	}
+	r.res.Steps = append(r.res.Steps, s)
 }
 
-// outcomeFor classifies a call that did not succeed. A status is an answer and is failed. With
-// no answer, a cancelled parent means the run was cancelled (agent shutdown under the
-// detached-context contract) before the runtime answered, and the Engine may have acted:
-// unknown, never retried by itself.
-func (r *deployRun) outcomeFor(ctx context.Context, err error, status int) (string, string) {
+// succeeded, deny and fail are a step's plain answers.
+func succeeded() (string, string, string)       { return protocol.OutcomeSucceeded, "", "" }
+func deny(code string) (string, string, string) { return protocol.OutcomeDenied, code, "" }
+func fail(code string) (string, string, string) { return protocol.OutcomeFailed, code, "" }
+
+// outcomeFor classifies a call that did not succeed. A status is an answer: failed,
+// runtime_status with the status. With no answer, a cancelled parent means the run was cancelled
+// (agent shutdown under the detached-context contract) before the runtime answered, and the
+// Engine may have acted: unknown, never retried by itself.
+func (r *deployRun) outcomeFor(ctx context.Context, err error, status int) (string, string, string) {
 	if statusOf(err) != 0 {
 		err = nil
 	}
 	switch {
 	case err != nil && r.parent.Err() == context.Canceled:
-		return protocol.OutcomeUnknown, "the run was cancelled before the runtime answered"
+		return protocol.OutcomeUnknown, "cancelled", ""
 	case err != nil && ctx.Err() != nil:
-		return protocol.OutcomeTimedOut, "the runtime did not answer in time"
-	case err != nil:
-		return protocol.OutcomeFailed, "the runtime call failed"
+		return protocol.OutcomeTimedOut, "runtime_timeout", ""
+	case err != nil, status < 100, status > 599:
+		return fail("runtime_error")
 	}
-	return protocol.OutcomeFailed, fmt.Sprintf("the runtime refused with status %d", status)
+	return protocol.OutcomeFailed, "runtime_status", strconv.Itoa(status)
 }
 
 // inspectedForDeploy is decoded with pointers so a field the Engine did not report is refused
@@ -242,8 +258,6 @@ func (a imageDefaults) differs(b imageDefaults) bool {
 		a.WorkingDir != b.WorkingDir || a.StopSignal != b.StopSignal
 }
 
-const cannotExpress = "the container has configuration the definition cannot express: "
-
 // reported says the Engine returned every field undescribed reads through a pointer; an absent
 // one is refused rather than read as its zero value.
 func reported(in inspectedForDeploy) bool {
@@ -311,9 +325,18 @@ func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) [
 	return codes
 }
 
-// unsupported is the precondition's detail for configuration a recreate would drop.
-func unsupported(codes []string) string {
-	return "unsupported: " + strings.Join(codes, ", ")
+// unsupported is the precondition's refusal for configuration a recreate would drop: the codes
+// joined by ",", as many whole ones as the step bound holds. The plan's live inspection already
+// listed every one.
+func unsupported(codes []string) (string, string, string) {
+	detail := codes[0]
+	for _, c := range codes[1:] {
+		if len(detail)+1+len(c) > protocol.MaxDeploymentStepDetailBytes {
+			break
+		}
+		detail += "," + c
+	}
+	return protocol.OutcomeDenied, "unsupported", detail
 }
 
 // prepared is what a service's precondition and image (or pull) steps settled for its replacement.
@@ -329,40 +352,36 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 	var before inspectedForDeploy
 	var networkMode string
 	var oldMounts []inspectedMount
-	r.step(s.Name, protocol.StepPrecondition, func() (string, string) {
+	r.step(s.Name, protocol.StepPrecondition, func() (string, string, string) {
 		if r.defaultRuntime == "" {
-			return protocol.OutcomeFailed, "the daemon's default runtime could not be read"
+			return fail("runtime_unreadable")
 		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		if err := r.c.get(cctx, "/containers/"+old+"/json", &before); err != nil {
 			if statusOf(err) == http.StatusNotFound {
-				return protocol.OutcomeDenied, "the container no longer exists"
+				return deny("container_missing")
 			}
 			return r.outcomeFor(cctx, err, statusOf(err))
 		}
 		if before.ID != s.Replaces.ContainerID || before.Image != s.Replaces.ImageID || before.Created.Unix() != s.Replaces.CreatedUnix {
-			return protocol.OutcomeDenied, "the container is not the one this plan was decided about"
+			return deny("identity_mismatch")
 		}
 		if !reported(before) {
-			return protocol.OutcomeDenied, "the runtime did not report the container's full configuration"
+			return deny("configuration_unreported")
 		}
 		if codes := undescribed(before, r.req.Project+"_default", r.defaultRuntime); len(codes) > 0 {
-			return protocol.OutcomeDenied, unsupported(codes)
-		}
-		// No mounts key is a server older than mounts: it relied on the agent refusing them.
-		if s.Mounts == nil && len(*before.Mounts) > 0 {
-			return protocol.OutcomeDenied, cannotExpress + "mounts"
+			return unsupported(codes)
 		}
 		// Binds are preserve-only: a deploy never introduces a host path.
 		for _, m := range s.Mounts {
 			if m.Kind == protocol.MountBind && !slices.ContainsFunc(*before.Mounts, func(o inspectedMount) bool {
 				return o.Type == "bind" && o.Source == m.Source && o.Destination == m.Target && o.RW == !m.ReadOnly
 			}) {
-				return protocol.OutcomeDenied, "bind mount not present on the container"
+				return deny("bind_missing")
 			}
 			if m.Kind == protocol.MountVolume && r.keepOnly[m.Source] && !keeps(*before.Mounts, m) {
-				return protocol.OutcomeDenied, notPresent
+				return deny("volume_mount_missing")
 			}
 		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
@@ -370,25 +389,25 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		var im struct{ Config imageDefaults }
 		if err := r.c.get(ictx, "/images/"+url.PathEscape(s.Replaces.ImageID)+"/json", &im); err != nil {
 			if statusOf(err) == http.StatusNotFound {
-				return protocol.OutcomeDenied, "the container's image is no longer present"
+				return deny("image_missing")
 			}
 			return r.outcomeFor(ictx, err, statusOf(err))
 		}
 		if before.Config.differs(im.Config) {
-			return protocol.OutcomeDenied, unsupported([]string{"image_config"})
+			return unsupported([]string{"image_config"})
 		}
 		networkMode, oldMounts = before.HostConfig.NetworkMode, *before.Mounts
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
 	r.ensureVolumes(ctx, s, oldMounts)
 	if s.Pull != nil {
-		r.step(s.Name, protocol.StepPull, func() (string, string) {
-			outcome, detail, id := r.pull(ctx, s)
+		r.step(s.Name, protocol.StepPull, func() (string, string, string) {
+			outcome, code, detail, id := r.pull(ctx, s)
 			s.ImageID = id // the replacement is created from, and verified against, the pulled ID
-			return outcome, detail
+			return outcome, code, detail
 		})
 	} else {
-		r.step(s.Name, protocol.StepImage, func() (string, string) {
+		r.step(s.Name, protocol.StepImage, func() (string, string, string) {
 			cctx, cancel := context.WithTimeout(ctx, callBudget)
 			defer cancel()
 			var im struct {
@@ -396,14 +415,14 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 			}
 			if err := r.c.get(cctx, "/images/"+url.PathEscape(s.ImageID)+"/json", &im); err != nil {
 				if statusOf(err) == http.StatusNotFound {
-					return protocol.OutcomeFailed, "the pinned image is not present on this host"
+					return fail("pinned_image_missing")
 				}
 				return r.outcomeFor(cctx, err, statusOf(err))
 			}
 			if im.ID != s.ImageID {
-				return protocol.OutcomeFailed, "the host reported a different image identity"
+				return fail("image_identity_mismatch")
 			}
-			return protocol.OutcomeSucceeded, ""
+			return succeeded()
 		})
 	}
 	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode, before: before}
@@ -412,9 +431,9 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 func (r *deployRun) replace(ctx context.Context, p prepared) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
 	// The pull window can be minutes: re-read the container right before touching it.
-	r.step(s.Name, protocol.StepRecheck, func() (string, string) {
+	r.step(s.Name, protocol.StepRecheck, func() (string, string, string) {
 		if time.Until(r.req.Deadline) < replaceBudget {
-			return protocol.OutcomeTimedOut, "not enough time left before the deadline to replace this service safely"
+			return protocol.OutcomeTimedOut, "deadline", ""
 		}
 		r.begin()
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
@@ -422,30 +441,30 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		var now inspectedForDeploy
 		if err := r.c.get(cctx, "/containers/"+old+"/json", &now); err != nil {
 			if statusOf(err) == http.StatusNotFound {
-				return protocol.OutcomeDenied, "the container no longer exists"
+				return deny("container_missing")
 			}
 			return r.outcomeFor(cctx, err, statusOf(err))
 		}
 		if now.ID != s.Replaces.ContainerID || now.Image != s.Replaces.ImageID || now.Created.Unix() != s.Replaces.CreatedUnix || !sameConfiguration(p.before, now) {
-			return protocol.OutcomeDenied, "the container changed after the precondition"
+			return deny("configuration_drift")
 		}
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
-	r.step(s.Name, protocol.StepRename, func() (string, string) {
+	r.step(s.Name, protocol.StepRename, func() (string, string, string) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		name := p.name + ".kyyard-prev-" + r.req.Deployment[:8]
 		status, err := r.c.post(cctx, "/containers/"+old+"/rename?name="+url.QueryEscape(name))
 		if err != nil || status >= 400 {
 			if status == http.StatusConflict {
-				return protocol.OutcomeFailed, "a container already holds the name reserved for the previous one"
+				return fail("name_reserved")
 			}
 			return r.outcomeFor(cctx, err, status)
 		}
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
 	var created string
-	r.step(s.Name, protocol.StepCreate, func() (string, string) {
+	r.step(s.Name, protocol.StepCreate, func() (string, string, string) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var out struct {
@@ -454,59 +473,57 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s, p.networkMode), &out)
 		if err != nil || status != http.StatusCreated {
 			if status == http.StatusConflict {
-				return protocol.OutcomeFailed, "a container with that name already exists"
+				return fail("name_taken")
 			}
 			return r.outcomeFor(cctx, err, status)
 		}
 		if !protocol.ValidExecID(out.ID) {
-			return protocol.OutcomeFailed, "the runtime returned an unusable container identity"
+			return fail("identity_unusable")
 		}
 		created = out.ID
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
-	r.step(s.Name, protocol.StepStop, func() (string, string) {
+	r.step(s.Name, protocol.StepStop, func() (string, string, string) {
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
 		defer cancel()
 		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
-			outcome, detail := r.outcomeFor(cctx, err, status)
-			return outcome, fmt.Sprintf("%s (container %s)", detail, created)
+			return r.outcomeFor(cctx, err, status)
 		}
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
-	r.step(s.Name, protocol.StepStart, func() (string, string) {
+	r.step(s.Name, protocol.StepStart, func() (string, string, string) {
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
 		defer cancel()
 		status, err := r.c.post(cctx, "/containers/"+url.PathEscape(created)+"/start")
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
-			outcome, detail := r.outcomeFor(cctx, err, status)
-			return outcome, fmt.Sprintf("%s (container %s)", detail, created)
+			return r.outcomeFor(cctx, err, status)
 		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
 		defer icancel()
 		var after inspectedForDeploy
 		if err := r.c.get(ictx, "/containers/"+url.PathEscape(created)+"/json", &after); err != nil {
-			outcome, detail := r.outcomeFor(ictx, err, statusOf(err))
-			return outcome, fmt.Sprintf("the container started but its identity could not be read: %s (container %s)", detail, created)
+			outcome, _, _ := r.outcomeFor(ictx, err, statusOf(err))
+			return outcome, "identity_unreadable", created
 		}
 		id := protocol.DeploymentIdentity{Service: s.Name, ContainerID: after.ID, ImageID: after.Image, CreatedUnix: after.Created.Unix()}
 		if s.Pull != nil {
 			id.ImageDigest = s.Pull.Digest
 		}
 		if after.ID != created || after.Image != s.ImageID || (protocol.InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil {
-			return protocol.OutcomeFailed, fmt.Sprintf("the container started but its identity could not be verified (container %s)", created)
+			return protocol.OutcomeFailed, "identity_unverified", created
 		}
 		r.res.Services = append(r.res.Services, id)
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
-	r.step(s.Name, protocol.StepRemove, func() (string, string) {
+	r.step(s.Name, protocol.StepRemove, func() (string, string, string) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		status, err := r.c.del(cctx, "/containers/"+old)
 		if err != nil || status >= 400 {
 			return r.outcomeFor(cctx, err, status)
 		}
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
 }
 
