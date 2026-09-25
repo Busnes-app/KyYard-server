@@ -105,6 +105,10 @@ var (
 // hex characters or the store's UUID fallback, safe to log.
 func ValidRequestID(id string) bool { return requestID.MatchString(id) }
 
+// ValidDeploymentID is the grammar Validate requires of Deployment: a lowercase UUID. A frame
+// failing this cannot be attributed to any deployment and so cannot be answered at all.
+func ValidDeploymentID(id string) bool { return deploymentUUID.MatchString(id) }
+
 // validStepCode reports a known code whose detail has the shape the code allows.
 func validStepCode(code, detail string) bool {
 	rule, ok := stepCodes[code]
