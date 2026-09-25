@@ -634,6 +634,9 @@ func TestDeploymentRequestMounts(t *testing.T) {
 			mounted(r)
 			withServices(r, 2)
 		},
+		"two-character volume name": func(r *DeploymentRequest) {
+			r.Services[0].Mounts, r.Volumes = []Mount{{Kind: MountVolume, Source: "ab", Target: "/data"}}, []string{"ab"}
+		},
 	} {
 		r := goodDeployment(now)
 		mutate(&r)
@@ -647,6 +650,9 @@ func TestDeploymentRequestMounts(t *testing.T) {
 		"kind other":        func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Kind = "other" },
 		"volume name":       func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Source = "-data" },
 		"volume name slash": func(r *DeploymentRequest) { mounted(r); r.Services[0].Mounts[0].Source = "a/b" },
+		"volume name one character": func(r *DeploymentRequest) {
+			r.Services[0].Mounts, r.Volumes = []Mount{{Kind: MountVolume, Source: "a", Target: "/data"}}, []string{"a"}
+		},
 		"volume name long": func(r *DeploymentRequest) {
 			mounted(r)
 			r.Services[0].Mounts[0].Source = strings.Repeat("v", 130)

@@ -130,8 +130,8 @@ var (
 	deploymentProject = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	deploymentService = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 	deploymentEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-	// Docker's volume name characters, long enough for a resolved "<project>_<name>" (64+1+64).
-	deploymentVolume  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,128}$`)
+	// Docker's volume name characters, at least two, long enough for a resolved "<project>_<name>" (64+1+64).
+	deploymentVolume  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{1,128}$`)
 	deploymentSteps   = map[string]bool{StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true, StepRecheck: true}
 	deploymentRestart = map[string]bool{"": true, "no": true, "always": true, "unless-stopped": true, "on-failure": true}
 	resultOutcomes    = map[string]bool{OutcomeSucceeded: true, OutcomeFailed: true, OutcomeDenied: true, OutcomeTimedOut: true, OutcomeUnknown: true}

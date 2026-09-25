@@ -80,6 +80,21 @@ func TestApplicationSpecVolumeBounds(t *testing.T) {
 	}
 }
 
+// A revision saved before the two-character minimum existed may still hold a one-character
+// volume name; ValidVolumeName (and so preflight, mapping and comparison on the stored spec)
+// must keep validating it. Only a newly declared name is held to the stricter grammar.
+func TestApplicationSpecOneCharacterVolumeNameStillValidates(t *testing.T) {
+	spec := withVolumes()
+	spec.Volumes[0].Name = "a"
+	spec.Services[0].Volumes[0].Source = "a"
+	if err := store.ValidateApplicationSpec(spec); err != nil {
+		t.Fatalf("a stored one-character volume name refused: %v", err)
+	}
+	if store.ValidDeclaredVolumeName("a") {
+		t.Fatal("a one-character name accepted for a new declaration")
+	}
+}
+
 func TestVolumeHostName(t *testing.T) {
 	if got := store.VolumeHostName("shop", store.DeclaredVolume{Name: "db"}); got != "shop_db" {
 		t.Fatal(got)

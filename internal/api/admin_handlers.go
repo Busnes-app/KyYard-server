@@ -147,7 +147,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		s.auditPlatform(r, actor, "user.create", req.Username, details+" refused=username_exists", "failure")
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "That username is taken", "code": "username_exists"})
 	}
-	// The column is unique by exact case, but login matches LOWER(username): refuse "erin" beside "Erin".
+	// Login matches LOWER(username) and idx_users_username_lower enforces it; this pre-check keeps the friendlier refusal.
 	if _, err := s.store.Users().GetUserByUsername(r.Context(), req.Username); err == nil {
 		refuseExisting()
 		return

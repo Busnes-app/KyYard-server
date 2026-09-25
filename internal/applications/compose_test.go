@@ -111,6 +111,8 @@ func TestComposeVolumes(t *testing.T) {
 			`[{"kind":"named","source":"db","target":"/x"},{"kind":"bind","source":"/srv","target":"/y","read_only":true}]`, `[{"name":"db"}]`},
 		{"external", volumeDoc("      - shared:/x\n      - db:/y\n", "volumes:\n  shared:\n    external: true\n  db:\n    external: false\n"),
 			`[{"kind":"named","source":"shared","target":"/x"},{"kind":"named","source":"db","target":"/y"}]`, `[{"name":"db"},{"name":"shared","external":true}]`},
+		{"two-character name", volumeDoc("      - ab:/x\n", "volumes:\n  ab:\n"),
+			`[{"kind":"named","source":"ab","target":"/x"}]`, `[{"name":"ab"}]`},
 	}
 	for _, c := range cases {
 		imported, err := ParseCompose(c.source)
@@ -157,7 +159,7 @@ func TestComposeVolumeRefusals(t *testing.T) {
 		{"dot bind", volumeDoc("      - ./data:/x\n", ""), 5, 9, relative},
 		{"home bind", volumeDoc("      - ~/data:/x\n", ""), 5, 9, relative},
 		{"windows bind", volumeDoc("      - C:\\data:/x\n", ""), 5, 9, relative},
-		{"drive letter declared", volumeDoc("      - c:/x\n", "volumes:\n  c:\n"), 5, 9, relative},
+		{"one-character declared name", volumeDoc("      - a:/x\n", "volumes:\n  a:\n"), 7, 3, "Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{1,63}"},
 		{"bind trailing slash", volumeDoc("      - /srv/cfg/:/etc/app\n", ""), 5, 9, normalized},
 		{"bind double slash", volumeDoc("      - //srv:/x\n", ""), 5, 9, normalized},
 		{"bind dot dot", volumeDoc("      - /a/../b:/x\n", ""), 5, 9, normalized},
@@ -173,7 +175,7 @@ func TestComposeVolumeRefusals(t *testing.T) {
 		{"long relative target", volumeDoc("      - type: volume\n        source: db\n        target: rel\n", declared), 7, 17, normalized},
 		{"long duplicate target", volumeDoc("      - db:/x\n      - type: bind\n        source: /srv\n        target: /x\n", declared), 8, 17, "Duplicate volume target"},
 		{"long bind unclean", volumeDoc("      - type: bind\n        source: /srv/\n        target: /x\n", ""), 6, 17, normalized},
-		{"bad declared name", volumeDoc("      - db:/x\n", "volumes:\n  db:\n  _cache:\n"), 8, 3, "Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}"},
+		{"bad declared name", volumeDoc("      - db:/x\n", "volumes:\n  db:\n  _cache:\n"), 8, 3, "Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{1,63}"},
 		{"anonymous", volumeDoc("      - /x\n", ""), 5, 9, anonymous},
 		{"undeclared", volumeDoc("      - cache:/x\n", declared), 5, 9, undeclared},
 		{"mode", volumeDoc("      - db:/x:z\n", declared), 5, 9, mode},
