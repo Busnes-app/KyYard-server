@@ -15,7 +15,7 @@ import (
 // The first step that is not a success ends the run and every later step is skipped.
 func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
-	if err := req.Validate(time.Now()); err != nil {
+	if err := req.ValidateFor(protocol.RuntimeDocker, time.Now()); err != nil {
 		return refused(res, err)
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)

@@ -42,7 +42,7 @@ const replaceBudget = 2*operationBudget + 4*callBudget
 // deadline guard); a run that ends in phase one never calls it.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
-	if err := req.Validate(time.Now()); err != nil {
+	if err := req.ValidateFor(protocol.RuntimeDocker, time.Now()); err != nil {
 		return refused(res, err)
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
