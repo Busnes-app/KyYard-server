@@ -605,6 +605,12 @@ daylight-saving jump skips does not run that day, and a window cannot cross midn
 missed while the server was down is recorded, not run late. Every run, and every step it takes,
 is in the audit log under one correlation ID.
 
+Automated updates need an agent with live inspection support (`container.inspect.verdict`);
+with an older agent every window is `blocked` until the agent is upgraded, and three such
+windows pause the policy. A run inspects as the administrator it acts for and shares that
+person's inspection budget (30 a minute): a run that cannot inspect is `blocked` with
+`inspection_unavailable`.
+
 The scheduler runs inside the server; there is nothing extra to deploy. The binary embeds the
 time-zone database (`time/tzdata`), so a bare binary on a host without `/usr/share/zoneinfo`
 evaluates zones the same way as the container.
