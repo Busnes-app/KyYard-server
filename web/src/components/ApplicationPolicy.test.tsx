@@ -190,3 +190,50 @@ it('falls back to a typed zone when Intl.supportedValuesOf is unavailable', asyn
   expect((saved as { timezone: string }).timezone).toBe('Pacific/Auckland');
   expect(put).toBeTruthy();
 });
+
+const endpoint = (capabilities: string[]) => ({ id: 'host', environment_id: 'env', name: 'Docker', runtime: 'docker', state: 'active', facts: {}, fingerprint: 'f', capabilities, alerts: [], created_at: '2026-09-24T10:00:00Z' });
+function stubWithEndpoint(p: unknown, capabilities: string[]) {
+  const fetcher = vi.fn(async (url: string) => String(url).includes('/endpoints/') ? json(endpoint(capabilities)) : json(p));
+  vi.stubGlobal('fetch', fetcher);
+  return fetcher;
+}
+const isEndpoint = (c: unknown[]) => c[0] === '/api/organizations/a/endpoints/host';
+
+it('warns that a host without health reporting cannot validate automated updates', async () => {
+  const fetcher = stubWithEndpoint(policy(), ['container.inspect', 'container.inspect.verdict']);
+  render(<ApplicationPolicy base="/app" admin={false} org="a" endpointID="host" />);
+  open();
+  await screen.findByText(/cannot report container health/);
+  expect(fetcher.mock.calls.some(isEndpoint)).toBe(true);
+});
+
+it('does not warn for a host that reports health, and asks nothing for a plan-only policy', async () => {
+  const fetcher = stubWithEndpoint(policy(), ['container.inspect', 'container.inspect.health']);
+  render(<ApplicationPolicy base="/app" admin={false} org="a" endpointID="host" />);
+  open();
+  await vi.waitFor(() => expect(fetcher.mock.calls.some(isEndpoint)).toBe(true));
+  await screen.findByText(/Plan and apply ·/);
+  expect(screen.queryByText(/cannot report container health/)).toBeNull();
+  cleanup();
+  const planOnly = stubWithEndpoint(policy({ mode: 'plan_only' }), ['container.inspect']);
+  render(<ApplicationPolicy base="/app" admin={false} org="a" endpointID="host" />);
+  open();
+  await screen.findByText(/Plan only; apply by hand ·/);
+  expect(planOnly.mock.calls.some(isEndpoint)).toBe(false);
+});
+
+it('shows each run validation and its rollback, and explains a validation pause', async () => {
+  const rolledBack = '3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b';
+  const v = (over: Record<string, unknown>) => ({ deployment_id: 'd', policy_run_id: 'r', automated: true, is_rollback: false, phase: 'done', started_at: '2026-09-24T10:00:00Z', observe_until: '2026-09-24T10:02:30Z', verdict: 'unhealthy', detail: 'web', rollback: null, correlation_id: 'c', finished_at: '2026-09-24T10:00:31Z', ...over });
+  stub(() => json(policy({ status: 'paused', next_occurrence: null, paused_reason: 'update failed and could not be rolled back: prior_images_missing', runs: [
+    run({ id: 'a', validation: v({ rollback: { deployment_id: rolledBack, revision: 3, outcome: 'applied', detail: '' } }) }),
+    run({ id: 'b', validation: v({ verdict: 'exited', detail: 'db', rollback: { deployment_id: '', revision: 0, outcome: 'ineligible', detail: 'prior_images_missing' } }) }),
+    run({ id: 'c', outcome: 'no_update' }),
+  ] })));
+  render(<ApplicationPolicy base="/app" admin={false} />);
+  open();
+  await screen.findByText(/Rolled back to revision 3\./);
+  expect(screen.getByText('3f2b1c9e').getAttribute('title')).toBe(rolledBack);
+  expect(screen.getAllByText(/The earlier images are no longer on the host\./).length).toBe(2);
+  expect(screen.getByText(/failed validation and was not rolled back/)).toBeTruthy();
+});
