@@ -14,7 +14,9 @@ const reconcileDetail = "the server restarted before a result arrived"
 // ReconcileAfterStart settles every command still in flight as unknown: the process that
 // dispatched it is gone, so no answer can arrive. Returns the number of commands settled.
 // An empty outcome is the only condition, so a first real answer always wins and a partially
-// written row still settles. Deployments are left to their own sweep.
+// written row still settles. Deployments are left to their own sweep. Policy runs the previous
+// process left open fail with `the server restarted during the run` and count against their
+// policy, in the same transaction; the count returned is commands only.
 func (t *tenancyStore) ReconcileAfterStart(ctx context.Context) (int64, error) {
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -61,6 +63,9 @@ func (t *tenancyStore) ReconcileAfterStart(ctx context.Context) (int64, error) {
 			return 0, err
 		}
 		total += n
+	}
+	if err := t.reconcilePolicyRuns(ctx, tx); err != nil {
+		return 0, err
 	}
 	return total, tx.Commit()
 }

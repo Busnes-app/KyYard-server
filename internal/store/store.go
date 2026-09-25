@@ -203,6 +203,12 @@ type TenancyStore interface {
 	DeleteUpdatePolicy(ctx context.Context, access TenantAccess, applicationID string) error
 	ResumeUpdatePolicy(ctx context.Context, access TenantAccess, applicationID string) (*UpdatePolicy, error)
 	ListPolicyRuns(ctx context.Context, access TenantAccess, applicationID string, limit int) ([]PolicyRun, error)
+	// The scheduler's side of update policies: trusted, not tenant-scoped. Each run re-authorizes
+	// its own steps as the policy's creator.
+	SchedulePolicies(ctx context.Context, now time.Time) ([]ScheduledPolicy, error)
+	BeginPolicyRun(ctx context.Context, policyID string, occurrence time.Time, correlation string) (string, error)
+	FinishPolicyRun(ctx context.Context, runID, outcome, deploymentID, detail string) error
+	SkipPolicyWindow(ctx context.Context, policyID string, occurrence time.Time, outcome, detail string) error
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)
 	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)
@@ -271,7 +277,8 @@ type TenancyStore interface {
 	MarkCommandDispatched(ctx context.Context, id string) error
 	SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
-	// ReconcileAfterStart settles every in-flight command as unknown; startup only.
+	// ReconcileAfterStart settles every in-flight command as unknown and fails every open policy
+	// run; startup only.
 	ReconcileAfterStart(ctx context.Context) (int64, error)
 	ReadCommand(ctx context.Context, access TenantAccess, endpointID, id string) (*Command, error)
 	ListCommands(ctx context.Context, access TenantAccess, endpointID string, limit int) ([]Command, error)

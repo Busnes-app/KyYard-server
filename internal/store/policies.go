@@ -244,6 +244,7 @@ func (t *tenancyStore) PutUpdatePolicy(ctx context.Context, a TenantAccess, app 
 	if err != nil {
 		return nil, false, err
 	}
+	out.NextOccurrence = nextOccurrenceOf(*out, time.Now())
 	return out, created, nil
 }
 
@@ -270,6 +271,9 @@ func (t *tenancyStore) ReadUpdatePolicy(ctx context.Context, a TenantAccess, app
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	if out != nil {
+		out.NextOccurrence = nextOccurrenceOf(*out, time.Now())
 	}
 	return out, runs, nil
 }
@@ -320,6 +324,7 @@ func (t *tenancyStore) ResumeUpdatePolicy(ctx context.Context, a TenantAccess, a
 	if err != nil {
 		return nil, err
 	}
+	out.NextOccurrence = nextOccurrenceOf(*out, time.Now())
 	return out, nil
 }
 
