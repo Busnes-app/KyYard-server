@@ -66,7 +66,7 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	if !s.dockerOnly(w, r, a, endpoint) {
+	if !s.runtimeGate(w, r, a, endpoint, dockerRoute) {
 		return
 	}
 	s.agents.mu.Lock()

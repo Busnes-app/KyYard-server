@@ -425,7 +425,7 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, err)
 		return
 	}
-	if !s.dockerOnly(w, r, a, id) {
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	var body struct {
@@ -521,7 +521,7 @@ func (s *Server) handleRemovalPreview(w http.ResponseWriter, r *http.Request, a 
 		s.tenantError(w, err)
 		return
 	}
-	if !s.dockerOnly(w, r, a, id) {
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	container := r.PathValue("container")

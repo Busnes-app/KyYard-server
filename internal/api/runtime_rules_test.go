@@ -103,6 +103,9 @@ func TestHelloCapabilitiesMustFitTheRuntime(t *testing.T) {
 		{"cluster capability from a host", f.host, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityPodLogs}, false},
 		{"cluster capabilities from a cluster", f.cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs}, true},
 		{"docker capabilities from a host", f.host, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}, true},
+		{"deployment.pull from a cluster", f.cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesDeploy, protocol.CapabilityDeploymentPull}, false},
+		{"cluster deployment from a host", f.host, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityKubernetesDeploy}, false},
+		{"cluster deployment capabilities from a cluster", f.cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesRemove}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, reason := connect(t, ctx, f.url, tc.agent, tc.agent.priv, protocol.Version)
@@ -241,9 +244,9 @@ func setEndpointRuntime(t *testing.T, cfg *config.Config, id, runtime string) {
 	}
 }
 
-// Every route that acts on containers, images, exec, inspection, deployments, adoption or the
-// service mapping refuses a Kubernetes endpoint with runtime_unsupported, before any
-// capability or state check.
+// A Docker-adopted application whose endpoint reads as a cluster is refused on every route with
+// runtime_unsupported, before any capability or state check: the Docker routes refuse the
+// cluster, and the application routes refuse an instance of the other runtime's shape.
 func TestDockerRoutesRefuseAKubernetesEndpoint(t *testing.T) {
 	h := newPlanHost(t, inspecting, "web")
 	api.SetPlanInspectorForTest(h.s, verifiedInspector)

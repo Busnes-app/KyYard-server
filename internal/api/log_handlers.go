@@ -46,7 +46,7 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	if !s.dockerOnly(w, r, a, id) {
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	q, err := parseLogQuery(r)
