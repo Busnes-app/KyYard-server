@@ -517,6 +517,17 @@ func TestMarkRollback(t *testing.T) {
 			t.Fatalf("policy: %+v %v", pol, err)
 		}
 	})
+	t.Run("not after a passing verdict", func(t *testing.T) {
+		st, _, _, _, _, _, _, updated := validationFixture(t)
+		ctx := context.Background()
+		ts := st.Tenancy()
+		if _, err := ts.FinishValidation(ctx, updated.ID, VerdictHealthy, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := ts.MarkRollbackOutcome(ctx, updated.ID, RollbackFailed, RollbackNotSent); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("a healthy update took a rollback decision: %v", err)
+		}
+	})
 	t.Run("ineligible", func(t *testing.T) {
 		st, a, app, _, _, _, _, updated := validationFixture(t)
 		ctx := context.Background()
@@ -535,6 +546,18 @@ func TestMarkRollback(t *testing.T) {
 			t.Fatalf("policy: %+v %v", pol, err)
 		}
 	})
+}
+
+// reconcileAgain runs ReconcileAfterStart a second time and fails if it wrote an audit row.
+func reconcileAgain(t *testing.T, st *SQLStore) {
+	t.Helper()
+	before := countRows(t, st, `SELECT COUNT(*) FROM audit_records`)
+	if _, err := st.Tenancy().ReconcileAfterStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if after := countRows(t, st, `SELECT COUNT(*) FROM audit_records`); after != before {
+		t.Fatalf("a second reconcile wrote %d audit rows", after-before)
+	}
 }
 
 func TestReconcileAfterStartSettlesValidations(t *testing.T) {
@@ -562,6 +585,7 @@ func TestReconcileAfterStartSettlesValidations(t *testing.T) {
 		if pol, _, err := ts.ReadUpdatePolicy(ctx, a, app.ID); err != nil || pol.PausedReason != ValidationReasonUnverified+ValidationDetailServerDown {
 			t.Fatalf("policy: %+v %v", pol, err)
 		}
+		reconcileAgain(t, st)
 	})
 	t.Run("an interrupted rollback", func(t *testing.T) {
 		st, a, app, _, _, _, _, updated := validationFixture(t)
@@ -587,7 +611,78 @@ func TestReconcileAfterStartSettlesValidations(t *testing.T) {
 		if pending, err := ts.PendingValidations(ctx); err != nil || len(pending) != 0 {
 			t.Fatalf("dispatched again: %+v %v", pending, err)
 		}
+		reconcileAgain(t, st)
 	})
+	// A rollback that settled before the restart was applied, whatever the loop recorded.
+	t.Run("a rollback that settled", func(t *testing.T) {
+		st, a, app, endpoint, _, _, _, updated := validationFixture(t)
+		ctx := context.Background()
+		ts := st.Tenancy()
+		if _, err := ts.FinishValidation(ctx, updated.ID, VerdictUnhealthy, "web"); err != nil {
+			t.Fatal(err)
+		}
+		back := deployFixture(t, st, a, app, endpoint, strings.Repeat("7", 64), []protocol.Image{tagged(imageD), tagged(imageX, "nginx:1")}, func(d *Deployment) {
+			if err := ts.MarkRollbackPlanned(ctx, updated.ID, d.ID); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if _, err := ts.ReconcileAfterStart(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ts.ReadDeployment(ctx, a, app.ID, updated.ID)
+		if err != nil || got.Validation.Rollback == nil || *got.Validation.Rollback != (ValidationRollback{DeploymentID: back.ID, Revision: back.Revision, Outcome: RollbackApplied}) {
+			t.Fatalf("settled rollback: %+v %v", got.Validation, err)
+		}
+		if pol, _, err := ts.ReadUpdatePolicy(ctx, a, app.ID); err != nil || pol.PausedReason != ValidationReasonRolledBack {
+			t.Fatalf("policy: %+v %v", pol, err)
+		}
+		reconcileAgain(t, st)
+	})
+}
+
+// A run the restart failed keeps its deployment, so that deployment's late settle is automated.
+func TestSettleOfARunFailedByReconcileIsAutomated(t *testing.T) {
+	st, a, app, endpoint, _, _ := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	p, _, err := ts.PutUpdatePolicy(ctx, a, app.ID, dailyPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := ts.BeginPolicyRun(ctx, p.ID, instant("2026-09-24T10:00:00Z"), uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, func(d *Deployment) {
+		if err := ts.AttachPolicyRunDeployment(ctx, run, d.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ts.ReconcileAfterStart(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := countRows(t, st, `SELECT COUNT(*) FROM policy_runs WHERE id=? AND outcome=? AND deployment_id=?`, run, RunFailed, d.ID); n != 1 {
+			t.Fatal("the failed run lost its deployment")
+		}
+	})
+	if v := d.Validation; v == nil || !v.Automated || v.PolicyRunID != run {
+		t.Fatalf("settled after the restart: %+v", v)
+	}
+}
+
+func TestSettleOfARemovalOpensNoValidation(t *testing.T) {
+	st, a, app, endpoint, _, m := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	d, _, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: m.InstanceID, Confirm: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SettleDeployment(ctx, endpoint, removalResult(d, protocol.OutcomeSucceeded, removalSteps("web", protocol.OutcomeSucceeded, protocol.OutcomeSucceeded, protocol.OutcomeSucceeded))); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM deployment_validations`); n != 0 {
+		t.Fatalf("validations: %d", n)
+	}
 }
 
 // A finished run takes no deployment: the name is written only while the run is open.

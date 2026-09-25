@@ -957,8 +957,9 @@ CREATE TABLE policy_runs (
 );
 CREATE INDEX idx_policy_runs_open ON policy_runs(outcome) WHERE outcome='';
 `},
-	// Health validation of every succeeded apply. A validation goes with its deployment; its policy
-	// run may go first (the policy deleted), which leaves it automated with no run to act for.
+	// Health validation of every succeeded apply. A validation goes with its deployment. A policy
+	// deleted after the settle leaves the validation automated with no run to act for; one deleted
+	// before it takes the run, so the apply settles as manual.
 	{Version: 32, Name: "deployment_validations", SQLite: `CREATE TABLE deployment_validations (
  deployment_id TEXT PRIMARY KEY REFERENCES deployments(id) ON DELETE CASCADE,
  organization_id TEXT NOT NULL,

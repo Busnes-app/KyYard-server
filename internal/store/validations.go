@@ -268,12 +268,13 @@ func (s *validationScan) validation() *Validation {
 }
 
 // insertValidation opens the validation of a succeeded apply inside the settling transaction. It is
-// automated when an open or applied policy run names the deployment (a plan_only run's plan applied
-// by hand is manual), and a rollback when a validation named it as its rollback.
+// automated when a policy run names the deployment, whatever became of the run, unless the run only
+// planned it (a plan_only run's plan applied by hand is manual); a rollback when a validation named
+// it as its rollback.
 func (t *tenancyStore) insertValidation(ctx context.Context, tx *sql.Tx, org, env, app, instance, endpoint, deployment, correlation string, settled time.Time) error {
 	var run any
 	var runID string
-	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT id FROM policy_runs WHERE deployment_id=? AND outcome IN ('','applied') ORDER BY started_at DESC,id LIMIT 1`), deployment).Scan(&runID)
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT id FROM policy_runs WHERE deployment_id=? AND outcome<>'planned' ORDER BY started_at DESC,id LIMIT 1`), deployment).Scan(&runID)
 	switch {
 	case err == nil:
 		run = runID
@@ -458,7 +459,7 @@ func (t *tenancyStore) finishValidation(ctx context.Context, tx *sql.Tx, deploym
 		return false, err
 	}
 	detail = protocol.CleanText(detail, 255)
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployment_validations SET phase=?,verdict=?,detail=?,finished_at=? WHERE deployment_id=?`), PhaseDone, verdict, detail, now, deployment); err != nil {
+	if err := updateOne(ctx, tx, t.store.rebind(`UPDATE deployment_validations SET phase=?,verdict=?,detail=?,finished_at=? WHERE deployment_id=? AND phase<>'done'`), PhaseDone, verdict, detail, now, deployment); err != nil {
 		return false, err
 	}
 	if err := t.auditPolicy(ctx, tx, org, env, app+"/deployments/"+deployment, AuditValidation, verdict, validationResults[verdict], correlation, now); err != nil {
@@ -524,7 +525,7 @@ func (t *tenancyStore) markRollbackOutcome(ctx context.Context, tx *sql.Tx, depl
 		return ErrInvalid
 	}
 	detail = protocol.CleanText(detail, 255)
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployment_validations SET rollback_outcome=?,rollback_detail=? WHERE deployment_id=?`), outcome, detail, deployment); err != nil {
+	if err := updateOne(ctx, tx, t.store.rebind(`UPDATE deployment_validations SET rollback_outcome=?,rollback_detail=? WHERE deployment_id=? AND rollback_outcome='' AND verdict IN ('unhealthy','exited','restarting')`), outcome, detail, deployment); err != nil {
 		return err
 	}
 	if !run.Valid {
@@ -562,7 +563,7 @@ func (t *tenancyStore) pauseForValidation(ctx context.Context, tx *sql.Tx, run, 
 
 // reconcileValidations settles what the previous process left: a validation still in grace whose
 // window has ended never had its baseline taken, and a rollback named but never decided was
-// interrupted. Neither is dispatched again.
+// applied if its deployment settled succeeded, interrupted otherwise. Neither is dispatched again.
 func (t *tenancyStore) reconcileValidations(ctx context.Context, tx *sql.Tx) error {
 	now := time.Now().UTC()
 	missed, err := t.validationIDs(ctx, tx, `SELECT deployment_id FROM deployment_validations WHERE phase='grace' AND observe_until<? ORDER BY started_at,deployment_id`, now)
@@ -574,14 +575,36 @@ func (t *tenancyStore) reconcileValidations(ctx context.Context, tx *sql.Tx) err
 			return err
 		}
 	}
-	interrupted, err := t.validationIDs(ctx, tx, `SELECT deployment_id FROM deployment_validations WHERE rollback_deployment_id IS NOT NULL AND rollback_outcome='' ORDER BY started_at,deployment_id`)
+	undecided := `SELECT v.deployment_id FROM deployment_validations v LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id WHERE v.rollback_deployment_id IS NOT NULL AND v.rollback_outcome='' AND `
+	for _, c := range []struct{ where, outcome, detail string }{
+		{`rd.state='succeeded'`, RollbackApplied, ""},
+		{`COALESCE(rd.state,'')<>'succeeded'`, RollbackFailed, RollbackInterrupted},
+	} {
+		ids, err := t.validationIDs(ctx, tx, undecided+c.where+` ORDER BY v.started_at,v.deployment_id`)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if err := t.markRollbackOutcome(ctx, tx, id, c.outcome, c.detail, now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// updateOne runs an UPDATE that must change exactly one row; none is ErrNotFound.
+func updateOne(ctx context.Context, tx *sql.Tx, query string, args ...any) error {
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
-	for _, id := range interrupted {
-		if err := t.markRollbackOutcome(ctx, tx, id, RollbackFailed, RollbackInterrupted, now); err != nil {
-			return err
-		}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
 	}
 	return nil
 }

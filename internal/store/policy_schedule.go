@@ -271,7 +271,7 @@ func (t *tenancyStore) finishPolicyRun(ctx context.Context, tx *sql.Tx, run, out
 	if deployment != "" {
 		dep = deployment
 	}
-	res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE policy_runs SET outcome=?,deployment_id=?,detail=?,finished_at=? WHERE id=? AND outcome=''`), outcome, dep, protocol.CleanText(detail, 255), now, run)
+	res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE policy_runs SET outcome=?,deployment_id=COALESCE(?,deployment_id),detail=?,finished_at=? WHERE id=? AND outcome=''`), outcome, dep, protocol.CleanText(detail, 255), now, run)
 	if err != nil {
 		return err
 	}
