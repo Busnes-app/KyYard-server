@@ -25,9 +25,6 @@ export const App: React.FC = () => {
         if (setResp.ok) {
           const s = await setResp.json();
           setSettings(s);
-          if (s.theme) {
-            document.documentElement.setAttribute('data-theme', s.theme);
-          }
         }
 
         if (authResp.ok) {
@@ -52,9 +49,6 @@ export const App: React.FC = () => {
     if (resp.ok) {
       const s = await resp.json();
       setSettings(s);
-      if (s.theme) {
-        document.documentElement.setAttribute('data-theme', s.theme);
-      }
     }
   };
 
@@ -84,7 +78,7 @@ export const App: React.FC = () => {
   }
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="app-shell">
       <AppHeader
         appName={settings?.app_name || 'KyYard'}
         activeTab={activeTab}
@@ -93,7 +87,7 @@ export const App: React.FC = () => {
         onLogout={handleLogout}
       />
 
-      <main style={{ flex: 1 }}>
+      <main className="app-main">
         {activeTab === 'dashboard' && <Dashboard settings={settings} user={user} onNavigate={(tab) => setActiveTab(tab)} />}
         {activeTab === 'scim' && <SCIMAdmin />}
         {activeTab === 'backup' && <Backup />}

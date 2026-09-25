@@ -49,9 +49,9 @@
   --bg: #05070a;
   --panel: #0d121d;
   --panel-hover: #131b2a;
-  --ink: #64748b;
-  --ink-strong: #00ffcc;
-  --accent: #00ffcc;
+  --ink: #aab7c8;
+  --ink-strong: #eef6f5;
+  --accent: #00d9bd;
   --accent-soft: rgba(0, 255, 204, 0.18);
   --line: #1e293b;
   --line-strong: #00ffcc44;
@@ -118,6 +118,38 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Shared Busnes application shell. The selected page uses the slim accent rail
+   shown in KyIdentity; the filled surface stays quiet so navigation remains easy
+   to scan in both light and dark themes. */
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 15.5rem minmax(0, 1fr); }
+.app-header { display: flex; flex-direction: column; gap: 1.25rem; position: sticky; top: 0; height: 100vh; padding: 1.25rem 1rem; background: linear-gradient(180deg, var(--sidebar-start, var(--panel)), var(--sidebar-end, var(--panel))); border-right: 1px solid var(--line); z-index: 10; }
+.app-brand { display: flex; align-items: center; gap: .7rem; padding: .25rem .5rem 1rem; color: var(--ink-strong); font-size: 1.15rem; font-weight: 700; letter-spacing: -.02em; }
+.app-brand img { border-radius: .45rem; flex: none; }
+.app-nav { display: flex; flex-direction: column; gap: .2rem; }
+.app-nav button { position: relative; justify-content: flex-start; width: 100%; border: 0; border-left: 3px solid transparent; border-radius: .45rem; padding: .6rem .65rem; background: transparent; color: var(--ink); font-size: .86rem; text-align: left; }
+.app-nav button:hover { background: var(--panel-hover); color: var(--ink-strong); }
+.app-nav button.active { border-left-color: var(--accent); background: var(--accent-soft); color: var(--ink-strong); }
+.app-header-actions { display: flex; flex-direction: column; gap: .65rem; margin-top: auto; }
+.app-pair { justify-content: flex-start; width: 100%; font-size: .82rem; }
+.app-user { display: flex; align-items: center; gap: .55rem; border-top: 1px solid var(--line); padding-top: .8rem; }
+.app-user-copy { min-width: 0; flex: 1; font-size: .8rem; }
+.app-user-copy > div:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-user-copy > div:last-child { color: var(--ink); font-size: .7rem; }
+.app-logout { padding: .45rem; color: var(--danger); }
+.app-main { min-width: 0; }
+@media (max-width: 720px) {
+  .app-shell { display: block; }
+  .app-header { position: sticky; height: auto; padding: .75rem 1rem; border-right: 0; border-bottom: 1px solid var(--line); }
+  .app-brand { padding: 0; }
+  .app-nav { flex-direction: row; overflow-x: auto; }
+  .app-nav button { width: auto; flex: 0 0 auto; border-left: 0; border-bottom: 3px solid transparent; white-space: nowrap; }
+  .app-nav button.active { border-bottom-color: var(--accent); }
+  .app-header-actions { flex-direction: row; margin-top: 0; align-items: center; }
+  .app-pair { width: auto; }
+  .app-user { border-top: 0; border-left: 1px solid var(--line); padding: 0 0 0 .65rem; }
+  .app-user-copy { display: none; }
+}
+
 code, pre, .font-mono {
   font-family: var(--font-mono);
 }
@@ -143,7 +175,7 @@ code, pre, .font-mono {
 button, .btn {
   font-family: var(--font-sans);
   background: var(--accent);
-  color: #0d0f14;
+  color: var(--button-text, #0d0f14);
   border: none;
   border-radius: 6px;
   padding: 8px 16px;
@@ -177,7 +209,7 @@ button:disabled, .btn:disabled {
 
 .btn-danger {
   background: var(--danger);
-  color: #ffffff;
+  color: var(--button-text, #ffffff);
 }
 
 input, select, textarea {
@@ -300,3 +332,107 @@ input:focus, select:focus, textarea:focus {
 .dr-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 12px; flex-wrap: wrap; }
 .dr-field { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 13px; color: var(--ink); }
 .dr-narrow { flex: 0 0 6rem; }
+
+/* Busnes.app light/dark defaults. Existing named palettes remain selectable. */
+:root[data-theme="busnes-light"] {
+  --bg: #f8f6f0;
+  --panel: #ffffff;
+  --ink: #566461;
+  --ink-strong: #182326;
+  --accent: #bf3f18;
+  --accent-soft: #fbf0ec;
+  --line: rgba(24, 35, 38, 0.22);
+  --glow: transparent;
+  --sidebar-start: #f2efe7;
+  --sidebar-end: #f2efe7;
+  --button-text: #ffffff;
+  --panel-hover: #f2efe7;
+  --panel-active: #f2efe7;
+  --ink-muted: #566461;
+  --accent-hover: #bf3f18;
+  --line-focus: #bf3f18;
+  --line-strong: rgba(24, 35, 38, 0.22);
+  --danger: #b42318;
+  --success: #267442;
+  --warning: #875b12;
+  color-scheme: light;
+}
+:root:not([data-theme]) {
+  --bg: #f8f6f0;
+  --panel: #ffffff;
+  --ink: #566461;
+  --ink-strong: #182326;
+  --accent: #bf3f18;
+  --accent-soft: #fbf0ec;
+  --line: rgba(24, 35, 38, 0.22);
+  --glow: transparent;
+  --sidebar-start: #f2efe7;
+  --sidebar-end: #f2efe7;
+  --button-text: #ffffff;
+  --panel-hover: #f2efe7;
+  --panel-active: #f2efe7;
+  --ink-muted: #566461;
+  --accent-hover: #bf3f18;
+  --line-focus: #bf3f18;
+  --line-strong: rgba(24, 35, 38, 0.22);
+  --danger: #b42318;
+  --success: #267442;
+  --warning: #875b12;
+  color-scheme: light;
+}
+:root[data-theme="busnes-dark"] {
+  --bg: #182326;
+  --panel: #1f2b2e;
+  --ink: #b3bcb8;
+  --ink-strong: #f2efe8;
+  --accent: #f5865f;
+  --accent-soft: #2b2622;
+  --line: rgba(242, 239, 232, 0.24);
+  --glow: transparent;
+  --sidebar-start: #1f2b2e;
+  --sidebar-end: #1f2b2e;
+  --button-text: #182326;
+  --panel-hover: #243033;
+  --panel-active: #243033;
+  --ink-muted: #b3bcb8;
+  --accent-hover: #f5865f;
+  --line-focus: #f5865f;
+  --line-strong: rgba(242, 239, 232, 0.24);
+  --danger: #eb9d93;
+  --success: #6fbf8a;
+  --warning: #d8a657;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+:root:not([data-theme]) {
+  --bg: #182326;
+  --panel: #1f2b2e;
+  --ink: #b3bcb8;
+  --ink-strong: #f2efe8;
+  --accent: #f5865f;
+  --accent-soft: #2b2622;
+  --line: rgba(242, 239, 232, 0.24);
+  --glow: transparent;
+  --sidebar-start: #1f2b2e;
+  --sidebar-end: #1f2b2e;
+  --button-text: #182326;
+  --panel-hover: #243033;
+  --panel-active: #243033;
+  --ink-muted: #b3bcb8;
+  --accent-hover: #f5865f;
+  --line-focus: #f5865f;
+  --line-strong: rgba(242, 239, 232, 0.24);
+  --danger: #eb9d93;
+  --success: #6fbf8a;
+  --warning: #d8a657;
+  color-scheme: dark;
+}
+}
+
+.theme-selector {
+  font: inherit; font-size: 0.875rem; width: auto; max-width: 100%; min-height: 36px;
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--panel); color: var(--ink-strong);
+}
+.theme-selector:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.auth-theme { padding: 12px; text-align: right; }
