@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -256,9 +257,9 @@ func TestDeployRefusesAnInvalidFrame(t *testing.T) {
 }
 
 // Removal deletes, in the foreground, what carries the instance's label, including a service
-// no longer in the definition, and each named Secret that is the instance's; a Secret under a
-// planned name without the label, and anything unlabelled, stays. A service with nothing left
-// is skipped.
+// no longer in the definition, and each service's Secret found by its Deployment's own name
+// (label-only "old" included); a Secret without the label stays, whatever its name. A service
+// with nothing left is skipped.
 func TestRemoveDeletesOnlyTheInstancesObjects(t *testing.T) {
 	obj := func(name, service string) metav1.ObjectMeta {
 		m := owned(service)
@@ -271,6 +272,7 @@ func TestRemoveDeletesOnlyTheInstancesObjects(t *testing.T) {
 		&corev1.ConfigMap{ObjectMeta: obj("shop-web-env", "web")},
 		&corev1.Secret{ObjectMeta: obj("shop-web-secret", "web")},
 		&appsv1.Deployment{ObjectMeta: obj("shop-old", "old")},
+		&corev1.Secret{ObjectMeta: obj("shop-old-secret", "old")},
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-api-env"}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-api-secret"}},
 	}
@@ -300,7 +302,7 @@ func TestRemoveDeletesOnlyTheInstancesObjects(t *testing.T) {
 		}
 	}
 	slices.Sort(deleted)
-	if !slices.Equal(deleted, []string{"configmaps/shop-web-env", "deployments/shop-old", "deployments/shop-web", "secrets/shop-web-secret", "services/shop-web"}) {
+	if !slices.Equal(deleted, []string{"configmaps/shop-web-env", "deployments/shop-old", "deployments/shop-web", "secrets/shop-old-secret", "secrets/shop-web-secret", "services/shop-web"}) {
 		t.Fatalf("deleted %v", deleted)
 	}
 	for _, a := range cs.Actions() {
@@ -319,6 +321,92 @@ func TestRemoveOfNothingSkips(t *testing.T) {
 	res := c.Remove(context.Background(), req, func() { t.Fatal("started with nothing to delete") })
 	if res.Outcome != protocol.OutcomeSucceeded || len(res.Steps) != 2 || res.Steps[1].Outcome != protocol.OutcomeSkipped || len(writes(cs)) != 0 {
 		t.Fatalf("result %+v writes %v", res, writes(cs))
+	}
+}
+
+// A removal of one of two colliding service names still finds its Secret by its Deployment's
+// name, not by recomputing KubernetesNames from this request's services alone: "we-b" and "we_b"
+// collide to the same slug ('-' and '_' both sanitise to '-'), so each carries a hash suffix that
+// depends on which of the two is in the plan, and a removal naming only one of them must not
+// miss its hashed Secret.
+func TestRemoveFindsSecretByDeploymentNameAcrossCollisions(t *testing.T) {
+	names := protocol.KubernetesNames("shop", []string{"we-b", "we_b"})
+	name := names["we-b"]
+	if name == "shop-we-b" {
+		t.Fatalf("test setup: expected we-b's name to carry a collision hash, got %q", name)
+	}
+	deployment := owned("we-b")
+	deployment.Name = name
+	secret := owned("we-b")
+	secret.Name = name + "-secret"
+	c, cs := deployCluster(t, true, false, &appsv1.Deployment{ObjectMeta: deployment}, &corev1.Secret{ObjectMeta: secret})
+	now := time.Now()
+	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: "shop", IssuedAt: now, Deadline: now.Add(time.Minute),
+		Kubernetes: &protocol.KubernetesTarget{Namespace: "shop", ApplicationID: testApp, InstanceID: testInstance, SpecDigest: testSpec}, Services: []string{"we-b"}}
+	res := c.Remove(context.Background(), req, func() {})
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("result %+v", res)
+	}
+	if _, err := cs.CoreV1().Secrets("shop").Get(context.Background(), name+"-secret", metav1.GetOptions{}); err == nil {
+		t.Fatal("the hashed Secret survived a removal naming only one of the colliding services")
+	}
+}
+
+// A same-name object recreated after the precondition read it is not the object this removal
+// found: the delete carries that object's UID as a precondition, and a resulting conflict is
+// treated as the object already being gone from this run's perspective rather than a failure.
+func TestRemoveGuardsDeletesByTheUIDItRead(t *testing.T) {
+	d := owned("web")
+	d.Name = "shop-web"
+	d.UID = "11111111-1111-4111-8111-111111111111"
+	c, cs := deployCluster(t, true, false, &appsv1.Deployment{ObjectMeta: d})
+	cs.PrependReactor("delete", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		del := action.(k8stesting.DeleteActionImpl)
+		if del.DeleteOptions.Preconditions == nil || del.DeleteOptions.Preconditions.UID == nil || *del.DeleteOptions.Preconditions.UID != d.UID {
+			t.Fatalf("delete without the UID read at precondition: %+v", del.DeleteOptions)
+		}
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "deployments"}, "shop-web", errors.New("uid precondition failed"))
+	})
+	now := time.Now()
+	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: "shop", IssuedAt: now, Deadline: now.Add(time.Minute),
+		Kubernetes: &protocol.KubernetesTarget{Namespace: "shop", ApplicationID: testApp, InstanceID: testInstance, SpecDigest: testSpec}, Services: []string{"web"}}
+	res := c.Remove(context.Background(), req, func() {})
+	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
+		t.Fatalf("result %+v %v", res, res.Validate())
+	}
+}
+
+// Dropping a service's last secret-backed key deletes the stale Secret an earlier apply left; an
+// unowned Secret under the same planned name is left alone rather than refused, since this apply
+// does not write to it.
+func TestDeployDropsAStaleSecretWhenKeysAreRemoved(t *testing.T) {
+	c, cs := deployCluster(t, true, false)
+	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("first deploy: %+v", res)
+	}
+	again := deployRequest(time.Minute)
+	again.Deployment, again.Revision = "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b", 2
+	again.Services[0].SecretKeys = nil
+	res = c.Deploy(context.Background(), again, func() {})
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("second deploy: %+v", res)
+	}
+	if _, err := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-web-secret", metav1.GetOptions{}); err == nil {
+		t.Fatal("the stale Secret survived a redeploy without secret keys")
+	}
+
+	foreign := owned("api")
+	foreign.Labels = map[string]string{} // unowned: no instance label
+	foreign.Name = "shop-api-secret"
+	c, cs = deployCluster(t, true, false, &corev1.Secret{ObjectMeta: foreign})
+	res = c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("deploy beside a foreign secret: %+v", res)
+	}
+	kept, err := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-api-secret", metav1.GetOptions{})
+	if err != nil || len(kept.Labels) != 0 {
+		t.Fatalf("the foreign secret was touched: %+v %v", kept, err)
 	}
 }
 

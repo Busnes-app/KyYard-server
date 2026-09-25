@@ -209,6 +209,18 @@ func (r *run) read(ctx context.Context, set render.Set) (existing, string, strin
 		} else if found {
 			e.secret = s
 		}
+	} else {
+		// No secret-backed values this apply: an owned Secret from an earlier revision is
+		// stale and apply drops it. One that is not ours is left alone rather than refused,
+		// since nothing here is written to it.
+		s, found, err := get(ctx, objectAPI[*corev1.Secret](core.Secrets(r.namespace)), set.Name+"-secret")
+		if err != nil {
+			o, code, detail := r.failure(ctx, err)
+			return e, o, code, detail
+		}
+		if found && r.owned(s) {
+			e.secret = s
+		}
 	}
 	d, found, err := get(ctx, objectAPI[*appsv1.Deployment](apps.Deployments(r.namespace)), set.Deployment.Name)
 	if o, code, detail := check("Deployment", set.Deployment.Name, d, found, err); o != protocol.OutcomeSucceeded {
@@ -236,6 +248,12 @@ func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.De
 	}
 	if set.Secret != nil {
 		if _, o, code, detail := upsert(ctx, r, "Secret", core.Secrets(r.namespace), set.Secret, e.secret, nil); o != protocol.OutcomeSucceeded {
+			return nil, o, code, detail
+		}
+	} else if e.secret != nil {
+		// The service dropped its last secret-backed key: the stale Secret must not outlive it.
+		if err := core.Secrets(r.namespace).Delete(ctx, e.secret.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			o, code, detail := r.failure(ctx, err)
 			return nil, o, code, detail
 		}
 	}
