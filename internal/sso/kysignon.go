@@ -12,6 +12,10 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
+// ErrUsernameTaken refuses a directory user whose username matches an existing account ignoring
+// case: sign-in matches LOWER(username), and a directory's claim is never a link to that account.
+var ErrUsernameTaken = errors.New("username is taken by another account")
+
 // KySignOnClient manages interactions with the central KySignOn identity provider.
 type KySignOnClient struct {
 	config config.SSOConfig
@@ -104,6 +108,11 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			return nil
 		}
 
+		if _, err := k.store.Users().GetUserByUsername(ctx, payload.Username); err == nil {
+			return fmt.Errorf("%w: %s", ErrUsernameTaken, payload.Username)
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
 		newUser := &store.User{
 			ID:          fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
 			Username:    payload.Username,
@@ -114,7 +123,11 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			SSOProvider: "kysignon",
 			SSOSubject:  payload.ID,
 		}
-		return k.store.Users().CreateUser(ctx, newUser)
+		err = k.store.Users().CreateUser(ctx, newUser)
+		if errors.Is(err, store.ErrAlreadyExists) {
+			return fmt.Errorf("%w: %s", ErrUsernameTaken, payload.Username)
+		}
+		return err
 
 	case "user.deactivated":
 		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)

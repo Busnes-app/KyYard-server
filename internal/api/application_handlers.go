@@ -11,6 +11,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/applications"
 	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/google/uuid"
 )
 
 func (s *Server) handleImportApplication(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
@@ -221,11 +222,23 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 		return
 	}
 	if len(input.Update) > 0 {
-		// Authorize before the slot, so a caller who may not deploy can neither see nor hold it.
-		if err := s.store.Tenancy().CheckImageUpdateAccess(r.Context(), a, r.PathValue("application")); err != nil {
+		id, err := uuid.Parse(r.PathValue("application"))
+		if err != nil {
+			s.tenantError(w, store.ErrInvalid)
+			return
+		}
+		// Authorize before the guard and the slot, so a caller who may not deploy can neither see
+		// nor hold either.
+		if err := s.store.Tenancy().CheckImageUpdateAccess(r.Context(), a, id.String()); err != nil {
 			s.tenantError(w, err)
 			return
 		}
+		// The check's guard, before the inspections and the registry slot.
+		done, ok := s.guardApplication(w, a, id.String())
+		if !ok {
+			return
+		}
+		defer done()
 	}
 	// The plan measures its frame against what this endpoint's agent accepts.
 	pre, err := s.store.Tenancy().PreflightApplication(r.Context(), a, r.PathValue("application"))

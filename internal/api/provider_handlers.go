@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -254,8 +255,21 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 	}
 	user, err := s.store.Users().GetUserBySSO(ctx, p.ID, claims.Subject)
 	if errors.Is(err, store.ErrNotFound) && p.AutoProvision {
-		user = &store.User{ID: "usr_" + crypto.RandomHex(12), Username: claims.PreferredUsername, Email: claims.Email, DisplayName: claims.Name, Role: "user", Status: "active", SSOProvider: p.ID, SSOSubject: claims.Subject}
-		err = s.store.Users().CreateUser(ctx, user)
+		// Sign-in matches LOWER(username): an account by this name in any case is neither linked
+		// to the provider's claim nor shadowed by a second one. The index closes the race.
+		switch _, taken := s.store.Users().GetUserByUsername(ctx, claims.PreferredUsername); {
+		case taken == nil:
+			err = store.ErrAlreadyExists
+		case errors.Is(taken, store.ErrNotFound):
+			user = &store.User{ID: "usr_" + crypto.RandomHex(12), Username: claims.PreferredUsername, Email: claims.Email, DisplayName: claims.Name, Role: "user", Status: "active", SSOProvider: p.ID, SSOSubject: claims.Subject}
+			err = s.store.Users().CreateUser(ctx, user)
+		default:
+			err = taken
+		}
+	}
+	if errors.Is(err, store.ErrAlreadyExists) {
+		s.writeError(w, 403, "The username "+protocol.CleanText(claims.PreferredUsername, 64)+" is taken by another account; ask your administrator")
+		return
 	}
 	if err != nil || user == nil || user.Status != "active" {
 		s.writeError(w, 403, "Account unavailable; contact your administrator")
