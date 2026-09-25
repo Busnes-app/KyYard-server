@@ -158,7 +158,7 @@ func TestInspectionRefusesChangesAndInvalidFacts(t *testing.T) {
 			}
 		})
 	}
-	for _, field := range []string{"identity", "ports", "restart", "mounts", "state", "config"} {
+	for _, field := range []string{"identity", "ports", "restart", "mounts", "state", "config", "health", "restarts"} {
 		t.Run("changed during read/"+field, func(t *testing.T) {
 			target, container, image := inspectionFixture()
 			c := fakeInspection(t, func(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +176,10 @@ func TestInspectionRefusesChangesAndInvalidFacts(t *testing.T) {
 						container["State"] = map[string]any{"Status": "exited"}
 					case "config":
 						container["HostConfig"].(map[string]any)["Memory"] = 1 << 30
+					case "health":
+						container["State"] = map[string]any{"Status": "running", "Health": map[string]any{"Status": "unhealthy"}}
+					case "restarts":
+						container["RestartCount"] = 1
 					}
 					json.NewEncoder(w).Encode(image)
 				} else {
@@ -268,7 +272,7 @@ func TestInspectionReportsWhatARecreateWouldDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.ConfigurationVerified || fmt.Sprint(out.Unsupported) != "[read_only_rootfs network image_config]" || out.Validate(target, time.Now()) != nil {
+	if out.ConfigurationVerified || fmt.Sprint(out.Unsupported) != "[read_only_rootfs network image_config]" || out.Validate(target, time.Now(), true) != nil {
 		t.Fatalf("verdict: %v %v", out.ConfigurationVerified, out.Unsupported)
 	}
 	raw, _ := json.Marshal(out)
@@ -280,7 +284,7 @@ func TestInspectionReportsWhatARecreateWouldDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.ConfigurationVerified || out.Unsupported == nil || len(out.Unsupported) != 0 || out.Validate(target, time.Now()) != nil {
+	if !out.ConfigurationVerified || out.Unsupported == nil || len(out.Unsupported) != 0 || out.Validate(target, time.Now(), true) != nil {
 		t.Fatalf("expressible: %v %v", out.ConfigurationVerified, out.Unsupported)
 	}
 	raw, _ = json.Marshal(out)
@@ -355,5 +359,49 @@ func TestInspectionIgnoresMountOrder(t *testing.T) {
 	out, err := c.InspectContainer(context.Background(), target)
 	if err != nil || out.Mounts.Bind != 1 || out.Mounts.Volume != 1 {
 		t.Fatalf("reordered mounts: %+v %v", out, err)
+	}
+}
+
+// Health and the restart count come from State.Health.Status and RestartCount; a container
+// without a healthcheck is "none". Anything else, or a count out of bounds, is refused, and the
+// healthcheck's log (its command's output) never leaves the adapter.
+func TestInspectionReportsHealthAndRestarts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		health   any // State.Health; nil leaves it out
+		count    any
+		want     string
+		restarts int
+		err      error
+	}{
+		{"no healthcheck", nil, 0, "none", 0, nil},
+		{"starting", map[string]any{"Status": "starting"}, 0, "starting", 0, nil},
+		{"healthy", map[string]any{"Status": "healthy", "FailingStreak": 0, "Log": []any{map[string]any{"Output": "secret-canary"}}}, 3, "healthy", 3, nil},
+		{"unhealthy at the bound", map[string]any{"Status": "unhealthy"}, 1_000_000, "unhealthy", 1_000_000, nil},
+		{"unknown status", map[string]any{"Status": "secret-canary"}, 0, "", 0, ErrInspectionInvalid},
+		{"negative count", nil, -1, "", 0, ErrInspectionInvalid},
+		{"count past the bound", nil, 1_000_001, "", 0, ErrInspectionInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, container, image := inspectionFixture()
+			state := map[string]any{"Status": "running", "Error": "secret-canary"}
+			if tc.health != nil {
+				state["Health"] = tc.health
+			}
+			container["State"], container["RestartCount"] = state, tc.count
+			out, err := fakeInspection(t, serve(container, image)).InspectContainer(context.Background(), target)
+			if tc.err != nil {
+				if !errors.Is(err, tc.err) || out != nil {
+					t.Fatalf("got %+v, %v; want %v", out, err, tc.err)
+				}
+				return
+			}
+			if err != nil || out.Health != tc.want || out.RestartCount != tc.restarts || out.Validate(target, time.Now(), true) != nil {
+				t.Fatalf("got %+v, %v", out, err)
+			}
+			if raw, _ := json.Marshal(out); strings.Contains(string(raw), "secret-canary") {
+				t.Fatal("the healthcheck log leaked")
+			}
+		})
 	}
 }

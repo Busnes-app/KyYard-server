@@ -37,7 +37,7 @@ func TestDeploymentPreflightImages(t *testing.T) {
 			if tc.truncated {
 				snapshot.Truncated = []string{"images"}
 			}
-			p := buildDeploymentPreflight(m, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: tc.ref}}}, snapshot, true)
+			p := buildDeploymentPreflight(m, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: tc.ref}}}, snapshot, true, nil)
 			if p.Executable != (tc.blocker == "") {
 				t.Fatalf("executable must mean no blocker remains: %+v", p)
 			}
@@ -68,7 +68,7 @@ func TestDeploymentPreflightReplacementIdentity(t *testing.T) {
 			m := &ApplicationMapping{Preview: &AdoptionPreview{Containers: []AdoptedContainer{owned}}, Version: 1, MappedRevision: 1, Bindings: map[string]string{"web": containerID}}
 			m.Preview.Revision = 1
 			snapshot := protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}}
-			p := buildDeploymentPreflight(m, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}}, snapshot, true)
+			p := buildDeploymentPreflight(m, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: "nginx:1"}}}, snapshot, true, nil)
 			row := p.Services[0]
 			if tc.blocker == "" {
 				if row.InspectionTarget == nil || slices.Contains(row.Blockers, "replacement_identity_invalid") {
@@ -101,13 +101,13 @@ func TestDeploymentPreflightPorts(t *testing.T) {
 			if tc.own {
 				container = "own"
 			}
-			p := buildDeploymentPreflight(m, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: "nginx:1", Ports: []ApplicationPort{{Published: 8080, Target: 80, Protocol: "tcp", HostIP: tc.desiredIP}}}}}, protocol.Snapshot{Containers: []protocol.Container{{ID: container, Ports: []protocol.Port{{Host: 8080, Container: 80, Protocol: tc.observedProtocol, HostIP: tc.observedIP}}}}}, true)
+			p := buildDeploymentPreflight(m, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: "nginx:1", Ports: []ApplicationPort{{Published: 8080, Target: 80, Protocol: "tcp", HostIP: tc.desiredIP}}}}}, protocol.Snapshot{Containers: []protocol.Container{{ID: container, Ports: []protocol.Port{{Host: 8080, Container: 80, Protocol: tc.observedProtocol, HostIP: tc.observedIP}}}}}, true, nil)
 			if slices.Contains(p.Services[0].Blockers, "reported_port_overlap") != tc.conflict {
 				t.Fatalf("unexpected overlap: %+v", p)
 			}
 		})
 	}
-	p := buildDeploymentPreflight(&ApplicationMapping{Preview: &AdoptionPreview{}}, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: "nginx:1", Ports: []ApplicationPort{{Published: 8080, Protocol: "tcp"}, {Published: 8080, Protocol: "tcp"}}}, {Name: "db", Image: "postgres:17", Ports: []ApplicationPort{{Published: 8080, Protocol: "tcp"}}}}}, protocol.Snapshot{}, true)
+	p := buildDeploymentPreflight(&ApplicationMapping{Preview: &AdoptionPreview{}}, ApplicationSpec{Services: []ApplicationService{{Name: "web", Image: "nginx:1", Ports: []ApplicationPort{{Published: 8080, Protocol: "tcp"}, {Published: 8080, Protocol: "tcp"}}}, {Name: "db", Image: "postgres:17", Ports: []ApplicationPort{{Published: 8080, Protocol: "tcp"}}}}}, protocol.Snapshot{}, true, nil)
 	for _, s := range p.Services {
 		if !slices.Contains(s.Blockers, "desired_port_overlap") {
 			t.Fatal("duplicate desired binding missed")
@@ -220,7 +220,7 @@ func TestDeploymentPreflightMounts(t *testing.T) {
 				service.Volumes = []ApplicationVolume{tc.want}
 			}
 			spec := ApplicationSpec{Services: []ApplicationService{service}, Volumes: []DeclaredVolume{{Name: "data"}}}
-			p := buildDeploymentPreflight(m, spec, protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}}, true)
+			p := buildDeploymentPreflight(m, spec, protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}}, true, nil)
 			row := p.Services[0]
 			if tc.blocker == "" {
 				if !p.Executable || len(row.Blockers) != 0 {
@@ -255,7 +255,7 @@ func TestDeploymentPreflightResolvesAndReportsDroppedMounts(t *testing.T) {
 		{Kind: "named", Source: "shared", Target: "/shared", ReadOnly: true},
 		{Kind: "bind", Source: "/srv/web", Target: "/srv"},
 	}}}}
-	p := buildDeploymentPreflight(m, spec, protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}, Volumes: []protocol.Volume{{Name: "shared"}}}, true)
+	p := buildDeploymentPreflight(m, spec, protocol.Snapshot{Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("a", 64), Tags: []string{"nginx:1"}}}, Volumes: []protocol.Volume{{Name: "shared"}}}, true, nil)
 	row := p.Services[0]
 	if !p.Executable {
 		t.Fatalf("blocked: %+v", p)
@@ -292,7 +292,7 @@ func TestDeploymentPreflightExternalVolumes(t *testing.T) {
 			if tc.truncated {
 				snapshot.Truncated = []string{"volumes"}
 			}
-			row := buildDeploymentPreflight(m, spec, snapshot, true).Services[0]
+			row := buildDeploymentPreflight(m, spec, snapshot, true, nil).Services[0]
 			if tc.missing != slices.Equal(row.Blockers, []string{"volume_missing"}) || (!tc.missing && len(row.Blockers) != 0) {
 				t.Fatalf("blockers: %+v", row.Blockers)
 			}

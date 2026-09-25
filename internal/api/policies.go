@@ -206,7 +206,7 @@ func (s *Server) runPolicy(ctx context.Context, sp store.ScheduledPolicy, opened
 		s.policies.panicHook = nil
 		hook()
 	}
-	outcome, deployment, detail := s.performPolicyRun(ctx, a, pol)
+	outcome, deployment, detail := s.performPolicyRun(ctx, a, pol, run)
 	err = ts.FinishPolicyRun(ctx, run, outcome, deployment, detail)
 	if errors.Is(err, store.ErrNotFound) {
 		log.Printf("[POLICY] policy %s run %s: the policy was deleted during the run", pol.ID, run)
@@ -222,7 +222,7 @@ func (s *Server) runPolicy(ctx context.Context, sp store.ScheduledPolicy, opened
 // performPolicyRun is one run's work as a: authorize, check, plan and, in apply mode, apply and
 // send, each step re-authorized by the store. It returns the outcome, the deployment it made and
 // a fixed detail.
-func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol store.UpdatePolicy) (outcome, deployment, detail string) {
+func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol store.UpdatePolicy, run string) (outcome, deployment, detail string) {
 	ts := s.store.Tenancy()
 	app := pol.ApplicationID
 	if err := ts.CheckImageUpdateAccess(ctx, a, app); err != nil {
@@ -296,13 +296,22 @@ func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol
 	}
 	// The policy is re-read inside the apply's transaction: one deleted, paused, switched to
 	// plan_only or saved by someone else since the tick leaves its plan for a click.
-	applied, frame, err := ts.ApplyPolicyDeployment(ctx, a, pol.ID, app, d.ID, d.Plan.Project, key, maxFrame)
+	applied, frame, err := ts.ApplyPolicyDeployment(ctx, a, pol.ID, run, app, d.ID, d.Plan.Project, key, maxFrame)
 	if errors.Is(err, store.ErrPolicyChanged) {
 		return store.RunPlanned, d.ID, "policy_changed"
 	}
 	if err != nil {
 		failed, _, why := policyFailure(err)
 		return failed, d.ID, why
+	}
+	// Named on the run before the frame leaves, so the run's record always shows what it sent;
+	// ApplyPolicyDeployment already made the apply automated. Unnamed, it is not sent.
+	if err := ts.AttachPolicyRunDeployment(ctx, run, applied.ID); err != nil {
+		log.Printf("[POLICY] run %s: naming deployment %s: %v", run, applied.ID, err)
+		if err := ts.FailDeployment(ctx, applied.ID, "the deployment could not be recorded on its policy run"); err != nil {
+			log.Printf("[POLICY] deployment %s: recording an unsent frame: %v", applied.ID, err)
+		}
+		return store.RunFailed, applied.ID, "error"
 	}
 	if !s.agents.deliver(applied.EndpointID, envelope(protocol.TypeDeploymentApply, frame)) {
 		if err := ts.FailDeployment(ctx, applied.ID, "the endpoint disconnected before the deployment was sent"); err != nil {

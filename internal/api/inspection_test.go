@@ -13,8 +13,13 @@ import (
 )
 
 func inspectionFixture(t *testing.T) terminalFixture {
+	return inspectionFixtureWith(t, []string{"container.inspect"})
+}
+
+// inspectionFixtureWith is inspectionFixture for an agent advertising capabilities.
+func inspectionFixtureWith(t *testing.T, capabilities []string) terminalFixture {
 	f := newTerminalFixture(t)
-	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{"container.inspect"}})
+	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities})
 	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeInventory, protocol.Snapshot{Generation: uint64(time.Now().Unix()) + 2, ObservedAt: time.Now(), Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: terminalSpec.Container, ImageID: terminalSpec.ImageID, CreatedAt: time.Unix(1700000000, 0), State: "running"}}})
 	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeHeartbeat, nil)
 	readEnvelope(t, f.ctx, f.ag.conn)
@@ -172,5 +177,39 @@ func TestInspectionAPICancellation(t *testing.T) {
 	var stopped protocol.InspectionCancel
 	if frame.Type != protocol.TypeInspectionCancel || json.Unmarshal(frame.Payload, &stopped) != nil || stopped.Request != grant.Request {
 		t.Fatal("agent did not receive request cancellation")
+	}
+}
+
+// The server validates health against what the answering agent advertised: required and bounded
+// from a container.inspect.health agent, absent from an older one (docs/agent-protocol.md).
+func TestInspectionAPIChecksHealthAgainstTheCapability(t *testing.T) {
+	withHealth := []string{"container.inspect", "container.inspect.health"}
+	for _, tc := range []struct {
+		name         string
+		capabilities []string
+		health       string
+		restarts     int
+		status       int
+	}{
+		{"health agent with health", withHealth, "unhealthy", 4, 200},
+		{"health agent without health", withHealth, "", 0, 502},
+		{"health agent with a runaway count", withHealth, "healthy", protocol.MaxRestartCount + 1, 502},
+		{"older agent with health", []string{"container.inspect"}, "healthy", 0, 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := inspectionFixtureWith(t, tc.capabilities)
+			response := beginInspection(f)
+			req := inspectionGrant(t, f)
+			reply := inspectionReply(req)
+			reply.Result.Health, reply.Result.RestartCount = tc.health, tc.restarts
+			writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeInspectionResult, reply)
+			w := <-response
+			if w.Code != tc.status {
+				t.Fatalf("got %d %s", w.Code, w.Body.String())
+			}
+			if tc.status == 200 && (!strings.Contains(w.Body.String(), `"health":"unhealthy"`) || !strings.Contains(w.Body.String(), `"restart_count":4`)) {
+				t.Fatalf("body: %s", w.Body.String())
+			}
+		})
 	}
 }

@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { secureFetch } from '../api';
-import { useTenantResource, type PolicyRun, type UpdatePolicy } from '../tenant';
+import { useTenantResource, type Endpoint, type PolicyRun, type UpdatePolicy } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { detailText, planBlockers } from './ApplicationUpdates';
+import { ValidationLine, pauseText } from './ApplicationValidation';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MODES: Record<string, string> = { apply: 'Plan and apply', plan_only: 'Plan only; apply by hand' };
@@ -79,7 +80,8 @@ function problem(days: number[], start: number, end: number): string {
   return '';
 }
 
-type Props = { base: string; admin: boolean };
+// org and endpointID, when known, let the card check the host for container.inspect.health.
+type Props = { base: string; admin: boolean; org?: string; endpointID?: string };
 
 export function ApplicationPolicy(props: Props) {
   const [open, setOpen] = useState(false);
@@ -89,7 +91,7 @@ export function ApplicationPolicy(props: Props) {
   </section>;
 }
 
-function PolicyView({ base, admin }: Props) {
+function PolicyView({ base, admin, org, endpointID }: Props) {
   const url = `${base}/update-policy`;
   const policy = useTenantResource<UpdatePolicy>(url);
   const [busy, setBusy] = useState(false);
@@ -114,6 +116,7 @@ function PolicyView({ base, admin }: Props) {
   return <>
     <p>A policy checks this application's images in a weekly maintenance window and plans, or plans and applies, what changed, acting as the administrator who last saved it. Every run is audited.</p>
     {p ? <PolicyStatus policy={p} admin={admin} busy={busy} onResume={() => void write('POST', `${url}/resume`)} /> : <p>No update policy.</p>}
+    {p?.mode === 'apply' && org && endpointID && <HealthWarning org={org} endpointID={endpointID} />}
     {admin && <PolicyEditor key={p?.updated_at ?? 'new'} policy={p} busy={busy} onSave={(body) => void write('PUT', url, body)} onDelete={() => { if (window.confirm('Delete this update policy and its run history? Deployments it made are kept.')) void write('DELETE', url); }} />}
     {message && <p role="alert">{message}</p>}
     {p && <RunList runs={p.runs ?? []} zone={p.timezone} />}
@@ -125,7 +128,7 @@ function PolicyStatus({ policy, admin, busy, onResume }: { policy: UpdatePolicy;
   return <div className="dr-stack">
     <p>{fixed(MODES, policy.mode)} · {schedule}</p>
     {policy.status === 'paused' ? <>
-      <p role="status">Paused. {fixed(SENTENCES, policy.paused_reason)}</p>
+      <p role="status">Paused. {fixed(SENTENCES, policy.paused_reason) || pauseText(policy.paused_reason)}</p>
       {admin && <button type="button" disabled={busy} onClick={onResume}>Resume policy</button>}
     </> : <p role="status">Active. {policy.next_occurrence ? `Next window: ${formatIn(policy.next_occurrence, policy.timezone)} (your time: ${formatIn(policy.next_occurrence, browserZone())}).` : 'No upcoming window.'}{policy.consecutive_failures > 0 ? ` ${policy.consecutive_failures} failed window(s) in a row; the policy pauses at 3.` : ''}</p>}
   </div>;
@@ -162,12 +165,21 @@ function PolicyEditor({ policy, busy, onSave, onDelete }: { policy: UpdatePolicy
 function RunList({ runs, zone }: { runs: PolicyRun[]; zone: string }) {
   if (runs.length === 0) return <p>No runs yet.</p>;
   return <table>
-    <thead><tr><th>Window</th><th>Outcome</th><th>Detail</th><th>Deployment</th></tr></thead>
+    <thead><tr><th>Window</th><th>Outcome</th><th>Detail</th><th>Deployment</th><th>Validation</th></tr></thead>
     <tbody>{runs.map((r) => <tr key={r.id}>
       <td>{formatIn(r.occurrence, zone)}</td>
       <td><span className="badge">{Object.hasOwn(RUN_OUTCOMES, r.outcome) ? RUN_OUTCOMES[r.outcome] : 'Unrecognised outcome'}</span></td>
       <td>{runDetail(r)}</td>
       <td>{/^[0-9a-f-]{36}$/.test(r.deployment_id) ? <code title={r.deployment_id}>{r.deployment_id.slice(0, 8)}</code> : '—'}</td>
+      <td>{r.validation ? <ValidationLine v={r.validation} /> : '—'}</td>
     </tr>)}</tbody>
   </table>;
+}
+
+// HealthWarning names a host whose agent cannot report container health: every automated update
+// there ends unverifiable and pauses the policy.
+function HealthWarning({ org, endpointID }: { org: string; endpointID: string }) {
+  const endpoint = useTenantResource<Endpoint>(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpointID)}`);
+  if (endpoint.state !== 'ready' || !endpoint.data || endpoint.data.capabilities.includes('container.inspect.health')) return null;
+  return <p role="alert">This host's agent cannot report container health, so automated updates here cannot be validated and pause the policy after each one. Upgrade the agent.</p>;
 }

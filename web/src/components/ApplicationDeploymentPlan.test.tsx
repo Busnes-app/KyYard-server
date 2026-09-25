@@ -429,3 +429,13 @@ it.each([
   expect((await screen.findAllByText('0123456789abcdef0123456789abcdef')).length).toBe(1);
   expect(screen.getByText(/search the audit log for it/)).toBeTruthy();
 });
+
+it('shows the validation verdict and the rollback of a settled deployment', async () => {
+  const rolledBack = '3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b';
+  const validated = { ...settled, validation: { deployment_id: 'd1', policy_run_id: 'r', automated: true, is_rollback: false, phase: 'done', started_at: '2026-09-22T12:01:00Z', observe_until: '2026-09-22T12:03:30Z', verdict: 'unhealthy', detail: 'web', rollback: { deployment_id: rolledBack, revision: 1, outcome: 'applied', detail: '' }, correlation_id: 'c', finished_at: '2026-09-22T12:01:31Z' } };
+  vi.stubGlobal('fetch', stubFetch([validated]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  expect((await screen.findAllByText(/Unhealthy: a healthcheck failed or never passed\./)).length).toBeGreaterThan(0);
+  expect(screen.getAllByText(/Rollback sent to revision 1\./).length).toBeGreaterThan(0);
+});

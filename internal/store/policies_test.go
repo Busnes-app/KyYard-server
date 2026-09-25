@@ -278,3 +278,29 @@ func TestListPolicyRuns(t *testing.T) {
 		t.Fatalf("no policy: %+v %v", runs, err)
 	}
 }
+
+// A run's validation, rollback included, comes with the run; the run's own outcome is untouched.
+func TestPolicyRunsCarryTheirValidation(t *testing.T) {
+	st, a, app, _, _, run, _, updated := validationFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, err := ts.FinishValidation(ctx, updated.ID, VerdictUnhealthy, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.MarkRollbackOutcome(ctx, updated.ID, RollbackIneligible, RollbackPriorImagesMissing); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := ts.ListPolicyRuns(ctx, a, app.ID, 20)
+	if err != nil || len(runs) != 1 || runs[0].ID != run || runs[0].Outcome != RunApplied || runs[0].Validation == nil || runs[0].Validation.DeploymentID != updated.ID || runs[0].Validation.Verdict != VerdictUnhealthy || runs[0].Validation.Rollback == nil || runs[0].Validation.Rollback.Detail != RollbackPriorImagesMissing {
+		t.Fatalf("runs: %+v %v", runs, err)
+	}
+	if _, viaPolicy, err := ts.ReadUpdatePolicy(ctx, a, app.ID); err != nil || len(viaPolicy) != 1 || viaPolicy[0].Validation == nil || viaPolicy[0].Validation.Verdict != VerdictUnhealthy {
+		t.Fatalf("policy runs: %+v %v", viaPolicy, err)
+	}
+	// A run with no deployment has no validation.
+	skipped := rawPolicyRun(t, st, &UpdatePolicy{ID: runs[0].PolicyID, OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, ApplicationID: app.ID}, instant("2026-09-25T10:00:00Z"), RunSkippedMissed)
+	runs, err = ts.ListPolicyRuns(ctx, a, app.ID, 20)
+	if err != nil || len(runs) != 2 || runs[0].ID != skipped || runs[0].Validation != nil {
+		t.Fatalf("skipped run: %+v %v", runs, err)
+	}
+}

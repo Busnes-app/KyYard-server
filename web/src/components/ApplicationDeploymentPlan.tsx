@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
-import { useTenantResource } from '../tenant';
+import { useTenantResource, type Validation } from '../tenant';
+import { ValidationLine } from './ApplicationValidation';
 import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
@@ -11,7 +12,7 @@ type PlannedService = { name: string; reference: string; image_id: string; image
 type DeployStep = { service: string; step: string; outcome: string; code?: string; detail: string };
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number };
 type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
-type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[] } };
+type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[] }; validation?: Validation };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
 type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance; refreshKey?: number };
 
@@ -157,6 +158,7 @@ function ResultSection({ current }: { current: Deployment }) {
     {detail && <p>{detail}</p>}
     {outcome && <p>{outcome}</p>}
     {explanation && <p role="alert">{explanation}</p>}
+    {current.validation && <p><ValidationLine v={current.validation} /></p>}
     {current.result && <>
       {steps.controls}
       <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Step</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>{steps.rows.map((s, i) => <tr key={`${s.service}-${s.step}-${i}`}>

@@ -27,7 +27,10 @@ export interface RegistryPolicy { anonymous_pull_enabled: boolean; private_regis
 // Cached update verdicts for one adopted instance; services is [] before the first check.
 export interface ImageCheck { service: string; reference: string; local_digest: string; remote_digest: string; verdict: string; detail: string; checked_at: string }
 export interface UpdateCheck { instance_id: string; mapping_version: number; services: ImageCheck[] }
-export interface PolicyRun { id: string; policy_id: string; occurrence: string; started_at: string; finished_at: string | null; outcome: string; deployment_id: string; detail: string; correlation_id: string }
+export interface ValidationRollback { deployment_id: string; revision: number; outcome: string; detail: string }
+// A deployment's health validation (docs/application-schema.md, Health validation).
+export interface Validation { deployment_id: string; policy_run_id: string; automated: boolean; is_rollback: boolean; phase: string; started_at: string; observe_until: string; verdict: string; detail: string; rollback: ValidationRollback | null; correlation_id: string; finished_at: string | null }
+export interface PolicyRun { id: string; policy_id: string; occurrence: string; started_at: string; finished_at: string | null; outcome: string; deployment_id: string; detail: string; correlation_id: string; validation?: Validation }
 export interface UpdatePolicy { id: string; application_id: string; created_by: string; mode: string; timezone: string; weekdays: number[]; start_minute: number; end_minute: number; status: string; paused_reason: string; consecutive_failures: number; created_at: string; updated_at: string; next_occurrence: string | null; runs?: PolicyRun[] }
 
 export const privateDisabled = 'Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).';

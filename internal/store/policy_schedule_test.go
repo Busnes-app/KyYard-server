@@ -423,7 +423,7 @@ func TestApplyPolicyDeploymentRequiresThePolicyUnchanged(t *testing.T) {
 				t.Fatal(err)
 			}
 			change(t, st, a, app.ID, p.ID)
-			if _, _, err := ts.ApplyPolicyDeployment(ctx, a, p.ID, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrPolicyChanged) {
+			if _, _, err := ts.ApplyPolicyDeployment(ctx, a, p.ID, "", app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrPolicyChanged) {
 				t.Fatalf("apply: %v", err)
 			}
 			if got, err := ts.ReadDeployment(ctx, a, app.ID, d.ID); err != nil || got.State != "planned" {
@@ -436,7 +436,7 @@ func TestApplyPolicyDeploymentRequiresThePolicyUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied, _, err := st.Tenancy().ApplyPolicyDeployment(context.Background(), a, p.ID, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil || applied.State != "applying" {
+	if applied, _, err := st.Tenancy().ApplyPolicyDeployment(context.Background(), a, p.ID, "", app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil || applied.State != "applying" {
 		t.Fatalf("unchanged policy: %+v %v", applied, err)
 	}
 }

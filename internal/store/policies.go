@@ -102,6 +102,8 @@ type PolicyRun struct {
 	DeploymentID  string     `json:"deployment_id"`
 	Detail        string     `json:"detail"`
 	CorrelationID string     `json:"correlation_id"`
+	// Validation is the run's deployment's health validation, rollback included; nil without one.
+	Validation *Validation `json:"validation,omitempty"`
 }
 
 // validPolicyZone admits an IANA zone the embedded database loads. "" and "Local" load too, but
@@ -179,11 +181,11 @@ func (t *tenancyStore) policyOf(ctx context.Context, tx *sql.Tx, a TenantAccess,
 	return id, status, err
 }
 
-const policyRunColumns = `id,policy_id,occurrence,started_at,finished_at,outcome,deployment_id,detail,correlation_id`
+const policyRunColumns = `r.id,r.policy_id,r.occurrence,r.started_at,r.finished_at,r.outcome,r.deployment_id,r.detail,r.correlation_id,` + validationColumns
 
 // policyRuns lists policy's runs newest window first.
 func (t *tenancyStore) policyRuns(ctx context.Context, tx *sql.Tx, policy string, limit int) ([]PolicyRun, error) {
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT `+policyRunColumns+` FROM policy_runs WHERE policy_id=? ORDER BY occurrence DESC,id DESC LIMIT ?`), policy, limit)
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT `+policyRunColumns+` FROM policy_runs r LEFT JOIN deployment_validations v ON v.deployment_id=r.deployment_id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id WHERE r.policy_id=? ORDER BY r.occurrence DESC,r.id DESC LIMIT ?`), policy, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -193,13 +195,15 @@ func (t *tenancyStore) policyRuns(ctx context.Context, tx *sql.Tx, policy string
 		var r PolicyRun
 		var finished sql.NullTime
 		var deployment sql.NullString
-		if err := rows.Scan(&r.ID, &r.PolicyID, &r.Occurrence, &r.StartedAt, &finished, &r.Outcome, &deployment, &r.Detail, &r.CorrelationID); err != nil {
+		var vs validationScan
+		if err := rows.Scan(append([]any{&r.ID, &r.PolicyID, &r.Occurrence, &r.StartedAt, &finished, &r.Outcome, &deployment, &r.Detail, &r.CorrelationID}, vs.dest()...)...); err != nil {
 			return nil, err
 		}
 		if finished.Valid {
 			r.FinishedAt = &finished.Time
 		}
 		r.DeploymentID = deployment.String
+		r.Validation = vs.validation()
 		out = append(out, r)
 	}
 	return out, rows.Err()
