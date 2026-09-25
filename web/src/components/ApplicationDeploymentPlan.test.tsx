@@ -72,7 +72,7 @@ it('shows adoption changed and no form when the mapping names a different instan
 });
 const applying = { ...plan, state: 'applying', detail: '', result: null };
 const settled = { ...plan, state: 'succeeded', detail: '', result: { steps: [{ service: 'web', step: 'create', outcome: 'succeeded', detail: '' }], services: [{ service: 'web', container_id: 'e'.repeat(64), image_id: `sha256:${'a'.repeat(64)}`, created_unix: 1800000000 }] } };
-const refused = { ...plan, state: 'denied', detail: 'service web, step precondition: the container has mounts', result: { steps: [{ service: 'web', step: 'precondition', outcome: 'denied', detail: 'the container has mounts the definition does not describe' }, { service: 'web', step: 'image', outcome: 'skipped', detail: '' }], services: [] } };
+const refused = { ...plan, state: 'denied', detail: '', result: { code: 'step_failed', steps: [{ service: 'web', step: 'precondition', outcome: 'denied', code: 'unsupported', detail: 'privileged' }, { service: 'web', step: 'image', outcome: 'skipped', detail: '' }], services: [] } };
 
 it('applies on typed confirmation and polls until settled', async () => {
   vi.useFakeTimers();
@@ -175,15 +175,24 @@ it('pauses status updates after three consecutive poll failures and stops pollin
   expect(fetcher.mock.calls.length).toBe(before); // no further polling once paused
   vi.useRealTimers();
 });
-it('shows a step detail with a recognized adapter prefix and hides an unrecognized one', async () => {
-  const mixed = { ...plan, state: 'failed', detail: '', result: { steps: [
-    { service: 'web', step: 'precondition', outcome: 'denied', detail: 'this agent is already applying a deployment' },
-    { service: 'web', step: 'image', outcome: 'skipped', detail: 'unexpected raw server text' },
+it('renders step codes from the table and anything else as inert text', async () => {
+  const mixed = { ...plan, state: 'failed', detail: 'unexpected raw server text', result: { code: 'step_failed', steps: [
+    { service: 'web', step: 'precondition', outcome: 'succeeded', detail: '' },
+    { service: 'web', step: 'start', outcome: 'failed', code: 'identity_unverified', detail: 'c'.repeat(64) },
+    { service: 'web', step: 'stop', outcome: 'failed', code: 'runtime_status', detail: '500' },
+    { service: 'web', step: 'remove', outcome: 'failed', code: 'runtime_status', detail: 'abc' },
+    { service: 'web', step: 'create', outcome: 'failed', code: '<img src=x onerror=alert(1)>', detail: 'secret-canary' },
   ], services: [] } };
   vi.stubGlobal('fetch', stubFetch([mixed]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
-  await screen.findByText('this agent is already applying a deployment');
+  await screen.findByText(`The container started but its identity could not be verified (container ${'c'.repeat(64)}).`);
+  expect(screen.getByText('The runtime refused with status 500.')).toBeTruthy();
+  expect(screen.getByText('The runtime refused.')).toBeTruthy();
+  expect(screen.getByText('unrecognised outcome `<img src=x onerror=alert(1)>`')).toBeTruthy();
+  expect(screen.getByText('A step did not succeed; the steps say which.')).toBeTruthy();
+  expect(document.querySelector('img')).toBeNull();
+  expect(document.body.textContent).not.toContain('secret-canary');
   expect(document.body.textContent).not.toContain('unexpected raw server text');
 });
 it('explains an abandoned unknown row with fixed text', async () => {
@@ -200,12 +209,13 @@ it('explains a deployment that was never sent', async () => {
   await screen.findByText('The deployment was not sent to the host.');
   expect(document.body.textContent).not.toContain('.kyyard-prev');
 });
-it('keys a refused precondition on its step detail', async () => {
-  const gone = { ...refused, result: { steps: [{ service: 'web', step: 'precondition', outcome: 'denied', detail: 'the container no longer exists' }], services: [] } };
+it('keys a refused precondition on its step code', async () => {
+  const gone = { ...refused, result: { code: 'step_failed', steps: [{ service: 'web', step: 'precondition', outcome: 'denied', code: 'container_missing', detail: '' }], services: [] } };
   vi.stubGlobal('fetch', stubFetch([gone]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   await screen.findByText('The mapped container no longer exists on the host; refresh the inventory and plan again.');
+  expect(screen.getByText('The container no longer exists.')).toBeTruthy();
 });
 it('stops polling three minutes past the deadline and says so', async () => {
   vi.useFakeTimers();
@@ -246,7 +256,7 @@ it('plans a prior revision with the reapply warning', async () => {
   const post = fetcher.mock.calls.find(c => (c[1] as RequestInit | undefined)?.method === 'POST');
   expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({ instance_id: 'i', mapping_version: 3, revision: 1, confirm: 'shop' });
 });
-const removal = { ...plan, id: 'r1', kind: 'remove', state: 'denied', revision: 2, applied_by: 'admin-user', applied_at: '2026-09-23T10:00:00Z', settled_at: '2026-09-23T10:01:00Z', detail: '', result: { steps: [{ service: 'web', step: 'precondition', outcome: 'denied', detail: 'the container is not the one this plan names' }], services: [] }, plan: { project: 'shop', services: [], containers: [{ service: 'web', container_id: 'f'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1, name: 'shop-web-1' }] } };
+const removal = { ...plan, id: 'r1', kind: 'remove', state: 'denied', revision: 2, applied_by: 'admin-user', applied_at: '2026-09-23T10:00:00Z', settled_at: '2026-09-23T10:01:00Z', detail: '', result: { code: 'step_failed', steps: [{ service: 'web', step: 'precondition', outcome: 'denied', code: 'identity_mismatch', detail: '' }], services: [] }, plan: { project: 'shop', services: [], containers: [{ service: 'web', container_id: 'f'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1, name: 'shop-web-1' }] } };
 const applied = { ...settled, id: 'a1', kind: 'apply', revision: 1, applied_by: 'operator-user', applied_at: '2026-09-22T10:00:00Z', settled_at: '2026-09-22T10:01:00Z' };
 it('lists deployment history newest first and expands steps', async () => {
   vi.stubGlobal('fetch', stubFetch([removal, applied]));
@@ -365,37 +375,57 @@ it('names the services a live inspection refused and hides anything unrecognized
   expect(document.body.textContent).not.toContain('Bad Name');
 });
 it('explains a recheck denial like a precondition', async () => {
-  const drifted = { ...plan, state: 'denied', detail: 'service web, step recheck: the container changed after the precondition', result: { steps: [
+  const drifted = { ...plan, state: 'denied', detail: '', result: { code: 'step_failed', steps: [
     { service: 'web', step: 'precondition', outcome: 'succeeded', detail: '' },
     { service: 'web', step: 'image', outcome: 'succeeded', detail: '' },
-    { service: 'web', step: 'recheck', outcome: 'denied', detail: 'the container changed after the precondition' },
+    { service: 'web', step: 'recheck', outcome: 'denied', code: 'configuration_drift', detail: '' },
     { service: 'web', step: 'rename', outcome: 'skipped', detail: '' },
   ], services: [] } };
   vi.stubGlobal('fetch', stubFetch([drifted]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   await screen.findByText(/changed on the host while the deployment prepared/);
-  expect(screen.getByText('the container changed after the precondition')).toBeTruthy();
+  expect(screen.getByText('The container changed after the precondition.')).toBeTruthy();
 });
 it('explains a deployment refused for clock skew', async () => {
-  vi.stubGlobal('fetch', stubFetch([{ ...plan, state: 'failed', detail: 'clock skew exceeds 5 minutes', result: { steps: [], services: [] } }]));
+  vi.stubGlobal('fetch', stubFetch([{ ...plan, state: 'failed', detail: '', result: { code: 'clock_skew', steps: [], services: [] } }]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   await screen.findByText('The host clock differs from the server by more than five minutes; nothing ran. Correct the host clock, then plan again.');
-  expect(screen.getByText('clock skew exceeds 5 minutes')).toBeTruthy();
+  expect(screen.getByText('The host clock differs from the server by more than five minutes; nothing ran.')).toBeTruthy();
 });
-it('shows the restart detail with the inspect-the-host guidance', async () => {
-  vi.stubGlobal('fetch', stubFetch([{ ...plan, state: 'unknown', detail: 'the agent restarted after replacement began; inspect the host', result: { steps: [], services: [] } }]));
+it('shows the restart outcome with the inspect-the-host guidance', async () => {
+  vi.stubGlobal('fetch', stubFetch([{ ...plan, state: 'unknown', detail: '', result: { code: 'restarted', steps: [], services: [] } }]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   await screen.findByText('The host may or may not have acted. Inspect it before planning again.');
-  expect(screen.getByText('the agent restarted after replacement began; inspect the host')).toBeTruthy();
+  expect(screen.getByText('The agent restarted after replacement began; inspect the host.')).toBeTruthy();
 });
-it('shows an unsupported-configuration step detail', async () => {
-  const refusedCodes = { ...plan, state: 'denied', detail: '', result: { steps: [{ service: 'web', step: 'precondition', outcome: 'denied', detail: 'unsupported: privileged, devices' }], services: [] } };
+it('names unsupported configuration from its codes and drops unknown ones', async () => {
+  const refusedCodes = { ...plan, state: 'denied', detail: '', result: { code: 'step_failed', steps: [{ service: 'web', step: 'precondition', outcome: 'denied', code: 'unsupported', detail: 'privileged,devices,made_up' }], services: [] } };
   vi.stubGlobal('fetch', stubFetch([refusedCodes]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
-  await screen.findByText('unsupported: privileged, devices');
+  await screen.findByText('The container has configuration the definition cannot express: runs privileged, maps host devices.');
   expect(screen.getByText(/configuration the definition does not describe/i)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('made_up');
+});
+it('asks for an agent upgrade on a legacy outcome and hides its old sentence', async () => {
+  const older = { ...plan, state: 'denied', detail: 'service web, step precondition: the container no longer exists', result: { code: 'legacy', steps: [{ service: 'web', step: 'precondition', outcome: 'denied', code: 'legacy', detail: '' }], services: [] } };
+  vi.stubGlobal('fetch', stubFetch([older]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  expect((await screen.findAllByText('The agent did not classify this outcome; upgrade the agent.')).length).toBe(2);
+  expect(document.body.textContent).not.toContain('no longer exists');
+  expect(document.body.textContent).not.toContain('configuration the definition does not describe');
+});
+it.each([
+  ['planned', { ...plan, correlation_id: '0123456789abcdef0123456789abcdef' }],
+  ['settled', { ...settled, correlation_id: '0123456789abcdef0123456789abcdef' }],
+])('shows the %s deployment correlation ID once', async (_state, row) => {
+  vi.stubGlobal('fetch', stubFetch([row]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  expect((await screen.findAllByText('0123456789abcdef0123456789abcdef')).length).toBe(1);
+  expect(screen.getByText(/search the audit log for it/)).toBeTruthy();
 });

@@ -4,13 +4,14 @@ import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 import { knownBlockers, messages, serviceFindings, MountList, type Mount } from './ApplicationPreflight';
+import { unsupportedNames } from './ApplicationInspection';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
 type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[] };
-type DeployStep = { service: string; step: string; outcome: string; detail: string };
+type DeployStep = { service: string; step: string; outcome: string; code?: string; detail: string };
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number };
 type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
-type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[] } };
+type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[] } };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
 type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance; refreshKey?: number };
 
@@ -20,18 +21,80 @@ const APPLY_CODES: Record<string, string> = {
   endpoint_offline: 'The host is not connected. Reconnect it before applying.',
   deployment_not_sent: 'The deployment was not sent. Refresh and try again.',
 };
-// Fixed detail prefixes: the adapter (internal/runtime/docker/deploy.go), the agent
-// (internal/agent/client/deployments.go) and the server (internal/store, internal/api).
-// Anything else stays hidden.
-const FIXED_DETAIL_PREFIXES = [
-  'the container', 'the pinned image', 'the runtime', 'the daemon', 'the deployment', 'this deployment',
-  'not enough time', 'a container', 'service ', 'the host reported', 'the run was cancelled',
-  'this agent', 'invalid deployment request',
-  'the connection ended', 'no result arrived', 'the endpoint disconnected', "the host's result",
-  'unsupported: ', 'clock skew', 'the agent restarted',
-];
-function fixedDetail(detail: string): string {
-  return FIXED_DETAIL_PREFIXES.some(p => detail.startsWith(p)) ? detail : '';
+const LEGACY_OUTCOME = 'The agent did not classify this outcome; upgrade the agent.';
+// Step codes (docs/agent-protocol.md, Outcome codes). A step's detail is its code's parameter and
+// renders only in the shape its code allows; an unknown code renders as inert text.
+export const STEP_CODES: Record<string, string> = {
+  runtime_unreadable: "The daemon's default runtime could not be read.",
+  container_missing: 'The container no longer exists.',
+  identity_mismatch: 'The container is not the one this plan was decided about.',
+  image_identity_mismatch: 'The host reported a different image identity than the plan pinned.',
+  configuration_unreported: "The runtime did not report the container's full configuration.",
+  unsupported: 'The container has configuration the definition cannot express',
+  bind_missing: 'A bind mount in the plan is not on the container.',
+  volume_mount_missing: 'A kept volume is not mounted on the container.',
+  volume_not_owned: 'The volume is not owned by this project.',
+  volume_missing: 'The volume does not exist.',
+  volume_create_failed: 'The volume could not be created.',
+  image_missing: "The container's image is no longer present.",
+  pinned_image_missing: 'The pinned image is not present on the host.',
+  configuration_drift: 'The container changed after the precondition.',
+  name_reserved: 'A container already holds the name reserved for the previous one.',
+  name_taken: 'A container with that name already exists.',
+  identity_unusable: 'The runtime returned an unusable container identity.',
+  identity_unreadable: 'The container started but its identity could not be read',
+  identity_unverified: 'The container started but its identity could not be verified',
+  dependents: 'Something still depends on this container.',
+  deadline: 'Not enough time was left before the deadline to continue safely.',
+  pull_failed: 'The image pull failed.',
+  pull_unauthorized: 'The registry refused the credential.',
+  pull_not_found: 'The registry has no such image.',
+  pull_digest_mismatch: 'The pulled image does not match the pinned digest.',
+  cancelled: 'The run was cancelled before the runtime answered.',
+  runtime_timeout: 'The runtime did not answer in time.',
+  runtime_error: 'The runtime call failed.',
+  runtime_status: 'The runtime refused',
+  legacy: LEGACY_OUTCOME,
+};
+export const RESULT_CODES: Record<string, string> = {
+  step_failed: 'A step did not succeed; the steps say which.',
+  clock_skew: 'The host clock differs from the server by more than five minutes; nothing ran.',
+  invalid_request: 'The agent refused the deployment request as invalid.',
+  wrong_endpoint: 'The deployment was addressed to another endpoint.',
+  busy: 'The agent was already applying a deployment.',
+  restarted: 'The agent restarted after replacement began; inspect the host.',
+  unreadable: 'The runtime returned a result the agent could not read.',
+  legacy: LEGACY_OUTCOME,
+};
+// Sentences the server itself writes on a row it settles without a result (internal/store,
+// internal/api); any other row detail is an older agent's and stays hidden.
+const SERVER_DETAILS = new Set([
+  'the connection ended before a result arrived',
+  'no result arrived before the deadline',
+  "the host's result did not match the plan; inspect the host",
+  'the endpoint disconnected before the deployment was sent',
+  'the endpoint disconnected before the removal was sent',
+]);
+function codeText(table: Record<string, string>, code: string): string {
+  return Object.hasOwn(table, code) ? table[code] ?? '' : `unrecognised outcome \`${code}\``;
+}
+export function stepText(s: { code?: string; detail?: string }): string {
+  const code = s.code ?? '';
+  if (!code) return '';
+  const text = codeText(STEP_CODES, code);
+  const detail = s.detail ?? '';
+  switch (code) {
+    case 'unsupported': {
+      const names = detail.split(',').filter(c => Object.hasOwn(unsupportedNames, c)).map(c => unsupportedNames[c]);
+      return names.length ? `${text}: ${names.join(', ')}.` : `${text}.`;
+    }
+    case 'identity_unreadable':
+    case 'identity_unverified':
+      return /^[0-9a-f]{64}$/.test(detail) ? `${text} (container ${detail}).` : `${text}.`;
+    case 'runtime_status':
+      return /^[1-5][0-9]{2}$/.test(detail) ? `${text} with status ${detail}.` : `${text}.`;
+  }
+  return text;
 }
 function isDeployment(x: unknown): x is Deployment {
   if (!x || typeof x !== 'object') return false;
@@ -40,26 +103,29 @@ function isDeployment(x: unknown): x is Deployment {
     && typeof d.expires_at === 'string' && typeof d.expired === 'boolean'
     && typeof d.plan === 'object' && d.plan !== null;
 }
-function preconditionExplanation(detail: string): string {
-  if (detail.includes('changed after the precondition')) return 'The mapped container changed on the host while the deployment prepared; it and every later service were left untouched, and services before it were replaced. Review the host, then plan again.';
-  if (detail.includes('no longer exists')) return 'The mapped container no longer exists on the host; refresh the inventory and plan again.';
-  if (detail.includes('not the one this plan')) return 'The mapped container changed on the host; plan again.';
-  if (detail.includes('image is no longer present')) return "The mapped container's image is no longer present on the host. Review it on the host before planning again.";
+function preconditionExplanation(code: string): string {
+  switch (code) {
+    case 'configuration_drift': return 'The mapped container changed on the host while the deployment prepared; it and every later service were left untouched, and services before it were replaced. Review the host, then plan again.';
+    case 'container_missing': return 'The mapped container no longer exists on the host; refresh the inventory and plan again.';
+    case 'identity_mismatch': return 'The mapped container changed on the host; plan again.';
+    case 'image_missing': return "The mapped container's image is no longer present on the host. Review it on the host before planning again.";
+    case 'legacy': return '';
+  }
   return 'A mapped container has configuration the definition does not describe. Review it on the host before planning again.';
 }
 // The row's state decides first: an unknown or timed-out row may carry no steps, and a failed
-// row without a result never reached the host (FailDeployment).
+// row without a result never reached the host (FailDeployment). Then the result and step codes.
 function explanationFor(current: Deployment): string {
   if (current.state === 'unknown') return 'The host may or may not have acted. Inspect it before planning again.';
   if (current.state === 'timed_out') return 'The host did not answer in time.';
   if (current.state === 'failed' && current.result === null) return 'The deployment was not sent to the host.';
-  if (current.state === 'failed' && current.detail.startsWith('clock skew')) return 'The host clock differs from the server by more than five minutes; nothing ran. Correct the host clock, then plan again.';
+  if (current.result?.code === 'clock_skew') return 'The host clock differs from the server by more than five minutes; nothing ran. Correct the host clock, then plan again.';
   const failing = current.result?.steps.find(s => s.outcome !== 'succeeded' && s.outcome !== 'skipped');
   if (!failing) return '';
   if (failing.outcome === 'denied' && (failing.step === 'precondition' || failing.step === 'recheck')) return current.kind === 'remove'
     ? 'A container of this application is not the one recorded; refresh the inventory and, if it was recreated outside KyYard, release and adopt it again.'
-    : preconditionExplanation(failing.detail);
-  if (failing.detail.includes('pinned image is not present')) return 'The pinned image is no longer present on the host.';
+    : preconditionExplanation(failing.code ?? '');
+  if (failing.code === 'pinned_image_missing') return 'The pinned image is no longer present on the host.';
   if (failing.outcome === 'unknown') return 'The host may or may not have acted. Inspect it before planning again.';
   if (failing.outcome === 'timed_out') return 'The host did not answer in time.';
   if (failing.outcome === 'failed' && current.kind === 'remove') return 'A step failed on the host; containers removed before it are gone and the rest stay adopted.';
@@ -77,13 +143,19 @@ export function ApplicationDeploymentPlan(props: Props) {
 function isExpired(d: Deployment): boolean {
   return d.expired || Date.parse(d.expires_at) <= Date.now();
 }
+function Correlation({ id }: { id?: string }) {
+  return id ? <p>Correlation ID <code>{id}</code>: search the audit log for it.</p> : null;
+}
 function ResultSection({ current }: { current: Deployment }) {
   const steps = usePagination(current.result?.steps ?? [], `${current.id}-steps`);
   const explanation = explanationFor(current);
-  const detail = fixedDetail(current.detail);
+  const detail = SERVER_DETAILS.has(current.detail) ? current.detail : '';
+  const outcome = current.result?.code ? codeText(RESULT_CODES, current.result.code) : '';
   return <>
     <p>State: {current.state}{current.settled_at ? `, settled ${new Date(current.settled_at).toLocaleString()}` : ''}.</p>
+    <Correlation id={current.correlation_id} />
     {detail && <p>{detail}</p>}
+    {outcome && <p>{outcome}</p>}
     {explanation && <p role="alert">{explanation}</p>}
     {current.result && <>
       {steps.controls}
@@ -91,7 +163,7 @@ function ResultSection({ current }: { current: Deployment }) {
         <td data-label="Service">{s.service}</td>
         <td data-label="Step">{s.step}</td>
         <td data-label="Outcome">{s.outcome}</td>
-        <td data-label="Detail">{fixedDetail(s.detail)}</td>
+        <td data-label="Detail">{stepText(s)}</td>
       </tr>)}</tbody></table>
       {current.result.services.length > 0 && <ul className="ky-list">{current.result.services.map(s => <li key={s.container_id} style={{ overflowWrap: 'anywhere' }}><strong>{s.service}</strong><br /><span>{s.container_id}</span><br /><span>{s.image_id}</span></li>)}</ul>}
     </>}
@@ -277,6 +349,7 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
           ? <p>Removal of project <bdi>{current.plan.project}</bdi> on {current.endpoint_name || current.endpoint_id}: these containers are stopped and removed.</p>
           : <p>Plan for revision {current.revision}, mapping version {current.mapping_version}, project <bdi>{current.plan.project}</bdi>. {isExpired(current) ? 'This plan has expired; plan again to continue.' : `Expires ${new Date(current.expires_at).toLocaleString()}.`}</p>}
         <PlanDetails d={current} />
+        {current.state === 'planned' && <Correlation id={current.correlation_id} />}
       </> : <p>No plan for this instance.</p>)}
       {!mismatched && current && current.state === 'planned' && !isExpired(current) && <form className="dr-stack" onSubmit={e => { e.preventDefault(); void apply(); }}>
         <p>Applying replaces the mapped containers on {current.endpoint_id} with revision {current.revision} of {current.plan.project}. Nothing rolls back on failure; a failed run leaves the previous container renamed on the host.</p>
