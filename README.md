@@ -605,6 +605,14 @@ daylight-saving jump skips does not run that day, and a window cannot cross midn
 missed while the server was down is recorded, not run late. Every run, and every step it takes,
 is in the audit log under one correlation ID.
 
+After every deployment the server watches the containers for two and a half minutes: each must
+keep running, pass its own healthcheck if the image has one, and not restart. The verdict is
+shown on the deployment and on the policy's run list. When an update the policy applied fails,
+the server returns the application to the previous deployment's exact images if they are still
+on the host, or says why it cannot; either way the policy pauses until you resume it. Updates you
+apply by hand are judged the same way but never rolled back automatically. This needs the
+host's agent to report container health: the policy card warns when it cannot.
+
 Automated updates need an agent with live inspection support (`container.inspect.verdict`);
 with an older agent every window is `blocked` until the agent is upgraded, and three such
 windows pause the policy. A run inspects as the administrator it acts for and shares that
