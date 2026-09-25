@@ -72,9 +72,11 @@ func SetPolicyClockForTest(s *Server, interval time.Duration, clock func() time.
 // itself. Test-only: exercises the scheduler's panic recover.
 func SetPolicyPanicHookForTest(s *Server, f func()) { s.policies.panicHook = f }
 
-// ValidationTickForTest runs one validation tick at now; it returns when the tick, rollback
-// included, is done.
-func ValidationTickForTest(s *Server, now time.Time) { s.validationTick(context.Background(), now) }
+// ValidationTickForTest runs one validation tick with the clock at now; it returns when the tick,
+// rollback included, is done.
+func ValidationTickForTest(s *Server, now time.Time) {
+	s.validationTick(context.Background(), func() time.Time { return now })
+}
 
 // SetValidationClockForTest makes RunValidations tick every interval and read the time from clock.
 func SetValidationClockForTest(s *Server, interval time.Duration, clock func() time.Time) {

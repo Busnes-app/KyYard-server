@@ -41,8 +41,9 @@ func nextGeneration() uint64 { return uint64(time.Now().Unix()) + 10 + generatio
 // observations answers the plan-time inspector, which validation shares: every container running,
 // verified and healthy with no restarts unless on changes it.
 type observations struct {
-	mu sync.Mutex
-	by map[string]func(*protocol.ContainerInspection) error
+	mu    sync.Mutex
+	by    map[string]func(*protocol.ContainerInspection) error
+	stall *stall // answers stall.container, when set
 }
 
 func (o *observations) on(container string, f func(*protocol.ContainerInspection) error) {
@@ -54,12 +55,15 @@ func (o *observations) on(container string, f func(*protocol.ContainerInspection
 	o.by[container] = f
 }
 
-func (o *observations) inspect(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+func (o *observations) inspect(ctx context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
 	in := verifiedObservation(target)
 	in.Health = "healthy"
 	o.mu.Lock()
-	f := o.by[target.ContainerID]
+	f, st := o.by[target.ContainerID], o.stall
 	o.mu.Unlock()
+	if st != nil && target.ContainerID == st.container {
+		return protocol.ContainerInspection{}, st.wait(ctx)
+	}
 	if f != nil {
 		if err := f(&in); err != nil {
 			return protocol.ContainerInspection{}, err
@@ -673,11 +677,17 @@ func TestValidationDecidesARollbackOwedFromBeforeARestart(t *testing.T) {
 // faultyTenancy breaks or intercepts one store call at a time for the loop's failure paths.
 type faultyTenancy struct {
 	store.TenancyStore
-	failOutcomes atomic.Int32 // MarkRollbackOutcome calls still to fail
+	extraPending []store.PendingValidation // read before the store's rows; set before any tick
+	failOutcomes atomic.Int32              // MarkRollbackOutcome calls still to fail
 	failAttach   atomic.Bool
 	refuseApply  atomic.Bool // ApplyPolicyDeployment answers ErrInvalid without applying
 	beforeApply  func()      // runs as ApplyPolicyDeployment is entered
 	afterApply   func()      // runs once it has returned
+}
+
+func (f *faultyTenancy) PendingValidations(ctx context.Context) ([]store.PendingValidation, error) {
+	rows, err := f.TenancyStore.PendingValidations(ctx)
+	return append(append([]store.PendingValidation{}, f.extraPending...), rows...), err
 }
 
 func (f *faultyTenancy) MarkRollbackOutcome(ctx context.Context, deployment, outcome, detail string) error {
@@ -883,5 +893,79 @@ func TestValidationJSON(t *testing.T) {
 	}
 	if body := v.do(t, "GET", v.deployments+"/"+rollback.Deployment, "", 200); strings.Contains(body, `"validation"`) {
 		t.Fatalf("an applying deployment carries a validation: %s", body)
+	}
+}
+
+// stall is an agent that never answers for container: each inspection blocks until release closes
+// or its budget ends, counting how many are in flight at once.
+type stall struct {
+	container string
+	mu        sync.Mutex
+	release   chan struct{}
+	inFlight  int
+	most      int
+	calls     int
+}
+
+func (s *stall) wait(ctx context.Context) error {
+	s.mu.Lock()
+	s.inFlight++
+	s.calls++
+	s.most = max(s.most, s.inFlight)
+	release := s.release
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.inFlight--; s.mu.Unlock() }()
+	select {
+	case <-release:
+	case <-ctx.Done():
+	}
+	return errors.New("stalled")
+}
+
+// Reviewer's regression: another organization's stalled agent, with several validations pending
+// ahead of this one, neither delays this organization's polls nor runs more than one at a time.
+func TestValidationIsNotHeldUpByAnotherOrganizationsStalledAgent(t *testing.T) {
+	v := newValidationHost(t)
+	served := make(chan struct{}, 8)
+	v.obs.on(newContainer, func(*protocol.ContainerInspection) error { served <- struct{}{}; return nil })
+	id, _ := v.automate(t)
+	healthy := v.validation(t, id)
+	st := &stall{container: strings.Repeat("5", 64)}
+	v.obs.mu.Lock()
+	v.obs.stall = st
+	v.obs.mu.Unlock()
+	for i := range 3 {
+		v.faults.extraPending = append(v.faults.extraPending, store.PendingValidation{
+			Validation:     store.Validation{DeploymentID: strings.Repeat(string(rune('1'+i)), 8), Automated: true, Phase: store.PhaseObserving, StartedAt: healthy.StartedAt, ObserveUntil: healthy.ObserveUntil},
+			OrganizationID: "b", EndpointID: v.ag.id, Health: true, Baseline: map[string]store.ServiceBaseline{"web": {ContainerID: st.container}},
+			Services: []store.ObservedService{{DeploymentIdentity: protocol.DeploymentIdentity{Service: "web", ContainerID: st.container, ImageID: newImage}, Presence: store.PresencePresent}},
+		})
+	}
+	for _, offset := range []time.Duration{afterGrace, afterWindow} {
+		st.mu.Lock()
+		st.release, st.calls = make(chan struct{}), 0
+		release := st.release
+		st.mu.Unlock()
+		done := make(chan struct{})
+		go func() { defer close(done); v.at(t, id, offset) }()
+		select {
+		case <-served: // the stalled rows are still blocked: release is open
+		case <-time.After(api.PlanInspectionBudgetForTest / 2):
+			t.Fatalf("at %v the healthy organization waited on the stalled one", offset)
+		}
+		close(release)
+		<-done
+		st.mu.Lock()
+		calls, most := st.calls, st.most
+		st.mu.Unlock()
+		if calls != 3 || most != 1 {
+			t.Fatalf("at %v: %d stalled polls, %d at once; want 3, 1", offset, calls, most)
+		}
+	}
+	if got := v.validation(t, id); got.Verdict != store.VerdictHealthy {
+		t.Fatalf("healthy organization: %+v", got)
+	}
+	if p := v.policyNow(t); p.Status != store.PolicyActive {
+		t.Fatalf("policy: %+v", p)
 	}
 }

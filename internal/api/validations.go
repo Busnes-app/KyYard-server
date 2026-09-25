@@ -24,6 +24,10 @@ type validationLoop struct {
 	now      func() time.Time
 }
 
+// validationWorkers bounds the rows one tick advances at once. A tick runs at most one row per
+// organization at a time, so an organization whose agent stalls holds one worker, never all.
+const validationWorkers = 4
+
 // RunValidations watches every settled apply until ctx ends (docs/application-schema.md, Health
 // validation). A tick runs to its end, a rollback included, so done closes only between ticks and
 // runServer can wait on it before the store closes.
@@ -32,6 +36,10 @@ func (s *Server) RunValidations(ctx context.Context, done chan<- struct{}) {
 	interval := s.validations.interval
 	if interval == 0 {
 		interval = store.ValidationPoll
+	}
+	clock := s.validations.now
+	if clock == nil {
+		clock = time.Now
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -43,18 +51,16 @@ func (s *Server) RunValidations(ctx context.Context, done chan<- struct{}) {
 			if ctx.Err() != nil {
 				return
 			}
-			now := time.Now()
-			if s.validations.now != nil {
-				now = s.validations.now()
-			}
-			s.validationTick(ctx, now)
+			s.validationTick(ctx, clock)
 		}
 	}
 }
 
-// validationTick works through the pending validations oldest first. Shutdown stops it between
-// rows; the rows resume on the next start.
-func (s *Server) validationTick(ctx context.Context, now time.Time) {
+// validationTick advances the pending validations on validationWorkers workers, taking the
+// organizations in turn and each organization's rows oldest first, one at a time. Each row reads
+// the clock when its work starts. Shutdown stops new rows; the tick returns once the rows in flight
+// finish, and the rest resume on the next start.
+func (s *Server) validationTick(ctx context.Context, clock func() time.Time) {
 	s.validations.tick.Lock()
 	defer s.validations.tick.Unlock()
 	if s.stopping.Load() {
@@ -69,19 +75,47 @@ func (s *Server) validationTick(ctx context.Context, now time.Time) {
 		log.Printf("[VALIDATION] pending validations unreadable: %v", err)
 		return
 	}
+	var orgs []string
+	queues := map[string][]store.PendingValidation{}
 	for _, p := range pending {
-		if ctx.Err() != nil || s.stopping.Load() {
+		if queues[p.OrganizationID] == nil {
+			orgs = append(orgs, p.OrganizationID)
+		}
+		queues[p.OrganizationID] = append(queues[p.OrganizationID], p)
+	}
+	finished := make(chan string)
+	busy := map[string]bool{}
+	next := 0 // the organization whose turn is next
+	for {
+		for len(busy) < validationWorkers && ctx.Err() == nil && !s.stopping.Load() {
+			org := ""
+			for i := range orgs {
+				if o := orgs[(next+i)%len(orgs)]; !busy[o] && len(queues[o]) > 0 {
+					org, next = o, (next+i+1)%len(orgs)
+					break
+				}
+			}
+			if org == "" {
+				break
+			}
+			p := queues[org][0]
+			queues[org] = queues[org][1:]
+			busy[org] = true
+			go func() {
+				defer func() { finished <- org }()
+				// One row's panic must not end the loop for every other deployment.
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[VALIDATION] deployment %s panicked: %v", p.DeploymentID, r)
+					}
+				}()
+				s.validate(ctx, p, clock())
+			}()
+		}
+		if len(busy) == 0 {
 			return
 		}
-		func() {
-			// One row's panic must not end the loop for every other deployment.
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[VALIDATION] deployment %s panicked: %v", p.DeploymentID, r)
-				}
-			}()
-			s.validate(ctx, p, now)
-		}()
+		delete(busy, <-finished)
 	}
 }
 
