@@ -12,6 +12,8 @@ import { EndpointPage } from './pages/EndpointPage';
 import { AuditList } from './components/AuditList';
 import { Link } from './components/Link';
 import './styles/theme.css';
+import './ky-ui/tokens.css';
+import './ky-ui/navigation.css';
 import { secureFetch } from './api';
 import { useRoute, type Route } from './router';
 
