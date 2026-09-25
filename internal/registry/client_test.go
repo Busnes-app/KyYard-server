@@ -604,11 +604,14 @@ func TestResolveRequestBudget(t *testing.T) {
 }
 
 func TestResolveHonoursTimeouts(t *testing.T) {
+	// The handler never answers: only the client's deadline ends the call. Returning would
+	// send an empty 200, so it aborts the connection instead.
 	srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 		case <-time.After(5 * time.Second):
 		}
+		panic(http.ErrAbortHandler)
 	})
 	start := time.Now()
 	_, err := testClient(t, srv, Options{Timeout: 100 * time.Millisecond}).Resolve(context.Background(), ref(srv), nil)
@@ -622,6 +625,33 @@ func TestResolveHonoursTimeouts(t *testing.T) {
 	_, err = testClient(t, srv, Options{}).Resolve(ctx, ref(srv), nil)
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatalf("context deadline: err %v after %v", err, time.Since(start))
+	}
+}
+
+// A registry can answer as the caller's context ends; the caller's error still wins, even
+// when the late answer is itself malformed.
+func TestCallerContextWinsOverALateAnswer(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		cancels := make(chan context.CancelFunc, 1)
+		srv := newServer(t, &recorder{}, func(w http.ResponseWriter, r *http.Request) {
+			(<-cancels)()
+			w.WriteHeader(http.StatusOK)
+		})
+		c := testClient(t, srv, Options{})
+		for i := 0; i < 20; i++ {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancels <- cancel
+			var err error
+			if method == http.MethodGet {
+				_, err = c.Resolve(ctx, ref(srv), nil)
+			} else {
+				_, err = c.Head(ctx, ref(srv), nil)
+			}
+			cancel()
+			if !errors.Is(err, context.Canceled) || errors.Is(err, ErrUnavailable) {
+				t.Fatalf("%s run %d: err %v, want context.Canceled only", method, i, err)
+			}
+		}
 	}
 }
 
