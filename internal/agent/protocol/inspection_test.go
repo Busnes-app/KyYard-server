@@ -62,7 +62,7 @@ func TestInspectionUnsupportedVocabulary(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
-	if len(UnsupportedCodes) != 29 || len(UnsupportedCodes) > MaxUnsupported || UnsupportedCodes[0] != "mount_type" || UnsupportedCodes[28] != "image_config" {
+	if len(UnsupportedCodes) != 34 || len(UnsupportedCodes) > MaxUnsupported || UnsupportedCodes[0] != "mount_type" || UnsupportedCodes[28] != "image_config" || UnsupportedCodes[33] != "k8s_namespace" {
 		t.Fatalf("vocabulary: %v", UnsupportedCodes)
 	}
 }

@@ -78,6 +78,8 @@ const (
 	detailUnsupported            // one to MaxUnsupported distinct UnsupportedCodes, joined by ","
 	detailContainerID            // a full 64-hex Docker ID
 	detailStatus                 // a 3-digit status
+	detailObject                 // empty, or a Kubernetes object's Kind/name
+	detailRollout                // a rollout_timeout's reasons
 )
 
 // stepCodes maps each step code to the parameter its detail carries.
@@ -87,11 +89,12 @@ var stepCodes = map[string]detailRule{
 	"bind_missing": detailNone, "volume_mount_missing": detailNone, "volume_not_owned": detailNone,
 	"volume_missing": detailNone, "volume_create_failed": detailNone, "image_missing": detailNone,
 	"pinned_image_missing": detailNone, "configuration_drift": detailNone, "name_reserved": detailNone,
-	"name_taken": detailNone, "identity_unusable": detailNone, "identity_unreadable": detailContainerID,
+	"name_taken": detailObject, "identity_unusable": detailNone, "identity_unreadable": detailContainerID,
 	"identity_unverified": detailContainerID, "dependents": detailNone, "deadline": detailNone,
 	"pull_failed": detailNone, "pull_unauthorized": detailNone, "pull_not_found": detailNone,
 	"pull_digest_mismatch": detailNone, "cancelled": detailNone, "runtime_timeout": detailNone,
 	"runtime_error": detailNone, "runtime_status": detailStatus, CodeLegacy: detailNone,
+	"forbidden": detailNone, "rollout_timeout": detailRollout, "conflict": detailObject,
 }
 
 var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
@@ -121,6 +124,10 @@ func validStepCode(code, detail string) bool {
 		return fullDockerID.MatchString(detail)
 	case rule == detailStatus:
 		return statusDetail.MatchString(detail)
+	case rule == detailObject:
+		return detail == "" || kubeObject.MatchString(detail)
+	case rule == detailRollout:
+		return rolloutDetail.MatchString(detail)
 	}
 	return detail == ""
 }
@@ -171,6 +178,8 @@ type DeploymentRequest struct {
 	// Volumes are the named volumes the agent ensures before any replacement, each one some
 	// service mounts.
 	Volumes []string `json:"volumes,omitempty"`
+	// Kubernetes is set exactly for a cluster endpoint: the namespace and labels of its objects.
+	Kubernetes *KubernetesTarget `json:"kubernetes,omitempty"`
 }
 type DeploymentService struct {
 	Name          string            `json:"name"`
@@ -185,6 +194,9 @@ type DeploymentService struct {
 	// Mounts are MountVolume or MountBind only; a bind must already be on the replaced container.
 	// Always sent: a nil list is invalid.
 	Mounts []Mount `json:"mounts"`
+	// SecretKeys are the Env keys backed by a secret reference, sorted; Kubernetes only. The
+	// agent puts them in the service's Secret and the rest in its ConfigMap.
+	SecretKeys []string `json:"secret_keys,omitempty"`
 }
 
 // ImagePull names an image by host, repository and the digest it must resolve to. Tag, when
@@ -255,6 +267,60 @@ func fullImageID(id string) bool {
 	return strings.HasPrefix(id, "sha256:") && fullDockerID.MatchString(strings.TrimPrefix(id, "sha256:"))
 }
 
+// binding is one published port as the runtime binds it.
+type binding struct {
+	ip       string
+	port     int
+	protocol string
+}
+
+// validPorts checks ports and records their bindings in used, refusing one already there. A host
+// address is allowed only where hostIP is: a Kubernetes Service has none.
+func validPorts(ports []Port, used map[binding]bool, hostIP bool) error {
+	if len(ports) > MaxDeploymentPorts {
+		return errors.New("too many ports")
+	}
+	for _, p := range ports {
+		if p.Container < 1 || p.Container > 65535 || p.Host < 1 || p.Host > 65535 || (p.Protocol != "tcp" && p.Protocol != "udp") || (p.HostIP != "" && !hostIP) {
+			return errors.New("invalid port")
+		}
+		// "" is Docker's IPv4 wildcard; 0.0.0.0 and :: are separate binds Docker allows together.
+		b := binding{"v4-any", p.Host, p.Protocol}
+		if p.HostIP != "" {
+			ip, err := netip.ParseAddr(p.HostIP)
+			if err != nil || ip.Zone() != "" {
+				return errors.New("invalid host address")
+			}
+			switch {
+			case ip.IsUnspecified() && ip.Is4():
+			case ip.IsUnspecified():
+				b.ip = "v6-any"
+			default:
+				b.ip = ip.String()
+			}
+		}
+		if used[b] {
+			return errors.New("duplicate port binding")
+		}
+		used[b] = true
+	}
+	return nil
+}
+
+func validEnv(env map[string]string) error {
+	if len(env) > MaxDeploymentEnvEntries {
+		return errors.New("too many environment entries")
+	}
+	total := 0
+	for k, v := range env {
+		total += len(k) + len(v)
+		if !deploymentEnvName.MatchString(k) || len(v) > MaxDeploymentEnvValueBytes || !utf8.ValidString(v) || strings.ContainsRune(v, 0) || total > MaxDeploymentEnvBytes {
+			return errors.New("invalid environment value")
+		}
+	}
+	return nil
+}
+
 // Validate refuses anything the adapter would have to guess about. Every bound here is a
 // wire bound as well: PR B rejects a frame that fails it before touching the runtime.
 func (r DeploymentRequest) Validate(now time.Time) error {
@@ -270,15 +336,13 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 	if len(r.Services) == 0 || len(r.Services) > MaxDeploymentServices {
 		return errors.New("invalid service count")
 	}
-	type binding struct {
-		ip       string
-		port     int
-		protocol string
+	if r.Kubernetes != nil {
+		return r.validateKubernetes()
 	}
 	names, containers, replaces, bindings, pulled, mounted := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}, map[string]bool{}, map[string]bool{}
 	for _, s := range r.Services {
 		image := (s.Pull == nil && fullImageID(s.ImageID)) || (s.Pull != nil && s.ImageID == "" && s.Pull.valid())
-		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] {
+		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 {
 			return errors.New("invalid deployment service")
 		}
 		names[s.Name], containers[s.ContainerName], replaces[s.Replaces.ContainerID] = true, true, true
@@ -288,42 +352,11 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 		if s.Mounts == nil || !validMounts(s.Mounts, mounted) {
 			return errors.New("invalid mount")
 		}
-		if len(s.Ports) > MaxDeploymentPorts {
-			return errors.New("too many ports")
+		if err := validPorts(s.Ports, bindings, true); err != nil {
+			return err
 		}
-		for _, p := range s.Ports {
-			if p.Container < 1 || p.Container > 65535 || p.Host < 1 || p.Host > 65535 || (p.Protocol != "tcp" && p.Protocol != "udp") {
-				return errors.New("invalid port")
-			}
-			// "" is Docker's IPv4 wildcard; 0.0.0.0 and :: are separate binds Docker allows together.
-			b := binding{"v4-any", p.Host, p.Protocol}
-			if p.HostIP != "" {
-				ip, err := netip.ParseAddr(p.HostIP)
-				if err != nil || ip.Zone() != "" {
-					return errors.New("invalid host address")
-				}
-				switch {
-				case ip.IsUnspecified() && ip.Is4():
-				case ip.IsUnspecified():
-					b.ip = "v6-any"
-				default:
-					b.ip = ip.String()
-				}
-			}
-			if bindings[b] {
-				return errors.New("duplicate port binding")
-			}
-			bindings[b] = true
-		}
-		if len(s.Env) > MaxDeploymentEnvEntries {
-			return errors.New("too many environment entries")
-		}
-		total := 0
-		for k, v := range s.Env {
-			total += len(k) + len(v)
-			if !deploymentEnvName.MatchString(k) || len(v) > MaxDeploymentEnvValueBytes || !utf8.ValidString(v) || strings.ContainsRune(v, 0) || total > MaxDeploymentEnvBytes {
-				return errors.New("invalid environment value")
-			}
+		if err := validEnv(s.Env); err != nil {
+			return err
 		}
 	}
 	// Volumes lists exactly the volumes the services mount, once each, so every one is ensured.
@@ -371,12 +404,21 @@ type DeploymentStep struct {
 	// Detail is Code's parameter: empty, unsupported codes, a container ID or a status.
 	Detail string `json:"detail"`
 }
+
+// DeploymentIdentity is what a service now runs as: a Docker container, or on a cluster
+// (Kind set) the Deployment's namespace, name, UID and generation. ImageDigest is the pulled
+// repository digest, always set for a Deployment.
 type DeploymentIdentity struct {
 	Service     string `json:"service"`
 	ContainerID string `json:"container_id"`
 	ImageID     string `json:"image_id"`
 	CreatedUnix int64  `json:"created_unix"`
-	ImageDigest string `json:"image_digest,omitempty"` // the pulled repository digest
+	ImageDigest string `json:"image_digest,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
+	Name        string `json:"name,omitempty"`
+	UID         string `json:"uid,omitempty"`
+	Generation  int64  `json:"generation,omitempty"`
 }
 
 func (r DeploymentResult) Validate() error {
@@ -396,7 +438,7 @@ func (r DeploymentResult) Validate() error {
 		}
 	}
 	for _, id := range r.Services {
-		if !deploymentService.MatchString(id.Service) || (InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil || (id.ImageDigest != "" && !imageID.MatchString(id.ImageDigest)) {
+		if !deploymentService.MatchString(id.Service) || !id.valid() {
 			return errors.New("invalid deployment identity")
 		}
 	}
@@ -414,6 +456,10 @@ type RemovalRequest struct {
 	IssuedAt   time.Time       `json:"issued_at"`
 	Deadline   time.Time       `json:"deadline"`
 	Containers []RemovalTarget `json:"containers"`
+	// Kubernetes is set exactly for a cluster endpoint; Containers is then empty and Services
+	// names every service whose objects the agent deletes.
+	Kubernetes *KubernetesTarget `json:"kubernetes,omitempty"`
+	Services   []string          `json:"services,omitempty"`
 }
 type RemovalTarget struct {
 	Service string           `json:"service"`
@@ -430,7 +476,20 @@ func (r RemovalRequest) Validate(now time.Time) error {
 	if !r.Deadline.After(now) || r.Deadline.After(now.Add(DeploymentLifetime)) {
 		return errors.New("invalid removal deadline")
 	}
-	if len(r.Containers) == 0 || len(r.Containers) > MaxRemovalTargets {
+	if r.Kubernetes != nil {
+		if r.Kubernetes.Validate() != nil || len(r.Containers) > 0 || len(r.Services) == 0 || len(r.Services) > MaxRemovalTargets {
+			return errors.New("invalid Kubernetes removal")
+		}
+		seen := map[string]bool{}
+		for _, s := range r.Services {
+			if !deploymentService.MatchString(s) || seen[s] {
+				return errors.New("invalid Kubernetes removal")
+			}
+			seen[s] = true
+		}
+		return nil
+	}
+	if len(r.Services) > 0 || len(r.Containers) == 0 || len(r.Containers) > MaxRemovalTargets {
 		return errors.New("invalid container count")
 	}
 	names, containers := map[string]bool{}, map[string]bool{}
