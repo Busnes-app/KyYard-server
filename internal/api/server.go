@@ -63,6 +63,8 @@ type Server struct {
 	registrySlots chan struct{}
 	registryMu    sync.Mutex
 	registryHeld  map[string]int
+	// policies is the update-policy scheduler's in-memory state (policies.go).
+	policies policyScheduler
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -235,6 +237,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/comparison", s.tenantRoute(s.handleApplicationComparison))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/updates", s.tenantRoute(s.handleImageChecks))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/updates/check", s.tenantRoute(s.handleCheckImageUpdates))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy", s.tenantRoute(s.handleUpdatePolicy))
+	s.mux.HandleFunc("PUT /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy", s.tenantRoute(s.handlePutUpdatePolicy))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy", s.tenantRoute(s.handleDeleteUpdatePolicy))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy/resume", s.tenantRoute(s.handleResumeUpdatePolicy))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy/runs", s.tenantRoute(s.handlePolicyRuns))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleAdoptionPreview))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleAdoption))
 	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleReleaseApplication))

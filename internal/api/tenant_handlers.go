@@ -83,6 +83,16 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "No registry is configured for this image's host and anonymous pulls are off", "code": "registry_not_configured"})
 	case errors.Is(err, store.ErrPrivateRegistriesDisabled):
 		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE)", "code": "private_registries_disabled"})
+	case errors.Is(err, store.ErrInvalidTimezone):
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "This server does not recognise that time zone", "code": "invalid_timezone"})
+	case errors.Is(err, store.ErrInvalidWindow):
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "A window lasts at least 15 minutes and ends by midnight", "code": "invalid_window"})
+	case errors.Is(err, store.ErrInvalidWeekdays):
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose one to seven distinct days, 0 (Sunday) to 6", "code": "invalid_weekdays"})
+	case errors.Is(err, store.ErrInvalidMode):
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Mode is apply or plan_only", "code": "invalid_mode"})
+	case errors.Is(err, store.ErrPolicyNotPaused):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The update policy is not paused", "code": "policy_not_paused"})
 	case errors.Is(err, store.ErrInvalid):
 		s.writeError(w, http.StatusBadRequest, "Invalid tenant input")
 	default:

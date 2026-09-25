@@ -95,3 +95,16 @@ func TestRegistryRoleMatrix(t *testing.T) {
 		}
 	}
 }
+
+// Update policies act unattended as the administrator who saved them, so only the organization
+// administrator may create, edit, delete or resume one (docs/authorization-matrix.md).
+func TestUpdatePolicyIsOrganizationAdminOnly(t *testing.T) {
+	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer", "read_only", "admin", "unknown", ""} {
+		if Allows(role, ApplicationPolicy) != (role == "organization_admin") || PlatformAllows(role, ApplicationPolicy) {
+			t.Errorf("%q application.policy", role)
+		}
+	}
+	if ApplicationPolicy != "application.policy" {
+		t.Fatal("the audit identifier changed")
+	}
+}

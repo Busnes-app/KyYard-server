@@ -259,7 +259,9 @@ Implemented M7a PR D1 (`feat/deploy-safety`): the agent re-checks each container
 
 Implemented M7a PR D2 (`feat/bookkeeping`): deployment step and result outcomes are closed codes with a validated parameter (docs/agent-protocol.md, Outcome codes), and an older agent's code-less result reads as `legacy`; the plan's request ID is the deployment's correlation ID on its row, its frame and every audit row from plan to settle, and a result echoing another request ID is refused; an update plan takes the per-application guard an update check holds (409 `check_in_progress`; registry slots stay 2 per organization and 8 server-wide); migration 30 makes usernames unique ignoring case and refuses to start on existing case variants, naming them; single sign-on refuses a case-variant username instead of creating a second account; the first organization admin's status is read under a row lock on PostgreSQL; declared volume names need two characters. Spec `docs/superpowers/specs/2026-09-24-bookkeeping-design.md`.
 
-Next: M7b (automated update policies, maintenance windows, health validation and eligible rollback).
+Implemented M7b PR 18 (`feat/update-policies`): per-application update policies with a weekly maintenance window in an IANA zone (wall clock; a DST-skipped start does not run, an overlap runs once), modes `apply` and `plan_only`, created and edited by organization administrators (`application.policy`). A scheduler inside the server runs each window once (`UNIQUE (policy_id, occurrence)`), as the policy's last editor with `application.deploy` re-checked, one run per endpoint and two server-wide, recording missed and busy windows; three failed windows or a lapsed creator pause the policy until resumed; a crash mid-run fails the run at the next start. Spec `docs/superpowers/specs/2026-09-25-update-policies-design.md`.
+
+Next: M7b PR 19 (health validation and eligible rollback).
 
 The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

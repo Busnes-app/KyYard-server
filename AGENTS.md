@@ -150,7 +150,12 @@ attempt would log and audit the same failure every minute forever. It closes its
 only where it returns, between runs, and `runServer` cancels and waits on that channel after
 `httpServer.Shutdown` and before the store closes, then waits on `api.Server.WaitDetached()` for
 the pair, pin-key and deposit handlers, which detach from their requests and so outlive
-`Shutdown`. Nothing writes into a closed store. Both waits run under one `backupWaitTimeout`
+`Shutdown`. `api.Server.RunPolicies`, the update-policy scheduler, starts beside `backupLoop` and
+closes its own `done` only when its loop has stopped and no policy run is in flight; `runServer`
+waits on it inside the same handler wait (a run's worst case is under 3 minutes, so the budget is
+unchanged). `main.go` blank-imports `time/tzdata` so policy zones load the same on every host
+(`TestServerEmbedsTheTimeZoneDatabase`). Nothing writes into a closed store. Both waits run under
+one `backupWaitTimeout`
 context (17m, the lib's 15m deposit ceiling plus sealing) -- a context, not a timer channel,
 which delivers once and would leave the second wait unbounded; the HTTP drain is `shutdownTimeout`
 (5s). `docker-compose.yml` grants a `stop_grace_period` above their sum, so the guarantee holds

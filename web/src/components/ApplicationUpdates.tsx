@@ -5,7 +5,7 @@ import { StateNotice } from './StateNotice';
 import { knownBlockers, messages } from './ApplicationPreflight';
 
 const verdictText: Record<string, string> = { current: 'Up to date', update_available: 'Update available', pinned: 'Pinned', unknown_local: 'Unknown on host', registry_error: 'Registry error' };
-const detailText: Record<string, string> = {
+export const detailText: Record<string, string> = {
   not_configured: 'No registry entry for this host and anonymous pulls are off.',
   unauthorized: 'The registry refused the credentials.',
   not_found: 'The image was not found in the registry.',
@@ -21,7 +21,7 @@ const texts = {
     adoption_changed: 'Adoption changed. Refresh applications before checking.',
   },
 };
-const planBlockers: Record<string, string> = {
+export const planBlockers: Record<string, string> = {
   ...messages,
   update_not_mapped: 'Map the services first.',
   ...Object.fromEntries(Object.entries(detailText).map(([k, v]) => [`registry_${k}`, v])),
