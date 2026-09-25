@@ -50,10 +50,15 @@ const hhmm = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}
 const minutes = (v: string) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
 
 export const browserZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+// hasZoneList is false on an engine without Intl.supportedValuesOf; the editor falls back to a
+// typed zone rather than throwing.
+export const hasZoneList = () => typeof Intl.supportedValuesOf === 'function';
 // zoneChoices is the browser's zone list plus the zones in keep: a zone the server accepts but
-// this browser does not list (UTC, aliases) must never be swapped silently.
+// this browser does not list (UTC, aliases) must never be swapped silently. Without
+// Intl.supportedValuesOf the list is only the kept and browser zones.
 export function zoneChoices(keep: string[]): string[] {
-  return Array.from(new Set([...keep, browserZone(), ...Intl.supportedValuesOf('timeZone')].filter(Boolean)));
+  const known = hasZoneList() ? Intl.supportedValuesOf('timeZone') : [];
+  return Array.from(new Set([...keep, browserZone(), ...known].filter(Boolean)));
 }
 // formatIn shows an instant in zone, or in UTC when this browser does not know the zone.
 export function formatIn(iso: string, zone: string): string {
@@ -147,6 +152,7 @@ function PolicyEditor({ policy, busy, onSave, onDelete }: { policy: UpdatePolicy
     <label>Window end<input type="time" value={end} onChange={(e) => setEnd(e.target.value)} required disabled={busy} /></label>
     <p>Times are wall-clock times in the chosen zone. A window lasts at least 15 minutes and cannot cross midnight; an end of 00:00 means midnight.</p>
     <label>Time zone<select value={zone} onChange={(e) => setZone(e.target.value)} disabled={busy}>{zoneChoices([policy?.timezone ?? '', zone]).map((z) => <option key={z} value={z}>{z}</option>)}</select></label>
+    {!hasZoneList() && <label>Other timezone<input type="text" value={zone} onChange={(e) => setZone(e.target.value)} disabled={busy} placeholder="e.g. Europe/Paris" /></label>}
     {error && <p role="alert">{error}</p>}
     <button disabled={busy}>Save policy</button>
     {policy && <button type="button" className="btn-danger" disabled={busy} onClick={onDelete}>Delete policy</button>}

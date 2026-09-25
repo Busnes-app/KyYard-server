@@ -124,6 +124,7 @@ it('renders runs through fixed tables only', async () => {
     run({ id: 'd', outcome: 'skipped_missed', detail: 'the server was not running during this window' }),
     run({ id: 'e', outcome: 'failed', detail: 'secret-canary' }),
     run({ id: 'f', outcome: 'exploded' }),
+    run({ id: 'g', outcome: 'paused', detail: 'three consecutive windows failed' }),
   ] })));
   render(<ApplicationPolicy base="/app" admin={false} />);
   open();
@@ -133,6 +134,7 @@ it('renders runs through fixed tables only', async () => {
   expect(screen.getByText('The registry refused the credentials.')).toBeTruthy();
   expect(screen.getByText('The server was not running during this window.')).toBeTruthy();
   expect(screen.getByText('Unrecognised outcome')).toBeTruthy();
+  expect(screen.getByText('Three windows in a row failed. Fix the cause, then resume.')).toBeTruthy();
   expect(document.body.textContent).not.toContain('secret-canary');
   expect(document.body.textContent).not.toContain('made_up_blocker');
 });
@@ -164,4 +166,27 @@ it('shows the next window in the policy zone and the browser zone', async () => 
   const status = await screen.findByText(/Next window/);
   expect(status.textContent).toContain('09:00'); // 00:00 UTC is 09:00 in Tokyo
   expect(status.textContent).toContain('your time');
+});
+
+// Fix round 1: Intl.supportedValuesOf is absent on some engines; the editor must not throw.
+it('falls back to a typed zone when Intl.supportedValuesOf is unavailable', async () => {
+  document.cookie = 'ky_csrf=csrf';
+  const partialIntl = Object.create(Intl) as typeof Intl;
+  Object.defineProperty(partialIntl, 'supportedValuesOf', { value: undefined });
+  vi.stubGlobal('Intl', partialIntl);
+  const real = new Intl.DateTimeFormat().resolvedOptions();
+  vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockReturnValue({ ...real, timeZone: 'Asia/Tokyo' });
+  let saved: unknown = null;
+  const fetcher = stub(() => saved ? json(policy()) : json(policy({ timezone: 'Europe/Paris' })), (_url, init) => { saved = JSON.parse(String(init.body)); return json(policy(), 201); });
+  render(<ApplicationPolicy base="/app" admin />);
+  expect(() => open()).not.toThrow();
+  await screen.findByText(/Mon, Wed/);
+  const select = await screen.findByLabelText('Time zone') as HTMLSelectElement;
+  expect(Array.from(select.options).map((o) => o.value).sort()).toEqual(['Asia/Tokyo', 'Europe/Paris']);
+  fireEvent.change(screen.getByLabelText('Other timezone'), { target: { value: 'Pacific/Auckland' } });
+  save();
+  await screen.findByText(/Plan and apply ·/);
+  const put = fetcher.mock.calls.find((c) => c[1]?.method === 'PUT');
+  expect((saved as { timezone: string }).timezone).toBe('Pacific/Auckland');
+  expect(put).toBeTruthy();
 });
