@@ -49,6 +49,10 @@ const (
 	RegistryRead Action = "registry.read"
 	// RegistryManage writes registries, their credentials and the anonymous-pull opt-in.
 	RegistryManage Action = "registry.manage"
+	// ApplicationPolicy creates, edits, deletes and resumes an application's update policy. A
+	// policy deploys unattended as whoever saved it last, so the matrix stops at the organization
+	// administrator.
+	ApplicationPolicy Action = "application.policy"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -59,7 +63,7 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage:
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage:
 			return true
 		}
 	case "environment_admin":

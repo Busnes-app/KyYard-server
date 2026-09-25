@@ -884,6 +884,79 @@ ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled BOOLEAN NOT NULL DEF
 	{Version: 28, Name: "organizations_name_unique", SQLite: `CREATE UNIQUE INDEX idx_organizations_name ON organizations(name);`, Postgres: `CREATE UNIQUE INDEX idx_organizations_name ON organizations(name);`},
 	{Version: 29, Name: "deployment_correlation", SQLite: `ALTER TABLE deployments ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';`, Postgres: `ALTER TABLE deployments ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';`},
 	{Version: 30, Name: "users_username_lower_unique", Check: refuseCaseVariantUsernames, SQLite: usernameLowerIndex, Postgres: usernameLowerIndex},
+	// Update policies and their runs. outcome is empty while a run is in flight; UNIQUE (policy_id,
+	// occurrence) makes one attempt per window across restarts and ticks.
+	{Version: 31, Name: "update_policies", SQLite: `CREATE TABLE update_policies (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL UNIQUE,
+ created_by TEXT NOT NULL CHECK(length(created_by) BETWEEN 1 AND 255),
+ mode TEXT NOT NULL CHECK(mode IN ('apply','plan_only')),
+ timezone TEXT NOT NULL CHECK(length(timezone) BETWEEN 1 AND 64),
+ weekdays TEXT NOT NULL CHECK(length(weekdays) BETWEEN 1 AND 13),
+ start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1425),
+ end_minute INTEGER NOT NULL CHECK(end_minute BETWEEN 15 AND 1440 AND end_minute-start_minute>=15),
+ status TEXT NOT NULL CHECK(status IN ('active','paused')),
+ paused_reason TEXT NOT NULL DEFAULT '' CHECK(length(paused_reason)<=255),
+ consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_failures>=0),
+ created_at DATETIME NOT NULL,
+ updated_at DATETIME NOT NULL,
+ FOREIGN KEY(organization_id,environment_id,application_id) REFERENCES applications(organization_id,environment_id,id) ON DELETE CASCADE
+);
+CREATE INDEX idx_update_policies_status ON update_policies(status,created_at);
+CREATE TABLE policy_runs (
+ id TEXT PRIMARY KEY,
+ policy_id TEXT NOT NULL REFERENCES update_policies(id) ON DELETE CASCADE,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL,
+ occurrence DATETIME NOT NULL,
+ started_at DATETIME NOT NULL,
+ finished_at DATETIME,
+ outcome TEXT NOT NULL DEFAULT '' CHECK(outcome IN ('','skipped_missed','skipped_busy','no_update','planned','applied','blocked','failed','paused')),
+ deployment_id TEXT,
+ detail TEXT NOT NULL DEFAULT '' CHECK(length(detail)<=255),
+ correlation_id TEXT NOT NULL CHECK(length(correlation_id) BETWEEN 1 AND 64),
+ UNIQUE(policy_id,occurrence)
+);
+CREATE INDEX idx_policy_runs_open ON policy_runs(outcome) WHERE outcome='';
+`, Postgres: `CREATE TABLE update_policies (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL UNIQUE,
+ created_by TEXT NOT NULL CHECK(length(created_by) BETWEEN 1 AND 255),
+ mode TEXT NOT NULL CHECK(mode IN ('apply','plan_only')),
+ timezone TEXT NOT NULL CHECK(length(timezone) BETWEEN 1 AND 64),
+ weekdays TEXT NOT NULL CHECK(length(weekdays) BETWEEN 1 AND 13),
+ start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1425),
+ end_minute INTEGER NOT NULL CHECK(end_minute BETWEEN 15 AND 1440 AND end_minute-start_minute>=15),
+ status TEXT NOT NULL CHECK(status IN ('active','paused')),
+ paused_reason TEXT NOT NULL DEFAULT '' CHECK(length(paused_reason)<=255),
+ consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_failures>=0),
+ created_at TIMESTAMPTZ NOT NULL,
+ updated_at TIMESTAMPTZ NOT NULL,
+ FOREIGN KEY(organization_id,environment_id,application_id) REFERENCES applications(organization_id,environment_id,id) ON DELETE CASCADE
+);
+CREATE INDEX idx_update_policies_status ON update_policies(status,created_at);
+CREATE TABLE policy_runs (
+ id TEXT PRIMARY KEY,
+ policy_id TEXT NOT NULL REFERENCES update_policies(id) ON DELETE CASCADE,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL,
+ occurrence TIMESTAMPTZ NOT NULL,
+ started_at TIMESTAMPTZ NOT NULL,
+ finished_at TIMESTAMPTZ,
+ outcome TEXT NOT NULL DEFAULT '' CHECK(outcome IN ('','skipped_missed','skipped_busy','no_update','planned','applied','blocked','failed','paused')),
+ deployment_id TEXT,
+ detail TEXT NOT NULL DEFAULT '' CHECK(length(detail)<=255),
+ correlation_id TEXT NOT NULL CHECK(length(correlation_id) BETWEEN 1 AND 64),
+ UNIQUE(policy_id,occurrence)
+);
+CREATE INDEX idx_policy_runs_open ON policy_runs(outcome) WHERE outcome='';
+`},
 }
 
 // Latest returns the highest registered migration version: the schema this binary runs.

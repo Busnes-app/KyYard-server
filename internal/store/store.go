@@ -195,6 +195,14 @@ type TenancyStore interface {
 	// CheckImageUpdates resolves each mapped service's reference through resolver and replaces
 	// the instance's cached checks, audited as application.deploy on <app>/updates.
 	CheckImageUpdates(ctx context.Context, access TenantAccess, applicationID string, resolver DigestResolver, key []byte, privateAllowed bool) (*UpdateCheck, error)
+	// Update policies (docs/application-schema.md, Update policies): writes under
+	// application.policy, reads under application.read. ReadUpdatePolicy returns a nil policy
+	// when the application has none.
+	PutUpdatePolicy(ctx context.Context, access TenantAccess, applicationID string, input PolicyInput) (*UpdatePolicy, bool, error)
+	ReadUpdatePolicy(ctx context.Context, access TenantAccess, applicationID string) (*UpdatePolicy, []PolicyRun, error)
+	DeleteUpdatePolicy(ctx context.Context, access TenantAccess, applicationID string) error
+	ResumeUpdatePolicy(ctx context.Context, access TenantAccess, applicationID string) (*UpdatePolicy, error)
+	ListPolicyRuns(ctx context.Context, access TenantAccess, applicationID string, limit int) ([]PolicyRun, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)
 	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)
