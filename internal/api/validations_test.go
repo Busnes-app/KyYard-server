@@ -43,7 +43,7 @@ func nextGeneration() uint64 { return uint64(time.Now().Unix()) + 10 + generatio
 type observations struct {
 	mu    sync.Mutex
 	by    map[string]func(*protocol.ContainerInspection) error
-	stall *stall // answers stall.container, when set
+	stall *stall // answers stall.containers, when set
 }
 
 func (o *observations) on(container string, f func(*protocol.ContainerInspection) error) {
@@ -61,8 +61,8 @@ func (o *observations) inspect(ctx context.Context, target protocol.InspectionTa
 	o.mu.Lock()
 	f, st := o.by[target.ContainerID], o.stall
 	o.mu.Unlock()
-	if st != nil && target.ContainerID == st.container {
-		return protocol.ContainerInspection{}, st.wait(ctx)
+	if st != nil && st.containers[target.ContainerID] {
+		return protocol.ContainerInspection{}, st.wait(ctx, target.ContainerID)
 	}
 	if f != nil {
 		if err := f(&in); err != nil {
@@ -896,21 +896,21 @@ func TestValidationJSON(t *testing.T) {
 	}
 }
 
-// stall is an agent that never answers for container: each inspection blocks until release closes
-// or its budget ends, counting how many are in flight at once.
+// stall is an agent that never answers for its containers: each inspection blocks until release
+// closes or its budget ends, counting how many are in flight at once and which containers it saw.
 type stall struct {
-	container string
-	mu        sync.Mutex
-	release   chan struct{}
-	inFlight  int
-	most      int
-	calls     int
+	containers map[string]bool
+	mu         sync.Mutex
+	release    chan struct{}
+	inFlight   int
+	most       int
+	seen       []string
 }
 
-func (s *stall) wait(ctx context.Context) error {
+func (s *stall) wait(ctx context.Context, container string) error {
 	s.mu.Lock()
 	s.inFlight++
-	s.calls++
+	s.seen = append(s.seen, container)
 	s.most = max(s.most, s.inFlight)
 	release := s.release
 	s.mu.Unlock()
@@ -922,45 +922,53 @@ func (s *stall) wait(ctx context.Context) error {
 	return errors.New("stalled")
 }
 
-// Reviewer's regression: another organization's stalled agent, with several validations pending
-// ahead of this one, neither delays this organization's polls nor runs more than one at a time.
+// Reviewer's regression: another organization's stalled agent, with six validations pending ahead
+// of this one, neither delays this organization's polls nor runs more than one at a time, and its
+// rows drain two per tick.
 func TestValidationIsNotHeldUpByAnotherOrganizationsStalledAgent(t *testing.T) {
 	v := newValidationHost(t)
 	served := make(chan struct{}, 8)
 	v.obs.on(newContainer, func(*protocol.ContainerInspection) error { served <- struct{}{}; return nil })
 	id, _ := v.automate(t)
 	healthy := v.validation(t, id)
-	st := &stall{container: strings.Repeat("5", 64)}
+	st := &stall{containers: map[string]bool{}}
+	var order []string
+	for i := range 6 {
+		c := strings.Repeat(string(rune('1'+i)), 64)
+		st.containers[c] = true
+		order = append(order, c)
+		v.faults.extraPending = append(v.faults.extraPending, store.PendingValidation{
+			Validation:     store.Validation{DeploymentID: c[:8], Automated: true, Phase: store.PhaseObserving, StartedAt: healthy.StartedAt, ObserveUntil: healthy.ObserveUntil},
+			OrganizationID: "b", EndpointID: v.ag.id, Health: true, Baseline: map[string]store.ServiceBaseline{"web": {ContainerID: c}},
+			Services: []store.ObservedService{{DeploymentIdentity: protocol.DeploymentIdentity{Service: "web", ContainerID: c, ImageID: newImage}, Presence: store.PresencePresent}},
+		})
+	}
 	v.obs.mu.Lock()
 	v.obs.stall = st
 	v.obs.mu.Unlock()
-	for i := range 3 {
-		v.faults.extraPending = append(v.faults.extraPending, store.PendingValidation{
-			Validation:     store.Validation{DeploymentID: strings.Repeat(string(rune('1'+i)), 8), Automated: true, Phase: store.PhaseObserving, StartedAt: healthy.StartedAt, ObserveUntil: healthy.ObserveUntil},
-			OrganizationID: "b", EndpointID: v.ag.id, Health: true, Baseline: map[string]store.ServiceBaseline{"web": {ContainerID: st.container}},
-			Services: []store.ObservedService{{DeploymentIdentity: protocol.DeploymentIdentity{Service: "web", ContainerID: st.container, ImageID: newImage}, Presence: store.PresencePresent}},
-		})
-	}
-	for _, offset := range []time.Duration{afterGrace, afterWindow} {
+	for tick, offset := range []time.Duration{afterGrace, afterGrace + store.ValidationPoll, afterWindow} {
 		st.mu.Lock()
-		st.release, st.calls = make(chan struct{}), 0
+		st.release, st.seen = make(chan struct{}), nil
 		release := st.release
 		st.mu.Unlock()
+		now := healthy.StartedAt.Add(offset)
 		done := make(chan struct{})
-		go func() { defer close(done); v.at(t, id, offset) }()
+		go func() { defer close(done); api.ValidationTickForTest(v.s, now) }()
 		select {
 		case <-served: // the stalled rows are still blocked: release is open
 		case <-time.After(api.PlanInspectionBudgetForTest / 2):
-			t.Fatalf("at %v the healthy organization waited on the stalled one", offset)
+			t.Fatalf("tick %d: the healthy organization waited on the stalled one", tick)
 		}
 		close(release)
 		<-done
 		st.mu.Lock()
-		calls, most := st.calls, st.most
+		seen, most := st.seen, st.most
 		st.mu.Unlock()
-		if calls != 3 || most != 1 {
-			t.Fatalf("at %v: %d stalled polls, %d at once; want 3, 1", offset, calls, most)
+		if want := order[2*tick : 2*tick+2]; most != 1 || strings.Join(seen, ",") != strings.Join(want, ",") {
+			t.Fatalf("tick %d: polled %v, %d at once; want %v, 1", tick, seen, most, want)
 		}
+		// The rows it attempted finish; the rest stay pending for the next tick.
+		v.faults.extraPending = v.faults.extraPending[2:]
 	}
 	if got := v.validation(t, id); got.Verdict != store.VerdictHealthy {
 		t.Fatalf("healthy organization: %+v", got)
