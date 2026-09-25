@@ -65,3 +65,29 @@ func TestMigrationRefusesCaseVariantUsernames(t *testing.T) {
 		t.Fatalf("lookup: %+v %v", u, err)
 	}
 }
+
+// Renaming onto a taken username is ErrAlreadyExists through either index, exact or
+// case-insensitive, as CreateUser's conflict is, never the driver's text.
+func TestUpdateUserMapsAUsernameConflict(t *testing.T) {
+	st, _ := tenantAtomicStore(t)
+	ctx := context.Background()
+	for _, u := range []*User{{ID: "u1", Username: "erin"}, {ID: "u2", Username: "frank"}} {
+		u.Role, u.Status, u.SSOProvider = "user", "active", "local"
+		if err := st.Users().CreateUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"erin", "ERIN"} {
+		u, err := st.Users().GetUserByID(ctx, "u2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		u.Username = name
+		if err := st.Users().UpdateUser(ctx, u); !errors.Is(err, ErrAlreadyExists) || err.Error() != ErrAlreadyExists.Error() {
+			t.Fatalf("rename onto %q: %v", name, err)
+		}
+	}
+	if u, err := st.Users().GetUserByID(ctx, "u2"); err != nil || u.Username != "frank" {
+		t.Fatalf("the refused rename changed the row: %+v %v", u, err)
+	}
+}

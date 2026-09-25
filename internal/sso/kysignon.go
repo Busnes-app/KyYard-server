@@ -99,7 +99,9 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			existing.DisplayName = payload.DisplayName
 			existing.Role = role
 			existing.Status = status
-			if err := k.store.Users().UpdateUser(ctx, existing); err != nil {
+			if err := k.store.Users().UpdateUser(ctx, existing); errors.Is(err, store.ErrAlreadyExists) {
+				return fmt.Errorf("%w: %s", ErrUsernameTaken, payload.Username)
+			} else if err != nil {
 				return err
 			}
 			if privilegesChanged {
