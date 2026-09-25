@@ -153,7 +153,10 @@ the pair, pin-key and deposit handlers, which detach from their requests and so 
 `Shutdown`. `api.Server.RunPolicies`, the update-policy scheduler, starts beside `backupLoop` and
 closes its own `done` only when its loop has stopped and no policy run is in flight; `runServer`
 waits on it inside the same handler wait (a run's worst case is under 3 minutes, so the budget is
-unchanged). `main.go` blank-imports `time/tzdata` so policy zones load the same on every host
+unchanged). `api.Server.RunValidations`, the health-validation loop, starts beside it and closes
+its `done` only between ticks, a rollback in flight included (under `context.WithoutCancel`);
+`runServer` waits on it in the same handler wait (`TestServerRunsAndAwaitsTheValidationLoop`).
+`main.go` blank-imports `time/tzdata` so policy zones load the same on every host
 (`TestServerEmbedsTheTimeZoneDatabase`). Nothing writes into a closed store. Both waits run under
 one `backupWaitTimeout`
 context (17m, the lib's 15m deposit ceiling plus sealing) -- a context, not a timer channel,

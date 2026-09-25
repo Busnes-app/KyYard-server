@@ -790,3 +790,38 @@ func TestValidationRollbackFailures(t *testing.T) {
 		}
 	})
 }
+
+// Deployment detail, the deployment list and the policy's runs carry the validation without its
+// baseline; a deployment still applying carries none.
+func TestValidationJSON(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, health("unhealthy"))
+	id, _ := v.automate(t)
+	v.at(t, id, afterGrace)
+	rollback := v.frame(t)
+	policyURL := strings.TrimSuffix(v.deployments, "deployments") + "update-policy"
+	for name, body := range map[string]string{
+		"detail": v.do(t, "GET", v.deployments+"/"+id, "", 200),
+		"list":   v.do(t, "GET", v.deployments, "", 200),
+		"policy": v.do(t, "GET", policyURL, "", 200),
+		"runs":   v.do(t, "GET", policyURL+"/runs?limit=20", "", 200),
+	} {
+		if !strings.Contains(body, `"validation":{`) || strings.Contains(body, "baseline") {
+			t.Fatalf("%s: %s", name, body)
+		}
+	}
+	var pol struct {
+		PausedReason string            `json:"paused_reason"`
+		Runs         []store.PolicyRun `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(v.do(t, "GET", policyURL, "", 200)), &pol); err != nil || len(pol.Runs) != 1 {
+		t.Fatalf("policy: %+v %v", pol, err)
+	}
+	r := pol.Runs[0].Validation
+	if r == nil || r.Verdict != store.VerdictUnhealthy || r.Rollback == nil || *r.Rollback != (store.ValidationRollback{DeploymentID: rollback.Deployment, Revision: 1, Outcome: store.RollbackApplied}) || pol.PausedReason != store.ValidationReasonRolledBack {
+		t.Fatalf("run validation: %+v, paused %q", r, pol.PausedReason)
+	}
+	if body := v.do(t, "GET", v.deployments+"/"+rollback.Deployment, "", 200); strings.Contains(body, `"validation"`) {
+		t.Fatalf("an applying deployment carries a validation: %s", body)
+	}
+}

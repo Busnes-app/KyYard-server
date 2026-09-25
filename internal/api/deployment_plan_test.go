@@ -208,6 +208,16 @@ func TestPlanRefusesClientSuppliedInspections(t *testing.T) {
 	h.do(t, "POST", h.deployments, strings.TrimSuffix(h.planBody, "}")+forged, 400)
 }
 
+// Pinned images are the rollback's to set: a client cannot hand them in.
+func TestPlanRefusesClientSuppliedPins(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web")
+	api.SetPlanInspectorForTest(h.s, verifiedInspector)
+	for _, key := range []string{"pin_images", "PinImages"} {
+		forged := `,"` + key + `":{"web":"` + h.targets[0].ImageID + `"}}`
+		h.do(t, "POST", h.deployments, strings.TrimSuffix(h.planBody, "}")+forged, 400)
+	}
+}
+
 // Over a real agent socket the plan sends one grant per mapped container, expiring within the
 // plan budget, and plans on the agent's answer.
 func TestPlanInspectsOverTheAgentSocket(t *testing.T) {
