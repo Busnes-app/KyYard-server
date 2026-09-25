@@ -322,3 +322,73 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	request(admin, "POST", deployments+"/"+wide.ID+"/apply", `{"confirm":"shop"}`, 202)
 	sock.conn.CloseNow()
 }
+
+// A result echoing another deployment's request ID is refused like one that does not fit the
+// plan: the applying row becomes unknown with the fixed detail and one refused audit row under
+// the plan's correlation ID. The genuine result still settles it afterwards.
+func TestApplyRefusesAForeignRequestID(t *testing.T) {
+	h := newPlanHost(t, inspecting, "web")
+	api.SetPlanInspectorForTest(h.s, verifiedInspector)
+	sock, ctx := h.online(t, inspecting)
+	var replaced, planned store.Deployment
+	if json.Unmarshal([]byte(h.do(t, "POST", h.deployments, h.planBody, 201)), &replaced) != nil || json.Unmarshal([]byte(h.do(t, "POST", h.deployments, h.planBody, 201)), &planned) != nil {
+		t.Fatal("plan")
+	}
+	if replaced.CorrelationID == "" || replaced.CorrelationID == planned.CorrelationID {
+		t.Fatalf("correlation IDs %q, %q", replaced.CorrelationID, planned.CorrelationID)
+	}
+	h.do(t, "POST", h.deployments+"/"+planned.ID+"/apply", `{"confirm":"shop"}`, 202)
+	if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeDeploymentApply {
+		t.Fatalf("expected %s, got %s", protocol.TypeDeploymentApply, f.Type)
+	}
+	sync := func() {
+		t.Helper()
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+		if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeHeartbeat {
+			t.Fatalf("expected a heartbeat, got %s", f.Type)
+		}
+	}
+	state := func() store.Deployment {
+		t.Helper()
+		var d store.Deployment
+		if err := json.Unmarshal([]byte(h.do(t, "GET", h.deployments+"/"+planned.ID, "", 200)), &d); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	result := func(requestID string) protocol.DeploymentResult {
+		return protocol.DeploymentResult{
+			Deployment: planned.ID, RequestID: requestID, Outcome: protocol.OutcomeFailed, Code: protocol.ResultStepFailed,
+			Steps:    []protocol.DeploymentStep{{Service: "web", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeDenied, Code: "bind_missing"}},
+			Services: []protocol.DeploymentIdentity{},
+		}
+	}
+
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, result(replaced.CorrelationID))
+	sync()
+	if got := state(); got.State != protocol.OutcomeUnknown || got.Detail != "the host's result did not match the plan; inspect the host" || got.SettledAt != nil {
+		t.Fatalf("a foreign request ID: %+v", got)
+	}
+	records, _, err := h.st.Audit().ListAuditRecords(ctx, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := 0
+	for _, rec := range records {
+		if rec.UserID == "agent:"+h.ag.id && rec.Details == "outcome=refused" {
+			if !strings.HasSuffix(rec.Resource, "/deployments/"+planned.ID) || rec.CorrelationID != planned.CorrelationID {
+				t.Fatalf("refusal audit row: %+v", rec)
+			}
+			refused++
+		}
+	}
+	if refused != 1 {
+		t.Fatalf("refusal audit rows: %d", refused)
+	}
+
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, result(planned.CorrelationID))
+	sync()
+	if got := state(); got.State != protocol.OutcomeFailed || got.SettledAt == nil || got.CorrelationID != planned.CorrelationID {
+		t.Fatalf("the genuine result did not settle the row: %+v", got)
+	}
+}

@@ -138,7 +138,6 @@ var (
 )
 
 // ErrClockSkew is a frame whose issue time is more than MaxClockSkew from the reader's clock.
-// Its text is the detail an agent answers with.
 var ErrClockSkew = errors.New("clock skew exceeds 5 minutes")
 
 // issued refuses a frame with no issue time, one issued more than MaxClockSkew from now (the
