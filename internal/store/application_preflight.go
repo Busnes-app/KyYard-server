@@ -59,7 +59,7 @@ func (t *tenancyStore) PreflightApplication(ctx context.Context, a TenantAccess,
 	}
 	var out *DeploymentPreflight
 	err = t.readTenant(ctx, a, permissions.ApplicationRead, func(tx *sql.Tx) error {
-		out, _, _, _, _, err = t.preflight(ctx, tx, a, id.String(), false, 0)
+		out, _, _, _, _, err = t.preflight(ctx, tx, a, id.String(), false, 0, nil)
 		return err
 	})
 	if err != nil {
@@ -71,8 +71,8 @@ func (t *tenancyStore) PreflightApplication(ctx context.Context, a TenantAccess,
 // preflight is the shared diagnostic. lock=true takes the mapping locks for a writer. revision
 // picks a saved revision to check, 0 the latest. It also returns the mapping, the parsed spec,
 // the parsed snapshot and the revision digest so a writer can build a plan from exactly what it
-// checked.
-func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, lock bool, revision int) (*DeploymentPreflight, *ApplicationMapping, ApplicationSpec, protocol.Snapshot, string, error) {
+// checked. pins, from PlanRequest.PinImages, take an image ID for a service instead of its tag.
+func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, lock bool, revision int, pins map[string]string) (*DeploymentPreflight, *ApplicationMapping, ApplicationSpec, protocol.Snapshot, string, error) {
 	m, err := t.applicationMapping(ctx, tx, a, app, lock)
 	if err != nil {
 		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
@@ -115,7 +115,7 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
 		}
 	}
-	out := buildDeploymentPreflight(m, spec, snapshot, number == head)
+	out := buildDeploymentPreflight(m, spec, snapshot, number == head, pins)
 	out.Revision, out.ReceivedAt = number, received
 	// observed_at is the agent's clock, received_at the server's.
 	if d := observed.Sub(received); d > protocol.MaxClockSkew || d < -protocol.MaxClockSkew {
@@ -148,7 +148,7 @@ func freshInventory(state, raw string, received, observed time.Time) (protocol.S
 
 // buildDeploymentPreflight checks spec against the mapping. latest says spec is the latest
 // revision; a prior one whose services differ from the mapped ones gets one blocker.
-func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snapshot protocol.Snapshot, latest bool) *DeploymentPreflight {
+func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snapshot protocol.Snapshot, latest bool, pins map[string]string) *DeploymentPreflight {
 	out := &DeploymentPreflight{InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Revision: m.Preview.Revision, MappingVersion: m.Version, Blockers: []string{}, Services: []PreflightService{}}
 	if m.Version == 0 || m.MappedRevision != m.Preview.Revision {
 		out.Blockers = append(out.Blockers, "mapping_requires_review")
@@ -230,6 +230,7 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 	}
 	desired := map[portKey]map[string]bool{}
 	blocked := false
+	onHost := imagesOnHost(snapshot)
 	for _, s := range spec.Services {
 		row := PreflightService{Name: s.Name, Reference: s.Image, ContainerID: m.Bindings[s.Name], Blockers: []string{}, Mounts: resolveMounts(m.Preview.Project, declared, s.Volumes), DroppedBinds: []protocol.Mount{}, DroppedMounts: []protocol.Mount{}, UnsupportedMounts: []protocol.Mount{}}
 		if slices.ContainsFunc(s.Volumes, func(v ApplicationVolume) bool {
@@ -274,7 +275,14 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 			row.Blockers = append(row.Blockers, "replacement_identity_invalid")
 		}
 		_, tag := protocol.SplitImageReference(s.Image)
+		pin, pinned := pins[s.Name]
 		switch {
+		case pinned && !validSHA256(pin):
+			row.Blockers = append(row.Blockers, "image_identity_invalid")
+		case pinned && !onHost[pin]:
+			row.Blockers = append(row.Blockers, "image_not_reported")
+		case pinned:
+			row.ImageID = pin
 		case tag == "":
 			row.Blockers = append(row.Blockers, "explicit_image_reference_required")
 		case !imagesComplete:
@@ -358,4 +366,19 @@ func overlapsBinding(index map[portKey]map[string]bool, key portKey, ip string) 
 	set := index[key]
 	addr := bindingAddress(ip)
 	return set["*"] || set[addr] || (addr == "*" && len(set) > 0)
+}
+
+// imagesOnHost is every image ID the inventory shows present: listed images and the images of
+// running containers.
+func imagesOnHost(snapshot protocol.Snapshot) map[string]bool {
+	out := map[string]bool{}
+	for _, im := range snapshot.Images {
+		out[im.ID] = true
+	}
+	for _, c := range snapshot.Containers {
+		if c.State == "running" {
+			out[c.ImageID] = true
+		}
+	}
+	return out
 }

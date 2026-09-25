@@ -129,7 +129,7 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 		if m.Version < 1 {
 			return ErrMappingRequired
 		}
-		_, m, spec, snapshot, _, err := t.preflight(ctx, tx, a, id.String(), false, 0)
+		_, m, spec, snapshot, _, err := t.preflight(ctx, tx, a, id.String(), false, 0, nil)
 		if err != nil {
 			return err
 		}

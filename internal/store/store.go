@@ -222,6 +222,9 @@ type TenancyStore interface {
 	FinishValidation(ctx context.Context, deploymentID, verdict, detail string) (bool, error)
 	MarkRollbackPlanned(ctx context.Context, deploymentID, rollbackDeploymentID string) error
 	MarkRollbackOutcome(ctx context.Context, deploymentID, outcome, detail string) error
+	// RollbackTarget authorizes application.deploy as the policy's creator and returns the
+	// replaced revision and images, or an ineligibility reason (docs/application-schema.md, Rollback).
+	RollbackTarget(ctx context.Context, access TenantAccess, applicationID, deploymentID string) (*Rollback, string, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)
 	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)

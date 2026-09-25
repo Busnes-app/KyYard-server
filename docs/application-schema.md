@@ -129,7 +129,7 @@ An adopted ID can be present, missing, changed in image/creation identity, or mo
 ## History
 
 - `ListDeployments` returns every row for an instance newest first, including `kind` and `endpoint_name`. The plan panel shows the instance's current and previous revision at the top and a "Deployment history" table below (revision, kind, state, applied by, applied and settled time) with a per-row expandable step view reusing the apply result section.
-- `Prune` deletes settled rows older than `DeploymentHistoryRetention` (90 days) except the latest succeeded row at the instance's current and previous revision, so a rollback target stays available, and any row of a removed application, which the removed-application prune deletes with it. See docs/retention-policy.md.
+- `Prune` deletes settled rows older than `DeploymentHistoryRetention` (90 days) except the latest succeeded row at the instance's current and previous revision, so a rollback target stays available, a row whose automated validation's rollback is undecided (its validation cascades with it), and any row of a removed application, which the removed-application prune deletes with it. See docs/retention-policy.md.
 
 ## Delete semantics
 

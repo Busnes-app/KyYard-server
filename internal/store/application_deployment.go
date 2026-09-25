@@ -32,6 +32,9 @@ type PlanRequest struct {
 	// and one live inspection per mapped container, keyed by container ID.
 	MaxFrameBytes int                                     `json:"-"`
 	Inspections   map[string]protocol.ContainerInspection `json:"-"`
+	// PinImages is set only by a validation's rollback: service to image ID, taken instead of
+	// resolving the service's tag. The ID must be on the host; nothing is pulled.
+	PinImages map[string]string `json:"-"`
 }
 type PlannedService struct {
 	Name        string                    `json:"name"`
@@ -153,6 +156,9 @@ func (e *PreflightBlockedError) Error() string {
 func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app string, r PlanRequest, resolver DigestResolver, key []byte, privateAllowed bool) (*Deployment, error) {
 	id, err := uuid.Parse(app)
 	if err != nil || a.EnvironmentID == "" || len(key) != 32 {
+		return nil, ErrInvalid
+	}
+	if len(r.Update) > 0 && len(r.PinImages) > 0 {
 		return nil, ErrInvalid
 	}
 	if len(r.Update) > 0 {
@@ -361,9 +367,15 @@ type draft struct {
 // draftPlan runs the preflight (locking when the plan is written in the same transaction) and
 // builds the plan in memory, returning its blockers unrefused so an update can add its own.
 func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess, app, planID string, r PlanRequest, lock bool) (*draft, error) {
-	p, m, spec, snapshot, digest, err := t.preflight(ctx, tx, a, app, lock, r.Revision)
+	p, m, spec, snapshot, digest, err := t.preflight(ctx, tx, a, app, lock, r.Revision, r.PinImages)
 	if err != nil {
 		return nil, err
+	}
+	// An unmatched pin would leave the service it meant resolving its tag.
+	for name := range r.PinImages {
+		if !slices.ContainsFunc(spec.Services, func(s ApplicationService) bool { return s.Name == name }) {
+			return nil, ErrInvalid
+		}
 	}
 	if r.InstanceID != m.InstanceID || r.MappingVersion != m.Version || (r.Revision != 0 && r.Revision != p.Revision) || r.Confirm != m.Preview.Project {
 		return nil, ErrAdoptionChanged
