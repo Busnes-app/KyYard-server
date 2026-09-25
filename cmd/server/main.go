@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "time/tzdata" // update-policy zones load the same on every host
+
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
@@ -135,6 +137,8 @@ func runServer() {
 	go localDockerLoop(ctx, srv.RunLocalDocker, localDone)
 	backupDone := make(chan struct{})
 	go backupLoop(ctx, cfg, st, backupDone)
+	policiesDone := make(chan struct{})
+	go srv.RunPolicies(ctx, policiesDone)
 	go pruneLoop(ctx, st)
 
 	addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
@@ -169,7 +173,9 @@ func runServer() {
 	cancel()
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), backupWaitTimeout)
 	defer waitCancel()
-	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; srv.WaitDetached() })
+	// A policy run in flight finishes before the store closes: its apply is recorded before its
+	// frame leaves. A run's worst case (under 3 minutes) fits the same budget.
+	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; <-policiesDone; srv.WaitDetached() })
 	log.Println("[KYYARD] Server stopped")
 }
 
