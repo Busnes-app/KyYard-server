@@ -840,6 +840,7 @@ ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled BOOLEAN NOT NULL DEF
 );
 `},
 	{Version: 28, Name: "organizations_name_unique", SQLite: `CREATE UNIQUE INDEX idx_organizations_name ON organizations(name);`, Postgres: `CREATE UNIQUE INDEX idx_organizations_name ON organizations(name);`},
+	{Version: 29, Name: "deployment_correlation", SQLite: `ALTER TABLE deployments ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';`, Postgres: `ALTER TABLE deployments ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';`},
 }
 
 // Latest returns the highest registered migration version: the schema this binary runs.

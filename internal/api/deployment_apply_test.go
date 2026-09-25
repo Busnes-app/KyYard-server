@@ -134,7 +134,15 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 		return d
 	}
 
-	planned := plan()
+	// The plan's request ID becomes the deployment's correlation ID.
+	planResp := tenantRequest(s, admin, "POST", deployments, string(planBody), true)
+	var planned store.Deployment
+	if planResp.Code != 201 || json.Unmarshal(planResp.Body.Bytes(), &planned) != nil {
+		t.Fatalf("plan: %d %s", planResp.Code, planResp.Body.String())
+	}
+	if planned.CorrelationID == "" || planned.CorrelationID != planResp.Header().Get("X-Request-ID") {
+		t.Fatalf("correlation %q, request %q", planned.CorrelationID, planResp.Header().Get("X-Request-ID"))
+	}
 	apply := deployments + "/" + planned.ID + "/apply"
 	request(nil, "POST", apply, `{"confirm":"shop"}`, 401)
 	if w := tenantRequest(s, admin, "POST", apply, `{"confirm":"shop"}`, false); w.Code != 403 {
@@ -143,7 +151,7 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	request(viewer, "POST", apply, `{"confirm":"shop"}`, 403)
 	var applying store.Deployment
 	must(json.Unmarshal([]byte(request(admin, "POST", apply, `{"confirm":"shop"}`, 202)), &applying))
-	if applying.State != "applying" || applying.ID != planned.ID {
+	if applying.State != "applying" || applying.ID != planned.ID || applying.CorrelationID != planned.CorrelationID {
 		t.Fatalf("the 202 body is not the applying row: %+v", applying)
 	}
 	frame := readEnvelope(t, ctx, sock.conn)
@@ -152,7 +160,7 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	}
 	var sent protocol.DeploymentRequest
 	must(json.Unmarshal(frame.Payload, &sent))
-	if sent.Deployment != planned.ID || len(sent.Services) != 1 || sent.Services[0].Env["TOKEN"] != canary || sent.Services[0].ContainerName != "shop-web" {
+	if sent.Deployment != planned.ID || len(sent.Services) != 1 || sent.Services[0].Env["TOKEN"] != canary || sent.Services[0].ContainerName != "shop-web" || sent.RequestID != planned.CorrelationID {
 		t.Fatalf("the frame did not carry the resolved plan: %+v", sent)
 	}
 	if got := state(planned.ID); got.State != "applying" {
@@ -184,9 +192,9 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	waitFor(t, func() bool { return state(planned.ID).State == protocol.OutcomeUnknown })
 	// A result that validates but is past its byte bound ends the session too: the size check
 	// is what refuses it.
-	big := protocol.DeploymentResult{Deployment: planned.ID, Outcome: protocol.OutcomeFailed, Steps: make([]protocol.DeploymentStep, 700), Services: []protocol.DeploymentIdentity{}}
+	big := protocol.DeploymentResult{Deployment: planned.ID, RequestID: planned.CorrelationID, Outcome: protocol.OutcomeFailed, Code: protocol.ResultStepFailed, Steps: make([]protocol.DeploymentStep, 800), Services: []protocol.DeploymentIdentity{}}
 	for i := range big.Steps {
-		big.Steps[i] = protocol.DeploymentStep{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeFailed, Detail: strings.Repeat("d", protocol.MaxDeploymentStepDetailBytes)}
+		big.Steps[i] = protocol.DeploymentStep{Service: strings.Repeat("w", 63), Step: protocol.StepCreate, Outcome: protocol.OutcomeFailed, Code: "identity_unverified", Detail: strings.Repeat("d", 64)}
 	}
 	if raw, _ := json.Marshal(big); big.Validate() != nil || len(raw) <= protocol.MaxDeploymentResultBytes {
 		t.Fatalf("the oversized fixture must validate and exceed the bound: %d bytes", len(raw))
@@ -223,6 +231,16 @@ func TestApplyDeploymentOverTheAgentSocket(t *testing.T) {
 	}
 	if refused != 1 {
 		t.Fatalf("refusal audit rows: %d", refused)
+	}
+	// The apply's audit row carries the deployment's correlation ID, not the apply request's.
+	applied := 0
+	for _, rec := range records {
+		if rec.Resource == app.ID+"/deployments/"+planned.ID+"/apply" && rec.Result == "success" && rec.CorrelationID == planned.CorrelationID {
+			applied++
+		}
+	}
+	if applied != 1 {
+		t.Fatalf("apply audit rows under the plan's correlation ID: %d", applied)
 	}
 
 	// The real answer still settles the unknown row and rebinds the replaced container.

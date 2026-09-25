@@ -261,13 +261,13 @@ func TestFailDeploymentCoversApplyingAndUnknown(t *testing.T) {
 }
 
 func settledResult(d *Deployment, outcome string, newID string) protocol.DeploymentResult {
-	res := protocol.DeploymentResult{Deployment: d.ID, Outcome: outcome, Steps: []protocol.DeploymentStep{{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}}, Services: []protocol.DeploymentIdentity{}}
+	res := protocol.DeploymentResult{Deployment: d.ID, RequestID: d.CorrelationID, Outcome: outcome, Steps: []protocol.DeploymentStep{{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}}, Services: []protocol.DeploymentIdentity{}}
 	if newID != "" {
 		res.Services = append(res.Services, protocol.DeploymentIdentity{Service: "web", ContainerID: newID, ImageID: d.Plan.Services[0].ImageID, CreatedUnix: 1800000000})
 	}
 	if outcome != protocol.OutcomeSucceeded {
-		res.Steps[0].Outcome = outcome
-		res.Steps[0].Detail = "fixed text"
+		res.Code = protocol.ResultStepFailed
+		res.Steps[0].Outcome, res.Steps[0].Code = outcome, "runtime_error"
 	}
 	return res
 }
@@ -643,10 +643,11 @@ func TestSettleDeploymentRefusesOversizedResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := settledResult(d, protocol.OutcomeFailed, "")
-	// Each detail is 64 three-byte runes: 192 bytes, under the per-step cap, so the result
+	// Each parameter is twelve unsupported codes (148 bytes), under the per-step cap, so the result
 	// validates and only the stored byte cap refuses it.
+	detail := strings.Join(protocol.UnsupportedCodes[:12], ",")
 	for len(res.Steps) < 8*protocol.MaxDeploymentServices {
-		res.Steps = append(res.Steps, protocol.DeploymentStep{Service: "web", Step: protocol.StepStart, Outcome: protocol.OutcomeFailed, Detail: strings.Repeat("\u20ac", 64)})
+		res.Steps = append(res.Steps, protocol.DeploymentStep{Service: "web", Step: protocol.StepStart, Outcome: protocol.OutcomeFailed, Code: "unsupported", Detail: detail})
 	}
 	if err := res.Validate(); err != nil {
 		t.Fatal(err)

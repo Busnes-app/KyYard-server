@@ -370,9 +370,6 @@ func TestDeploymentResultValidation(t *testing.T) {
 			failing(r, OutcomeDenied)
 			r.Steps[0].Code = "the container no longer exists"
 		},
-		"free result detail": func(r *DeploymentResult) {
-			r.Outcome, r.Code, r.Detail = OutcomeFailed, ResultStepFailed, "service web, step create: failed"
-		},
 		"bad request id": func(r *DeploymentResult) { r.RequestID = "a b" },
 		"step service":   func(r *DeploymentResult) { r.Steps[0].Service = "Web" },
 		"identity":       func(r *DeploymentResult) { r.Services[0].ImageID = "latest" },
@@ -759,5 +756,22 @@ func TestRemovalRequestIssuedAt(t *testing.T) {
 	r.Deadline = now.Add(time.Minute)
 	if err := r.Validate(now); !errors.Is(err, ErrClockSkew) {
 		t.Fatalf("skewed removal: %v", err)
+	}
+}
+
+// The result's free detail is gone from the wire: no sentence travels beside the code, and an
+// older agent's is dropped on decode.
+func TestDeploymentResultCarriesNoFreeDetail(t *testing.T) {
+	r := goodResult()
+	r.Steps = []DeploymentStep{}
+	if raw, _ := json.Marshal(r); strings.Contains(string(raw), `"detail"`) {
+		t.Fatalf("detail on the wire: %s", raw)
+	}
+	var older DeploymentResult
+	if err := json.Unmarshal([]byte(`{"deployment":"3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b","outcome":"failed","detail":"service web, step create: failed","steps":[],"services":[]}`), &older); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := json.Marshal(older); strings.Contains(string(raw), "service web") {
+		t.Fatalf("an older agent's sentence survived: %s", raw)
 	}
 }

@@ -210,8 +210,8 @@ The per-code detail shape is validated: `unsupported` requires one to thirty-two
 `[1-5][0-9]{2}`; every other code requires an empty detail.
 
 A `DeploymentResult` carries `Code` exactly when `Outcome` is not `succeeded`, from a second
-closed vocabulary, and never a free `Detail`: a non-empty `Detail` on a result fails
-`Validate`.
+closed vocabulary. It has no free `Detail` field: an older agent's `detail` is dropped on
+decode.
 
 | Code | Emitted when |
 |---|---|

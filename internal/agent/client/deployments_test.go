@@ -533,7 +533,7 @@ func TestDeployerRunsARemoval(t *testing.T) {
 func TestDeployerReplaysAPersistedRemoval(t *testing.T) {
 	dir := t.TempDir()
 	req := testRemoval("ep_1")
-	ledger, _ := json.Marshal(map[string]deploymentEntry{req.Deployment: {Result: protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeFailed, Detail: "x", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}})
+	ledger, _ := json.Marshal(map[string]deploymentEntry{req.Deployment: {Result: protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeFailed, Code: protocol.ResultStepFailed, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}})
 	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), ledger, 0o600); err != nil {
 		t.Fatal(err)
 	}

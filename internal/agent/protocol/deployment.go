@@ -359,9 +359,7 @@ type DeploymentResult struct {
 	RequestID string `json:"request_id"`
 	Outcome   string `json:"outcome"`
 	// Code is a result code, set exactly when Outcome is not succeeded.
-	Code string `json:"code"`
-	// Detail is removed from the wire in the store task; Validate refuses a non-empty one.
-	Detail   string               `json:"detail"`
+	Code     string               `json:"code"`
 	Steps    []DeploymentStep     `json:"steps"`
 	Services []DeploymentIdentity `json:"services"`
 }
@@ -383,7 +381,7 @@ type DeploymentIdentity struct {
 }
 
 func (r DeploymentResult) Validate() error {
-	if !deploymentUUID.MatchString(r.Deployment) || !resultOutcomes[r.Outcome] || r.Detail != "" || (r.RequestID != "" && !ValidRequestID(r.RequestID)) || len(r.Steps) > MaxDeploymentResultSteps || len(r.Services) > MaxDeploymentServices {
+	if !deploymentUUID.MatchString(r.Deployment) || !resultOutcomes[r.Outcome] || (r.RequestID != "" && !ValidRequestID(r.RequestID)) || len(r.Steps) > MaxDeploymentResultSteps || len(r.Services) > MaxDeploymentServices {
 		return errors.New("invalid deployment result")
 	}
 	if (r.Outcome == OutcomeSucceeded) != (r.Code == "") || (r.Code != "" && !resultCodes[r.Code]) {

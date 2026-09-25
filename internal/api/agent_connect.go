@@ -498,14 +498,12 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
-		// The size is already bounded. Closing would only make the agent re-send the same
-		// result on reconnect, so drop it; the row stays until the deadline sweep.
-		if res.Validate() != nil {
-			log.Printf("agent %s: dropped an unreadable deployment result", c.endpointID)
-			return false
-		}
 		switch err := ts.SettleDeployment(fctx, c.endpointID, res); {
 		case err == nil:
+		case errors.Is(err, store.ErrUnreadableResult):
+			// The size is already bounded. Closing would only make the agent re-send the same
+			// result on reconnect, so drop it; the row stays until the deadline sweep.
+			log.Printf("agent %s: dropped an unreadable deployment result", c.endpointID)
 		case errors.Is(err, store.ErrNotFound):
 			// A row this endpoint may not settle: nothing to report to the agent.
 			log.Printf("agent %s: late deployment result ignored: %s", c.endpointID, res.Deployment)

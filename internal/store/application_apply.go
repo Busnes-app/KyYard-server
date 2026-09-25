@@ -26,6 +26,12 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 	if err != nil {
 		return nil, nil, ErrNotFound
 	}
+	// Every audit row of a deployment carries its plan's correlation ID, the apply's included.
+	// A row's ID never changes, so the transaction need not re-read it.
+	var correlation string
+	if t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT correlation_id FROM deployments WHERE organization_id=? AND environment_id=? AND application_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, appID.String(), planID.String()).Scan(&correlation) == nil && correlation != "" {
+		a.CorrelationID = correlation
+	}
 	var out *Deployment
 	var req *protocol.DeploymentRequest
 	err = t.withTenantTarget(ctx, a, permissions.ApplicationDeploy, appID.String()+"/deployments/"+planID.String()+"/apply", func(tx *sql.Tx) error {
@@ -113,6 +119,10 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 	if digest != d.SpecDigest || len(spec.Services) != len(d.Plan.Services) {
 		return protocol.DeploymentRequest{}, ErrAdoptionChanged
 	}
+	// A plan saved before correlation IDs has no request ID to send: plan again.
+	if d.CorrelationID == "" {
+		return protocol.DeploymentRequest{}, ErrAdoptionChanged
+	}
 	names := map[string]string{}
 	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name FROM application_resources WHERE instance_id=? AND endpoint_id=?`), d.InstanceID, d.EndpointID)
 	if err != nil {
@@ -132,7 +142,7 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 	if err := rows.Err(); err != nil {
 		return protocol.DeploymentRequest{}, err
 	}
-	req := protocol.DeploymentRequest{Deployment: d.ID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}, Volumes: d.Plan.Volumes}
+	req := protocol.DeploymentRequest{Deployment: d.ID, RequestID: d.CorrelationID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}, Volumes: d.Plan.Volumes}
 	hosts := map[string]bool{}
 	for i, ps := range d.Plan.Services {
 		name, ok := names[ps.ContainerID]
@@ -233,15 +243,15 @@ func (t *tenancyStore) systemTransition(ctx context.Context, filter string, arg 
 		return 0, err
 	}
 	defer tx.Rollback()
-	type row struct{ id, org, env, app, kind string }
+	type row struct{ id, org, env, app, kind, correlation string }
 	var affected []row
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,environment_id,application_id,kind FROM deployments WHERE `+filter), arg)
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,environment_id,application_id,kind,correlation_id FROM deployments WHERE `+filter), arg)
 	if err != nil {
 		return 0, err
 	}
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.org, &r.env, &r.app, &r.kind); err != nil {
+		if err := rows.Scan(&r.id, &r.org, &r.env, &r.app, &r.kind, &r.correlation); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -272,7 +282,7 @@ func (t *tenancyStore) systemTransition(ctx context.Context, filter string, arg 
 		if r.kind == "remove" {
 			action = permissions.ApplicationDestroy
 		}
-		if err := t.auditDeployment(ctx, tx, "system", action, r.org, r.env, r.app, r.id, outcome, result, now); err != nil {
+		if err := t.auditDeployment(ctx, tx, "system", action, r.org, r.env, r.app, r.id, r.correlation, outcome, result, now); err != nil {
 			return 0, err
 		}
 		total++
@@ -311,12 +321,16 @@ func (t *tenancyStore) lockDeploymentApplication(ctx context.Context, tx *sql.Tx
 // applying row always settles. An unknown row (abandoned or swept) settles only while its
 // instance exists and no newer row for it has been applied or settled, so a late answer never
 // rewrites state someone has since acted on; a newer plan, built against the containers the
-// late answer replaces, is expired instead. Anything else is ErrNotFound.
+// late answer replaces, is expired instead. Anything else is ErrNotFound. A result from a binary
+// built before codes is read through legacyResult; one that still fails validation is
+// ErrUnreadableResult with nothing written, and one echoing another deployment's request ID is
+// ErrInvalid.
 func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, res protocol.DeploymentResult) error {
+	res = legacyResult(res)
 	if res.Validate() != nil {
-		return ErrInvalid
+		return ErrUnreadableResult
 	}
-	raw, err := json.Marshal(storedDeploymentResult{Steps: res.Steps, Services: res.Services})
+	raw, err := json.Marshal(storedDeploymentResult{Code: res.Code, Steps: res.Steps, Services: res.Services})
 	if err != nil || len(raw) > MaxDeploymentResultStoredBytes {
 		return ErrInvalid
 	}
@@ -329,14 +343,18 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 	if err != nil {
 		return err
 	}
-	var org, env, appID, instance, kind, planRaw string
+	var org, env, appID, instance, kind, planRaw, correlation string
 	var revision int
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.instance_id,d.kind,d.revision,d.plan FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND `+settleable+lock), res.Deployment, endpointID).Scan(&org, &env, &appID, &instance, &kind, &revision, &planRaw)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.instance_id,d.kind,d.revision,d.plan,d.correlation_id FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND `+settleable+lock), res.Deployment, endpointID).Scan(&org, &env, &appID, &instance, &kind, &revision, &planRaw, &correlation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
+	}
+	// A current agent echoes the frame's request ID; another deployment's is a replay or a bug.
+	if res.RequestID != "" && res.RequestID != correlation {
+		return ErrInvalid
 	}
 	var plan DeploymentPlan
 	if json.Unmarshal([]byte(planRaw), &plan) != nil {
@@ -352,7 +370,7 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 		return err
 	}
 	now := time.Now().UTC()
-	updated, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state=?,detail=?,result=?,settled_at=? WHERE id=? AND state IN ('applying','unknown')`), res.Outcome, protocol.CleanText(res.Detail, 255), string(raw), now, res.Deployment)
+	updated, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state=?,detail='',result=?,settled_at=? WHERE id=? AND state IN ('applying','unknown')`), res.Outcome, string(raw), now, res.Deployment)
 	if err != nil {
 		return err
 	}
@@ -373,7 +391,7 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 		return err
 	}
 	// In the same transaction: a settled row without its audit row cannot exist.
-	if err := t.auditDeployment(ctx, tx, "agent:"+endpointID, action, org, env, appID, res.Deployment, res.Outcome, auditResults[res.Outcome], now); err != nil {
+	if err := t.auditDeployment(ctx, tx, "agent:"+endpointID, action, org, env, appID, res.Deployment, correlation, res.Outcome, auditResults[res.Outcome], now); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -485,9 +503,13 @@ func (t *tenancyStore) settleRemoval(ctx context.Context, tx *sql.Tx, endpointID
 	return err
 }
 
-// auditDeployment writes the audit row for a deployment transition inside its transaction.
-func (t *tenancyStore) auditDeployment(ctx context.Context, tx *sql.Tx, user string, action permissions.Action, org, env, appID, id, outcome, result string, at time.Time) error {
-	_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), user, string(action), protocol.CleanText(appID+"/deployments/"+id, 255), "outcome="+outcome, at, "organization", org, env, uuid.NewString(), result)
+// auditDeployment writes the audit row for a deployment transition inside its transaction, under
+// the deployment's correlation ID (a fresh one for a row planned before correlation IDs).
+func (t *tenancyStore) auditDeployment(ctx context.Context, tx *sql.Tx, user string, action permissions.Action, org, env, appID, id, correlation, outcome, result string, at time.Time) error {
+	if correlation == "" {
+		correlation = uuid.NewString()
+	}
+	_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), user, string(action), protocol.CleanText(appID+"/deployments/"+id, 255), "outcome="+outcome, at, "organization", org, env, correlation, result)
 	return err
 }
 
@@ -505,8 +527,8 @@ func (t *tenancyStore) RefuseDeploymentResult(ctx context.Context, endpointID, i
 	if err != nil {
 		return err
 	}
-	var org, env, appID, kind string
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.kind FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND `+settleable+lock), id, endpointID).Scan(&org, &env, &appID, &kind)
+	var org, env, appID, kind, correlation string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.organization_id,d.environment_id,d.application_id,d.kind,d.correlation_id FROM deployments d WHERE d.id=? AND d.endpoint_id=? AND `+settleable+lock), id, endpointID).Scan(&org, &env, &appID, &kind, &correlation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -530,7 +552,7 @@ func (t *tenancyStore) RefuseDeploymentResult(ctx context.Context, endpointID, i
 	if kind == "remove" {
 		action = permissions.ApplicationDestroy
 	}
-	if err := t.auditDeployment(ctx, tx, "agent:"+endpointID, action, org, env, appID, id, "refused", auditResults[protocol.OutcomeUnknown], now); err != nil {
+	if err := t.auditDeployment(ctx, tx, "agent:"+endpointID, action, org, env, appID, id, correlation, "refused", auditResults[protocol.OutcomeUnknown], now); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -561,6 +583,10 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 	instanceID, err := uuid.Parse(r.InstanceID)
 	if err != nil {
 		return nil, nil, ErrAdoptionChanged
+	}
+	// The removal's request ID is its correlation ID, as a plan's is.
+	if a.CorrelationID == "" {
+		a.CorrelationID = uuid.NewString()
 	}
 	id := uuid.NewString()
 	var out *Deployment
@@ -615,7 +641,7 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		}
 		now := time.Now().UTC()
 		plan := DeploymentPlan{Project: project, Services: []PlannedService{}, Containers: []RemovalPlanTarget{}}
-		req = &protocol.RemovalRequest{Deployment: id, Endpoint: endpoint, Project: project, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
+		req = &protocol.RemovalRequest{Deployment: id, RequestID: a.CorrelationID, Endpoint: endpoint, Project: project, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
 		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name,image_id,created_at,service_name FROM application_resources WHERE instance_id=? AND endpoint_id=? ORDER BY container_id`), instanceID.String(), endpoint)
 		if err != nil {
 			return err
@@ -660,8 +686,8 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		if err != nil || len(raw) > MaxDeploymentPlanBytes {
 			return ErrInvalid
 		}
-		out = &Deployment{ID: id, ApplicationID: appID.String(), InstanceID: instanceID.String(), EndpointID: endpoint, EndpointName: endpointName, Kind: "remove", State: "applying", Revision: head, SpecDigest: digest, MappingVersion: mappingVersion, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: req.Deadline, AppliedBy: a.ActorID, AppliedAt: &now, Deadline: &req.Deadline}
-		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,kind,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), out.ID, a.OrganizationID, a.EnvironmentID, out.ApplicationID, out.InstanceID, out.EndpointID, project, out.Kind, out.State, out.Revision, out.SpecDigest, out.MappingVersion, string(raw), out.CreatedBy, now, out.ExpiresAt, out.AppliedBy, now, req.Deadline)
+		out = &Deployment{ID: id, ApplicationID: appID.String(), InstanceID: instanceID.String(), EndpointID: endpoint, EndpointName: endpointName, Kind: "remove", State: "applying", Revision: head, SpecDigest: digest, MappingVersion: mappingVersion, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: req.Deadline, AppliedBy: a.ActorID, AppliedAt: &now, Deadline: &req.Deadline, CorrelationID: a.CorrelationID}
+		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,kind,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline,correlation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), out.ID, a.OrganizationID, a.EnvironmentID, out.ApplicationID, out.InstanceID, out.EndpointID, project, out.Kind, out.State, out.Revision, out.SpecDigest, out.MappingVersion, string(raw), out.CreatedBy, now, out.ExpiresAt, out.AppliedBy, now, req.Deadline, out.CorrelationID)
 		details = fmt.Sprintf("project=%s endpoint=%s containers=%d", project, endpoint, len(plan.Containers))
 		return err
 	})

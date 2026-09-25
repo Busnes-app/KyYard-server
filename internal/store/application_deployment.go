@@ -69,34 +69,57 @@ type RemovalPlanTarget struct {
 	Name        string `json:"name"`
 }
 type Deployment struct {
-	ID             string                     `json:"id"`
-	ApplicationID  string                     `json:"application_id"`
-	InstanceID     string                     `json:"instance_id"`
-	EndpointID     string                     `json:"endpoint_id"`
-	EndpointName   string                     `json:"endpoint_name"`
-	Kind           string                     `json:"kind"`
-	State          string                     `json:"state"`
-	Revision       int                        `json:"revision"`
-	SpecDigest     string                     `json:"spec_digest"`
-	MappingVersion int                        `json:"mapping_version"`
-	Plan           DeploymentPlan             `json:"plan"`
-	CreatedBy      string                     `json:"created_by"`
-	CreatedAt      time.Time                  `json:"created_at"`
-	ExpiresAt      time.Time                  `json:"expires_at"`
-	Expired        bool                       `json:"expired"`
-	AppliedBy      string                     `json:"applied_by"`
-	AppliedAt      *time.Time                 `json:"applied_at"`
-	Deadline       *time.Time                 `json:"deadline"`
-	SettledAt      *time.Time                 `json:"settled_at"`
-	Detail         string                     `json:"detail"`
-	Result         *protocol.DeploymentResult `json:"result"` // nil until settled
+	ID             string         `json:"id"`
+	ApplicationID  string         `json:"application_id"`
+	InstanceID     string         `json:"instance_id"`
+	EndpointID     string         `json:"endpoint_id"`
+	EndpointName   string         `json:"endpoint_name"`
+	Kind           string         `json:"kind"`
+	State          string         `json:"state"`
+	Revision       int            `json:"revision"`
+	SpecDigest     string         `json:"spec_digest"`
+	MappingVersion int            `json:"mapping_version"`
+	Plan           DeploymentPlan `json:"plan"`
+	CreatedBy      string         `json:"created_by"`
+	CreatedAt      time.Time      `json:"created_at"`
+	ExpiresAt      time.Time      `json:"expires_at"`
+	Expired        bool           `json:"expired"`
+	AppliedBy      string         `json:"applied_by"`
+	AppliedAt      *time.Time     `json:"applied_at"`
+	Deadline       *time.Time     `json:"deadline"`
+	SettledAt      *time.Time     `json:"settled_at"`
+	Detail         string         `json:"detail"`
+	// CorrelationID is the plan's request ID: the frame and every audit row of the deployment carry it.
+	CorrelationID string                     `json:"correlation_id"`
+	Result        *protocol.DeploymentResult `json:"result"` // nil until settled
 }
 
-// storedDeploymentResult is the shape kept in the result column. Outcome and Detail already
-// live in the row's state and detail columns, so only the step-by-step record is duplicated.
+// storedDeploymentResult is the shape kept in the result column: the result code and the
+// step-by-step record, codes and parameters only. The outcome lives in the row's state.
 type storedDeploymentResult struct {
+	Code     string                        `json:"code,omitempty"`
 	Steps    []protocol.DeploymentStep     `json:"steps"`
 	Services []protocol.DeploymentIdentity `json:"services"`
+}
+
+// legacyResult reads a result produced by a binary built before outcome codes: it carries no
+// request ID, and a step or result that did not succeed carries no code. Each missing code becomes
+// protocol.CodeLegacy and its free text is dropped. A result with a request ID is a current
+// agent's and is taken as sent.
+func legacyResult(res protocol.DeploymentResult) protocol.DeploymentResult {
+	if res.RequestID != "" {
+		return res
+	}
+	res.Steps = slices.Clone(res.Steps)
+	for i, s := range res.Steps {
+		if s.Code == "" && s.Outcome != protocol.OutcomeSucceeded && s.Outcome != protocol.OutcomeSkipped {
+			res.Steps[i].Code, res.Steps[i].Detail = protocol.CodeLegacy, ""
+		}
+	}
+	if res.Code == "" && res.Outcome != protocol.OutcomeSucceeded {
+		res.Code = protocol.CodeLegacy
+	}
+	return res
 }
 
 // PreflightBlockedError names the findings that stopped a plan. A plan never guesses past them.
@@ -134,6 +157,10 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 		if len(r.Update) > protocol.MaxDeploymentServices || len(slices.Compact(sorted)) != len(r.Update) || resolver == nil {
 			return nil, ErrInvalid
 		}
+	}
+	// The plan's request ID is the deployment's correlation ID from here on.
+	if a.CorrelationID == "" {
+		a.CorrelationID = uuid.NewString()
 	}
 	planID := uuid.NewString()
 	target := id.String() + "/deployments/" + planID
@@ -390,7 +417,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 	}
 	blockers = append(blockers, capabilityBlockers(capabilities, plan)...)
 	now := time.Now().UTC()
-	d := &Deployment{ID: planID, ApplicationID: app, InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Kind: "apply", State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL)}
+	d := &Deployment{ID: planID, ApplicationID: app, InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Kind: "apply", State: "planned", Revision: p.Revision, SpecDigest: digest, MappingVersion: m.Version, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: now.Add(DeploymentPlanTTL), CorrelationID: a.CorrelationID}
 	return &draft{d: d, m: m, blockers: blockers, capabilities: capabilities, services: refused}, nil
 }
 
@@ -457,19 +484,19 @@ func (t *tenancyStore) insertPlan(ctx context.Context, tx *sql.Tx, a TenantAcces
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), d.ID, a.OrganizationID, a.EnvironmentID, d.ApplicationID, d.InstanceID, d.EndpointID, d.Plan.Project, d.State, d.Revision, d.SpecDigest, d.MappingVersion, string(raw), d.CreatedBy, d.CreatedAt, d.ExpiresAt)
+	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,correlation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), d.ID, a.OrganizationID, a.EnvironmentID, d.ApplicationID, d.InstanceID, d.EndpointID, d.Plan.Project, d.State, d.Revision, d.SpecDigest, d.MappingVersion, string(raw), d.CreatedBy, d.CreatedAt, d.ExpiresAt, d.CorrelationID)
 	return err
 }
 
 // selectDeployments reads rows aliased d with the endpoint's current name (empty once the
 // endpoint is gone); the caller appends the WHERE clause.
-const selectDeployments = `SELECT d.id,d.application_id,d.instance_id,d.endpoint_id,COALESCE(e.name,''),d.kind,d.state,d.revision,d.spec_digest,d.mapping_version,d.plan,d.created_by,d.created_at,d.expires_at,d.applied_by,d.applied_at,d.deadline,d.settled_at,d.detail,d.result FROM deployments d LEFT JOIN endpoints e ON e.id=d.endpoint_id `
+const selectDeployments = `SELECT d.id,d.application_id,d.instance_id,d.endpoint_id,COALESCE(e.name,''),d.kind,d.state,d.revision,d.spec_digest,d.mapping_version,d.plan,d.created_by,d.created_at,d.expires_at,d.applied_by,d.applied_at,d.deadline,d.settled_at,d.detail,d.result,d.correlation_id FROM deployments d LEFT JOIN endpoints e ON e.id=d.endpoint_id `
 
 func scanDeployment(rows interface{ Scan(...any) error }) (*Deployment, error) {
 	var d Deployment
 	var raw, result string
 	var appliedAt, deadline, settledAt sql.NullTime
-	if err := rows.Scan(&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.EndpointName, &d.Kind, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result); err != nil {
+	if err := rows.Scan(&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.EndpointName, &d.Kind, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result, &d.CorrelationID); err != nil {
 		return nil, err
 	}
 	if json.Unmarshal([]byte(raw), &d.Plan) != nil {
@@ -492,7 +519,9 @@ func scanDeployment(rows interface{ Scan(...any) error }) (*Deployment, error) {
 		if json.Unmarshal([]byte(result), &stored) != nil {
 			return nil, ErrRevisionCorrupt
 		}
-		d.Result = &protocol.DeploymentResult{Deployment: d.ID, Outcome: d.State, Detail: d.Detail, Steps: stored.Steps, Services: stored.Services}
+		// A result stored before codes reads as legacy.
+		res := legacyResult(protocol.DeploymentResult{Deployment: d.ID, Outcome: d.State, Code: stored.Code, Steps: stored.Steps, Services: stored.Services})
+		d.Result = &res
 	}
 	d.Expired = !time.Now().Before(d.ExpiresAt)
 	return &d, nil
