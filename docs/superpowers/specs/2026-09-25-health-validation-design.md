@@ -141,7 +141,7 @@ the policy's `created_by` with `application.deploy` re-checked (a lapse is
   minus baseline) when one exists.
 - `GET .../update-policy` runs gain `validation` as above.
 - Deployment detail and the policy run list show the verdict text (`VALIDATION_VERDICTS`
-  table), the rollback line ("Rolled back to revision N" linking the rollback deployment by
+  table), the rollback line ("Rollback sent to revision N" linking the rollback deployment by
   ID prefix, or the ineligible reason from a fixed table), and the pause reason on the card.
 - Endpoint capability `container.inspect.health` missing → the policy card warns that
   automated updates on this host cannot be validated and will pause.

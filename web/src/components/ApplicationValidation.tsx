@@ -57,7 +57,8 @@ export function reasonText(codes: string): string {
 export function rollbackText(v: Validation): string {
   const r = v.rollback;
   if (!r) return '';
-  if (r.outcome === 'applied') return `Rolled back to revision ${r.revision}.`;
+  // applied: the rollback was sent; its own deployment row carries how it settled.
+  if (r.outcome === 'applied') return `Rollback sent to revision ${r.revision}.`;
   if (r.outcome === 'ineligible' || r.outcome === 'failed') return `Not rolled back. ${reasonText(r.detail)}`;
   return 'Rolling back.';
 }

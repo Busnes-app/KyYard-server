@@ -25,7 +25,7 @@ it('names the deciding service and the loop sentences, and nothing else the serv
 it('shows the rollback revision and deployment prefix, or why there was none', () => {
   const id = '3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b';
   render(<ValidationLine v={validation({ verdict: 'unhealthy', detail: 'web', rollback: { deployment_id: id, revision: 4, outcome: 'applied', detail: '' } })} />);
-  expect(screen.getByText(/Rolled back to revision 4\./)).toBeTruthy();
+  expect(screen.getByText(/Rollback sent to revision 4\./)).toBeTruthy();
   expect(screen.getByText('3f2b1c9e').getAttribute('title')).toBe(id);
   for (const [code, text] of Object.entries(ROLLBACK_REASONS)) expect(line({ verdict: 'exited', rollback: { deployment_id: '', revision: 0, outcome: 'ineligible', detail: code } })).toContain(text);
   expect(line({ verdict: 'exited', rollback: { deployment_id: '', revision: 0, outcome: 'failed', detail: 'image_not_reported,made_up' } })).not.toContain('made_up');

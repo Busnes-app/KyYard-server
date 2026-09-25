@@ -232,7 +232,7 @@ it('shows each run validation and its rollback, and explains a validation pause'
   ] })));
   render(<ApplicationPolicy base="/app" admin={false} />);
   open();
-  await screen.findByText(/Rolled back to revision 3\./);
+  await screen.findByText(/Rollback sent to revision 3\./);
   expect(screen.getByText('3f2b1c9e').getAttribute('title')).toBe(rolledBack);
   expect(screen.getAllByText(/The earlier images are no longer on the host\./).length).toBe(2);
   expect(screen.getByText(/failed validation and was not rolled back/)).toBeTruthy();
