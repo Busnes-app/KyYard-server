@@ -45,11 +45,11 @@ func TestMigrationRefusesCaseVariantUsernames(t *testing.T) {
 	}
 	add(1, "u1", "erin")
 	add(2, "u2", "Erin")
-	refused("usernames differ only by case: erin, Erin; rename or delete one of each pair before upgrading", 3)
+	refused(`usernames differ only by case: "erin", "Erin"; rename or delete one of each pair before upgrading`, 3)
 	add(3, "u3", "ERIN")
 	add(4, "u4", "bob")
 	add(5, "u5", "Bob")
-	refused("usernames differ only by case: bob, Bob; erin, Erin, ERIN; rename or delete one of each pair before upgrading", 6)
+	refused(`usernames differ only by case: "bob", "Bob"; "erin", "Erin", "ERIN"; rename or delete one of each pair before upgrading`, 6)
 	for _, id := range []string{"u2", "u3", "u5"} {
 		if err := st.Users().DeleteUser(ctx, id); err != nil {
 			t.Fatal(err)

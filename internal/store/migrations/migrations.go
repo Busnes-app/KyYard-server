@@ -49,7 +49,11 @@ func refuseCaseVariantUsernames(ctx context.Context, tx *sql.Tx) error {
 	}
 	listed := []string{}
 	for _, lower := range slices.Sorted(maps.Keys(groups)) {
-		listed = append(listed, strings.Join(groups[lower], ", "))
+		quoted := make([]string, len(groups[lower]))
+		for i, name := range groups[lower] {
+			quoted[i] = fmt.Sprintf("%q", name)
+		}
+		listed = append(listed, strings.Join(quoted, ", "))
 	}
 	return fmt.Errorf("usernames differ only by case: %s; rename or delete one of each pair before upgrading", strings.Join(listed, "; "))
 }
