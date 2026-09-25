@@ -1,5 +1,6 @@
 import { ApplicationPreflight, MountList, type Mount } from './ApplicationPreflight';
 import { ApplicationUpdates } from './ApplicationUpdates';
+import { ApplicationPolicy } from './ApplicationPolicy';
 import { ApplicationDeploymentPlan, ApplicationHistory } from './ApplicationDeploymentPlan';
 import { ApplicationMapping } from './ApplicationMapping';
 import { ApplicationRevisionEditor } from './ApplicationRevisionEditor';
@@ -8,7 +9,7 @@ import { ApplicationAdoption, type ApplicationInstance } from './ApplicationAdop
 import { useState } from 'react';
 import { usePagination } from './Pagination';
 import { secureFetch } from '../api';
-import { useTenantResource } from '../tenant';
+import { canManagePolicies, useTenantResource, type MemberOrganization } from '../tenant';
 import { StateNotice } from './StateNotice';
 
 type Draft = { id: string; name: string; latest_revision: number; removed_at?: string | null };
@@ -37,6 +38,8 @@ export function Applications({ org, env }: { org: string; env: string }) {
   // Admission caps the organization at 100, so one bounded page covers this environment.
   const drafts = useTenantResource<Draft[]>(`${base}?limit=100`);
   const instances = useTenantResource<ApplicationInstance[]>(`${base}/instances`);
+  const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  const policyAdmin = canManagePolicies((Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role);
   const refresh = () => { drafts.reload(); instances.reload(); setSelected(''); };
   const pagination = usePagination(drafts.data ?? [], base);
   const [name, setName] = useState('');
@@ -84,7 +87,8 @@ export function Applications({ org, env }: { org: string; env: string }) {
             if (window.confirm(`Discard draft "${draft.name}" and all its saved revisions? Running containers are unchanged.`)) void write('DELETE', `${base}/${encodeURIComponent(draft.id)}`, { expected_revision: draft.latest_revision });
           }}>Discard {draft.name}</button>
         </div>
-        {selected === draft.id && <><RevisionView key={`${draft.id}/${draft.latest_revision}`} base={base} draft={draft} /><ApplicationRevisionEditor key={`edit/${draft.id}/${draft.latest_revision}`} base={`${base}/${encodeURIComponent(draft.id)}`} name={draft.name} expected={draft.latest_revision} onSaved={() => { refresh(); setMessage('New revision saved. Running containers were not changed.'); }} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={(status) => { refresh(); setMessage(status ?? ''); }} />}{instances.state === 'ready' && !instances.data?.some((i) => i.application_id === draft.id) && <ApplicationHistory base={`${base}/${encodeURIComponent(draft.id)}`} />}{instances.state === 'ready' && instances.data?.filter((i) => i.application_id === draft.id).map((i) => <div key={i.id}><ApplicationMapping base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationComparison base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationPreflight org={org} base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationUpdates base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} mappingVersion={i.mapping_version} project={i.project} latestRevision={draft.latest_revision} onPlanned={() => setPlanKey((k) => k + 1)} /><ApplicationDeploymentPlan base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} latestRevision={draft.latest_revision} instance={i} refreshKey={planKey} /></div>)}</>}
+        {selected === draft.id && <><RevisionView key={`${draft.id}/${draft.latest_revision}`} base={base} draft={draft} /><ApplicationRevisionEditor key={`edit/${draft.id}/${draft.latest_revision}`} base={`${base}/${encodeURIComponent(draft.id)}`} name={draft.name} expected={draft.latest_revision} onSaved={() => { refresh(); setMessage('New revision saved. Running containers were not changed.'); }} />{instances.state === 'ready' && <ApplicationAdoption key={instances.data?.find((i) => i.application_id === draft.id)?.id ?? draft.id} applicationName={draft.name} base={`${base}/${encodeURIComponent(draft.id)}`} org={org} env={env} instance={instances.data?.find((i) => i.application_id === draft.id)} onChanged={(status) => { refresh(); setMessage(status ?? ''); }} />}{instances.state === 'ready' && !instances.data?.some((i) => i.application_id === draft.id) && <ApplicationHistory base={`${base}/${encodeURIComponent(draft.id)}`} />}{instances.state === 'ready' && instances.data?.filter((i) => i.application_id === draft.id).map((i) => <div key={i.id}><ApplicationMapping base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationComparison base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationPreflight org={org} base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} /><ApplicationUpdates base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} mappingVersion={i.mapping_version} project={i.project} latestRevision={draft.latest_revision} onPlanned={() => setPlanKey((k) => k + 1)} /><ApplicationDeploymentPlan base={`${base}/${encodeURIComponent(draft.id)}`} instanceID={i.id} latestRevision={draft.latest_revision} instance={i} refreshKey={planKey} /></div>)}
+        {instances.state === 'ready' && <ApplicationPolicy key={`policy/${draft.id}`} base={`${base}/${encodeURIComponent(draft.id)}`} admin={policyAdmin} />}</>}
       </li>)}
     </ul>}
     <details><summary>Import Compose draft</summary>

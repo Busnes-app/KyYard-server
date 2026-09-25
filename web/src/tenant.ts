@@ -27,12 +27,17 @@ export interface RegistryPolicy { anonymous_pull_enabled: boolean; private_regis
 // Cached update verdicts for one adopted instance; services is [] before the first check.
 export interface ImageCheck { service: string; reference: string; local_digest: string; remote_digest: string; verdict: string; detail: string; checked_at: string }
 export interface UpdateCheck { instance_id: string; mapping_version: number; services: ImageCheck[] }
+export interface PolicyRun { id: string; policy_id: string; occurrence: string; started_at: string; finished_at: string | null; outcome: string; deployment_id: string; detail: string; correlation_id: string }
+export interface UpdatePolicy { id: string; application_id: string; created_by: string; mode: string; timezone: string; weekdays: number[]; start_minute: number; end_minute: number; status: string; paused_reason: string; consecutive_failures: number; created_at: string; updated_at: string; next_occurrence: string | null; runs?: PolicyRun[] }
 
 export const privateDisabled = 'Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).';
 
 export const tenantRoles = ['organization_admin', 'environment_admin', 'operator', 'developer', 'read_only'] as const;
 // Mirrors permissions.Allows(role, ContainerExec): only organization admins may exec.
 export const canExec = (role: string | undefined) => role === 'organization_admin';
+
+// Mirrors permissions.Allows(role, ApplicationPolicy): only organization admins edit update policies.
+export const canManagePolicies = (role: string | undefined) => role === 'organization_admin';
 
 // Every tenant screen shows exactly one of these; there is no client-side cache to go stale.
 export type LoadState = 'loading' | 'ready' | 'denied' | 'notfound' | 'offline' | 'error';

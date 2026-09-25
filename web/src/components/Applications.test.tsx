@@ -126,3 +126,22 @@ it('lists each service volume with its kind and a read-only mark', async () => {
   expect(bind.parentElement?.textContent).toContain('bind');
   expect(bind.parentElement?.querySelector('.badge')?.textContent).toBe('ro');
 });
+
+it('offers the update-policy editor to organization administrators only', async () => {
+  for (const [role, editor] of [['organization_admin', true], ['environment_admin', false]] as const) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/organizations') return json([{ id: 'a', name: 'A', role }]);
+      if (url.endsWith('/update-policy')) return json({ error: 'none' }, 404);
+      if (url.includes('/revisions/')) return json({ digest: 'digest', spec: { services: [] } });
+      if (url.endsWith('/instances')) return json([]);
+      return json([{ id: 'app', name: 'shop', latest_revision: 1 }]);
+    }));
+    render(<Applications org="a" env="env" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'View configuration for shop' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Update policy' }));
+    await screen.findByText('No update policy.');
+    if (editor) expect(await screen.findByRole('button', { name: 'Save policy' })).toBeTruthy();
+    else expect(screen.queryByRole('button', { name: 'Save policy' })).toBeNull();
+    cleanup();
+  }
+});
