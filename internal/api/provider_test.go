@@ -314,4 +314,8 @@ func TestSSOAutoProvisionRefusesACaseVariantUsername(t *testing.T) {
 	if u, err := st.Users().GetUserByUsername(ctx, "ERIN"); err != nil || u.ID != "usr_erin" || u.SSOProvider != "local" {
 		t.Fatalf("the local account changed: %+v %v", u, err)
 	}
+	rows := auditRows(t, st, "auth.sso.refused")
+	if len(rows) != 1 || rows[0].Result != "denied" || rows[0].Resource != "idp_test" || rows[0].Details != "username=Erin" || rows[0].UserID != "" {
+		t.Fatalf("refusal audit rows: %+v", rows)
+	}
 }

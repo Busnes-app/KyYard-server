@@ -268,7 +268,9 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if errors.Is(err, store.ErrAlreadyExists) {
-		s.writeError(w, 403, "The username "+protocol.CleanText(claims.PreferredUsername, 64)+" is taken by another account; ask your administrator")
+		name := protocol.CleanText(claims.PreferredUsername, 64)
+		s.auditPlatform(r, "", "auth.sso.refused", p.ID, "username="+name, "denied")
+		s.writeError(w, 403, "The username "+name+" is taken by another account; ask your administrator")
 		return
 	}
 	if err != nil || user == nil || user.Status != "active" {

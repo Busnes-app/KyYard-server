@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,40 @@ func TestKySignOnWebhookRefusesACaseVariantUsername(t *testing.T) {
 	if u, err := st.Users().GetUserByUsername(ctx, "ERIN"); err != nil || u.ID != "usr_erin" || u.SSOProvider != "local" {
 		t.Fatalf("the local account changed: %+v %v", u, err)
 	}
+	// The audited name is cleaned of control characters and capped at 64 bytes.
+	long := "\x07" + strings.Repeat("x", 70)
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_long", Username: long, Role: "user", Status: "active", SSOProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = json.Marshal(sso.KySignOnSyncPayload{Event: "user.created", ID: "ext-long", Username: long, Role: "user", Status: "active", Timestamp: time.Now().Unix()})
+	if err := client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "webhook-secret-999")); !errors.Is(err, sso.ErrUsernameTaken) {
+		t.Fatalf("long name: %v", err)
+	}
+	assertRefusals(t, st, "username=Erin", "username="+strings.Repeat("x", 64))
+}
+
+// assertRefusals checks the auth.sso.refused rows carry exactly these details, in any order.
+func assertRefusals(t *testing.T, st store.Store, details ...string) {
+	t.Helper()
+	records, _, err := st.Audit().ListAuditRecords(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range records {
+		if r.Action != "auth.sso.refused" {
+			continue
+		}
+		if r.Result != "denied" || r.Resource != "kysignon" || r.UserID != "" {
+			t.Fatalf("refusal row %+v", r)
+		}
+		got = append(got, r.Details)
+	}
+	slices.Sort(got)
+	slices.Sort(details)
+	if !slices.Equal(got, details) {
+		t.Fatalf("refusal details %q, want %q", got, details)
+	}
 }
 
 // A directory rename onto another account's username, ignoring case, is refused the same way,
@@ -168,4 +203,5 @@ func TestKySignOnWebhookRefusesARenameOntoATakenUsername(t *testing.T) {
 	if u, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-frank"); err != nil || u.Username != "frank" {
 		t.Fatalf("the directory account changed: %+v %v", u, err)
 	}
+	assertRefusals(t, st, "username=erin", "username=Erin")
 }
