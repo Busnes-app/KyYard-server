@@ -71,3 +71,15 @@ func SetPolicyClockForTest(s *Server, interval time.Duration, clock func() time.
 // SetPolicyPanicHookForTest fires f once, the moment the next run's row is open, then clears
 // itself. Test-only: exercises the scheduler's panic recover.
 func SetPolicyPanicHookForTest(s *Server, f func()) { s.policies.panicHook = f }
+
+// ValidationTickForTest runs one validation tick at now; it returns when the tick, rollback
+// included, is done.
+func ValidationTickForTest(s *Server, now time.Time) { s.validationTick(context.Background(), now) }
+
+// SetValidationClockForTest makes RunValidations tick every interval and read the time from clock.
+func SetValidationClockForTest(s *Server, interval time.Duration, clock func() time.Time) {
+	s.validations.interval, s.validations.now = interval, clock
+}
+
+// ErrInspectionInvalidForTest is what an inspection that failed validation returns.
+var ErrInspectionInvalidForTest = errInspectionInvalid

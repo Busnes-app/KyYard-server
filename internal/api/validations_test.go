@@ -1,0 +1,578 @@
+package api_test
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+)
+
+// validationCaps is an agent that inspects with verdicts and health, applies and pulls.
+var validationCaps = []string{protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityContainerInspectHealth}
+
+const (
+	afterGrace  = store.ValidationGrace + time.Second
+	afterWindow = store.ValidationGrace + store.ValidationWindow + time.Second
+)
+
+var (
+	hostImage      = "sha256:" + strings.Repeat("b", 64) // newPlanHost's image, tagged nginx:1
+	hostDigest     = "nginx@sha256:" + strings.Repeat("c", 64)
+	priorContainer = strings.Repeat("e", 64)
+	newContainer   = strings.Repeat("f", 64)
+	newImage       = "sha256:" + strings.Repeat("9", 64)
+	newDigest      = "sha256:" + strings.Repeat("d", 64)
+	generationSeq  atomic.Uint64
+)
+
+// nextGeneration is an inventory generation above every one sent before, inside the store's skew.
+func nextGeneration() uint64 { return uint64(time.Now().Unix()) + 10 + generationSeq.Add(1) }
+
+// observations answers the plan-time inspector, which validation shares: every container running,
+// verified and healthy with no restarts unless on changes it.
+type observations struct {
+	mu sync.Mutex
+	by map[string]func(*protocol.ContainerInspection) error
+}
+
+func (o *observations) on(container string, f func(*protocol.ContainerInspection) error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.by == nil {
+		o.by = map[string]func(*protocol.ContainerInspection) error{}
+	}
+	o.by[container] = f
+}
+
+func (o *observations) inspect(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+	in := verifiedObservation(target)
+	in.Health = "healthy"
+	o.mu.Lock()
+	f := o.by[target.ContainerID]
+	o.mu.Unlock()
+	if f != nil {
+		if err := f(&in); err != nil {
+			return protocol.ContainerInspection{}, err
+		}
+	}
+	return in, nil
+}
+
+func health(status string) func(*protocol.ContainerInspection) error {
+	return func(in *protocol.ContainerInspection) error { in.Health = status; return nil }
+}
+
+// validationHost is a planHost whose web service already ran one succeeded manual apply of
+// revision 1 on the host image (prior): the deployment a rollback returns to. Its agent is online
+// with health, and every inspection goes through obs.
+type validationHost struct {
+	planHost
+	sock    *agentSocket
+	ctx     context.Context
+	obs     *observations
+	prior   string
+	running protocol.Container // the web container the last settle reported
+}
+
+func newValidationHost(t *testing.T) *validationHost {
+	t.Helper()
+	v := &validationHost{planHost: newPlanHost(t, validationCaps, "web"), obs: &observations{}}
+	api.SetPlanInspectorForTest(v.s, v.obs.inspect)
+	v.sock, v.ctx = v.online(t, validationCaps)
+	v.prior = v.applyByHand(t)
+	v.settle(t, v.prior, priorContainer, hostImage, "", []protocol.Image{{ID: hostImage, Tags: []string{"nginx:1"}, Digests: []string{hostDigest}}})
+	return v
+}
+
+// applyByHand plans and applies the latest revision as the planner and reads the frame.
+func (v *validationHost) applyByHand(t *testing.T) string {
+	t.Helper()
+	var d store.Deployment
+	if err := json.Unmarshal([]byte(v.do(t, "POST", v.deployments, v.planBody, 201)), &d); err != nil {
+		t.Fatal(err)
+	}
+	v.do(t, "POST", v.deployments+"/"+d.ID+"/apply", `{"confirm":"shop"}`, 202)
+	if req := v.frame(t); req.Deployment != d.ID {
+		t.Fatalf("frame for %s, want %s", req.Deployment, d.ID)
+	}
+	return d.ID
+}
+
+// frame reads the next frame as a deployment request.
+func (v *validationHost) frame(t *testing.T) protocol.DeploymentRequest {
+	t.Helper()
+	f := readEnvelope(t, v.ctx, v.sock.conn)
+	var req protocol.DeploymentRequest
+	if f.Type != protocol.TypeDeploymentApply || json.Unmarshal(f.Payload, &req) != nil {
+		t.Fatalf("expected a deployment frame, got %s", f.Type)
+	}
+	return req
+}
+
+// settle answers deployment id as the agent would: web replaced by container on image (digest for
+// a pulled service), then an inventory showing it beside images.
+func (v *validationHost) settle(t *testing.T, id, container, image, digest string, images []protocol.Image) {
+	t.Helper()
+	var d store.Deployment
+	if err := json.Unmarshal([]byte(v.do(t, "GET", v.deployments+"/"+id, "", 200)), &d); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Now().UTC().Truncate(time.Second)
+	res := protocol.DeploymentResult{Deployment: id, RequestID: d.CorrelationID, Outcome: protocol.OutcomeSucceeded,
+		Steps:    []protocol.DeploymentStep{{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}},
+		Services: []protocol.DeploymentIdentity{{Service: "web", ContainerID: container, ImageID: image, CreatedUnix: created.Unix(), ImageDigest: digest}}}
+	if err := v.st.Tenancy().SettleDeployment(context.Background(), v.ag.id, res); err != nil {
+		t.Fatal(err)
+	}
+	v.running = protocol.Container{ID: container, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: created, Mounts: []protocol.Mount{}}
+	v.inventory(t, images)
+}
+
+// inventory sends the running web container beside images.
+func (v *validationHost) inventory(t *testing.T, images []protocol.Image) {
+	t.Helper()
+	raw, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{v.running}, Images: images})
+	if _, err := v.st.Tenancy().AcceptInventory(context.Background(), v.ag.id, nextGeneration(), time.Now(), raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// automate saves an apply-mode policy, offers a newer registry digest and runs its window: the
+// policy applies the update and the agent settles it on newContainer running newImage. The host
+// keeps the old image, untagged.
+func (v *validationHost) automate(t *testing.T) (string, *store.UpdatePolicy) {
+	t.Helper()
+	v.do(t, "PUT", "/api/organizations/a/registry-policy", `{"anonymous_pull_enabled":true}`, 204)
+	api.SetDigestResolverForTest(v.s, &fakeDigests{digest: newDigest})
+	p := v.policy(t, store.PolicyModeApply)
+	v.tick(tomorrow().Add(10*time.Hour + 30*time.Minute))
+	runs := v.runs(t, "usr_planner")
+	if len(runs) != 1 || runs[0].Outcome != store.RunApplied {
+		t.Fatalf("runs: %+v", runs)
+	}
+	if req := v.frame(t); req.Deployment != runs[0].DeploymentID {
+		t.Fatalf("frame for %s, want %s", req.Deployment, runs[0].DeploymentID)
+	}
+	v.settle(t, runs[0].DeploymentID, newContainer, newImage, newDigest, []protocol.Image{{ID: hostImage, Digests: []string{hostDigest}}, {ID: newImage, Tags: []string{"nginx:1"}, Digests: []string{"nginx@" + newDigest}}})
+	return runs[0].DeploymentID, p
+}
+
+func (v *validationHost) validation(t *testing.T, deployment string) *store.Validation {
+	t.Helper()
+	var d store.Deployment
+	if err := json.Unmarshal([]byte(v.do(t, "GET", v.deployments+"/"+deployment, "", 200)), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Validation == nil {
+		t.Fatalf("deployment %s has no validation", deployment)
+	}
+	return d.Validation
+}
+
+// at runs one validation tick at the validation's start plus offset.
+func (v *validationHost) at(t *testing.T, deployment string, offset time.Duration) {
+	t.Helper()
+	api.ValidationTickForTest(v.s, v.validation(t, deployment).StartedAt.Add(offset))
+}
+
+func (v *validationHost) policyNow(t *testing.T) *store.UpdatePolicy {
+	t.Helper()
+	p, _, err := v.st.Tenancy().ReadUpdatePolicy(context.Background(), v.as("usr_planner"), v.appID())
+	if err != nil || p == nil {
+		t.Fatalf("policy: %+v %v", p, err)
+	}
+	return p
+}
+
+func (v *validationHost) deploymentCount(t *testing.T) int {
+	t.Helper()
+	var list []store.Deployment
+	if err := json.Unmarshal([]byte(v.do(t, "GET", v.deployments, "", 200)), &list); err != nil {
+		t.Fatal(err)
+	}
+	return len(list)
+}
+
+func (v *validationHost) pauseRows(t *testing.T) int {
+	t.Helper()
+	n := 0
+	for _, r := range policyAuditRows(t, v.planHost, v.admin) {
+		if r.Action == store.AuditPolicyPaused {
+			n++
+		}
+	}
+	return n
+}
+
+func TestValidationRecordsAHealthyUpdate(t *testing.T) {
+	v := newValidationHost(t)
+	id, _ := v.automate(t)
+	got := v.validation(t, id)
+	if !got.Automated || got.IsRollback || got.PolicyRunID == "" || got.Phase != store.PhaseGrace || !got.ObserveUntil.Equal(got.StartedAt.Add(store.ValidationGrace+store.ValidationWindow)) {
+		t.Fatalf("opened: %+v", got)
+	}
+	api.ValidationTickForTest(v.s, got.StartedAt.Add(store.ValidationGrace-time.Second))
+	if got := v.validation(t, id); got.Phase != store.PhaseGrace {
+		t.Fatalf("observed during grace: %+v", got)
+	}
+	v.at(t, id, afterGrace)
+	if got := v.validation(t, id); got.Phase != store.PhaseObserving || got.Verdict != "" {
+		t.Fatalf("after grace: %+v", got)
+	}
+	v.at(t, id, afterWindow)
+	got = v.validation(t, id)
+	if got.Phase != store.PhaseDone || got.Verdict != store.VerdictHealthy || got.Rollback != nil || got.FinishedAt == nil {
+		t.Fatalf("finished: %+v", got)
+	}
+	if p := v.policyNow(t); p.Status != store.PolicyActive {
+		t.Fatalf("policy: %+v", p)
+	}
+	audited := false
+	for _, r := range policyAuditRows(t, v.planHost, v.admin) {
+		if r.Action == store.AuditValidation && r.Resource == v.appID()+"/deployments/"+id && r.UserID == "system" && r.Result == "success" && r.CorrelationID == got.CorrelationID {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Fatal("no application.validation row")
+	}
+}
+
+// An unhealthy update is rolled back to the prior apply's image, pinned by ID, as the policy's
+// creator; the policy pauses with one audit row (Review Focus 1).
+func TestValidationRollsBackAnUnhealthyUpdate(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, health("unhealthy"))
+	id, _ := v.automate(t)
+	v.at(t, id, afterGrace)
+	req := v.frame(t)
+	if req.Revision != 1 || len(req.Services) != 1 || req.Services[0].ImageID != hostImage || req.Services[0].Pull != nil || req.Services[0].Replaces.ContainerID != newContainer {
+		t.Fatalf("rollback frame: %+v", req)
+	}
+	got := v.validation(t, id)
+	if got.Verdict != store.VerdictUnhealthy || got.Detail != "web" || got.Rollback == nil || *got.Rollback != (store.ValidationRollback{DeploymentID: req.Deployment, Revision: 1, Outcome: store.RollbackApplied}) {
+		t.Fatalf("validation: %+v %+v", got, got.Rollback)
+	}
+	var rb store.Deployment
+	if err := json.Unmarshal([]byte(v.do(t, "GET", v.deployments+"/"+req.Deployment, "", 200)), &rb); err != nil {
+		t.Fatal(err)
+	}
+	if rb.State != "applying" || rb.CreatedBy != "usr_planner" || rb.AppliedBy != "usr_planner" || rb.CorrelationID == got.CorrelationID || rb.Plan.Services[0].ImageID != hostImage {
+		t.Fatalf("rollback deployment: %+v", rb)
+	}
+	if pol := v.policyNow(t); pol.Status != store.PolicyPaused || pol.PausedReason != store.ValidationReasonRolledBack {
+		t.Fatalf("policy: %+v", pol)
+	}
+	if n := v.pauseRows(t); n != 1 {
+		t.Fatalf("pause rows: %d", n)
+	}
+	if runs := v.runs(t, "usr_planner"); runs[0].Outcome != store.RunApplied || runs[0].DeploymentID != id {
+		t.Fatalf("the run changed: %+v", runs[0])
+	}
+}
+
+func TestValidationStopsWhenThePriorImagesAreGone(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, health("unhealthy"))
+	id, _ := v.automate(t)
+	v.inventory(t, []protocol.Image{{ID: newImage, Tags: []string{"nginx:1"}, Digests: []string{"nginx@" + newDigest}}})
+	v.at(t, id, afterGrace)
+	got := v.validation(t, id)
+	if got.Verdict != store.VerdictUnhealthy || got.Rollback == nil || *got.Rollback != (store.ValidationRollback{Outcome: store.RollbackIneligible, Detail: store.RollbackPriorImagesMissing}) {
+		t.Fatalf("validation: %+v %+v", got, got.Rollback)
+	}
+	if pol := v.policyNow(t); pol.Status != store.PolicyPaused || pol.PausedReason != store.ValidationReasonNotRolledBack+store.RollbackPriorImagesMissing {
+		t.Fatalf("policy: %+v", pol)
+	}
+	if n := v.deploymentCount(t); n != 2 {
+		t.Fatalf("deployments: %d", n)
+	}
+}
+
+// A manual apply gets its verdict and nothing else.
+func TestValidationOfAManualApplyOnlyRecords(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(priorContainer, health("unhealthy"))
+	v.at(t, v.prior, afterGrace)
+	got := v.validation(t, v.prior)
+	if got.Automated || got.Verdict != store.VerdictUnhealthy || got.Detail != "web" || got.Rollback != nil {
+		t.Fatalf("manual: %+v", got)
+	}
+	if n := v.deploymentCount(t); n != 1 {
+		t.Fatalf("deployments: %d", n)
+	}
+}
+
+func TestValidationOfAnOfflineHostIsUnverifiable(t *testing.T) {
+	v := newValidationHost(t)
+	id, _ := v.automate(t)
+	v.sock.conn.CloseNow()
+	waitFor(t, func() bool { return !v.s.Connected(v.ag.id) })
+	v.at(t, id, afterGrace)
+	got := v.validation(t, id)
+	if got.Verdict != store.VerdictUnverifiable || got.Detail != store.ValidationDetailUnobserved || got.Rollback != nil {
+		t.Fatalf("offline: %+v", got)
+	}
+	if pol := v.policyNow(t); pol.Status != store.PolicyPaused || pol.PausedReason != store.ValidationReasonUnverified+store.ValidationDetailUnobserved {
+		t.Fatalf("policy: %+v", pol)
+	}
+}
+
+func TestValidationWithoutTheHealthCapabilityIsUnverifiable(t *testing.T) {
+	v := newValidationHost(t)
+	id, _ := v.automate(t)
+	if err := v.st.Tenancy().SetEndpointCapabilities(context.Background(), v.ag.id, policyCaps); err != nil {
+		t.Fatal(err)
+	}
+	v.at(t, id, afterGrace)
+	if got := v.validation(t, id); got.Verdict != store.VerdictUnverifiable || got.Detail != store.ValidationDetailNoHealth {
+		t.Fatalf("no health: %+v", got)
+	}
+}
+
+func TestValidationOfAnInvalidInspectionIsUnverifiable(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, func(*protocol.ContainerInspection) error { return api.ErrInspectionInvalidForTest })
+	id, _ := v.automate(t)
+	v.at(t, id, afterGrace)
+	if got := v.validation(t, id); got.Verdict != store.VerdictUnverifiable || got.Detail != store.ValidationDetailInvalid {
+		t.Fatalf("invalid inspection: %+v", got)
+	}
+	if pol := v.policyNow(t); pol.PausedReason != store.ValidationReasonUnverified+store.ValidationDetailInvalid {
+		t.Fatalf("policy: %+v", pol)
+	}
+}
+
+// Over the real socket the loop's grant names the system actor in the wire's identifier form, and
+// a health agent's answer becomes the baseline.
+func TestValidationInspectsOverTheAgentSocketAsTheSystem(t *testing.T) {
+	v := newValidationHost(t)
+	api.SetPlanInspectorForTest(v.s, nil)
+	start := v.validation(t, v.prior).StartedAt
+	done := make(chan struct{})
+	go func() { defer close(done); api.ValidationTickForTest(v.s, start.Add(afterGrace)) }()
+	g := grant(t, v.ctx, v.sock)
+	if g.Actor != "system-validation" || g.Validate(time.Now()) != nil || g.Target.ContainerID != priorContainer {
+		t.Fatalf("grant: %+v", g)
+	}
+	in := verifiedObservation(g.Target)
+	in.Health, in.RestartCount = "healthy", 2
+	writeEnvelope(t, v.ctx, v.sock.conn, protocol.TypeInspectionResult, protocol.InspectionResult{Request: g.Request, Status: "ok", Result: &in})
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the tick never finished")
+	}
+	pending, err := v.st.Tenancy().PendingValidations(context.Background())
+	if err != nil || len(pending) != 1 || pending[0].Phase != store.PhaseObserving || pending[0].Baseline["web"] != (store.ServiceBaseline{ContainerID: priorContainer, RestartCount: 2}) {
+		t.Fatalf("pending: %+v %v", pending, err)
+	}
+}
+
+// A restart mid-window resumes the window; a rollback already dispatched is never sent again.
+func TestValidationResumesAfterARestart(t *testing.T) {
+	v := newValidationHost(t)
+	id, _ := v.automate(t)
+	v.at(t, id, afterGrace)
+	if _, err := v.st.Tenancy().ReconcileAfterStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.validation(t, id); got.Phase != store.PhaseObserving {
+		t.Fatalf("the open window did not survive the restart: %+v", got)
+	}
+	v.at(t, id, afterWindow)
+	if got := v.validation(t, id); got.Verdict != store.VerdictHealthy {
+		t.Fatalf("resumed: %+v", got)
+	}
+}
+
+func TestValidationNeverDispatchesARollbackTwice(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, health("unhealthy"))
+	id, _ := v.automate(t)
+	v.at(t, id, afterGrace)
+	first := v.frame(t)
+	if _, err := v.st.Tenancy().ReconcileAfterStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	v.at(t, id, afterWindow)
+	api.ValidationTickForTest(v.s, time.Now().Add(time.Hour))
+	got := v.validation(t, id)
+	if got.Rollback == nil || got.Rollback.DeploymentID != first.Deployment || got.Rollback.Outcome != store.RollbackApplied {
+		t.Fatalf("rollback: %+v", got.Rollback)
+	}
+	if n := v.deploymentCount(t); n != 3 {
+		t.Fatalf("deployments: %d", n)
+	}
+}
+
+// Shutdown waits for a rollback in flight: done closes only once its frame is sent and recorded.
+func TestRunValidationsWaitsForAnInFlightRollback(t *testing.T) {
+	v := newValidationHost(t)
+	entered, gate := make(chan struct{}, 1), make(chan struct{})
+	var calls atomic.Int32
+	v.obs.on(newContainer, func(in *protocol.ContainerInspection) error {
+		in.Health = "unhealthy"
+		if calls.Add(1) == 2 { // the first is the validation's poll, the second the rollback plan's
+			entered <- struct{}{}
+			<-gate
+		}
+		return nil
+	})
+	id, _ := v.automate(t)
+	start := v.validation(t, id).StartedAt
+	api.SetValidationClockForTest(v.s, 10*time.Millisecond, func() time.Time { return start.Add(afterGrace) })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go v.s.RunValidations(ctx, done)
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no rollback reached its plan")
+	}
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("done closed with a rollback in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(gate)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("done never closed")
+	}
+	req := v.frame(t)
+	if got := v.validation(t, id); got.Rollback == nil || got.Rollback.Outcome != store.RollbackApplied || got.Rollback.DeploymentID != req.Deployment {
+		t.Fatalf("rollback: %+v", got.Rollback)
+	}
+}
+
+// Review Focus 2: a rollback's own failed validation is recorded and changes nothing else.
+func TestValidationNeverRollsBackARollback(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, health("unhealthy"))
+	id, _ := v.automate(t)
+	v.at(t, id, afterGrace)
+	req := v.frame(t)
+	back := strings.Repeat("7", 64)
+	v.obs.on(back, health("unhealthy"))
+	v.settle(t, req.Deployment, back, hostImage, "", []protocol.Image{{ID: hostImage, Digests: []string{hostDigest}}, {ID: newImage, Tags: []string{"nginx:1"}, Digests: []string{"nginx@" + newDigest}}})
+	if got := v.validation(t, req.Deployment); !got.IsRollback || got.Automated {
+		t.Fatalf("rollback's validation: %+v", got)
+	}
+	v.at(t, req.Deployment, afterGrace)
+	if got := v.validation(t, req.Deployment); got.Verdict != store.VerdictUnhealthy || got.Rollback != nil {
+		t.Fatalf("rollback's verdict: %+v", got)
+	}
+	if n := v.deploymentCount(t); n != 3 {
+		t.Fatalf("deployments: %d", n)
+	}
+	if pol := v.policyNow(t); pol.PausedReason != store.ValidationReasonRolledBack || v.pauseRows(t) != 1 {
+		t.Fatalf("policy: %+v, pause rows %d", pol, v.pauseRows(t))
+	}
+}
+
+// Review Focus 3: a manual apply inside an automated window makes the automated one changed.
+func TestValidationOfAnUpdateReplacedByAManualApply(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, health("unhealthy"))
+	id, _ := v.automate(t)
+	manual := v.applyByHand(t)
+	v.settle(t, manual, strings.Repeat("6", 64), newImage, "", []protocol.Image{{ID: hostImage, Digests: []string{hostDigest}}, {ID: newImage, Tags: []string{"nginx:1"}, Digests: []string{"nginx@" + newDigest}}})
+	v.at(t, id, afterGrace)
+	if got := v.validation(t, id); got.Verdict != store.VerdictChanged || got.Detail != "web" || got.Rollback != nil {
+		t.Fatalf("automated: %+v", got)
+	}
+	if got := v.validation(t, manual); got.Automated || got.Verdict == store.VerdictChanged {
+		t.Fatalf("manual: %+v", got)
+	}
+	if pol := v.policyNow(t); pol.Status != store.PolicyActive {
+		t.Fatalf("policy: %+v", pol)
+	}
+	if n := v.deploymentCount(t); n != 3 {
+		t.Fatalf("deployments: %d", n)
+	}
+}
+
+// Review Focus 4: a new connection mid-window carries on the same window.
+func TestValidationSurvivesAnAgentReconnect(t *testing.T) {
+	v := newValidationHost(t)
+	id, _ := v.automate(t)
+	v.at(t, id, afterGrace)
+	v.sock.conn.CloseNow()
+	waitFor(t, func() bool { return !v.s.Connected(v.ag.id) })
+	v.at(t, id, afterGrace+store.ValidationPoll)
+	if got := v.validation(t, id); got.Phase != store.PhaseObserving {
+		t.Fatalf("offline mid-window ended it: %+v", got)
+	}
+	v.sock, v.ctx = v.online(t, validationCaps)
+	v.at(t, id, afterWindow)
+	if got := v.validation(t, id); got.Verdict != store.VerdictHealthy {
+		t.Fatalf("after the reconnect: %+v", got)
+	}
+}
+
+// Review Focus 5: with the policy or the adoption gone mid-window, a verdict and nothing else.
+func TestValidationWhenThePolicyOrTheAdoptionGoes(t *testing.T) {
+	t.Run("policy deleted", func(t *testing.T) {
+		v := newValidationHost(t)
+		v.obs.on(newContainer, health("unhealthy"))
+		id, _ := v.automate(t)
+		if err := v.st.Tenancy().DeleteUpdatePolicy(context.Background(), v.as("usr_planner"), v.appID()); err != nil {
+			t.Fatal(err)
+		}
+		v.at(t, id, afterGrace)
+		if got := v.validation(t, id); got.Verdict != store.VerdictUnhealthy || got.PolicyRunID != "" || got.Rollback != nil {
+			t.Fatalf("policy deleted: %+v", got)
+		}
+		if n := v.deploymentCount(t); n != 2 {
+			t.Fatalf("deployments: %d", n)
+		}
+	})
+	t.Run("application released", func(t *testing.T) {
+		v := newValidationHost(t)
+		v.obs.on(newContainer, health("unhealthy"))
+		id, _ := v.automate(t)
+		var d store.Deployment
+		if err := json.Unmarshal([]byte(v.do(t, "GET", v.deployments+"/"+id, "", 200)), &d); err != nil {
+			t.Fatal(err)
+		}
+		v.do(t, "DELETE", strings.TrimSuffix(v.deployments, "/deployments")+"/adoption", `{"instance_id":"`+d.InstanceID+`","confirm":"shop"}`, 204)
+		v.at(t, id, afterGrace)
+		if got := v.validation(t, id); got.Verdict != store.VerdictChanged || got.Detail != store.ValidationDetailReleased || got.Rollback != nil {
+			t.Fatalf("released: %+v", got)
+		}
+		if pol := v.policyNow(t); pol.Status != store.PolicyActive {
+			t.Fatalf("policy: %+v", pol)
+		}
+	})
+}
+
+// A verdict recorded before a restart with its rollback decision still owed is decided on the next
+// tick.
+func TestValidationDecidesARollbackOwedFromBeforeARestart(t *testing.T) {
+	v := newValidationHost(t)
+	id, _ := v.automate(t)
+	if decide, err := v.st.Tenancy().FinishValidation(context.Background(), id, store.VerdictUnhealthy, "web"); err != nil || !decide {
+		t.Fatalf("finish: %v %v", decide, err)
+	}
+	api.ValidationTickForTest(v.s, time.Now())
+	req := v.frame(t)
+	if req.Revision != 1 || req.Services[0].ImageID != hostImage {
+		t.Fatalf("rollback frame: %+v", req)
+	}
+	if got := v.validation(t, id); got.Rollback == nil || got.Rollback.Outcome != store.RollbackApplied || got.Rollback.DeploymentID != req.Deployment {
+		t.Fatalf("rollback: %+v", got.Rollback)
+	}
+	if pol := v.policyNow(t); pol.PausedReason != store.ValidationReasonRolledBack {
+		t.Fatalf("policy: %+v", pol)
+	}
+}

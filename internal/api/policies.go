@@ -206,7 +206,7 @@ func (s *Server) runPolicy(ctx context.Context, sp store.ScheduledPolicy, opened
 		s.policies.panicHook = nil
 		hook()
 	}
-	outcome, deployment, detail := s.performPolicyRun(ctx, a, pol)
+	outcome, deployment, detail := s.performPolicyRun(ctx, a, pol, run)
 	err = ts.FinishPolicyRun(ctx, run, outcome, deployment, detail)
 	if errors.Is(err, store.ErrNotFound) {
 		log.Printf("[POLICY] policy %s run %s: the policy was deleted during the run", pol.ID, run)
@@ -222,7 +222,7 @@ func (s *Server) runPolicy(ctx context.Context, sp store.ScheduledPolicy, opened
 // performPolicyRun is one run's work as a: authorize, check, plan and, in apply mode, apply and
 // send, each step re-authorized by the store. It returns the outcome, the deployment it made and
 // a fixed detail.
-func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol store.UpdatePolicy) (outcome, deployment, detail string) {
+func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol store.UpdatePolicy, run string) (outcome, deployment, detail string) {
 	ts := s.store.Tenancy()
 	app := pol.ApplicationID
 	if err := ts.CheckImageUpdateAccess(ctx, a, app); err != nil {
@@ -303,6 +303,11 @@ func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol
 	if err != nil {
 		failed, _, why := policyFailure(err)
 		return failed, d.ID, why
+	}
+	// Named before the frame leaves: a settle that beats FinishPolicyRun still finds this run and
+	// validates the deployment as automated. Unnamed, it is validated as a manual apply.
+	if err := ts.AttachPolicyRunDeployment(ctx, run, applied.ID); err != nil {
+		log.Printf("[POLICY] run %s: naming deployment %s: %v", run, applied.ID, err)
 	}
 	if !s.agents.deliver(applied.EndpointID, envelope(protocol.TypeDeploymentApply, frame)) {
 		if err := ts.FailDeployment(ctx, applied.ID, "the endpoint disconnected before the deployment was sent"); err != nil {
