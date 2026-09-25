@@ -1,0 +1,283 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
+)
+
+const kubeUID = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+// kubernetesPlanFixture maps a two-service application (web with a secret, api pinned by digest)
+// to namespace shop of an active cluster, with anonymous pulls on.
+func kubernetesPlanFixture(t *testing.T, spec ApplicationSpec, values map[string]string) (*SQLStore, TenantAccess, *Application, string, *ApplicationMapping) {
+	t.Helper()
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	cluster := activeCluster(t, ts, a, []string{"shop"}, nil)
+	if err := ts.SetAnonymousPull(ctx, a, true); err != nil {
+		t.Fatal(err)
+	}
+	app := kubernetesApp(t, st, a, spec, values)
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, MappingRequest{EndpointID: cluster, Namespace: "shop"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, a, app, cluster, m
+}
+
+func twoServiceSpec() ApplicationSpec {
+	return ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{
+		{Name: "web", Image: "ghcr.io/org/web:1", Restart: "always", Ports: []ApplicationPort{{Target: 80, Published: 8080, Protocol: "tcp"}}, Environment: map[string]ApplicationSecretRef{"TOKEN": {SecretRef: "web.TOKEN"}}},
+		{Name: "api", Image: "ghcr.io/org/api@" + digestOf("a")},
+	}}
+}
+
+func kubePlanRequest(m *ApplicationMapping) PlanRequest {
+	return PlanRequest{InstanceID: m.InstanceID, MappingVersion: m.Version, Revision: m.Preview.Revision, Confirm: m.Preview.Project, MaxFrameBytes: protocol.MaxDeploymentRequestBytes}
+}
+
+// A Kubernetes plan resolves every service's image at the registry, names each service's
+// objects in the instance's namespace, and builds a frame with the target, the pinned pulls and
+// the secret keys, and no Docker field.
+func TestKubernetesPlanAndFrame(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "secret-canary"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("b")}}}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), nil, imageCheckKey, false); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a cluster plan without a resolver: %v", err)
+	}
+	pinned := kubePlanRequest(m)
+	pinned.PinImages = map[string]string{"web": digestOf("c")}
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, pinned, resolver, imageCheckKey, false); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a cluster plan with pinned image IDs: %v", err)
+	}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolver.called()) != 1 {
+		t.Fatalf("registry calls %v: the pinned api needs none", resolver.called())
+	}
+	web, api := d.Plan.Services[0], d.Plan.Services[1]
+	if d.Plan.Namespace != "shop" || d.Plan.Project != "shop-front" || web.Object == nil || *web.Object != (KubernetesObject{Namespace: "shop", Name: "shop-front-web"}) || api.Object.Name != "shop-front-api" {
+		t.Fatalf("plan %+v", d.Plan)
+	}
+	if web.PullReference != "ghcr.io/org/web@"+digestOf("b") || web.PullDigest != digestOf("b") || api.PullDigest != digestOf("a") || web.ImageID != "" || web.ContainerID != "" || web.Replaces != (protocol.InspectionTarget{}) || len(web.Mounts) != 0 {
+		t.Fatalf("services %+v %+v", web, api)
+	}
+	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop-front", imageCheckKey, protocol.MaxDeploymentRequestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.State != "applying" || req.Kubernetes == nil || *req.Kubernetes != (protocol.KubernetesTarget{Namespace: "shop", ApplicationID: app.ID, InstanceID: m.InstanceID, SpecDigest: d.SpecDigest}) || len(req.Registries) != 0 || len(req.Volumes) != 0 {
+		t.Fatalf("frame %+v", req)
+	}
+	s := req.Services[0]
+	if s.Pull == nil || s.Pull.Tag != "" || s.ContainerName != "" || s.Env["TOKEN"] != "secret-canary" || !slices.Equal(s.SecretKeys, []string{"TOKEN"}) || s.Ports[0] != (protocol.Port{Container: 80, Host: 8080, Protocol: "tcp"}) {
+		t.Fatalf("frame service %+v", s)
+	}
+	if err := req.ValidateFor(protocol.RuntimeKubernetes, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	_ = cluster
+}
+
+// Every definition a Deployment cannot express stops at the plan with its code, all at once,
+// and so does a namespace the manifest no longer grants.
+func TestKubernetesPlanBlockers(t *testing.T) {
+	spec := ApplicationSpec{Kind: "compose.v1", Volumes: []DeclaredVolume{{Name: "data"}}, Services: []ApplicationService{
+		{Name: "db", Image: "ghcr.io/org/db:1", Volumes: []ApplicationVolume{{Kind: "named", Source: "data", Target: "/var/lib/db"}}},
+		{Name: "web", Image: "ghcr.io/org/web:1", Restart: "on-failure", Ports: []ApplicationPort{{Target: 80, Published: 80, HostIP: "127.0.0.1", Protocol: "tcp"}}},
+		{Name: "api-", Image: "ghcr.io/org/api:1"},
+		{Name: "ok", Image: "ghcr.io/org/ok:1"},
+	}}
+	st, a, app, cluster, m := kubernetesPlanFixture(t, spec, nil)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{}}
+	_, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	var blocked *PreflightBlockedError
+	if !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"kubernetes_unsupported"}) {
+		t.Fatalf("blocked: %v", err)
+	}
+	want := map[string][]string{"db": {"k8s_volume"}, "web": {"k8s_host_ip", "k8s_restart"}, "api-": {"k8s_name"}}
+	if len(blocked.Services) != len(want) {
+		t.Fatalf("services %+v", blocked.Services)
+	}
+	for _, s := range blocked.Services {
+		if !slices.Equal(s.Unsupported, want[s.Name]) || !slices.Equal(s.Blockers, []string{"kubernetes_unsupported"}) {
+			t.Errorf("%s: %+v", s.Name, s)
+		}
+	}
+	if len(resolver.called()) != 0 {
+		t.Fatal("a blocked plan asked the registry")
+	}
+	if _, err := ts.SetEndpointDeployNamespaces(ctx, a, cluster, []string{"other"}); err != nil {
+		t.Fatal(err)
+	}
+	pre, err := ts.PreflightApplication(ctx, a, app.ID)
+	if err != nil || !slices.Contains(pre.Blockers, "k8s_namespace") || pre.Executable {
+		t.Fatalf("namespace no longer granted: %+v %v", pre, err)
+	}
+}
+
+// A cluster agent needs kubernetes.deploy and nothing else to take a plan.
+func TestKubernetesPlanCapability(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if err := ts.SetEndpointCapabilities(ctx, cluster, []string{protocol.CapabilityKubernetesInventory}); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("b")}}}
+	_, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	var blocked *PreflightBlockedError
+	if !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"agent_deploy_unsupported"}) {
+		t.Fatalf("without kubernetes.deploy: %v", err)
+	}
+}
+
+// kubeIdentity is what a cluster agent reports for a planned service.
+func kubeIdentity(ps PlannedService) protocol.DeploymentIdentity {
+	return protocol.DeploymentIdentity{Service: ps.Name, Kind: protocol.KindDeployment, Namespace: ps.Object.Namespace, Name: ps.Object.Name, UID: kubeUID, Generation: 1, ImageDigest: ps.PullDigest}
+}
+
+// A cluster result settles with Deployment identities in the planned namespace, names and
+// digests; anything else is refused, and a success advances the instance's revisions.
+func TestSettleKubernetesDeployment(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("b")}}}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop-front", imageCheckKey, protocol.MaxDeploymentRequestBytes); err != nil {
+		t.Fatal(err)
+	}
+	result := func(ids ...protocol.DeploymentIdentity) protocol.DeploymentResult {
+		return protocol.DeploymentResult{Deployment: d.ID, RequestID: d.CorrelationID, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: ids}
+	}
+	web, api := kubeIdentity(d.Plan.Services[0]), kubeIdentity(d.Plan.Services[1])
+	for name, bad := range map[string]protocol.DeploymentIdentity{
+		"other namespace": func() protocol.DeploymentIdentity { i := web; i.Namespace = "billing"; return i }(),
+		"other name":      func() protocol.DeploymentIdentity { i := web; i.Name = "shop-front-api"; return i }(),
+		"other digest":    func() protocol.DeploymentIdentity { i := web; i.ImageDigest = digestOf("f"); return i }(),
+		"a container":     {Service: "web", ContainerID: strings.Repeat("e", 64), ImageID: digestOf("e"), CreatedUnix: 1700000000, ImageDigest: digestOf("b")},
+	} {
+		if err := ts.SettleDeployment(ctx, cluster, result(bad, api)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := ts.SettleDeployment(ctx, cluster, result(web)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a success missing a service: %v", err)
+	}
+	if err := ts.SettleDeployment(ctx, cluster, result(web, api)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ts.ReadDeployment(ctx, a, app.ID, d.ID)
+	if err != nil || got.State != protocol.OutcomeSucceeded || len(got.Result.Services) != 2 || got.Result.Services[0].UID != kubeUID || got.Validation == nil {
+		t.Fatalf("settled: %+v %v", got, err)
+	}
+	instance, err := ts.ReadApplicationInstance(ctx, a, app.ID, m.InstanceID)
+	if err != nil || instance.CurrentRevision != 1 || instance.PreviousRevision != 0 {
+		t.Fatalf("instance: %+v %v", instance, err)
+	}
+	// The instance has no recorded container to go back to.
+	_, reason, err := ts.RollbackTarget(ctx, a, app.ID, d.ID)
+	if err != nil || reason != RollbackNoPriorIdentity {
+		t.Fatalf("rollback: %q %v", reason, err)
+	}
+}
+
+// Removing a cluster instance names its services and target, not containers; a success releases
+// the instance and marks the application removed.
+func TestRemoveKubernetesApplication(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	d, req, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: m.InstanceID, Confirm: "shop-front"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Plan.Namespace != "shop" || len(req.Containers) != 0 || !slices.Equal(req.Services, []string{"api", "web"}) || req.Kubernetes == nil || req.Kubernetes.Namespace != "shop" || req.Kubernetes.InstanceID != m.InstanceID {
+		t.Fatalf("removal %+v %+v", d.Plan, req)
+	}
+	if err := req.ValidateFor(protocol.RuntimeKubernetes, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	res := protocol.DeploymentResult{Deployment: d.ID, RequestID: d.CorrelationID, Outcome: protocol.OutcomeSucceeded, Services: []protocol.DeploymentIdentity{}, Steps: []protocol.DeploymentStep{
+		{Service: "api", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeSucceeded},
+		{Service: "api", Step: protocol.StepRemove, Outcome: protocol.OutcomeSkipped},
+		{Service: "web", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeSucceeded},
+		{Service: "web", Step: protocol.StepRemove, Outcome: protocol.OutcomeSucceeded},
+	}}
+	bad := res
+	bad.Steps = append(slices.Clone(res.Steps), protocol.DeploymentStep{Service: "web", Step: protocol.StepStop, Outcome: protocol.OutcomeSucceeded})
+	if err := ts.SettleDeployment(ctx, cluster, bad); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a Docker step in a cluster removal: %v", err)
+	}
+	if err := ts.SettleDeployment(ctx, cluster, res); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.ReadApplicationInstance(ctx, a, app.ID, m.InstanceID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("instance kept: %v", err)
+	}
+	var removed int
+	if err := st.db.QueryRowContext(ctx, st.rebind(`SELECT COUNT(*) FROM applications WHERE id=? AND removed_at IS NOT NULL`), app.ID).Scan(&removed); err != nil || removed != 1 {
+		t.Fatalf("application not marked removed: %d %v", removed, err)
+	}
+	records, _, err := st.Audit().ListAuditRecords(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(records, func(r *AuditRecord) bool {
+		return r.Action == string(permissions.ApplicationDestroy) && strings.Contains(r.Details, "services=2")
+	}) {
+		t.Fatal("the removal's audit row does not count its services")
+	}
+}
+
+// A cluster instance's update check reads the running digest off its Deployment in the
+// inventory, only when the Deployment carries the instance's label.
+func TestKubernetesImageCheckReadsTheWorkload(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1"}}}, nil)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("c")}}}
+	check := func() ImageCheck {
+		t.Helper()
+		out, err := ts.CheckImageUpdates(ctx, a, app.ID, resolver, imageCheckKey, false)
+		if err != nil || len(out.Services) != 1 {
+			t.Fatalf("check: %+v %v", out, err)
+		}
+		return out.Services[0]
+	}
+	if c := check(); c.Verdict != "unknown_local" {
+		t.Fatalf("no workload yet: %+v", c)
+	}
+	running := protocol.Workload{Kind: protocol.KindDeployment, Namespace: "shop", Name: "shop-front-web", Images: []string{"ghcr.io/org/web@" + digestOf("b")}, Instance: m.InstanceID, Application: app.ID}
+	foreign := running
+	foreign.Instance = ""
+	putClusterInventory(t, ts, cluster, []protocol.Workload{foreign})
+	if c := check(); c.Verdict != "unknown_local" {
+		t.Fatalf("an unlabelled Deployment was read: %+v", c)
+	}
+	putClusterInventory(t, ts, cluster, []protocol.Workload{running})
+	if c := check(); c.Verdict != "update_available" || c.LocalDigest != digestOf("b") || c.RemoteDigest != digestOf("c") {
+		t.Fatalf("labelled Deployment: %+v", c)
+	}
+}

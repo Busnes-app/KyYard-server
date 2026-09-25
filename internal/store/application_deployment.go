@@ -53,6 +53,16 @@ type PlannedService struct {
 	Mounts []protocol.Mount `json:"mounts,omitempty"`
 	// DroppedMounts are the replaced container's mounts the recreate leaves off, for approval.
 	DroppedMounts []protocol.Mount `json:"dropped_mounts,omitempty"`
+	// Object is the Deployment (and Service) a Kubernetes plan applies for this service; nil on
+	// Docker. Replaces, ImageID and Mounts are then empty and the service always pulls.
+	Object *KubernetesObject `json:"object,omitempty"`
+}
+
+// KubernetesObject names a service's objects: the Deployment and Service <name>, the
+// ConfigMap <name>-env and the Secret <name>-secret.
+type KubernetesObject struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }
 
 // DeploymentPlan is what a row decided: the services an apply replaces, or the containers a
@@ -63,6 +73,8 @@ type DeploymentPlan struct {
 	Containers []RemovalPlanTarget `json:"containers,omitempty"`
 	// Volumes are the named volumes the agent ensures, host names in first-use order.
 	Volumes []string `json:"volumes,omitempty"`
+	// Namespace is set exactly for a Kubernetes plan or removal.
+	Namespace string `json:"namespace,omitempty"`
 }
 type RemovalPlanTarget struct {
 	Service     string `json:"service"`
@@ -161,6 +173,15 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	if len(r.Update) > 0 && len(r.PinImages) > 0 {
 		return nil, ErrInvalid
 	}
+	// A Kubernetes plan resolves every image at the registry, so it takes the update path. This
+	// read only picks the path: both paths re-read the instance under authorization and refuse
+	// one whose runtime changed since.
+	var namespace string
+	_ = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT namespace FROM application_instances WHERE organization_id=? AND environment_id=? AND application_id=?`), a.OrganizationID, a.EnvironmentID, id.String()).Scan(&namespace)
+	kube := namespace != ""
+	if kube && (len(r.PinImages) > 0 || resolver == nil) {
+		return nil, ErrInvalid
+	}
 	if len(r.Update) > 0 {
 		sorted := slices.Sorted(slices.Values(r.Update))
 		if len(r.Update) > protocol.MaxDeploymentServices || len(slices.Compact(sorted)) != len(r.Update) || resolver == nil {
@@ -174,11 +195,14 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	planID := uuid.NewString()
 	target := id.String() + "/deployments/" + planID
 	var out *Deployment
-	if len(r.Update) == 0 {
+	if len(r.Update) == 0 && !kube {
 		err = t.withTenantTarget(ctx, a, permissions.ApplicationDeploy, target, func(tx *sql.Tx) error {
 			dr, err := t.draftPlan(ctx, tx, a, id.String(), planID, r, true)
 			if err != nil {
 				return err
+			}
+			if dr.m.Runtime != protocol.RuntimeDocker {
+				return ErrAdoptionChanged
 			}
 			if err := blocked(dr.blockers, dr.services...); err != nil {
 				return err
@@ -206,15 +230,25 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 			return err
 		}
 		d, m, blockers := dr.d, dr.m, dr.blockers
+		if (m.Runtime == protocol.RuntimeKubernetes) != kube {
+			return ErrAdoptionChanged
+		}
 		services = dr.services
 		capabilities = dr.capabilities
 		anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
 		if err != nil {
 			return err
 		}
-		for _, name := range r.Update {
+		updates := r.Update
+		if kube {
+			updates = nil
+			for _, ps := range d.Plan.Services {
+				updates = append(updates, ps.Name)
+			}
+		}
+		for _, name := range updates {
 			i := slices.IndexFunc(d.Plan.Services, func(ps PlannedService) bool { return ps.Name == name })
-			if i < 0 || m.Bindings[name] == "" {
+			if i < 0 || (!kube && m.Bindings[name] == "") {
 				blockers = append(blockers, "update_not_mapped")
 				continue
 			}
@@ -396,6 +430,11 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 		}
 	}
 	inspected := inspectsVerdicts(capabilities)
+	var objects map[string]string
+	if m.Runtime == protocol.RuntimeKubernetes {
+		plan.Namespace = m.Namespace
+		objects = protocol.KubernetesNames(m.Preview.Project, spec.serviceNames())
+	}
 	var refused []BlockedService
 	for i, s := range spec.Services {
 		row := p.Services[i]
@@ -427,6 +466,9 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 		}
 		if row.InspectionTarget != nil {
 			ps.Replaces = *row.InspectionTarget
+		}
+		if plan.Namespace != "" {
+			ps.Object = &KubernetesObject{Namespace: plan.Namespace, Name: objects[s.Name]}
 		}
 		plan.Services = append(plan.Services, ps)
 	}
@@ -462,8 +504,15 @@ func inspectsVerdicts(capabilities map[string]bool) bool {
 }
 
 // capabilityBlockers refuses a plan the endpoint's agent could not run: no deployments, no live
-// inspection for the plan to check, or a pull without deployment.pull. Apply checks again.
+// inspection for the plan to check, or a pull without deployment.pull. Apply checks again. A
+// Kubernetes plan needs kubernetes.deploy only: the kubelet pulls, and nothing is inspected.
 func capabilityBlockers(capabilities map[string]bool, plan DeploymentPlan) []string {
+	if plan.Namespace != "" {
+		if !capabilities[protocol.CapabilityKubernetesDeploy] {
+			return []string{"agent_deploy_unsupported"}
+		}
+		return nil
+	}
 	var out []string
 	if !capabilities[protocol.CapabilityDeploymentApply] {
 		out = append(out, "agent_deploy_unsupported")

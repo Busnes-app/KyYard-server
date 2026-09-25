@@ -82,7 +82,8 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 		if json.Unmarshal([]byte(planRaw), &plan) != nil || json.Unmarshal([]byte(resultRaw), &result) != nil {
 			return ErrRevisionCorrupt
 		}
-		if len(plan.Services) == 0 {
+		// A Kubernetes plan replaces no recorded container, so it has nothing to roll back to.
+		if len(plan.Services) == 0 || plan.Namespace != "" {
 			reason = RollbackNoPriorIdentity
 			return nil
 		}

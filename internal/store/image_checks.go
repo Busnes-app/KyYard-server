@@ -149,9 +149,11 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 		if err != nil {
 			return err
 		}
+		kube := m.Runtime == protocol.RuntimeKubernetes
+		objects := protocol.KubernetesNames(m.Preview.Project, spec.serviceNames())
 		for _, s := range spec.Services {
 			container, mapped := m.Bindings[s.Name]
-			if !mapped {
+			if !mapped && !kube {
 				continue
 			}
 			w := imageCheckWork{Row: ImageCheck{Service: s.Name, Reference: s.Image}}
@@ -162,7 +164,11 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 			case w.Ref.Digest != "":
 				w.Row.Verdict = "pinned"
 			default:
-				w.Row.LocalDigest = localRepoDigest(images[containers[container].ImageID], w.Ref)
+				if kube {
+					w.Row.LocalDigest = workloadDigest(snapshot, m, objects[s.Name], w.Ref)
+				} else {
+					w.Row.LocalDigest = localRepoDigest(images[containers[container].ImageID], w.Ref)
+				}
 				if w.Row.LocalDigest == "" {
 					w.Row.Verdict = "unknown_local"
 					break
@@ -271,6 +277,26 @@ func imageCheckStateOf(version, revision int, containers []AdoptedContainer) str
 		state += " " + c.ID + "=" + c.ImageID
 	}
 	return state
+}
+
+// workloadDigest is the digest a Kubernetes instance's Deployment runs for ref: its one image,
+// pinned as host/repository@digest to exactly ref's repository. "" when the Deployment is not
+// reported, is not the instance's, or runs anything else.
+func workloadDigest(snapshot protocol.Snapshot, m *ApplicationMapping, name string, ref registry.Reference) string {
+	if snapshot.Kubernetes == nil {
+		return ""
+	}
+	for _, w := range snapshot.Kubernetes.Workloads {
+		if w.Kind != protocol.KindDeployment || w.Namespace != m.Namespace || w.Name != name || w.Instance != m.InstanceID || len(w.Images) != 1 {
+			continue
+		}
+		repo, digest, ok := strings.Cut(w.Images[0], "@")
+		parsed, err := registry.ParseReference(repo)
+		if ok && err == nil && parsed.Host == ref.Host && parsed.Repository == ref.Repository && validSHA256(digest) {
+			return digest
+		}
+	}
+	return ""
 }
 
 // localRepoDigest returns the host image's digest for exactly the reference's repository, or ""

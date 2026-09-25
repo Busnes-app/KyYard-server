@@ -56,6 +56,15 @@ func VolumeHostName(project string, v DeclaredVolume) string {
 	return project + "_" + v.Name
 }
 
+// serviceNames lists the spec's services in order.
+func (spec ApplicationSpec) serviceNames() []string {
+	out := make([]string, 0, len(spec.Services))
+	for _, s := range spec.Services {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
 func ValidateApplicationSpec(spec ApplicationSpec) error {
 	_, _, err := encodeApplicationSpec(spec)
 	return err
