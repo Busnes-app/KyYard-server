@@ -343,14 +343,16 @@ settings retain platform authorization; tenant settings and credentials are not 
 
 ### Kubernetes endpoints
 
-A Kubernetes cluster enrolls as an endpoint the way a Docker host does, read-only in this
-release: inventory, cluster health and pod logs. Prerequisites: `KY_APP_URL` on HTTPS, a
-digest-pinned agent image (discovered from the installed server image, or `KY_AGENT_IMAGE`),
-and a cluster-admin kubeconfig for the one `kubectl apply`.
+A Kubernetes cluster enrolls as an endpoint the way a Docker host does. KyYard reads the whole
+cluster (inventory, cluster health, pod logs) and deploys stateless applications into the
+namespaces you grant it. Prerequisites: `KY_APP_URL` on HTTPS, a digest-pinned agent image
+(discovered from the installed server image, or `KY_AGENT_IMAGE`), and a cluster-admin
+kubeconfig for `kubectl apply`.
 
-1. On the environment screen choose **Kubernetes cluster**, name the cluster and select
-   **Enroll a cluster**. The manifest is shown once: download it (or copy it) and run the
-   `kubectl apply -f kyyard-agent-<name>.yaml` command shown beside it.
+1. On the environment screen choose **Kubernetes cluster**, name the cluster, optionally list
+   the namespaces KyYard may deploy to, and select **Enroll a cluster**. Create those
+   namespaces first; KyYard never creates one. The manifest is shown once: download it (or copy
+   it) and run the `kubectl apply -f kyyard-agent-<name>.yaml` command shown beside it.
 2. Read the key fingerprint with `kubectl -n kyyard-agent logs deploy/kyyard-agent` and
    approve the matching endpoint.
 3. Delete the spent enrollment Secret: `kubectl -n kyyard-agent delete secret kyyard-agent-enrollment`.
@@ -360,26 +362,53 @@ What the manifest creates, all labelled `app.kubernetes.io/name: kyyard-agent`,
 `app.kubernetes.io/managed-by: kyyard`: the namespace `kyyard-agent`; the ServiceAccount
 `kyyard-agent`; the ClusterRole and ClusterRoleBinding `kyyard-agent-read` (only `get` and
 `list` on namespaces, nodes, pods, pod logs, events, services, persistentvolumeclaims,
-deployments, statefulsets and daemonsets: no Secrets, no ConfigMaps, no `watch`, no
-wildcard); the Role and RoleBinding `kyyard-agent-identity` (`get`/`create` Secrets in
-`kyyard-agent` and `update` only on `kyyard-agent-identity`, where the agent keeps its
-identity); the Secret `kyyard-agent-enrollment`; and a one-replica `Recreate` Deployment
-running `/app/kyyard-agent --kubernetes` as UID 65532 with a read-only root filesystem, no
-privilege escalation, every capability dropped, seccomp `RuntimeDefault`, and 50m/64Mi
-requested, 500m/256Mi limited. Applying it needs cluster-admin because it creates cluster
-RBAC; the agent itself holds only the read role above.
+deployments, statefulsets and daemonsets, plus `create` on `selfsubjectaccessreviews` so the
+agent can ask what it may do: no Secrets, no ConfigMaps, no `watch`, no wildcard); the Role and
+RoleBinding `kyyard-agent-identity` (`get`/`create` Secrets in `kyyard-agent` and `update` only
+on `kyyard-agent-identity`, where the agent keeps its identity); in each listed namespace the
+Role and RoleBinding `kyyard-agent-deploy` (`get`, `list`, `create`, `update`, `patch`,
+`delete` on Deployments, Services and ConfigMaps; the same on Secrets except `list`, so the
+agent reads only the Secrets it named); the Secret `kyyard-agent-enrollment`; and a one-replica
+`Recreate` Deployment running `/app/kyyard-agent --kubernetes` as UID 65532 with a read-only
+root filesystem, no privilege escalation, every capability dropped, seccomp `RuntimeDefault`,
+and 50m/64Mi requested, 500m/256Mi limited. Applying it needs cluster-admin because it creates
+cluster RBAC; the agent itself holds only the roles above.
 
-Container, image, network, volume, terminal, inspection and deployment actions are refused
-for a cluster (`409 runtime_unsupported`) and not shown. Uninstall with
+To change the namespaces of an enrolled cluster, an organization or environment administrator
+opens the cluster (or an application's Kubernetes card), selects **Regenerate manifest**, types
+the list and applies the file shown with `kubectl apply -f`. It carries the RBAC only: no
+enrollment link, no agent Deployment. A namespace you drop keeps its Role until you run
+`kubectl -n <namespace> delete role,rolebinding kyyard-agent-deploy`. The list only decides
+where KyYard lets you map applications; before every apply the agent asks the API server
+whether it may create Deployments there and stops (`forbidden`) if the manifest was not
+applied.
+
+Deploying: open an application, choose the cluster and a namespace under **Deploy to a
+Kubernetes cluster**, then plan and apply as on a Docker host. Each service becomes a
+Deployment (one replica, `Recreate`), a `ClusterIP` Service for its published ports, a
+ConfigMap and a Secret for its environment, all named `<application>-<service>` and labelled
+with the application and instance; every image is pinned by digest at plan time. KyYard never
+touches an object with those names that it did not label (`name_taken`), and the apply waits
+for each rollout; one that does not finish before the apply's ten-minute deadline stops with
+the reason the cluster gives (`ImagePullBackOff`, `CrashLoopBackOff`, ...) and leaves the objects as applied.
+Stateless only in this release: a service with a volume, a port bound to a host address, or a
+restart policy other than `always`/`unless-stopped` stops at the plan with the reason. The
+kubelet pulls the images: for a private registry, give the namespace's `default` ServiceAccount
+an imagePullSecret. A Kubernetes apply is not health-validated and never rolls back
+automatically; plan and apply the earlier revision to go back. Removing the application
+deletes the objects labelled as its own and nothing else.
+
+Container, image, network, volume, terminal, inspection and adoption actions are refused for a
+cluster (`409 runtime_unsupported`) and not shown. Uninstall with
 `kubectl delete -f kyyard-agent-<name>.yaml`, then revoke the endpoint. To enroll the same
 cluster again after a revocation, delete the Secret `kyyard-agent-identity` (or uninstall)
 before applying a new manifest: an identity from an old enrollment refuses a new link.
 
 Upgrade a cluster agent in place with
 `kubectl -n kyyard-agent set image deploy/kyyard-agent agent=ghcr.io/busnes-app/kyyard@sha256:<digest>`.
-The identity Secret survives the new pod, so no re-enrollment is needed. Regenerating the
-manifest instead mints a new enrollment link, which an already-enrolled identity refuses: the
-agent stops until the original link is restored or the identity Secret is deleted.
+The identity Secret survives the new pod, so no re-enrollment is needed. A new enrollment token
+mints a new enrollment link, which an already-enrolled identity refuses: to change namespaces,
+use **Regenerate manifest**, which carries no link.
 
 ## Persistent keys
 

@@ -55,7 +55,7 @@ Today `environment.delete` is unconditional. From M3 it refuses (*planned*, 409)
 | Action | OA | EA | Op | Dev | RO | Secret | Audit |
 |---|---|---|---|---|---|---|---|
 | `endpoint.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – (reads of inventory are not audited; list reads are bounded) |
-| `endpoint.enroll` (token request, approval, rejection) | ✓ | ✓ | – | – | – | one-time enrollment command, or for a Kubernetes cluster the one-time manifest (the token only inside its enrollment Secret, returned only in this authenticated response) | success/failure, target = endpoint |
+| `endpoint.enroll` (token request, approval, rejection) | ✓ | ✓ | – | – | – | one-time enrollment command, or for a Kubernetes cluster the one-time manifest (the token only inside its enrollment Secret, returned only in this authenticated response); also the cluster's deploy namespaces (`POST .../endpoints/{endpoint}/manifest`, answering an RBAC-only manifest with no link) | success/failure, target = endpoint; the manifest route `<endpoint>/manifest` with the namespace list |
 | `endpoint.update` (rename, notes) | ✓ | ✓ | – | – | – | no | success |
 | `endpoint.revoke` | ✓ | ✓ | – | – | – | no | success, closes streams |
 | `endpoint.rotate` | agent only, authenticated by its current key | | | | | no | success/failure, both fingerprints |
