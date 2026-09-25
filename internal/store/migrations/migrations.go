@@ -1013,6 +1013,9 @@ CREATE INDEX idx_deployment_validations_phase ON deployment_validations(phase,st
 CREATE INDEX idx_deployment_validations_instance ON deployment_validations(instance_id);
 CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validations(rollback_deployment_id) WHERE rollback_deployment_id IS NOT NULL;
 `},
+	// The policy run that applied a deployment, written only by ApplyPolicyDeployment: automation
+	// is a fact of the apply, so a run's plan applied by hand stays manual.
+	{Version: 33, Name: "deployment_policy_run", SQLite: `ALTER TABLE deployments ADD COLUMN policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL;`, Postgres: `ALTER TABLE deployments ADD COLUMN policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL;`},
 }
 
 // Latest returns the highest registered migration version: the schema this binary runs.

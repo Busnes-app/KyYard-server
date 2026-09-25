@@ -131,14 +131,28 @@ func TestRollbackTargetIneligibility(t *testing.T) {
 			}
 		})
 	}
-	// previous_revision is 0 after the first update of an adopted instance: the definition is
-	// unchanged, so the rollback re-plans the deployment's own revision on the adopted images.
+	// previous_revision is 0 after the first update of an adopted instance: the rollback returns to
+	// the adopted revision on the adopted images, not the newer revision the update applied.
 	t.Run("first update after adoption", func(t *testing.T) {
 		st, a, app, endpoint, _, m := planFixture(t)
+		ts := st.Tenancy()
 		adopted := m.Preview.Containers[0].ImageID
-		d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(adopted), tagged(imageD, "nginx:1")}, nil)
-		rb, reason, err := st.Tenancy().RollbackTarget(ctx, a, app.ID, d.ID)
-		if err != nil || reason != "" || rb == nil || rb.Revision < 1 || rb.Revision != d.Revision || rb.Images["web"] != adopted || adopted == "" {
+		if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Restart: "always"}}}, map[string]string{}, imageCheckKey); err != nil {
+			t.Fatal(err)
+		}
+		m, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ts.SetApplicationMapping(ctx, a, app.ID, mappingRequest(m)); err != nil {
+			t.Fatal(err)
+		}
+		d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(adopted), tagged(imageD, "nginx:1")}, appliedBy{}, nil)
+		if d.Revision != 2 {
+			t.Fatalf("applied revision %d, want 2", d.Revision)
+		}
+		rb, reason, err := ts.RollbackTarget(ctx, a, app.ID, d.ID)
+		if err != nil || reason != "" || rb == nil || rb.Revision != 1 || rb.Images["web"] != adopted || adopted == "" {
 			t.Fatalf("%+v %q %v", rb, reason, err)
 		}
 	})

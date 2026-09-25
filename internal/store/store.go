@@ -209,8 +209,9 @@ type TenancyStore interface {
 	BeginPolicyRun(ctx context.Context, policyID string, occurrence time.Time, correlation string) (string, error)
 	FinishPolicyRun(ctx context.Context, runID, outcome, deploymentID, detail string) error
 	// ApplyPolicyDeployment is ApplyDeployment that also requires, in its transaction, the policy
-	// still active, in apply mode and acting as access.ActorID (ErrPolicyChanged otherwise).
-	ApplyPolicyDeployment(ctx context.Context, access TenantAccess, policyID, applicationID, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error)
+	// still active, in apply mode and acting as access.ActorID (ErrPolicyChanged otherwise), and
+	// records runID (empty for a rollback) as the run that applied the row.
+	ApplyPolicyDeployment(ctx context.Context, access TenantAccess, policyID, runID, applicationID, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error)
 	SkipPolicyWindow(ctx context.Context, policyID string, occurrence time.Time, outcome, detail string) error
 	// AttachPolicyRunDeployment names the deployment an open run is about to send.
 	AttachPolicyRunDeployment(ctx context.Context, runID, deploymentID string) error

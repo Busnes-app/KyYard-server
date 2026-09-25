@@ -74,9 +74,11 @@ func health(status string) func(*protocol.ContainerInspection) error {
 
 // validationHost is a planHost whose web service already ran one succeeded manual apply of
 // revision 1 on the host image (prior): the deployment a rollback returns to. Its agent is online
-// with health, and every inspection goes through obs.
+// with health, every inspection goes through obs, and every store call through faults, installed
+// before the agent connects so no handler reads the store while it is swapped.
 type validationHost struct {
 	planHost
+	faults  *faultyTenancy
 	sock    *agentSocket
 	ctx     context.Context
 	obs     *observations
@@ -87,6 +89,8 @@ type validationHost struct {
 func newValidationHost(t *testing.T) *validationHost {
 	t.Helper()
 	v := &validationHost{planHost: newPlanHost(t, validationCaps, "web"), obs: &observations{}}
+	v.faults = &faultyTenancy{TenancyStore: v.st.Tenancy()}
+	api.SetStoreForTest(v.s, faultyStore{Store: v.st, t: v.faults})
 	api.SetPlanInspectorForTest(v.s, v.obs.inspect)
 	v.sock, v.ctx = v.online(t, validationCaps)
 	v.prior = v.applyByHand(t)
@@ -358,6 +362,62 @@ func TestValidationOfAnOfflineHostIsUnverifiable(t *testing.T) {
 	}
 }
 
+// Offline through the window and back just after it: no baseline is taken so late, since the next
+// poll would judge the whole window healthy from it.
+func TestValidationWithNoBaselineByTheWindowsEndIsUnverifiable(t *testing.T) {
+	v := newValidationHost(t)
+	id, _ := v.automate(t)
+	v.disconnect(t)
+	v.at(t, id, afterGrace)
+	v.sock, v.ctx = v.online(t, validationCaps)
+	v.at(t, id, afterWindow)
+	got := v.validation(t, id)
+	if got.Verdict != store.VerdictUnverifiable || got.Detail != store.ValidationDetailUnobserved || got.Phase != store.PhaseDone || got.Rollback != nil {
+		t.Fatalf("a baseline after observe_until: %+v", got)
+	}
+	if pol := v.policyNow(t); pol.Status != store.PolicyPaused || pol.PausedReason != store.ValidationReasonUnverified+store.ValidationDetailUnobserved {
+		t.Fatalf("policy: %+v", pol)
+	}
+	v.noFrame(t)
+}
+
+// A policy run that fails after planning names its plan; an admin who applies that plan later
+// makes a manual apply: validated, never rolled back.
+func TestValidationOfAFailedRunsPlanAppliedByHandIsManual(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, health("unhealthy"))
+	v.faulty().refuseApply.Store(true)
+	v.do(t, "PUT", "/api/organizations/a/registry-policy", `{"anonymous_pull_enabled":true}`, 204)
+	api.SetDigestResolverForTest(v.s, &fakeDigests{digest: newDigest})
+	v.policy(t, store.PolicyModeApply)
+	v.tick(tomorrow().Add(10*time.Hour + 30*time.Minute))
+	runs := v.runs(t, "usr_planner")
+	if len(runs) != 1 || runs[0].Outcome != store.RunFailed || runs[0].DeploymentID == "" {
+		t.Fatalf("runs: %+v", runs)
+	}
+	v.faulty().refuseApply.Store(false)
+	d := runs[0].DeploymentID
+	v.do(t, "POST", v.deployments+"/"+d+"/apply", `{"confirm":"shop"}`, 202)
+	if req := v.frame(t); req.Deployment != d {
+		t.Fatalf("frame for %s, want %s", req.Deployment, d)
+	}
+	v.settle(t, d, newContainer, newImage, newDigest, []protocol.Image{{ID: hostImage, Digests: []string{hostDigest}}, {ID: newImage, Tags: []string{"nginx:1"}, Digests: []string{"nginx@" + newDigest}}})
+	if got := v.validation(t, d); got.Automated || got.PolicyRunID != "" {
+		t.Fatalf("a hand-applied plan is automated: %+v", got)
+	}
+	v.at(t, d, afterGrace)
+	if got := v.validation(t, d); got.Verdict != store.VerdictUnhealthy || got.Rollback != nil {
+		t.Fatalf("hand-applied: %+v", got)
+	}
+	if n := v.deploymentCount(t); n != 2 {
+		t.Fatalf("deployments: %d", n)
+	}
+	if pol := v.policyNow(t); pol.Status != store.PolicyActive {
+		t.Fatalf("policy: %+v", pol)
+	}
+	v.noFrame(t)
+}
+
 func TestValidationWithoutTheHealthCapabilityIsUnverifiable(t *testing.T) {
 	v := newValidationHost(t)
 	id, _ := v.automate(t)
@@ -615,8 +675,9 @@ type faultyTenancy struct {
 	store.TenancyStore
 	failOutcomes atomic.Int32 // MarkRollbackOutcome calls still to fail
 	failAttach   atomic.Bool
-	beforeApply  func() // runs as ApplyPolicyDeployment is entered
-	afterApply   func() // runs once it has returned
+	refuseApply  atomic.Bool // ApplyPolicyDeployment answers ErrInvalid without applying
+	beforeApply  func()      // runs as ApplyPolicyDeployment is entered
+	afterApply   func()      // runs once it has returned
 }
 
 func (f *faultyTenancy) MarkRollbackOutcome(ctx context.Context, deployment, outcome, detail string) error {
@@ -633,11 +694,14 @@ func (f *faultyTenancy) AttachPolicyRunDeployment(ctx context.Context, run, depl
 	return f.TenancyStore.AttachPolicyRunDeployment(ctx, run, deployment)
 }
 
-func (f *faultyTenancy) ApplyPolicyDeployment(ctx context.Context, a store.TenantAccess, policy, app, id, confirm string, key []byte, maxFrameBytes int) (*store.Deployment, *protocol.DeploymentRequest, error) {
+func (f *faultyTenancy) ApplyPolicyDeployment(ctx context.Context, a store.TenantAccess, policy, run, app, id, confirm string, key []byte, maxFrameBytes int) (*store.Deployment, *protocol.DeploymentRequest, error) {
+	if f.refuseApply.Load() {
+		return nil, nil, store.ErrInvalid
+	}
 	if f.beforeApply != nil {
 		f.beforeApply()
 	}
-	d, req, err := f.TenancyStore.ApplyPolicyDeployment(ctx, a, policy, app, id, confirm, key, maxFrameBytes)
+	d, req, err := f.TenancyStore.ApplyPolicyDeployment(ctx, a, policy, run, app, id, confirm, key, maxFrameBytes)
 	if f.afterApply != nil {
 		f.afterApply()
 	}
@@ -651,12 +715,8 @@ type faultyStore struct {
 
 func (f faultyStore) Tenancy() store.TenancyStore { return f.t }
 
-// faulty routes the server's store calls through a faultyTenancy.
-func (v *validationHost) faulty() *faultyTenancy {
-	f := &faultyTenancy{TenancyStore: v.st.Tenancy()}
-	api.SetStoreForTest(v.s, faultyStore{Store: v.st, t: f})
-	return f
-}
+// faulty returns the faultyTenancy every server store call goes through.
+func (v *validationHost) faulty() *faultyTenancy { return v.faults }
 
 // noFrame proves nothing was queued for the agent: a heartbeat's answer is the next frame.
 func (v *validationHost) noFrame(t *testing.T) {
@@ -712,8 +772,8 @@ func TestValidationDecidesARollbackWhoseOutcomeWriteFailed(t *testing.T) {
 	}
 }
 
-// A policy run that cannot name its deployment on the run fails it unsent: an unnamed apply would
-// be validated as manual and never rolled back.
+// A policy run that cannot name its deployment on the run fails it unsent: the run's record never
+// hides what it sent.
 func TestPolicyRunThatCannotNameItsDeploymentSendsNothing(t *testing.T) {
 	v := newValidationHost(t)
 	v.faulty().failAttach.Store(true)

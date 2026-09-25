@@ -46,17 +46,16 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 	err = t.readTenant(ctx, a, permissions.ApplicationDeploy, func(tx *sql.Tx) error {
 		out, reason = nil, ""
 		var instance, endpoint, planRaw, resultRaw, rolledBack string
-		var applied int
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.instance_id,d.endpoint_id,d.revision,d.plan,COALESCE(d.result,''),COALESCE(v.rollback_deployment_id,'') FROM deployments d JOIN deployment_validations v ON v.deployment_id=d.id WHERE d.organization_id=? AND d.environment_id=? AND d.application_id=? AND d.id=? AND v.is_rollback=0`), a.OrganizationID, a.EnvironmentID, appID.String(), depID.String()).Scan(&instance, &endpoint, &applied, &planRaw, &resultRaw, &rolledBack)
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.instance_id,d.endpoint_id,d.plan,COALESCE(d.result,''),COALESCE(v.rollback_deployment_id,'') FROM deployments d JOIN deployment_validations v ON v.deployment_id=d.id WHERE d.organization_id=? AND d.environment_id=? AND d.application_id=? AND d.id=? AND v.is_rollback=0`), a.OrganizationID, a.EnvironmentID, appID.String(), depID.String()).Scan(&instance, &endpoint, &planRaw, &resultRaw, &rolledBack)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		var previous, version int
+		var previous, adopted, version int
 		var project string
-		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT previous_revision,mapping_version,project FROM application_instances WHERE id=?`), instance).Scan(&previous, &version, &project)
+		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT previous_revision,revision,mapping_version,project FROM application_instances WHERE id=?`), instance).Scan(&previous, &adopted, &version, &project)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -88,10 +87,10 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 			return nil
 		}
 		// The revision the deployment replaced. previous_revision 0 is the first update after
-		// adoption: the definition is unchanged, only the images differ, so it is the deployment's own.
+		// adoption, which replaced what adoption recorded: the instance's adopted revision.
 		revision := previous
 		if revision == 0 {
-			revision = applied
+			revision = adopted
 		}
 		if revision < 1 {
 			return ErrInvalid // the planner reads 0 as the latest revision

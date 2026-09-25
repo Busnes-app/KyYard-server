@@ -610,8 +610,10 @@ keep running, pass its own healthcheck if the image has one, and not restart. Th
 shown on the deployment and on the policy's run list. When an update the policy applied fails,
 the server returns the application to the previous deployment's exact images if they are still
 on the host, or says why it cannot; either way the policy pauses until you resume it. Updates you
-apply by hand are judged the same way but never rolled back automatically. This needs the
-host's agent to report container health: the policy card warns when it cannot.
+apply by hand are judged the same way but never rolled back automatically, including a plan a
+policy run left behind. This needs the host's agent to report container health: the policy card
+warns when it cannot. Upgrade the server before its agents: a server older than health reporting
+refuses a health agent's inspection answers and closes its connection.
 
 Automated updates need an agent with live inspection support (`container.inspect.verdict`);
 with an older agent every window is `blocked` until the agent is upgraded, and three such

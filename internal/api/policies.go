@@ -296,7 +296,7 @@ func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol
 	}
 	// The policy is re-read inside the apply's transaction: one deleted, paused, switched to
 	// plan_only or saved by someone else since the tick leaves its plan for a click.
-	applied, frame, err := ts.ApplyPolicyDeployment(ctx, a, pol.ID, app, d.ID, d.Plan.Project, key, maxFrame)
+	applied, frame, err := ts.ApplyPolicyDeployment(ctx, a, pol.ID, run, app, d.ID, d.Plan.Project, key, maxFrame)
 	if errors.Is(err, store.ErrPolicyChanged) {
 		return store.RunPlanned, d.ID, "policy_changed"
 	}
@@ -304,9 +304,8 @@ func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol
 		failed, _, why := policyFailure(err)
 		return failed, d.ID, why
 	}
-	// Named before the frame leaves: a settle that beats FinishPolicyRun still finds this run and
-	// validates the deployment as automated. Unnamed, it would be validated as a manual apply and
-	// never rolled back, so it is not sent.
+	// Named on the run before the frame leaves, so the run's record always shows what it sent;
+	// ApplyPolicyDeployment already made the apply automated. Unnamed, it is not sent.
 	if err := ts.AttachPolicyRunDeployment(ctx, run, applied.ID); err != nil {
 		log.Printf("[POLICY] run %s: naming deployment %s: %v", run, applied.ID, err)
 		if err := ts.FailDeployment(ctx, applied.ID, "the deployment could not be recorded on its policy run"); err != nil {

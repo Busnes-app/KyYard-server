@@ -38,10 +38,14 @@ func putInventory(t *testing.T, st *SQLStore, endpoint string, containers []prot
 	}
 }
 
-// deployFixture plans and applies the latest revision as a with images on the host, runs between
-// (when set) after the apply, and settles it succeeded with the web service on container newID
-// running the planned image. The inventory then shows newID beside images.
-func deployFixture(t *testing.T, st *SQLStore, a TenantAccess, app *Application, endpoint, newID string, images []protocol.Image, between func(*Deployment)) *Deployment {
+// appliedBy names the policy run that applies a fixture deployment; the zero value applies it by hand.
+type appliedBy struct{ policy, run string }
+
+// deployFixture plans and applies the latest revision as a with images on the host (through
+// ApplyPolicyDeployment when by names a run), runs between (when set) after the apply, and settles
+// it succeeded with the web service on container newID running the planned image. The inventory
+// then shows newID beside images.
+func deployFixture(t *testing.T, st *SQLStore, a TenantAccess, app *Application, endpoint, newID string, images []protocol.Image, by appliedBy, between func(*Deployment)) *Deployment {
 	t.Helper()
 	ctx := context.Background()
 	ts := st.Tenancy()
@@ -58,7 +62,12 @@ func deployFixture(t *testing.T, st *SQLStore, a TenantAccess, app *Application,
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey, protocol.MaxDeploymentRequestBytes); err != nil {
+	if by.run == "" {
+		_, _, err = ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop", imageCheckKey, protocol.MaxDeploymentRequestBytes)
+	} else {
+		_, _, err = ts.ApplyPolicyDeployment(ctx, a, by.policy, by.run, app.ID, d.ID, "shop", imageCheckKey, protocol.MaxDeploymentRequestBytes)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if between != nil {
@@ -92,7 +101,7 @@ func validationFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, str
 	if err != nil {
 		t.Fatal(err)
 	}
-	prior := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, nil)
+	prior := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, appliedBy{}, nil)
 	if _, err := ts.FinishValidation(ctx, prior.ID, VerdictHealthy, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +109,7 @@ func validationFixture(t *testing.T) (*SQLStore, TenantAccess, *Application, str
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated := deployFixture(t, st, a, app, endpoint, updatedID, []protocol.Image{tagged(imageD), tagged(imageX, "nginx:1")}, func(d *Deployment) {
+	updated := deployFixture(t, st, a, app, endpoint, updatedID, []protocol.Image{tagged(imageD), tagged(imageX, "nginx:1")}, appliedBy{p.ID, run}, func(d *Deployment) {
 		if err := ts.AttachPolicyRunDeployment(ctx, run, d.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -208,13 +217,37 @@ func TestSettleOfAPlanOnlyRunIsManual(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, func(d *Deployment) {
+	d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, appliedBy{}, func(d *Deployment) {
 		if err := ts.FinishPolicyRun(ctx, run, RunPlanned, d.ID, ""); err != nil {
 			t.Fatal(err)
 		}
 	})
 	if v := d.Validation; v == nil || v.Automated || v.PolicyRunID != "" {
 		t.Fatalf("plan_only applied by hand: %+v", v)
+	}
+}
+
+// A run that failed after planning names its plan; applied later by hand, the plan is manual:
+// automation is a fact of the apply, not of the run.
+func TestSettleOfAFailedRunsPlanAppliedByHandIsManual(t *testing.T) {
+	st, a, app, endpoint, _, _ := planFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	p, _, err := ts.PutUpdatePolicy(ctx, a, app.ID, dailyPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := ts.BeginPolicyRun(ctx, p.ID, instant("2026-09-24T10:00:00Z"), uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, appliedBy{}, func(d *Deployment) {
+		if err := ts.FinishPolicyRun(ctx, run, RunFailed, d.ID, "endpoint_offline"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if v := d.Validation; v == nil || v.Automated || v.PolicyRunID != "" {
+		t.Fatalf("a failed run's plan applied by hand: %+v", v)
 	}
 }
 
@@ -227,7 +260,7 @@ func TestSettleOfARollbackNeverRollsBackAgain(t *testing.T) {
 	if decide, err := ts.FinishValidation(ctx, updated.ID, VerdictUnhealthy, "web"); err != nil || !decide {
 		t.Fatalf("automated failure: decide=%v %v", decide, err)
 	}
-	back := deployFixture(t, st, a, app, endpoint, strings.Repeat("7", 64), []protocol.Image{tagged(imageD), tagged(imageX, "nginx:1")}, func(d *Deployment) {
+	back := deployFixture(t, st, a, app, endpoint, strings.Repeat("7", 64), []protocol.Image{tagged(imageD), tagged(imageX, "nginx:1")}, appliedBy{}, func(d *Deployment) {
 		if err := ts.MarkRollbackPlanned(ctx, updated.ID, d.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -613,6 +646,39 @@ func TestReconcileAfterStartSettlesValidations(t *testing.T) {
 		}
 		reconcileAgain(t, st)
 	})
+	// Startup shares the live rule: an applying rollback or an unexpired plan waits for its
+	// settle or the deadline sweep; an expired plan is interrupted.
+	t.Run("a rollback still applying or planned", func(t *testing.T) {
+		st, a, app, _, _, _, prior, updated := validationFixture(t)
+		ctx := context.Background()
+		ts := st.Tenancy()
+		if _, err := ts.FinishValidation(ctx, updated.ID, VerdictUnhealthy, "web"); err != nil {
+			t.Fatal(err)
+		}
+		if err := ts.MarkRollbackPlanned(ctx, updated.ID, prior.ID); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			state   string
+			expires time.Time
+		}{{"applying", time.Now().UTC().Add(-time.Hour)}, {"planned", time.Now().UTC().Add(time.Hour)}} {
+			mustExec(t, st, `UPDATE deployments SET state=?,expires_at=? WHERE id=?`, c.state, c.expires, prior.ID)
+			if _, err := ts.ReconcileAfterStart(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := ts.ReadDeployment(ctx, a, app.ID, updated.ID); err != nil || got.Validation.Rollback == nil || got.Validation.Rollback.Outcome != "" {
+				t.Fatalf("%s decided at startup: %+v %v", c.state, got.Validation, err)
+			}
+		}
+		mustExec(t, st, `UPDATE deployments SET expires_at=? WHERE id=?`, time.Now().UTC().Add(-time.Minute), prior.ID)
+		if _, err := ts.ReconcileAfterStart(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := ts.ReadDeployment(ctx, a, app.ID, updated.ID); err != nil || got.Validation.Rollback == nil || got.Validation.Rollback.Outcome != RollbackFailed || got.Validation.Rollback.Detail != RollbackInterrupted {
+			t.Fatalf("expired plan at startup: %+v %v", got.Validation, err)
+		}
+		reconcileAgain(t, st)
+	})
 	// A rollback that settled before the restart was applied, whatever the loop recorded.
 	t.Run("a rollback that settled", func(t *testing.T) {
 		st, a, app, endpoint, _, _, _, updated := validationFixture(t)
@@ -621,7 +687,7 @@ func TestReconcileAfterStartSettlesValidations(t *testing.T) {
 		if _, err := ts.FinishValidation(ctx, updated.ID, VerdictUnhealthy, "web"); err != nil {
 			t.Fatal(err)
 		}
-		back := deployFixture(t, st, a, app, endpoint, strings.Repeat("7", 64), []protocol.Image{tagged(imageD), tagged(imageX, "nginx:1")}, func(d *Deployment) {
+		back := deployFixture(t, st, a, app, endpoint, strings.Repeat("7", 64), []protocol.Image{tagged(imageD), tagged(imageX, "nginx:1")}, appliedBy{}, func(d *Deployment) {
 			if err := ts.MarkRollbackPlanned(ctx, updated.ID, d.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -653,7 +719,7 @@ func TestSettleOfARunFailedByReconcileIsAutomated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, func(d *Deployment) {
+	d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, appliedBy{p.ID, run}, func(d *Deployment) {
 		if err := ts.AttachPolicyRunDeployment(ctx, run, d.ID); err != nil {
 			t.Fatal(err)
 		}

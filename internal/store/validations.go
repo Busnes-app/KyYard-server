@@ -268,17 +268,12 @@ func (s *validationScan) validation() *Validation {
 }
 
 // insertValidation opens the validation of a succeeded apply inside the settling transaction. It is
-// automated when a policy run names the deployment, whatever became of the run, unless the run only
-// planned it (a plan_only run's plan applied by hand is manual); a rollback when a validation named
-// it as its rollback.
+// automated when a policy run applied the deployment (deployments.policy_run_id, written by
+// ApplyPolicyDeployment), whatever became of the run; a run's plan applied by hand is manual. It is
+// a rollback when a validation named it as its rollback.
 func (t *tenancyStore) insertValidation(ctx context.Context, tx *sql.Tx, org, env, app, instance, endpoint, deployment, correlation string, settled time.Time) error {
-	var run any
-	var runID string
-	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT id FROM policy_runs WHERE deployment_id=? AND outcome<>'planned' ORDER BY started_at DESC,id LIMIT 1`), deployment).Scan(&runID)
-	switch {
-	case err == nil:
-		run = runID
-	case !errors.Is(err, sql.ErrNoRows):
+	var run sql.NullString
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT policy_run_id FROM deployments WHERE id=?`), deployment).Scan(&run); err != nil {
 		return err
 	}
 	var dispatched int
@@ -286,7 +281,7 @@ func (t *tenancyStore) insertValidation(ctx context.Context, tx *sql.Tx, org, en
 		return err
 	}
 	automated, rollback := 0, 0
-	if run != nil {
+	if run.Valid {
 		automated = 1
 	}
 	if dispatched > 0 {
@@ -295,7 +290,7 @@ func (t *tenancyStore) insertValidation(ctx context.Context, tx *sql.Tx, org, en
 	if correlation == "" {
 		correlation = uuid.NewString()
 	}
-	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployment_validations(deployment_id,organization_id,environment_id,application_id,instance_id,endpoint_id,policy_run_id,automated,is_rollback,phase,started_at,observe_until,correlation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`), deployment, org, env, app, instance, endpoint, run, automated, rollback, PhaseGrace, settled, settled.Add(ValidationGrace+ValidationWindow), correlation)
+	_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployment_validations(deployment_id,organization_id,environment_id,application_id,instance_id,endpoint_id,policy_run_id,automated,is_rollback,phase,started_at,observe_until,correlation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`), deployment, org, env, app, instance, endpoint, run, automated, rollback, PhaseGrace, settled, settled.Add(ValidationGrace+ValidationWindow), correlation)
 	return err
 }
 
@@ -562,8 +557,8 @@ func (t *tenancyStore) pauseForValidation(ctx context.Context, tx *sql.Tx, run, 
 }
 
 // reconcileValidations settles what the previous process left: a validation still in grace whose
-// window has ended never had its baseline taken, and a rollback named but never decided was
-// applied if its deployment settled succeeded, interrupted otherwise. Neither is dispatched again.
+// window has ended never had its baseline taken, and a named rollback is decided by the live rule
+// (decideNamedRollbacks). Neither is dispatched again.
 func (t *tenancyStore) reconcileValidations(ctx context.Context, tx *sql.Tx) error {
 	now := time.Now().UTC()
 	missed, err := t.validationIDs(ctx, tx, `SELECT deployment_id FROM deployment_validations WHERE phase='grace' AND observe_until<? ORDER BY started_at,deployment_id`, now)
@@ -575,42 +570,36 @@ func (t *tenancyStore) reconcileValidations(ctx context.Context, tx *sql.Tx) err
 			return err
 		}
 	}
-	return t.decideNamedRollbacks(ctx, tx, false, now)
+	return t.decideNamedRollbacks(ctx, tx, now)
 }
 
 // DecideNamedRollbacks decides every named, undecided rollback from its deployment's state, for
-// the live loop: one whose outcome write failed would otherwise leave its policy active. applied
-// when it settled succeeded; failed interrupted when it settled otherwise, is gone, or is a plan
-// that expired unapplied; a rollback still planned or applying waits.
+// the live loop: one whose outcome write failed would otherwise leave its policy active.
 func (t *tenancyStore) DecideNamedRollbacks(ctx context.Context) error {
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := t.decideNamedRollbacks(ctx, tx, true, time.Now().UTC()); err != nil {
+	if err := t.decideNamedRollbacks(ctx, tx, time.Now().UTC()); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// decideNamedRollbacks marks named, undecided rollbacks: applied when the deployment settled
-// succeeded, failed interrupted otherwise. live leaves one still planned (unexpired) or applying;
-// at startup nothing is left, since no process is dispatching it.
-func (t *tenancyStore) decideNamedRollbacks(ctx context.Context, tx *sql.Tx, live bool, now time.Time) error {
+// decideNamedRollbacks marks named, undecided rollbacks, at startup and on every live tick alike:
+// applied when the deployment settled succeeded; one still applying or an unexpired plan waits (at
+// startup the deployment sweep settles an applying row); failed interrupted otherwise (unknown,
+// failed, denied, timed_out, an expired plan, or gone).
+func (t *tenancyStore) decideNamedRollbacks(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	undecided := `SELECT v.deployment_id FROM deployment_validations v LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id WHERE v.rollback_deployment_id IS NOT NULL AND v.rollback_outcome='' AND `
-	interrupted := `COALESCE(rd.state,'')<>'succeeded'`
-	var args []any
-	if live {
-		interrupted += ` AND NOT (COALESCE(rd.state,'')='applying' OR (COALESCE(rd.state,'')='planned' AND rd.expires_at>?))`
-		args = append(args, now)
-	}
+	interrupted := `COALESCE(rd.state,'')<>'succeeded' AND NOT (COALESCE(rd.state,'')='applying' OR (COALESCE(rd.state,'')='planned' AND rd.expires_at>?))`
 	for _, c := range []struct {
 		where, outcome, detail string
 		args                   []any
 	}{
 		{`rd.state='succeeded'`, RollbackApplied, "", nil},
-		{interrupted, RollbackFailed, RollbackInterrupted, args},
+		{interrupted, RollbackFailed, RollbackInterrupted, []any{now}},
 	} {
 		ids, err := t.validationIDs(ctx, tx, undecided+c.where+` ORDER BY v.started_at,v.deployment_id`, c.args...)
 		if err != nil {

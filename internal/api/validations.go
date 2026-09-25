@@ -111,6 +111,10 @@ func (s *Server) validate(ctx context.Context, p store.PendingValidation, now ti
 			s.finishValidation(ctx, p, store.VerdictUnverifiable, store.ValidationDetailUnobserved)
 		}
 		return
+	case p.Phase == store.PhaseGrace && !now.Before(p.ObserveUntil):
+		// No baseline by the window's end: one taken now would judge the window from a single poll.
+		s.finishValidation(ctx, p, store.VerdictUnverifiable, store.ValidationDetailUnobserved)
+		return
 	}
 	obs, invalid := s.observeServices(ctx, p)
 	if ctx.Err() != nil || s.stopping.Load() {
@@ -237,7 +241,7 @@ func (s *Server) performRollback(ctx context.Context, p store.PendingValidation)
 	if !s.Connected(d.EndpointID) {
 		return store.RollbackFailed, "endpoint_offline"
 	}
-	applied, frame, err := ts.ApplyPolicyDeployment(ctx, a, p.PolicyID, app, d.ID, d.Plan.Project, key, maxFrame)
+	applied, frame, err := ts.ApplyPolicyDeployment(ctx, a, p.PolicyID, "", app, d.ID, d.Plan.Project, key, maxFrame)
 	if errors.Is(err, store.ErrPolicyChanged) {
 		return store.RollbackFailed, "policy_changed"
 	}
