@@ -1,6 +1,7 @@
 package manifest_test
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -76,6 +77,13 @@ func TestManifestRBACIsReadOnlyWithoutSecrets(t *testing.T) {
 	}
 	var granted []string
 	for _, rule := range clusterRole.Rules {
+		// The one write: asking the API server what the agent itself may do.
+		if slices.Equal(rule.APIGroups, []string{"authorization.k8s.io"}) {
+			if !slices.Equal(rule.Resources, []string{"selfsubjectaccessreviews"}) || !slices.Equal(rule.Verbs, []string{"create"}) || len(rule.ResourceNames) != 0 {
+				t.Fatalf("access review rule %+v", rule)
+			}
+			continue
+		}
 		if !slices.Equal(rule.Verbs, []string{"get", "list"}) || len(rule.ResourceNames) != 0 || len(rule.NonResourceURLs) != 0 {
 			t.Fatalf("cluster rule %+v", rule)
 		}
@@ -173,5 +181,76 @@ func TestFileName(t *testing.T) {
 		if got := manifest.FileName(in); got != want {
 			t.Errorf("%q: %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Each listed namespace gets the deploy Role, exactly: Deployments, Services and ConfigMaps
+// read and written, Secrets written and read by name but never listed, bound to the agent.
+func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
+	doc, err := manifest.Render(manifest.Input{Image: image, Link: link, Name: name, Namespaces: []string{"billing", "shop"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds, namespaces []string
+	for _, obj := range decode(t, doc) {
+		kinds = append(kinds, obj.GetObjectKind().GroupVersionKind().Kind)
+		switch o := obj.(type) {
+		case *rbacv1.Role:
+			if o.Name != "kyyard-agent-deploy" {
+				continue
+			}
+			namespaces = append(namespaces, o.Namespace)
+			want := []rbacv1.PolicyRule{
+				{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
+				{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
+				{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "create", "update", "patch", "delete"}},
+			}
+			if !reflect.DeepEqual(o.Rules, want) {
+				t.Fatalf("deploy role in %s: %+v", o.Namespace, o.Rules)
+			}
+		case *rbacv1.RoleBinding:
+			if o.Name == "kyyard-agent-deploy" && (o.RoleRef.Name != "kyyard-agent-deploy" || len(o.Subjects) != 1 || o.Subjects[0].Name != "kyyard-agent" || o.Subjects[0].Namespace != "kyyard-agent") {
+				t.Fatalf("deploy binding %+v", o)
+			}
+		}
+	}
+	if !slices.Equal(namespaces, []string{"billing", "shop"}) {
+		t.Fatalf("deploy roles in %v", namespaces)
+	}
+	if !slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Role", "RoleBinding", "Role", "RoleBinding", "Secret", "Deployment"}) {
+		t.Fatalf("kinds %v", kinds)
+	}
+}
+
+// The regenerated manifest carries the RBAC and nothing that enrolls: no Secret, no link, no
+// Deployment.
+func TestManifestRBACOnly(t *testing.T) {
+	doc, err := manifest.RenderRBAC(name, []string{"shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, obj := range decode(t, doc) {
+		kinds = append(kinds, obj.GetObjectKind().GroupVersionKind().Kind)
+	}
+	if !slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Role", "RoleBinding"}) {
+		t.Fatalf("kinds %v", kinds)
+	}
+	if strings.Contains(doc, "kyyard=") || strings.Contains(doc, "kyyard-agent-enrollment") {
+		t.Fatalf("an enrollment in the RBAC manifest:\n%s", doc)
+	}
+}
+
+func TestManifestRefusesBadNamespaces(t *testing.T) {
+	for _, list := range [][]string{{"shop", "billing"}, {"shop", "shop"}, {"Shop"}, {"shop."}, strings.Split(strings.Repeat("n,", 32)+"x", ",")} {
+		if _, err := manifest.Render(manifest.Input{Image: image, Link: link, Name: name, Namespaces: list}); err == nil {
+			t.Errorf("rendered %v", list)
+		}
+		if _, err := manifest.RenderRBAC(name, list); err == nil {
+			t.Errorf("rendered RBAC %v", list)
+		}
+	}
+	if _, err := manifest.RenderRBAC("", nil); err == nil {
+		t.Error("rendered without a name")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/client"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/manifest"
 	appsv1 "k8s.io/api/apps/v1"
@@ -24,14 +25,24 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// deployNamespace is the namespace the real-cluster test grants and deploys into.
+const deployNamespace = "kyyard-test-deploy"
+
 // TestManifestOnARealCluster applies the rendered manifest to the cluster KY_TEST_KUBECONFIG
 // names (a disposable kind cluster: it creates and deletes cluster-scoped RBAC), then acts as
 // the agent's ServiceAccount: Secrets are denied cluster-wide, pods are listed, the identity
-// Secret round-trips, and a snapshot names the cluster's nodes with nothing forbidden.
+// Secret round-trips, and a snapshot names the cluster's nodes with nothing forbidden. In the
+// one granted namespace the agent may write Deployments and read Secrets by name but not list
+// them; it deploys KY_TEST_DEPLOY_IMAGE (a digest-pinned image that keeps running, such as
+// registry.k8s.io/pause@sha256:...) as one service, sees it ready, and removes it.
 func TestManifestOnARealCluster(t *testing.T) {
 	path := os.Getenv("KY_TEST_KUBECONFIG")
 	if path == "" {
 		t.Skip("KY_TEST_KUBECONFIG is not set")
+	}
+	image := os.Getenv("KY_TEST_DEPLOY_IMAGE")
+	if image == "" {
+		t.Fatal("KY_TEST_DEPLOY_IMAGE must name a digest-pinned image that keeps running")
 	}
 	admin, err := clientcmd.BuildConfigFromFlags("", path)
 	if err != nil {
@@ -42,8 +53,11 @@ func TestManifestOnARealCluster(t *testing.T) {
 	defer cancel()
 	removeAgent(t, ctx, cs)
 	t.Cleanup(func() { removeAgent(t, context.Background(), cs) })
+	if _, err := cs.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: deployNamespace}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
 
-	doc, err := manifest.Render(manifest.Input{Image: "ghcr.io/busnes-app/kyyard@sha256:" + strings.Repeat("0", 64), Link: "https://kyyard.invalid/#kyyard=" + strings.Repeat("A", 43), Name: "kind"})
+	doc, err := manifest.Render(manifest.Input{Image: "ghcr.io/busnes-app/kyyard@sha256:" + strings.Repeat("0", 64), Link: "https://kyyard.invalid/#kyyard=" + strings.Repeat("A", 43), Name: "kind", Namespaces: []string{deployNamespace}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +120,26 @@ func TestManifestOnARealCluster(t *testing.T) {
 			t.Errorf("%s %s in %q (%s): allowed=%v", tc.verb, tc.resource, tc.namespace, tc.name, review.Status.Allowed)
 		}
 	}
+	for _, tc := range []struct {
+		verb, group, resource, namespace string
+		allowed                          bool
+	}{
+		{"create", "apps", "deployments", deployNamespace, true},
+		{"delete", "", "services", deployNamespace, true},
+		{"update", "", "configmaps", deployNamespace, true},
+		{"get", "", "secrets", deployNamespace, true},
+		{"list", "", "secrets", deployNamespace, false},
+		{"create", "apps", "deployments", "default", false},
+		{"create", "", "secrets", "default", false},
+	} {
+		review, err := as.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authorizationv1.ResourceAttributes{Verb: tc.verb, Group: tc.group, Resource: tc.resource, Namespace: tc.namespace}}}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if review.Status.Allowed != tc.allowed {
+			t.Errorf("%s %s/%s in %q: allowed=%v", tc.verb, tc.group, tc.resource, tc.namespace, review.Status.Allowed)
+		}
+	}
 
 	c, err := kubernetes.New(agent)
 	if err != nil {
@@ -129,6 +163,40 @@ func TestManifestOnARealCluster(t *testing.T) {
 	if err != nil || len(snap.Truncated) != 0 || len(snap.Kubernetes.Nodes) == 0 || snap.Kubernetes.Nodes[0].Name == "" {
 		t.Fatalf("snapshot as the agent: %v truncated %v nodes %+v", err, snap.Truncated, snap.Kubernetes.Nodes)
 	}
+
+	_, digest, _ := strings.Cut(image, "@")
+	now := time.Now()
+	target := &protocol.KubernetesTarget{Namespace: deployNamespace, ApplicationID: "11111111-2222-4333-8444-555555555555", InstanceID: "66666666-7777-4888-9999-aaaaaaaaaaaa", SpecDigest: "sha256:" + strings.Repeat("f", 64)}
+	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_kind", Project: "kind", Revision: 1, IssuedAt: now, Deadline: now.Add(2 * time.Minute), Kubernetes: target,
+		Services: []protocol.DeploymentService{{Name: "idle", Pull: &protocol.ImagePull{Reference: image, Digest: digest}, Ports: []protocol.Port{{Container: 8080, Host: 80, Protocol: "tcp"}}, Env: map[string]string{"TOKEN": "x"}, SecretKeys: []string{"TOKEN"}, Mounts: []protocol.Mount{}}}}
+	res := c.Deploy(ctx, req, func() {})
+	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
+		t.Fatalf("deploy as the agent: %+v", res)
+	}
+	d, err := cs.AppsV1().Deployments(deployNamespace).Get(ctx, "kind-idle", metav1.GetOptions{})
+	if err != nil || d.Status.ReadyReplicas != 1 || string(d.UID) != res.Services[0].UID {
+		t.Fatalf("deployed %+v %v", d, err)
+	}
+	removal := protocol.RemovalRequest{Deployment: "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_kind", Project: "kind", IssuedAt: time.Now(), Deadline: time.Now().Add(time.Minute), Kubernetes: target, Services: []string{"idle"}}
+	if res := c.Remove(ctx, removal, func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("remove as the agent: %+v", res)
+	}
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(time.Second) {
+		_, err := cs.AppsV1().Deployments(deployNamespace).Get(ctx, "kind-idle", metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the Deployment is still there: %v", err)
+		}
+	}
+	for _, name := range []string{"kind-idle-env", "kind-idle-secret"} {
+		_, errCM := cs.CoreV1().ConfigMaps(deployNamespace).Get(ctx, name, metav1.GetOptions{})
+		_, errS := cs.CoreV1().Secrets(deployNamespace).Get(ctx, name, metav1.GetOptions{})
+		if !apierrors.IsNotFound(errCM) || !apierrors.IsNotFound(errS) {
+			t.Fatalf("%s left behind: %v %v", name, errCM, errS)
+		}
+	}
 }
 
 // removeAgent deletes what the manifest creates and waits for the namespace to go, so a run
@@ -142,16 +210,20 @@ func removeAgent(t *testing.T, ctx context.Context, cs k8s.Interface) {
 	}
 	ignore(cs.RbacV1().ClusterRoleBindings().Delete(ctx, "kyyard-agent-read", metav1.DeleteOptions{}))
 	ignore(cs.RbacV1().ClusterRoles().Delete(ctx, "kyyard-agent-read", metav1.DeleteOptions{}))
-	ignore(cs.CoreV1().Namespaces().Delete(ctx, "kyyard-agent", metav1.DeleteOptions{}))
+	for _, ns := range []string{"kyyard-agent", deployNamespace} {
+		ignore(cs.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{}))
+	}
 	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		_, err := cs.CoreV1().Namespaces().Get(ctx, "kyyard-agent", metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return
+	for _, ns := range []string{"kyyard-agent", deployNamespace} {
+		for {
+			_, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("namespace %s still present: %v", ns, err)
+			}
+			time.Sleep(time.Second)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("namespace kyyard-agent still present: %v", err)
-		}
-		time.Sleep(time.Second)
 	}
 }
