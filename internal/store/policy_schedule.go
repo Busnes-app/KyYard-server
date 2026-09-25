@@ -361,3 +361,21 @@ func (t *tenancyStore) reconcilePolicyRuns(ctx context.Context, tx *sql.Tx) erro
 	}
 	return nil
 }
+
+// AttachPolicyRunDeployment names the deployment an open run is about to send, before the frame
+// leaves: a settle that beats FinishPolicyRun still finds the run and validates the deployment as
+// automated. A finished or missing run is ErrNotFound.
+func (t *tenancyStore) AttachPolicyRunDeployment(ctx context.Context, run, deployment string) error {
+	res, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE policy_runs SET deployment_id=? WHERE id=? AND outcome=''`), deployment, run)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
+	}
+	return nil
+}

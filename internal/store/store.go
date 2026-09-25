@@ -212,6 +212,16 @@ type TenancyStore interface {
 	// still active, in apply mode and acting as access.ActorID (ErrPolicyChanged otherwise).
 	ApplyPolicyDeployment(ctx context.Context, access TenantAccess, policyID, applicationID, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error)
 	SkipPolicyWindow(ctx context.Context, policyID string, occurrence time.Time, outcome, detail string) error
+	// AttachPolicyRunDeployment names the deployment an open run is about to send.
+	AttachPolicyRunDeployment(ctx context.Context, runID, deploymentID string) error
+	// Health validation (docs/application-schema.md, Health validation): the loop's side, trusted
+	// and not tenant-scoped.
+	PendingValidations(ctx context.Context) ([]PendingValidation, error)
+	BeginObservation(ctx context.Context, deploymentID string, baseline map[string]ServiceBaseline) error
+	// FinishValidation reports true when a rollback decision is due.
+	FinishValidation(ctx context.Context, deploymentID, verdict, detail string) (bool, error)
+	MarkRollbackPlanned(ctx context.Context, deploymentID, rollbackDeploymentID string) error
+	MarkRollbackOutcome(ctx context.Context, deploymentID, outcome, detail string) error
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)
 	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)
@@ -280,8 +290,8 @@ type TenancyStore interface {
 	MarkCommandDispatched(ctx context.Context, id string) error
 	SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
-	// ReconcileAfterStart settles every in-flight command as unknown and fails every open policy
-	// run; startup only.
+	// ReconcileAfterStart settles every in-flight command as unknown, fails every open policy run
+	// and settles validations the previous process left; startup only.
 	ReconcileAfterStart(ctx context.Context) (int64, error)
 	ReadCommand(ctx context.Context, access TenantAccess, endpointID, id string) (*Command, error)
 	ListCommands(ctx context.Context, access TenantAccess, endpointID string, limit int) ([]Command, error)

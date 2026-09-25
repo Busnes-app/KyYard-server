@@ -413,6 +413,10 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE application_instances SET previous_revision=current_revision,current_revision=? WHERE id=?`), revision, instance); err != nil {
 			return err
 		}
+		// Every succeeded apply is validated, opened in the transaction that settles it.
+		if err := t.insertValidation(ctx, tx, org, env, appID, instance, endpointID, res.Deployment, correlation, now); err != nil {
+			return err
+		}
 	}
 	// Only an unknown row can have a newer plan (a live one refuses planning).
 	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET expires_at=? WHERE instance_id=? AND state='planned' AND created_at>(SELECT created_at FROM deployments WHERE id=?)`), now, instance, res.Deployment); err != nil {

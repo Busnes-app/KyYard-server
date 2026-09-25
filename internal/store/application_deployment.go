@@ -92,6 +92,9 @@ type Deployment struct {
 	// CorrelationID is the plan's request ID: the frame and every audit row of the deployment carry it.
 	CorrelationID string                     `json:"correlation_id"`
 	Result        *protocol.DeploymentResult `json:"result"` // nil until settled
+	// Validation is the deployment's health validation: nil for a plan, a removal or an apply
+	// that did not succeed.
+	Validation *Validation `json:"validation,omitempty"`
 }
 
 // storedDeploymentResult is the shape kept in the result column: the result code and the
@@ -489,16 +492,18 @@ func (t *tenancyStore) insertPlan(ctx context.Context, tx *sql.Tx, a TenantAcces
 }
 
 // selectDeployments reads rows aliased d with the endpoint's current name (empty once the
-// endpoint is gone); the caller appends the WHERE clause.
-const selectDeployments = `SELECT d.id,d.application_id,d.instance_id,d.endpoint_id,COALESCE(e.name,''),d.kind,d.state,d.revision,d.spec_digest,d.mapping_version,d.plan,d.created_by,d.created_at,d.expires_at,d.applied_by,d.applied_at,d.deadline,d.settled_at,d.detail,d.result,d.correlation_id FROM deployments d LEFT JOIN endpoints e ON e.id=d.endpoint_id `
+// endpoint is gone) and the deployment's validation; the caller appends the WHERE clause.
+const selectDeployments = `SELECT d.id,d.application_id,d.instance_id,d.endpoint_id,COALESCE(e.name,''),d.kind,d.state,d.revision,d.spec_digest,d.mapping_version,d.plan,d.created_by,d.created_at,d.expires_at,d.applied_by,d.applied_at,d.deadline,d.settled_at,d.detail,d.result,d.correlation_id,` + validationColumns + ` FROM deployments d LEFT JOIN endpoints e ON e.id=d.endpoint_id LEFT JOIN deployment_validations v ON v.deployment_id=d.id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id `
 
 func scanDeployment(rows interface{ Scan(...any) error }) (*Deployment, error) {
 	var d Deployment
 	var raw, result string
 	var appliedAt, deadline, settledAt sql.NullTime
-	if err := rows.Scan(&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.EndpointName, &d.Kind, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result, &d.CorrelationID); err != nil {
+	var vs validationScan
+	if err := rows.Scan(append([]any{&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.EndpointName, &d.Kind, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result, &d.CorrelationID}, vs.dest()...)...); err != nil {
 		return nil, err
 	}
+	d.Validation = vs.validation()
 	if json.Unmarshal([]byte(raw), &d.Plan) != nil {
 		return nil, ErrRevisionCorrupt
 	}

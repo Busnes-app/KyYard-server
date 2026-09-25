@@ -957,6 +957,61 @@ CREATE TABLE policy_runs (
 );
 CREATE INDEX idx_policy_runs_open ON policy_runs(outcome) WHERE outcome='';
 `},
+	// Health validation of every succeeded apply. A validation goes with its deployment; its policy
+	// run may go first (the policy deleted), which leaves it automated with no run to act for.
+	{Version: 32, Name: "deployment_validations", SQLite: `CREATE TABLE deployment_validations (
+ deployment_id TEXT PRIMARY KEY REFERENCES deployments(id) ON DELETE CASCADE,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL,
+ instance_id TEXT NOT NULL,
+ endpoint_id TEXT NOT NULL,
+ policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL,
+ automated INTEGER NOT NULL CHECK(automated IN (0,1)),
+ is_rollback INTEGER NOT NULL DEFAULT 0 CHECK(is_rollback IN (0,1)),
+ phase TEXT NOT NULL CHECK(phase IN ('grace','observing','done')),
+ started_at DATETIME NOT NULL,
+ observe_until DATETIME NOT NULL,
+ verdict TEXT NOT NULL DEFAULT '' CHECK(verdict IN ('','healthy','unhealthy','exited','restarting','unverifiable','changed')),
+ detail TEXT NOT NULL DEFAULT '' CHECK(length(detail)<=255),
+ baseline TEXT NOT NULL DEFAULT '' CHECK(length(baseline)<=32768),
+ rollback_deployment_id TEXT,
+ rollback_outcome TEXT NOT NULL DEFAULT '' CHECK(rollback_outcome IN ('','applied','ineligible','failed')),
+ rollback_detail TEXT NOT NULL DEFAULT '' CHECK(length(rollback_detail)<=255),
+ correlation_id TEXT NOT NULL CHECK(length(correlation_id) BETWEEN 1 AND 64),
+ finished_at DATETIME,
+ CHECK(policy_run_id IS NULL OR automated=1)
+);
+CREATE INDEX idx_deployment_validations_phase ON deployment_validations(phase,started_at);
+CREATE INDEX idx_deployment_validations_instance ON deployment_validations(instance_id);
+CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validations(rollback_deployment_id) WHERE rollback_deployment_id IS NOT NULL;
+`, Postgres: `CREATE TABLE deployment_validations (
+ deployment_id TEXT PRIMARY KEY REFERENCES deployments(id) ON DELETE CASCADE,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL,
+ instance_id TEXT NOT NULL,
+ endpoint_id TEXT NOT NULL,
+ policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL,
+ automated INTEGER NOT NULL CHECK(automated IN (0,1)),
+ is_rollback INTEGER NOT NULL DEFAULT 0 CHECK(is_rollback IN (0,1)),
+ phase TEXT NOT NULL CHECK(phase IN ('grace','observing','done')),
+ started_at TIMESTAMPTZ NOT NULL,
+ observe_until TIMESTAMPTZ NOT NULL,
+ verdict TEXT NOT NULL DEFAULT '' CHECK(verdict IN ('','healthy','unhealthy','exited','restarting','unverifiable','changed')),
+ detail TEXT NOT NULL DEFAULT '' CHECK(length(detail)<=255),
+ baseline TEXT NOT NULL DEFAULT '' CHECK(length(baseline)<=32768),
+ rollback_deployment_id TEXT,
+ rollback_outcome TEXT NOT NULL DEFAULT '' CHECK(rollback_outcome IN ('','applied','ineligible','failed')),
+ rollback_detail TEXT NOT NULL DEFAULT '' CHECK(length(rollback_detail)<=255),
+ correlation_id TEXT NOT NULL CHECK(length(correlation_id) BETWEEN 1 AND 64),
+ finished_at TIMESTAMPTZ,
+ CHECK(policy_run_id IS NULL OR automated=1)
+);
+CREATE INDEX idx_deployment_validations_phase ON deployment_validations(phase,started_at);
+CREATE INDEX idx_deployment_validations_instance ON deployment_validations(instance_id);
+CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validations(rollback_deployment_id) WHERE rollback_deployment_id IS NOT NULL;
+`},
 }
 
 // Latest returns the highest registered migration version: the schema this binary runs.

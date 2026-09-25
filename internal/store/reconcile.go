@@ -16,7 +16,10 @@ const reconcileDetail = "the server restarted before a result arrived"
 // An empty outcome is the only condition, so a first real answer always wins and a partially
 // written row still settles. Deployments are left to their own sweep. Policy runs the previous
 // process left open fail with `the server restarted during the run` and count against their
-// policy, in the same transaction; the count returned is commands only.
+// policy, in the same transaction; the count returned is commands only. Validations still in
+// grace past their window become `unverifiable` (`the server was not running during the window`),
+// and a rollback named but undecided becomes `failed` `interrupted`, pausing its policy, in the
+// same transaction.
 func (t *tenancyStore) ReconcileAfterStart(ctx context.Context) (int64, error) {
 	tx, err := t.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -65,6 +68,9 @@ func (t *tenancyStore) ReconcileAfterStart(ctx context.Context) (int64, error) {
 		total += n
 	}
 	if err := t.reconcilePolicyRuns(ctx, tx); err != nil {
+		return 0, err
+	}
+	if err := t.reconcileValidations(ctx, tx); err != nil {
 		return 0, err
 	}
 	return total, tx.Commit()
