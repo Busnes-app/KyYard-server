@@ -175,9 +175,12 @@ func TestRemovalOverTheAgentSocket(t *testing.T) {
 		t.Fatalf("a removal result with identities was accepted: %+v", rows[0])
 	}
 
-	removing, _ := remove()
+	removing, removingFrame := remove()
+	if removingFrame.RequestID == "" || removingFrame.RequestID != removing.CorrelationID {
+		t.Fatalf("the removal frame's request id %q, row %q", removingFrame.RequestID, removing.CorrelationID)
+	}
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{
-		Deployment: removing.ID, Outcome: protocol.OutcomeSucceeded, Steps: steps, Services: []protocol.DeploymentIdentity{},
+		Deployment: removing.ID, RequestID: removingFrame.RequestID, Outcome: protocol.OutcomeSucceeded, Steps: steps, Services: []protocol.DeploymentIdentity{},
 	})
 	sync(sock)
 	var settled store.Deployment

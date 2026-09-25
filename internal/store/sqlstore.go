@@ -237,6 +237,9 @@ WHERE id = ?
 		lastLogin, user.ID,
 	)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key") {
+			return ErrAlreadyExists
+		}
 		return err
 	}
 	rows, _ := res.RowsAffected()

@@ -55,20 +55,89 @@ const (
 	MaxDeploymentResultSteps = 8*MaxDeploymentServices + MaxDeploymentVolumes
 )
 
+// Outcome codes: the closed vocabulary a denied or failed step, and a result that did not
+// succeed, report in. A step's Detail is its code's parameter, never a sentence.
+// See docs/agent-protocol.md, Outcome codes.
+const (
+	ResultStepFailed     = "step_failed"     // a step did not succeed; the steps say which
+	ResultClockSkew      = "clock_skew"      // issued_at is more than MaxClockSkew from the agent's clock
+	ResultInvalidRequest = "invalid_request" // the frame failed Validate
+	ResultWrongEndpoint  = "wrong_endpoint"  // the frame names another endpoint
+	ResultBusy           = "busy"            // the agent is already applying a deployment
+	ResultRestarted      = "restarted"       // the agent restarted after replacement began
+	ResultUnreadable     = "unreadable"      // the runtime returned a result the agent could not validate
+	// CodeLegacy is the server's reading of a result from an agent built before codes, for a
+	// step or a result; no agent emits it.
+	CodeLegacy = "legacy"
+)
+
+type detailRule int
+
+const (
+	detailNone        detailRule = iota
+	detailUnsupported            // one to MaxUnsupported distinct UnsupportedCodes, joined by ","
+	detailContainerID            // a full 64-hex Docker ID
+	detailStatus                 // a 3-digit status
+)
+
+// stepCodes maps each step code to the parameter its detail carries.
+var stepCodes = map[string]detailRule{
+	"runtime_unreadable": detailNone, "container_missing": detailNone, "identity_mismatch": detailNone,
+	"image_identity_mismatch": detailNone, "configuration_unreported": detailNone, "unsupported": detailUnsupported,
+	"bind_missing": detailNone, "volume_mount_missing": detailNone, "volume_not_owned": detailNone,
+	"volume_missing": detailNone, "volume_create_failed": detailNone, "image_missing": detailNone,
+	"pinned_image_missing": detailNone, "configuration_drift": detailNone, "name_reserved": detailNone,
+	"name_taken": detailNone, "identity_unusable": detailNone, "identity_unreadable": detailContainerID,
+	"identity_unverified": detailContainerID, "dependents": detailNone, "deadline": detailNone,
+	"pull_failed": detailNone, "pull_unauthorized": detailNone, "pull_not_found": detailNone,
+	"pull_digest_mismatch": detailNone, "cancelled": detailNone, "runtime_timeout": detailNone,
+	"runtime_error": detailNone, "runtime_status": detailStatus, CodeLegacy: detailNone,
+}
+
+var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
+
+var (
+	statusDetail = regexp.MustCompile(`^[1-5][0-9]{2}$`)
+	requestID    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
+
+// ValidRequestID is the grammar of a frame's request_id, the audit correlation ID: the API's 32
+// hex characters or the store's UUID fallback, safe to log.
+func ValidRequestID(id string) bool { return requestID.MatchString(id) }
+
+// ValidDeploymentID is the grammar Validate requires of Deployment: a lowercase UUID. A frame
+// failing this cannot be attributed to any deployment and so cannot be answered at all.
+func ValidDeploymentID(id string) bool { return deploymentUUID.MatchString(id) }
+
+// validStepCode reports a known code whose detail has the shape the code allows.
+func validStepCode(code, detail string) bool {
+	rule, ok := stepCodes[code]
+	switch {
+	case !ok:
+		return false
+	case rule == detailUnsupported:
+		return knownCodes(strings.Split(detail, ","))
+	case rule == detailContainerID:
+		return fullDockerID.MatchString(detail)
+	case rule == detailStatus:
+		return statusDetail.MatchString(detail)
+	}
+	return detail == ""
+}
+
 var (
 	deploymentUUID    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	deploymentProject = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	deploymentService = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 	deploymentEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-	// Docker's volume name characters, long enough for a resolved "<project>_<name>" (64+1+64).
-	deploymentVolume  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,128}$`)
+	// Docker's volume name characters, at least two, long enough for a resolved "<project>_<name>" (64+1+64).
+	deploymentVolume  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{1,128}$`)
 	deploymentSteps   = map[string]bool{StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true, StepRecheck: true}
 	deploymentRestart = map[string]bool{"": true, "no": true, "always": true, "unless-stopped": true, "on-failure": true}
 	resultOutcomes    = map[string]bool{OutcomeSucceeded: true, OutcomeFailed: true, OutcomeDenied: true, OutcomeTimedOut: true, OutcomeUnknown: true}
 )
 
 // ErrClockSkew is a frame whose issue time is more than MaxClockSkew from the reader's clock.
-// Its text is the detail an agent answers with.
 var ErrClockSkew = errors.New("clock skew exceeds 5 minutes")
 
 // issued refuses a frame with no issue time, one issued more than MaxClockSkew from now (the
@@ -88,9 +157,11 @@ func issued(at, deadline, now time.Time) error {
 
 type DeploymentRequest struct {
 	Deployment string `json:"deployment"`
-	Endpoint   string `json:"endpoint"`
-	Project    string `json:"project"`
-	Revision   int    `json:"revision"`
+	// RequestID is the plan's audit correlation ID; the agent logs and echoes it.
+	RequestID string `json:"request_id"`
+	Endpoint  string `json:"endpoint"`
+	Project   string `json:"project"`
+	Revision  int    `json:"revision"`
 	// IssuedAt is the server's clock when it built the frame; Deadline is measured from it too.
 	IssuedAt time.Time           `json:"issued_at"`
 	Deadline time.Time           `json:"deadline"`
@@ -112,7 +183,7 @@ type DeploymentService struct {
 	// Pull, when set, has the agent pull the image first; ImageID is then empty.
 	Pull *ImagePull `json:"pull,omitempty"`
 	// Mounts are MountVolume or MountBind only; a bind must already be on the replaced container.
-	// The server always sends the key; nil (absent) is an older server that knows no mounts.
+	// Always sent: a nil list is invalid.
 	Mounts []Mount `json:"mounts"`
 }
 
@@ -187,7 +258,7 @@ func fullImageID(id string) bool {
 // Validate refuses anything the adapter would have to guess about. Every bound here is a
 // wire bound as well: PR B rejects a frame that fails it before touching the runtime.
 func (r DeploymentRequest) Validate(now time.Time) error {
-	if !deploymentUUID.MatchString(r.Deployment) || !execStreamID.MatchString(r.Endpoint) || !deploymentProject.MatchString(r.Project) || r.Revision < 1 || r.Revision > 100 {
+	if !deploymentUUID.MatchString(r.Deployment) || !ValidRequestID(r.RequestID) || !execStreamID.MatchString(r.Endpoint) || !deploymentProject.MatchString(r.Project) || r.Revision < 1 || r.Revision > 100 {
 		return errors.New("invalid deployment identity")
 	}
 	if err := issued(r.IssuedAt, r.Deadline, now); err != nil {
@@ -214,7 +285,7 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 		if s.Pull != nil {
 			pulled[s.Pull.Host()] = true
 		}
-		if !validMounts(s.Mounts, mounted) {
+		if s.Mounts == nil || !validMounts(s.Mounts, mounted) {
 			return errors.New("invalid mount")
 		}
 		if len(s.Ports) > MaxDeploymentPorts {
@@ -282,17 +353,23 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 }
 
 type DeploymentResult struct {
-	Deployment string               `json:"deployment"`
-	Outcome    string               `json:"outcome"`
-	Detail     string               `json:"detail"`
-	Steps      []DeploymentStep     `json:"steps"`
-	Services   []DeploymentIdentity `json:"services"`
+	Deployment string `json:"deployment"`
+	// RequestID echoes the frame's request_id; empty only from a binary built before it.
+	RequestID string `json:"request_id"`
+	Outcome   string `json:"outcome"`
+	// Code is a result code, set exactly when Outcome is not succeeded.
+	Code     string               `json:"code"`
+	Steps    []DeploymentStep     `json:"steps"`
+	Services []DeploymentIdentity `json:"services"`
 }
 type DeploymentStep struct {
 	Service string `json:"service"`
 	Step    string `json:"step"`
 	Outcome string `json:"outcome"`
-	Detail  string `json:"detail"`
+	// Code is a step code, set exactly when Outcome is denied, failed, timed_out or unknown.
+	Code string `json:"code"`
+	// Detail is Code's parameter: empty, unsupported codes, a container ID or a status.
+	Detail string `json:"detail"`
 }
 type DeploymentIdentity struct {
 	Service     string `json:"service"`
@@ -303,13 +380,19 @@ type DeploymentIdentity struct {
 }
 
 func (r DeploymentResult) Validate() error {
-	if !deploymentUUID.MatchString(r.Deployment) || !resultOutcomes[r.Outcome] || len(r.Detail) > MaxResultDetailBytes || len(r.Steps) > MaxDeploymentResultSteps || len(r.Services) > MaxDeploymentServices {
+	if !deploymentUUID.MatchString(r.Deployment) || !resultOutcomes[r.Outcome] || (r.RequestID != "" && !ValidRequestID(r.RequestID)) || len(r.Steps) > MaxDeploymentResultSteps || len(r.Services) > MaxDeploymentServices {
 		return errors.New("invalid deployment result")
+	}
+	if (r.Outcome == OutcomeSucceeded) != (r.Code == "") || (r.Code != "" && !resultCodes[r.Code]) {
+		return errors.New("invalid deployment result code")
 	}
 	for _, s := range r.Steps {
 		quiet := s.Outcome == OutcomeSucceeded || s.Outcome == OutcomeSkipped
-		if !deploymentService.MatchString(s.Service) || !deploymentSteps[s.Step] || !(resultOutcomes[s.Outcome] || s.Outcome == OutcomeSkipped) || len(s.Detail) > MaxDeploymentStepDetailBytes || (quiet && s.Detail != "") {
+		if !deploymentService.MatchString(s.Service) || !deploymentSteps[s.Step] || !(resultOutcomes[s.Outcome] || s.Outcome == OutcomeSkipped) || len(s.Detail) > MaxDeploymentStepDetailBytes {
 			return errors.New("invalid deployment step")
+		}
+		if (quiet && (s.Code != "" || s.Detail != "")) || (!quiet && !validStepCode(s.Code, s.Detail)) {
+			return errors.New("invalid deployment step code")
 		}
 	}
 	for _, id := range r.Services {
@@ -325,6 +408,7 @@ func (r DeploymentResult) Validate() error {
 // than a name a daemon restart could reassign.
 type RemovalRequest struct {
 	Deployment string          `json:"deployment"`
+	RequestID  string          `json:"request_id"`
 	Endpoint   string          `json:"endpoint"`
 	Project    string          `json:"project"`
 	IssuedAt   time.Time       `json:"issued_at"`
@@ -337,7 +421,7 @@ type RemovalTarget struct {
 }
 
 func (r RemovalRequest) Validate(now time.Time) error {
-	if !deploymentUUID.MatchString(r.Deployment) || !execStreamID.MatchString(r.Endpoint) || !deploymentProject.MatchString(r.Project) {
+	if !deploymentUUID.MatchString(r.Deployment) || !ValidRequestID(r.RequestID) || !execStreamID.MatchString(r.Endpoint) || !deploymentProject.MatchString(r.Project) {
 		return errors.New("invalid removal identity")
 	}
 	if err := issued(r.IssuedAt, r.Deadline, now); err != nil {

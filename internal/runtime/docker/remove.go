@@ -2,7 +2,6 @@ package docker
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,13 +14,9 @@ import (
 // container already gone counts as removed. Volumes (no v=1) and networks are never touched.
 // The first step that is not a success ends the run and every later step is skipped.
 func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, started func()) protocol.DeploymentResult {
-	res := protocol.DeploymentResult{Deployment: req.Deployment, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
-		res.Outcome, res.Detail = protocol.OutcomeDenied, "the removal request is invalid"
-		if errors.Is(err, protocol.ErrClockSkew) {
-			res.Outcome, res.Detail = protocol.OutcomeFailed, protocol.ErrClockSkew.Error()
-		}
-		return res
+		return refused(res, err)
 	}
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
@@ -38,7 +33,7 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, sta
 func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, deadline time.Time) {
 	id := url.PathEscape(t.Target.ContainerID)
 	gone := false
-	r.step(t.Service, protocol.StepPrecondition, func() (string, string) {
+	r.step(t.Service, protocol.StepPrecondition, func() (string, string, string) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var in struct {
@@ -49,14 +44,14 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		if err := r.c.get(cctx, "/containers/"+id+"/json", &in); err != nil {
 			if statusOf(err) == http.StatusNotFound {
 				gone = true
-				return protocol.OutcomeSucceeded, ""
+				return succeeded()
 			}
 			return r.outcomeFor(cctx, err, statusOf(err))
 		}
 		if in.ID != t.Target.ContainerID || in.Image != t.Target.ImageID || in.Created.Unix() != t.Target.CreatedUnix {
-			return protocol.OutcomeDenied, "the container is not the one this plan was decided about"
+			return deny("identity_mismatch")
 		}
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
 	if gone {
 		for _, step := range []string{protocol.StepStop, protocol.StepRemove} {
@@ -64,9 +59,9 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		}
 		return
 	}
-	r.step(t.Service, protocol.StepStop, func() (string, string) {
+	r.step(t.Service, protocol.StepStop, func() (string, string, string) {
 		if time.Until(deadline) < operationBudget+2*callBudget {
-			return protocol.OutcomeTimedOut, "not enough time left before the deadline to remove this container safely"
+			return protocol.OutcomeTimedOut, "deadline", ""
 		}
 		r.begin()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
@@ -75,18 +70,18 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
 			return r.outcomeFor(cctx, err, status)
 		}
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
-	r.step(t.Service, protocol.StepRemove, func() (string, string) {
+	r.step(t.Service, protocol.StepRemove, func() (string, string, string) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		status, err := r.c.del(cctx, "/containers/"+id)
 		switch {
 		case status == http.StatusConflict:
-			return protocol.OutcomeFailed, "the runtime refused: something still depends on this container"
+			return fail("dependents")
 		case err != nil || (status >= 400 && status != http.StatusNotFound):
 			return r.outcomeFor(cctx, err, status)
 		}
-		return protocol.OutcomeSucceeded, ""
+		return succeeded()
 	})
 }

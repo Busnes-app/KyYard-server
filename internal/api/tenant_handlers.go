@@ -76,7 +76,7 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrMappingRequired):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Map the application's services to adopted containers first", "code": "mapping_required"})
 	case errors.Is(err, errCheckInProgress):
-		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "An update check for this application is already running", "code": "check_in_progress"})
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "An image update check or update plan for this application is already running", "code": "check_in_progress"})
 	case errors.Is(err, errTooManyChecks):
 		s.writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Too many registry checks are running; try again in a moment", "code": "too_many_checks"})
 	case errors.Is(err, store.ErrRegistryNotConfigured):

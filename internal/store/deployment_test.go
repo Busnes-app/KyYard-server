@@ -631,7 +631,7 @@ func TestFrameBlocker(t *testing.T) {
 	for _, n := range []string{"A", "B", "C", "D"} {
 		env["V"+n] = strings.Repeat("<", 10000)
 	}
-	good := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_1", Project: "shop", Revision: 1, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{{
+	good := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: "shop", Revision: 1, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{{
 		Name: "web", ContainerName: "shop-web", ImageID: "sha256:" + strings.Repeat("a", 64), Mounts: []protocol.Mount{}, Env: env,
 		Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000},
 	}}}

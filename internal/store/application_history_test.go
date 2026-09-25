@@ -17,8 +17,11 @@ func removalSteps(service string, outcomes ...string) []protocol.DeploymentStep 
 	out := []protocol.DeploymentStep{}
 	for i, step := range []string{protocol.StepPrecondition, protocol.StepStop, protocol.StepRemove} {
 		s := protocol.DeploymentStep{Service: service, Step: step, Outcome: outcomes[i]}
-		if s.Outcome != protocol.OutcomeSucceeded && s.Outcome != protocol.OutcomeSkipped {
-			s.Detail = "fixed text"
+		switch s.Outcome {
+		case protocol.OutcomeDenied:
+			s.Code = "identity_mismatch"
+		case protocol.OutcomeFailed, protocol.OutcomeTimedOut, protocol.OutcomeUnknown:
+			s.Code = "runtime_error"
 		}
 		out = append(out, s)
 	}
@@ -26,7 +29,10 @@ func removalSteps(service string, outcomes ...string) []protocol.DeploymentStep 
 }
 
 func removalResult(d *Deployment, outcome string, steps ...[]protocol.DeploymentStep) protocol.DeploymentResult {
-	res := protocol.DeploymentResult{Deployment: d.ID, Outcome: outcome, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	res := protocol.DeploymentResult{Deployment: d.ID, RequestID: d.CorrelationID, Outcome: outcome, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	if outcome != protocol.OutcomeSucceeded {
+		res.Code = protocol.ResultStepFailed
+	}
 	for _, s := range steps {
 		res.Steps = append(res.Steps, s...)
 	}
@@ -312,7 +318,6 @@ func TestRemovalPartialSettle(t *testing.T) {
 	res := removalResult(d, protocol.OutcomeDenied,
 		removalSteps("unmapped-aaaaaaaaaaaa", protocol.OutcomeSucceeded, protocol.OutcomeSucceeded, protocol.OutcomeSucceeded),
 		removalSteps("unmapped-cccccccccccc", protocol.OutcomeDenied, protocol.OutcomeSkipped, protocol.OutcomeSucceeded))
-	res.Detail = "fixed text"
 	if err := ts.SettleDeployment(ctx, endpoint, res); err != nil {
 		t.Fatal(err)
 	}

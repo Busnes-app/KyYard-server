@@ -39,6 +39,9 @@ var (
 	// KY_REGISTRY_ALLOW_PRIVATE.
 	ErrPrivateRegistriesDisabled = errors.New("private registries are disabled by the operator")
 	ErrMappingRequired           = errors.New("application has no adopted mapping")
+	// ErrUnreadableResult is a deployment result that fails validation even read as an older
+	// agent's: nothing is stored, and the row waits for another answer or the sweep.
+	ErrUnreadableResult = errors.New("unreadable deployment result")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.

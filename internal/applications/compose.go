@@ -82,8 +82,8 @@ func ParseCompose(source string) (*Import, error) {
 		}
 		for i := 0; i < len(top.Content); i += 2 {
 			key, n := top.Content[i], top.Content[i+1]
-			if !store.ValidVolumeName(key.Value) {
-				return nil, refusal(key, "Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}")
+			if !store.ValidDeclaredVolumeName(key.Value) {
+				return nil, refusal(key, "Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{1,63}")
 			}
 			v := store.DeclaredVolume{Name: key.Value}
 			if n.Tag != "!!null" {

@@ -23,6 +23,17 @@ const (
 	registrySlotsTotal           = 8
 )
 
+// guardApplication admits one registry operation per application at a time, an update check or
+// an update plan, keyed by the canonical application ID, or answers 409 check_in_progress.
+func (s *Server) guardApplication(w http.ResponseWriter, a store.TenantAccess, app string) (release func(), ok bool) {
+	key := a.OrganizationID + "/" + a.EnvironmentID + "/" + app
+	if _, busy := s.imageChecks.LoadOrStore(key, struct{}{}); busy {
+		s.tenantError(w, errCheckInProgress)
+		return nil, false
+	}
+	return func() { s.imageChecks.Delete(key) }, true
+}
+
 // acquireRegistrySlot takes one of org's registry slots and one of the server's, or answers 429.
 func (s *Server) acquireRegistrySlot(w http.ResponseWriter, org string) (release func(), ok bool) {
 	s.registryMu.Lock()
@@ -96,12 +107,11 @@ func (s *Server) handleCheckImageUpdates(w http.ResponseWriter, r *http.Request,
 		s.tenantError(w, err)
 		return
 	}
-	key := a.OrganizationID + "/" + a.EnvironmentID + "/" + app
-	if _, busy := s.imageChecks.LoadOrStore(key, struct{}{}); busy {
-		s.tenantError(w, errCheckInProgress)
+	done, ok := s.guardApplication(w, a, app)
+	if !ok {
 		return
 	}
-	defer s.imageChecks.Delete(key)
+	defer done()
 	release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
 	if !ok {
 		return

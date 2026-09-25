@@ -72,7 +72,13 @@ func (t *tenancyStore) CreateOrganizationWithAdmin(ctx context.Context, o *Organ
 	}
 	defer tx.Rollback()
 	var status string
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT status FROM users WHERE id=?`), adminUserID).Scan(&status)
+	// The admin's row is locked on PostgreSQL, as withTenant locks the actor's: a concurrent status
+	// change waits behind the membership insert or is seen by it. SQLite serializes writers.
+	query := `SELECT status FROM users WHERE id=?`
+	if t.store.driver == "postgres" {
+		query += " FOR UPDATE"
+	}
+	err = tx.QueryRowContext(ctx, t.store.rebind(query), adminUserID).Scan(&status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}

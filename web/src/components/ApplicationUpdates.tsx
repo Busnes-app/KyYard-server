@@ -16,7 +16,7 @@ const detailText: Record<string, string> = {
 const texts = {
   forbidden: 'Only administrators and developers can check for updates.',
   conflict: {
-    check_in_progress: 'A check is already running.',
+    check_in_progress: 'An update check or update plan is already running.',
     mapping_required: 'Map the services first.',
     adoption_changed: 'Adoption changed. Refresh applications before checking.',
   },
@@ -33,6 +33,7 @@ const planCodes: Record<number, string> = {
 const planConflicts: Record<string, string> = {
   adoption_changed: 'Adoption changed. Refresh applications before planning.',
   deployment_in_progress: 'A deployment is being applied; wait for it to finish.',
+  check_in_progress: 'An update check or update plan is already running.',
 };
 const planUnknown = 'The plan was refused or its outcome is unknown. Refresh before trying again.';
 // Server strings never render raw: unknown verdicts and details show nothing.

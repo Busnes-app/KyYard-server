@@ -76,6 +76,11 @@ var applicationEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 var applicationVolumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
 var applicationSecretName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
+// declaredVolumeName is the grammar a newly declared volume name must match: two characters at
+// least. It is stricter than ValidVolumeName, which also validates volumes in stored revisions
+// saved before this bound existed; loosening later would require both to move together.
+var declaredVolumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,63}$`)
+
 func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 	if spec.Kind != "compose.v1" || len(spec.Services) == 0 || len(spec.Services) > 100 {
 		return nil, "", ErrInvalid
@@ -139,8 +144,14 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 	return raw, applicationSpecDigest(raw), nil
 }
 
-// ValidVolumeName is Docker's volume name grammar.
+// ValidVolumeName is Docker's volume name grammar, as stored: it also validates volumes in
+// revisions saved before ValidDeclaredVolumeName's two-character minimum took effect.
 func ValidVolumeName(name string) bool { return applicationVolumeName.MatchString(name) }
+
+// ValidDeclaredVolumeName is the grammar for a newly declared volume name, at least two
+// characters. Importers use this, not ValidVolumeName, so a one-character name can no longer
+// be declared even though one already stored still validates.
+func ValidDeclaredVolumeName(name string) bool { return declaredVolumeName.MatchString(name) }
 
 // CleanAbsolutePath holds mount paths to absolute, normalized, display-safe (so at most
 // 255 bytes) text with no surrounding whitespace.

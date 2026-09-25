@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/backup"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/sso"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 func TestProviderConfigurationSecretsAndPermissions(t *testing.T) {
@@ -248,5 +250,68 @@ func TestSSOAdmissionRemainsAvailableWhenAttemptMapIsFull(t *testing.T) {
 		if w.Code != http.StatusFound {
 			t.Fatalf("fresh client %d: got %d, want redirect: %s", i, w.Code, w.Body)
 		}
+	}
+}
+
+// A provider asserting "Erin" while a local "erin" exists is refused by name: sign-in matches
+// LOWER(username), so creating "Erin" would put two accounts behind one login, and signing in as
+// "erin" would hand the provider an account it never owned (Review Focus 4).
+func TestSSOAutoProvisionRefusesACaseVariantUsername(t *testing.T) {
+	var challenge string
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/token":
+			_ = r.ParseForm()
+			sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
+			if r.Form.Get("code") != "valid-code" || base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
+				w.WriteHeader(400)
+				return
+			}
+			_, _ = w.Write([]byte(`{"access_token":"profile-token","token_type":"Bearer"}`))
+		case "/user":
+			_, _ = w.Write([]byte(`{"id":"erin-at-idp","login":"Erin","name":"Erin"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer idp.Close()
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_erin", Username: "erin", Role: "admin", Status: "active", SSOProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	// HTTP is only used by this local provider fixture, bypassing the production HTTPS validator.
+	p := sso.Provider{ID: "idp_test", Name: "OAuth fixture", Kind: "oauth2", ClientID: "yard", ClientSecret: "secret", AuthorizationURL: idp.URL + "/authorize", TokenURL: idp.URL + "/token", UserInfoURL: idp.URL + "/user", SubjectField: "id", UsernameField: "login", NameField: "name", Enabled: true, AutoProvision: true}
+	plain, _ := json.Marshal([]sso.Provider{p})
+	sealed, _ := crypto.EncryptAESGCM(plain, crypto.DeriveKey(cfg.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	if err := st.Settings().SetSetting(ctx, "sso_providers_enc", sealed); err != nil {
+		t.Fatal(err)
+	}
+	login := do(t, srv, "GET", "/api/sso/idp_test/login", nil)
+	if login.Code != 302 {
+		t.Fatal(login.Code, login.Body)
+	}
+	dest, _ := url.Parse(login.Header().Get("Location"))
+	challenge = dest.Query().Get("code_challenge")
+	r := httptest.NewRequest("GET", "/api/sso/idp_test/callback?state="+dest.Query().Get("state")+"&code=valid-code", nil)
+	for _, c := range login.Result().Cookies() {
+		r.AddCookie(c)
+	}
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != 403 || !strings.Contains(w.Body.String(), "The username Erin is taken by another account") {
+		t.Fatalf("callback: %d %s", w.Code, w.Body.String())
+	}
+	for _, c := range w.Result().Cookies() {
+		if !strings.HasPrefix(c.Name, "ky_sso_") && c.Value != "" {
+			t.Fatalf("a session cookie was issued: %s", c.Name)
+		}
+	}
+	if _, err := st.Users().GetUserBySSO(ctx, "idp_test", "erin-at-idp"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a second account was created: %v", err)
+	}
+	if u, err := st.Users().GetUserByUsername(ctx, "ERIN"); err != nil || u.ID != "usr_erin" || u.SSOProvider != "local" {
+		t.Fatalf("the local account changed: %+v %v", u, err)
 	}
 }

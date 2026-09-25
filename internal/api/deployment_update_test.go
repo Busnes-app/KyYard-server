@@ -182,42 +182,51 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 	mapB, _ := json.Marshal(store.MappingRequest{InstanceID: instanceB.ID, Version: mappedB.Version, Digest: mappedB.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": containerB}})
 	request("PUT", baseB+"/"+appB.ID+"/mapping", string(mapB), 204)
 
-	// Organization a's quota is two registry calls in flight, a check and a plan; a third is 429
-	// and a plan with no update is not counted. Organization b still gets through.
-	gated := &fakeDigests{digest: remote, gate: make(chan struct{}), entered: make(chan struct{}, 2)}
+	// One registry operation per application: while a check runs, an update plan for the same
+	// application is 409 check_in_progress before any inspection or registry slot, and a plan
+	// with no update is not guarded. Another organization's check still gets through.
+	gated := &fakeDigests{digest: remote, gate: make(chan struct{}), entered: make(chan struct{}, 1)}
 	api.SetDigestResolverForTest(s, routeDigests{"orgb/web": fake, "": gated})
-	results := make(chan *httptest.ResponseRecorder, 2)
+	results := make(chan *httptest.ResponseRecorder, 1)
 	var release sync.Once
 	open := func() { release.Do(func() { close(gated.gate) }) }
 	t.Cleanup(open)
 	// The goroutines only request; every check runs here, where t.Fatal is allowed.
 	go func() { results <- tenantRequest(s, admin, "POST", check, "", true) }()
 	<-gated.entered
-	go func() { results <- tenantRequest(s, admin, "POST", deployments, string(planBody), true) }()
-	<-gated.entered
-	w := send("POST", deployments, string(planBody))
-	if w.Code != 429 || w.Header().Get("Retry-After") != "5" {
-		t.Fatalf("over the organization's quota: %d %v %s", w.Code, w.Header(), w.Body.String())
+	code(request("POST", deployments, string(planBody), 409), "check_in_progress")
+	if held := api.RegistrySlotsHeldForTest(s); held != 1 {
+		t.Fatalf("a refused update plan took a registry slot: %d held", held)
 	}
-	code(w.Body.String(), "too_many_checks")
 	var checkedB store.UpdateCheck
 	must(json.Unmarshal([]byte(request("POST", baseB+"/"+appB.ID+"/updates/check", "", 200)), &checkedB))
 	if len(checkedB.Services) != 1 || checkedB.Services[0].RemoteDigest != remote {
 		t.Fatalf("organization b's check: %+v", checkedB)
 	}
-	// Authorization answers before the cap: a member who may not deploy is 403, audited, not 429.
-	w = tenantRequest(s, viewer, "POST", deployments, string(planBody), true)
+	// Authorization answers before the guard: a member who may not deploy is 403, audited, not 409.
+	w := tenantRequest(s, viewer, "POST", deployments, string(planBody), true)
 	if w.Code != 403 {
-		t.Fatalf("read-only update plan with the cap full: %d %s", w.Code, w.Body.String())
+		t.Fatalf("read-only update plan while a check runs: %d %s", w.Code, w.Body.String())
 	}
 	code(w.Body.String(), "tenant_access_denied")
 	request("POST", deployments, string(plainBody), 201)
 	open()
-	for range 2 {
-		w := <-results
-		if (w.Code != 200 && w.Code != 201) || strings.Contains(w.Body.String(), secret) {
-			t.Fatalf("a request under the cap: %d %s", w.Code, w.Body.String())
-		}
+	if w := <-results; w.Code != 200 || strings.Contains(w.Body.String(), secret) {
+		t.Fatalf("the guarded check: %d %s", w.Code, w.Body.String())
+	}
+	// And the other way round: while an update plan runs, a check or a second update plan is 409.
+	planGate := &fakeDigests{digest: remote, gate: make(chan struct{}), entered: make(chan struct{}, 1)}
+	api.SetDigestResolverForTest(s, planGate)
+	var releasePlan sync.Once
+	openPlan := func() { releasePlan.Do(func() { close(planGate.gate) }) }
+	t.Cleanup(openPlan)
+	go func() { results <- tenantRequest(s, admin, "POST", deployments, string(planBody), true) }()
+	<-planGate.entered
+	code(request("POST", check, "", 409), "check_in_progress")
+	code(request("POST", deployments, string(planBody), 409), "check_in_progress")
+	openPlan()
+	if w := <-results; w.Code != 201 || strings.Contains(w.Body.String(), secret) {
+		t.Fatalf("the guarded update plan: %d %s", w.Code, w.Body.String())
 	}
 	records, err := ts.ReadAudit(ctx, store.TenantAccess{ActorID: "usr_updater", OrganizationID: "a"}, 0, 200)
 	must(err)
@@ -231,7 +240,7 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 		t.Fatalf("read-only denial audit rows: %d", denied)
 	}
 	api.SetDigestResolverForTest(s, fake)
-	plan() // every slot came back
+	plan() // the guard and every slot came back
 
 	// A plan outliving the listener's WriteTimeout still delivers its answer.
 	slow := &fakeDigests{digest: remote, gate: make(chan struct{}), entered: make(chan struct{}, 1)}

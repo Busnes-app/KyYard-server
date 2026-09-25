@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 )
@@ -14,6 +16,46 @@ type Migration struct {
 	Name     string
 	SQLite   string
 	Postgres string
+	// Check runs in the migration's transaction before its SQL; an error refuses the migration
+	// with nothing altered, and the server does not start.
+	Check func(context.Context, *sql.Tx) error
+}
+
+// usernameLowerIndex is one statement for both dialects.
+const usernameLowerIndex = `CREATE UNIQUE INDEX idx_users_username_lower ON users (LOWER(username));`
+
+// refuseCaseVariantUsernames names every username that differs from another only by case: sign-in
+// already matches LOWER(username), so each such group is one login for several accounts, and an
+// operator must choose which stays. Groups by lowercase name, each in creation order.
+func refuseCaseVariantUsernames(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT LOWER(username), username FROM users WHERE LOWER(username) IN (SELECT LOWER(username) FROM users GROUP BY LOWER(username) HAVING COUNT(*) > 1) ORDER BY created_at, id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	groups := map[string][]string{}
+	for rows.Next() {
+		var lower, name string
+		if err := rows.Scan(&lower, &name); err != nil {
+			return err
+		}
+		groups[lower] = append(groups[lower], name)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	listed := []string{}
+	for _, lower := range slices.Sorted(maps.Keys(groups)) {
+		quoted := make([]string, len(groups[lower]))
+		for i, name := range groups[lower] {
+			quoted[i] = fmt.Sprintf("%q", name)
+		}
+		listed = append(listed, strings.Join(quoted, ", "))
+	}
+	return fmt.Errorf("usernames differ only by case: %s; rename or delete one of each pair before upgrading", strings.Join(listed, "; "))
 }
 
 var registry = []Migration{
@@ -840,6 +882,8 @@ ALTER TABLE organizations ADD COLUMN anonymous_pull_enabled BOOLEAN NOT NULL DEF
 );
 `},
 	{Version: 28, Name: "organizations_name_unique", SQLite: `CREATE UNIQUE INDEX idx_organizations_name ON organizations(name);`, Postgres: `CREATE UNIQUE INDEX idx_organizations_name ON organizations(name);`},
+	{Version: 29, Name: "deployment_correlation", SQLite: `ALTER TABLE deployments ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';`, Postgres: `ALTER TABLE deployments ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';`},
+	{Version: 30, Name: "users_username_lower_unique", Check: refuseCaseVariantUsernames, SQLite: usernameLowerIndex, Postgres: usernameLowerIndex},
 }
 
 // Latest returns the highest registered migration version: the schema this binary runs.
@@ -911,6 +955,13 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("failed to begin migration tx for v%d: %w", m.Version, err)
+		}
+
+		if m.Check != nil {
+			if err := m.Check(ctx, tx); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migration v%d (%s) refused: %w", m.Version, m.Name, err)
+			}
 		}
 
 		if _, err := tx.ExecContext(ctx, ddl); err != nil {

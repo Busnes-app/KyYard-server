@@ -259,6 +259,11 @@ must produce the hex form, write it straight into the compose project's `.env` w
 **Bare binary.** Point `KY_DATA_DIR` at `restored/data`, set `KY_APP_URL` and `KY_APP_NAME`
 as before, and start.
 
+A capsule taken before migration 30 that holds usernames differing only by case makes the
+restored server refuse to start with `usernames differ only by case: …; rename or delete one
+of each pair before upgrading`; nothing is changed. Rename or delete one account of each pair
+in `data/ky_server.db` as the README's upgrade notes show, then start again.
+
 ## Step 4: prove it
 
 1. Open the app URL and sign in with an existing admin account and its second factor. TOTP

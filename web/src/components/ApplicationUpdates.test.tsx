@@ -82,7 +82,7 @@ it('posts the check with the CSRF header and renders the new rows', async () => 
 });
 it.each([
   [403, 'tenant_access_denied', 'Only administrators and developers can check for updates.'],
-  [409, 'check_in_progress', 'A check is already running.'],
+  [409, 'check_in_progress', 'An update check or update plan is already running.'],
   [409, 'mapping_required', 'Map the services first.'],
   [409, 'adoption_changed', 'Adoption changed. Refresh applications before checking.'],
 ])('maps %i %s to fixed text', async (status, code, text) => {
@@ -195,6 +195,7 @@ it('maps 429 to fixed text', async () => {
 it.each([
   ['adoption_changed', 'Adoption changed. Refresh applications before planning.'],
   ['deployment_in_progress', 'A deployment is being applied; wait for it to finish.'],
+  ['check_in_progress', 'An update check or update plan is already running.'],
   ['made_up_canary', 'The plan was refused or its outcome is unknown. Refresh before trying again.'],
 ])('maps the %s conflict to fixed text', async (code, text) => {
   stub(body([row({ verdict: 'update_available' })]), new Response(JSON.stringify({ error: 'secret-canary', code }), { status: 409 }));

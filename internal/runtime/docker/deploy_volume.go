@@ -10,10 +10,6 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
-const notOwned = "volume is not owned by this project"
-
-const notPresent = "volume mount not present on the container"
-
 func mountsVolume(mounts []inspectedMount, name string) bool {
 	return slices.ContainsFunc(mounts, func(o inspectedMount) bool { return o.Type == "volume" && o.Name == name })
 }
@@ -52,31 +48,31 @@ func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentServ
 			continue
 		}
 		r.ensured[m.Source] = true
-		r.step(s.Name, protocol.StepVolume, func() (string, string) {
+		r.step(s.Name, protocol.StepVolume, func() (string, string, string) {
 			cctx, cancel := context.WithTimeout(ctx, callBudget)
 			defer cancel()
 			var v dockerVolume
 			err := r.c.get(cctx, "/volumes/"+url.PathEscape(m.Source), &v)
 			switch {
 			case err == nil && v.owned(r.req.Project):
-				return protocol.OutcomeSucceeded, ""
+				return succeeded()
 			case err == nil && !mountsVolume(old, m.Source):
-				return protocol.OutcomeDenied, notOwned
+				return deny("volume_not_owned")
 			case err == nil:
 				for _, sm := range s.Mounts {
 					if sm.Kind == protocol.MountVolume && sm.Source == m.Source && !keeps(old, sm) {
-						return protocol.OutcomeDenied, notPresent
+						return deny("volume_mount_missing")
 					}
 				}
 				r.keepOnly[m.Source] = true
-				return protocol.OutcomeSucceeded, ""
+				return succeeded()
 			case statusOf(err) != http.StatusNotFound:
 				return r.outcomeFor(cctx, err, statusOf(err))
 			}
 			// Only the project's own volumes are created; an external one must already exist.
 			short, ok := strings.CutPrefix(m.Source, r.req.Project+"_")
 			if !ok || short == "" {
-				return protocol.OutcomeDenied, "volume does not exist"
+				return deny("volume_missing")
 			}
 			body := struct {
 				Name   string            `json:"Name"`
@@ -87,12 +83,12 @@ func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentServ
 			case err != nil:
 				return r.outcomeFor(cctx, err, status)
 			case status != http.StatusCreated:
-				return protocol.OutcomeFailed, "volume create failed"
+				return fail("volume_create_failed")
 			case !v.owned(r.req.Project):
 				// Docker answers 201 with the existing volume when the name was taken meanwhile.
-				return protocol.OutcomeDenied, notOwned
+				return deny("volume_not_owned")
 			}
-			return protocol.OutcomeSucceeded, ""
+			return succeeded()
 		})
 	}
 }
