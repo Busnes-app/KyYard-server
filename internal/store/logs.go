@@ -59,6 +59,37 @@ func (t *tenancyStore) OpenLogTarget(ctx context.Context, a TenantAccess, endpoi
 	return target, nil
 }
 
+// OpenPodLogTarget authorizes reading one pod container's log under container.logs and
+// records the session, naming the pod: the endpoint must be an active Kubernetes endpoint. The
+// pod is not resolved against the inventory; the agent reads its spec.
+func (t *tenancyStore) OpenPodLogTarget(ctx context.Context, a TenantAccess, endpointID string, pod protocol.PodTarget) error {
+	if pod.Validate() != nil {
+		return fmt.Errorf("%w: pod", ErrInvalid)
+	}
+	resource := endpointID + "/pods/" + pod.Namespace + "/" + pod.Name
+	if pod.Container != "" {
+		resource += "/" + pod.Container
+	}
+	return t.run(ctx, a, permissions.ContainerLogs, &resource, nil, false, func(tx *sql.Tx) error {
+		var state, runtime string
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT state,runtime FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
+			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID).Scan(&state, &runtime)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if runtime != protocol.RuntimeKubernetes {
+			return ErrRuntimeUnsupported
+		}
+		if state != "active" {
+			return fmt.Errorf("%w: it is %s", ErrEndpointOffline, state)
+		}
+		return nil
+	})
+}
+
 // StillAllowed re-checks a live authorization without writing an audit row. It exists for work
 // that outlives the request that started it: a stream is authorized when it opens, and a
 // membership removed, a role narrowed or an account disabled while it runs must end it.

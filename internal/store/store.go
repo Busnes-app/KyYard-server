@@ -295,6 +295,7 @@ type TenancyStore interface {
 	CheckExecAccess(ctx context.Context, access TenantAccess, endpointID string) error
 	OpenExecTarget(ctx context.Context, access TenantAccess, endpointID, streamID, confirm string, spec protocol.ExecSpec) (string, error)
 	OpenLogTarget(ctx context.Context, access TenantAccess, endpointID, identifier string) (*LogTarget, error)
+	OpenPodLogTarget(ctx context.Context, access TenantAccess, endpointID string, pod protocol.PodTarget) error
 	StillAllowed(ctx context.Context, access TenantAccess, action permissions.Action, endpointID string) error
 	MarkCommandDispatched(ctx context.Context, id string) error
 	SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,14 +38,8 @@ const (
 	deadlineSlack = 2 * accessRecheck
 )
 
-// handleContainerLogs streams one container's log to the caller: history, or history followed
-// by whatever arrives next. The body is never stored and never interpreted -- it is the
-// application's own output, forwarded as text.
-//
-// Every bound is explicit and reported when it bites: the request ends at
-// protocol.MaxLogLines or protocol.MaxLogBytes with a line saying so, a reader that cannot
-// keep up gets a gap marker naming the bytes dropped rather than a log that looks continuous,
-// and an endpoint serves only so many streams at once.
+// handleContainerLogs streams one container's log, named as the operator sees it and resolved
+// to the ID the endpoint last reported.
 func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	id, err := endpointID(r)
 	if err != nil {
@@ -54,34 +49,11 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 	if !s.dockerOnly(w, r, a, id) {
 		return
 	}
-	q := r.URL.Query()
-	search := q.Get("search")
-	if len(search) > maxLogSearchBytes {
-		s.tenantError(w, store.ErrInvalid)
-		return
-	}
-	since, err := parseSince(q.Get("since"))
+	q, err := parseLogQuery(r)
 	if err != nil {
-		s.tenantError(w, store.ErrInvalid)
+		s.tenantError(w, err)
 		return
 	}
-	tail := defaultLogTail
-	if raw := q.Get("tail"); raw != "" {
-		n, convErr := strconv.Atoi(raw)
-		if convErr != nil || n < 1 || n > protocol.MaxLogTail {
-			s.tenantError(w, store.ErrInvalid)
-			return
-		}
-		tail = n
-	}
-	follow := q.Get("follow") == "1"
-	download := q.Get("download") == "1"
-	if follow && download {
-		// A download is a file, and a file has an end. Asking for both says nothing coherent.
-		s.tenantError(w, store.ErrInvalid)
-		return
-	}
-
 	// Authorization, the audit row, and the resolution of the name the operator used into the
 	// container the endpoint last reported, all in one place.
 	target, err := s.store.Tenancy().OpenLogTarget(r.Context(), a, id, r.PathValue("container"))
@@ -89,16 +61,101 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
+	s.streamLog(w, r, a, id, q, target.Name, protocol.LogRequest{Container: target.ContainerID})
+}
+
+// handlePodLogs streams one pod container's log under the same authorization, bounds and
+// shapes as a container's. The pod is named, not resolved: the agent reads the pod spec and
+// refuses an unnamed container in a pod that runs several.
+func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	pod := protocol.PodTarget{Namespace: r.PathValue("namespace"), Name: r.PathValue("pod"), Container: r.URL.Query().Get("container")}
+	if pod.Validate() != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	q, err := parseLogQuery(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, id)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if ep.Runtime != protocol.RuntimeKubernetes {
+		s.tenantError(w, store.ErrRuntimeUnsupported)
+		return
+	}
+	if !slices.Contains(ep.Capabilities, protocol.CapabilityPodLogs) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to read pod logs")
+		return
+	}
+	if err := s.store.Tenancy().OpenPodLogTarget(r.Context(), a, id, pod); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	name := pod.Namespace + "/" + pod.Name
+	if pod.Container != "" {
+		name += "/" + pod.Container
+	}
+	s.streamLog(w, r, a, id, q, name, protocol.LogRequest{Pod: &pod})
+}
+
+// logQuery is a log request's options, bounded at the boundary.
+type logQuery struct {
+	search                       string
+	since                        time.Time
+	tail                         int
+	timestamps, follow, download bool
+}
+
+func parseLogQuery(r *http.Request) (logQuery, error) {
+	v := r.URL.Query()
+	q := logQuery{search: v.Get("search"), tail: defaultLogTail, timestamps: v.Get("timestamps") == "1", follow: v.Get("follow") == "1", download: v.Get("download") == "1"}
+	if len(q.search) > maxLogSearchBytes {
+		return q, store.ErrInvalid
+	}
+	since, err := parseSince(v.Get("since"))
+	if err != nil {
+		return q, store.ErrInvalid
+	}
+	q.since = since
+	if raw := v.Get("tail"); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n < 1 || n > protocol.MaxLogTail {
+			return q, store.ErrInvalid
+		}
+		q.tail = n
+	}
+	// A download is a file, and a file has an end. Asking for both says nothing coherent.
+	if q.follow && q.download {
+		return q, store.ErrInvalid
+	}
+	return q, nil
+}
+
+// streamLog opens the stream on the endpoint and serves it: history, or history followed by
+// whatever arrives next. The body is never stored and never interpreted -- it is the
+// application's own output, forwarded as text.
+//
+// Every bound is explicit and reported when it bites: the request ends at
+// protocol.MaxLogLines or protocol.MaxLogBytes with a line saying so, a reader that cannot
+// keep up gets a gap marker naming the bytes dropped rather than a log that looks continuous,
+// and an endpoint serves only so many streams at once.
+func (s *Server) streamLog(w http.ResponseWriter, r *http.Request, a store.TenantAccess, id string, q logQuery, name string, request protocol.LogRequest) {
 	stream, refusal := s.logs.open(id, a.ActorID)
 	if refusal != "" {
 		s.writeError(w, http.StatusTooManyRequests, refusal)
 		return
 	}
 	defer s.logs.release(stream)
-	request := protocol.LogRequest{
-		Stream: stream.id, Container: target.ContainerID, Tail: tail,
-		Since: since, Timestamps: q.Get("timestamps") == "1", Follow: follow,
-	}
+	request.Stream, request.Tail, request.Since, request.Timestamps, request.Follow = stream.id, q.tail, q.since, q.timestamps, q.follow
 	if !s.agents.deliver(id, envelope(protocol.TypeLogOpen, request)) {
 		s.writeError(w, http.StatusConflict, "The endpoint is not connected")
 		return
@@ -106,8 +163,8 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 	// The agent stops reading the host when the reader goes, however the reader goes.
 	defer s.agents.deliver(id, envelope(protocol.TypeLogCancel, protocol.LogCancel{Stream: stream.id}))
 
-	out := newLogWriter(w, follow, download, target.Name)
-	out.head(budgetFor(follow))
+	out := newLogWriter(w, q.follow, q.download, name)
+	out.head(budgetFor(q.follow))
 	ticker := time.NewTicker(accessRecheck)
 	defer ticker.Stop()
 	for {
@@ -130,7 +187,7 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 			out.keepalive()
 		case chunk := <-stream.chunks:
 			out.gap(stream.gap())
-			if done := out.write(chunk.Data, search); done {
+			if done := out.write(chunk.Data, q.search); done {
 				return
 			}
 		case <-stream.done:
@@ -140,7 +197,7 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 				select {
 				case chunk := <-stream.chunks:
 					out.gap(stream.gap())
-					if done := out.write(chunk.Data, search); done {
+					if done := out.write(chunk.Data, q.search); done {
 						return
 					}
 					continue
