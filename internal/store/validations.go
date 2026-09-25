@@ -575,12 +575,44 @@ func (t *tenancyStore) reconcileValidations(ctx context.Context, tx *sql.Tx) err
 			return err
 		}
 	}
+	return t.decideNamedRollbacks(ctx, tx, false, now)
+}
+
+// DecideNamedRollbacks decides every named, undecided rollback from its deployment's state, for
+// the live loop: one whose outcome write failed would otherwise leave its policy active. applied
+// when it settled succeeded; failed interrupted when it settled otherwise, is gone, or is a plan
+// that expired unapplied; a rollback still planned or applying waits.
+func (t *tenancyStore) DecideNamedRollbacks(ctx context.Context) error {
+	tx, err := t.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := t.decideNamedRollbacks(ctx, tx, true, time.Now().UTC()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// decideNamedRollbacks marks named, undecided rollbacks: applied when the deployment settled
+// succeeded, failed interrupted otherwise. live leaves one still planned (unexpired) or applying;
+// at startup nothing is left, since no process is dispatching it.
+func (t *tenancyStore) decideNamedRollbacks(ctx context.Context, tx *sql.Tx, live bool, now time.Time) error {
 	undecided := `SELECT v.deployment_id FROM deployment_validations v LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id WHERE v.rollback_deployment_id IS NOT NULL AND v.rollback_outcome='' AND `
-	for _, c := range []struct{ where, outcome, detail string }{
-		{`rd.state='succeeded'`, RollbackApplied, ""},
-		{`COALESCE(rd.state,'')<>'succeeded'`, RollbackFailed, RollbackInterrupted},
+	interrupted := `COALESCE(rd.state,'')<>'succeeded'`
+	var args []any
+	if live {
+		interrupted += ` AND NOT (COALESCE(rd.state,'')='applying' OR (COALESCE(rd.state,'')='planned' AND rd.expires_at>?))`
+		args = append(args, now)
+	}
+	for _, c := range []struct {
+		where, outcome, detail string
+		args                   []any
+	}{
+		{`rd.state='succeeded'`, RollbackApplied, "", nil},
+		{interrupted, RollbackFailed, RollbackInterrupted, args},
 	} {
-		ids, err := t.validationIDs(ctx, tx, undecided+c.where+` ORDER BY v.started_at,v.deployment_id`)
+		ids, err := t.validationIDs(ctx, tx, undecided+c.where+` ORDER BY v.started_at,v.deployment_id`, c.args...)
 		if err != nil {
 			return err
 		}

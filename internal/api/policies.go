@@ -305,9 +305,14 @@ func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol
 		return failed, d.ID, why
 	}
 	// Named before the frame leaves: a settle that beats FinishPolicyRun still finds this run and
-	// validates the deployment as automated. Unnamed, it is validated as a manual apply.
+	// validates the deployment as automated. Unnamed, it would be validated as a manual apply and
+	// never rolled back, so it is not sent.
 	if err := ts.AttachPolicyRunDeployment(ctx, run, applied.ID); err != nil {
 		log.Printf("[POLICY] run %s: naming deployment %s: %v", run, applied.ID, err)
+		if err := ts.FailDeployment(ctx, applied.ID, "the deployment could not be recorded on its policy run"); err != nil {
+			log.Printf("[POLICY] deployment %s: recording an unsent frame: %v", applied.ID, err)
+		}
+		return store.RunFailed, applied.ID, "error"
 	}
 	if !s.agents.deliver(applied.EndpointID, envelope(protocol.TypeDeploymentApply, frame)) {
 		if err := ts.FailDeployment(ctx, applied.ID, "the endpoint disconnected before the deployment was sent"); err != nil {

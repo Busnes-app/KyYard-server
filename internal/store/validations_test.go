@@ -692,3 +692,85 @@ func TestAttachPolicyRunDeployment(t *testing.T) {
 		t.Fatalf("attached to a finished run: %v", err)
 	}
 }
+
+// The live loop decides a named rollback from its deployment: waiting while it is applying or an
+// unexpired plan, applied once it settled succeeded, interrupted when it failed, expired or is gone.
+func TestDecideNamedRollbacks(t *testing.T) {
+	undecided := func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, updated *Deployment) {
+		t.Helper()
+		if err := st.Tenancy().DecideNamedRollbacks(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got, err := st.Tenancy().ReadDeployment(context.Background(), a, app.ID, updated.ID)
+		if err != nil || got.Validation.Rollback == nil || got.Validation.Rollback.Outcome != "" {
+			t.Fatalf("decided early: %+v %v", got.Validation, err)
+		}
+	}
+	decided := func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, updated *Deployment, outcome, detail, reason string) {
+		t.Helper()
+		ctx := context.Background()
+		if err := st.Tenancy().DecideNamedRollbacks(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, err := st.Tenancy().ReadDeployment(ctx, a, app.ID, updated.ID)
+		if err != nil || got.Validation.Rollback == nil || got.Validation.Rollback.Outcome != outcome || got.Validation.Rollback.Detail != detail {
+			t.Fatalf("decision: %+v %v", got.Validation, err)
+		}
+		if pol, _, err := st.Tenancy().ReadUpdatePolicy(ctx, a, app.ID); err != nil || pol.Status != PolicyPaused || pol.PausedReason != reason {
+			t.Fatalf("policy: %+v %v", pol, err)
+		}
+		before := countRows(t, st, `SELECT COUNT(*) FROM audit_records`)
+		if err := st.Tenancy().DecideNamedRollbacks(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if after := countRows(t, st, `SELECT COUNT(*) FROM audit_records`); after != before {
+			t.Fatalf("a second decision wrote %d audit rows", after-before)
+		}
+	}
+	// named points updated's validation at prior, a real deployment row the test then moves.
+	named := func(t *testing.T) (*SQLStore, TenantAccess, *Application, *Deployment, *Deployment) {
+		t.Helper()
+		st, a, app, _, _, _, prior, updated := validationFixture(t)
+		if _, err := st.Tenancy().FinishValidation(context.Background(), updated.ID, VerdictUnhealthy, "web"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Tenancy().MarkRollbackPlanned(context.Background(), updated.ID, prior.ID); err != nil {
+			t.Fatal(err)
+		}
+		return st, a, app, prior, updated
+	}
+	set := func(t *testing.T, st *SQLStore, id, state string, expires time.Time) {
+		t.Helper()
+		if _, err := st.db.ExecContext(context.Background(), st.rebind(`UPDATE deployments SET state=?,expires_at=? WHERE id=?`), state, expires, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("settled", func(t *testing.T) {
+		st, a, app, _, updated := named(t)
+		decided(t, st, a, app, updated, RollbackApplied, "", ValidationReasonRolledBack)
+	})
+	t.Run("in flight, then failed", func(t *testing.T) {
+		st, a, app, prior, updated := named(t)
+		set(t, st, prior.ID, "applying", time.Now().UTC().Add(time.Hour))
+		undecided(t, st, a, app, updated)
+		set(t, st, prior.ID, "failed", time.Now().UTC().Add(time.Hour))
+		decided(t, st, a, app, updated, RollbackFailed, RollbackInterrupted, ValidationReasonNotRolledBack+RollbackInterrupted)
+	})
+	t.Run("planned, then expired", func(t *testing.T) {
+		st, a, app, prior, updated := named(t)
+		set(t, st, prior.ID, "planned", time.Now().UTC().Add(time.Hour))
+		undecided(t, st, a, app, updated)
+		set(t, st, prior.ID, "planned", time.Now().UTC().Add(-time.Minute))
+		decided(t, st, a, app, updated, RollbackFailed, RollbackInterrupted, ValidationReasonNotRolledBack+RollbackInterrupted)
+	})
+	t.Run("gone", func(t *testing.T) {
+		st, a, app, _, _, _, _, updated := validationFixture(t)
+		if _, err := st.Tenancy().FinishValidation(context.Background(), updated.ID, VerdictUnhealthy, "web"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Tenancy().MarkRollbackPlanned(context.Background(), updated.ID, uuid.NewString()); err != nil {
+			t.Fatal(err)
+		}
+		decided(t, st, a, app, updated, RollbackFailed, RollbackInterrupted, ValidationReasonNotRolledBack+RollbackInterrupted)
+	})
+}

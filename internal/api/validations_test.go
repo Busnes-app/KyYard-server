@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,8 @@ var validationCaps = []string{protocol.CapabilityDeploymentApply, protocol.Capab
 const (
 	afterGrace  = store.ValidationGrace + time.Second
 	afterWindow = store.ValidationGrace + store.ValidationWindow + time.Second
+	// afterLate is observe_until plus a grace: a window with no complete observation gives up.
+	afterLate = 2*store.ValidationGrace + store.ValidationWindow
 )
 
 var (
@@ -310,12 +313,42 @@ func TestValidationOfAManualApplyOnlyRecords(t *testing.T) {
 	}
 }
 
+// An agent offline at the baseline is waited for: back before the window's end, the window runs.
+func TestValidationWaitsForAnOfflineHost(t *testing.T) {
+	v := newValidationHost(t)
+	id, _ := v.automate(t)
+	v.sock.conn.CloseNow()
+	waitFor(t, func() bool { return !v.s.Connected(v.ag.id) })
+	v.at(t, id, afterGrace)
+	if got := v.validation(t, id); got.Phase != store.PhaseGrace || got.Verdict != "" {
+		t.Fatalf("offline at the baseline ended it: %+v", got)
+	}
+	v.sock, v.ctx = v.online(t, validationCaps)
+	v.at(t, id, afterGrace+store.ValidationPoll)
+	if got := v.validation(t, id); got.Phase != store.PhaseObserving {
+		t.Fatalf("no baseline after the reconnect: %+v", got)
+	}
+	v.at(t, id, afterWindow)
+	if got := v.validation(t, id); got.Verdict != store.VerdictHealthy {
+		t.Fatalf("after the reconnect: %+v", got)
+	}
+	if pol := v.policyNow(t); pol.Status != store.PolicyActive {
+		t.Fatalf("policy: %+v", pol)
+	}
+}
+
+// Offline for the whole window, and its grace after, is unverifiable.
 func TestValidationOfAnOfflineHostIsUnverifiable(t *testing.T) {
 	v := newValidationHost(t)
 	id, _ := v.automate(t)
 	v.sock.conn.CloseNow()
 	waitFor(t, func() bool { return !v.s.Connected(v.ag.id) })
 	v.at(t, id, afterGrace)
+	v.at(t, id, afterLate-time.Second)
+	if got := v.validation(t, id); got.Verdict != "" {
+		t.Fatalf("given up before the window's grace ended: %+v", got)
+	}
+	v.at(t, id, afterLate)
 	got := v.validation(t, id)
 	if got.Verdict != store.VerdictUnverifiable || got.Detail != store.ValidationDetailUnobserved || got.Rollback != nil {
 		t.Fatalf("offline: %+v", got)
@@ -575,4 +608,185 @@ func TestValidationDecidesARollbackOwedFromBeforeARestart(t *testing.T) {
 	if pol := v.policyNow(t); pol.PausedReason != store.ValidationReasonRolledBack {
 		t.Fatalf("policy: %+v", pol)
 	}
+}
+
+// faultyTenancy breaks or intercepts one store call at a time for the loop's failure paths.
+type faultyTenancy struct {
+	store.TenancyStore
+	failOutcomes atomic.Int32 // MarkRollbackOutcome calls still to fail
+	failAttach   atomic.Bool
+	beforeApply  func() // runs as ApplyPolicyDeployment is entered
+	afterApply   func() // runs once it has returned
+}
+
+func (f *faultyTenancy) MarkRollbackOutcome(ctx context.Context, deployment, outcome, detail string) error {
+	if f.failOutcomes.Add(-1) >= 0 {
+		return errors.New("injected outcome write failure")
+	}
+	return f.TenancyStore.MarkRollbackOutcome(ctx, deployment, outcome, detail)
+}
+
+func (f *faultyTenancy) AttachPolicyRunDeployment(ctx context.Context, run, deployment string) error {
+	if f.failAttach.Load() {
+		return errors.New("injected attach failure")
+	}
+	return f.TenancyStore.AttachPolicyRunDeployment(ctx, run, deployment)
+}
+
+func (f *faultyTenancy) ApplyPolicyDeployment(ctx context.Context, a store.TenantAccess, policy, app, id, confirm string, key []byte, maxFrameBytes int) (*store.Deployment, *protocol.DeploymentRequest, error) {
+	if f.beforeApply != nil {
+		f.beforeApply()
+	}
+	d, req, err := f.TenancyStore.ApplyPolicyDeployment(ctx, a, policy, app, id, confirm, key, maxFrameBytes)
+	if f.afterApply != nil {
+		f.afterApply()
+	}
+	return d, req, err
+}
+
+type faultyStore struct {
+	store.Store
+	t *faultyTenancy
+}
+
+func (f faultyStore) Tenancy() store.TenancyStore { return f.t }
+
+// faulty routes the server's store calls through a faultyTenancy.
+func (v *validationHost) faulty() *faultyTenancy {
+	f := &faultyTenancy{TenancyStore: v.st.Tenancy()}
+	api.SetStoreForTest(v.s, faultyStore{Store: v.st, t: f})
+	return f
+}
+
+// noFrame proves nothing was queued for the agent: a heartbeat's answer is the next frame.
+func (v *validationHost) noFrame(t *testing.T) {
+	t.Helper()
+	writeEnvelope(t, v.ctx, v.sock.conn, protocol.TypeHeartbeat, nil)
+	if f := readEnvelope(t, v.ctx, v.sock.conn); f.Type != protocol.TypeHeartbeat {
+		t.Fatalf("a frame was sent: %s", f.Type)
+	}
+}
+
+// disconnect closes the agent's socket and waits for the server to see it.
+func (v *validationHost) disconnect(t *testing.T) {
+	v.sock.conn.CloseNow()
+	waitFor(t, func() bool { return !v.s.Connected(v.ag.id) })
+}
+
+func (v *validationHost) deploymentState(t *testing.T, id string) string {
+	t.Helper()
+	var d store.Deployment
+	if err := json.Unmarshal([]byte(v.do(t, "GET", v.deployments+"/"+id, "", 200)), &d); err != nil {
+		t.Fatal(err)
+	}
+	return d.State
+}
+
+// A rollback whose outcome write failed is decided on a later tick from its deployment's state:
+// waiting while it applies, then applied, and the policy pauses once.
+func TestValidationDecidesARollbackWhoseOutcomeWriteFailed(t *testing.T) {
+	v := newValidationHost(t)
+	v.obs.on(newContainer, health("unhealthy"))
+	id, _ := v.automate(t)
+	f := v.faulty()
+	f.failOutcomes.Store(1)
+	v.at(t, id, afterGrace)
+	req := v.frame(t)
+	if got := v.validation(t, id); got.Rollback == nil || got.Rollback.DeploymentID != req.Deployment || got.Rollback.Outcome != "" {
+		t.Fatalf("after the failed write: %+v", got.Rollback)
+	}
+	v.at(t, id, afterGrace)
+	if got := v.validation(t, id); got.Rollback.Outcome != "" || v.policyNow(t).Status != store.PolicyActive {
+		t.Fatalf("decided while applying: %+v", got.Rollback)
+	}
+	v.settle(t, req.Deployment, strings.Repeat("7", 64), hostImage, "", []protocol.Image{{ID: hostImage, Digests: []string{hostDigest}}, {ID: newImage, Tags: []string{"nginx:1"}, Digests: []string{"nginx@" + newDigest}}})
+	v.at(t, id, afterGrace)
+	if got := v.validation(t, id); got.Rollback == nil || *got.Rollback != (store.ValidationRollback{DeploymentID: req.Deployment, Revision: 1, Outcome: store.RollbackApplied}) {
+		t.Fatalf("after the settle: %+v", got.Rollback)
+	}
+	if pol := v.policyNow(t); pol.Status != store.PolicyPaused || pol.PausedReason != store.ValidationReasonRolledBack || v.pauseRows(t) != 1 {
+		t.Fatalf("policy: %+v, pause rows %d", pol, v.pauseRows(t))
+	}
+	if n := v.deploymentCount(t); n != 3 {
+		t.Fatalf("deployments: %d", n)
+	}
+}
+
+// A policy run that cannot name its deployment on the run fails it unsent: an unnamed apply would
+// be validated as manual and never rolled back.
+func TestPolicyRunThatCannotNameItsDeploymentSendsNothing(t *testing.T) {
+	v := newValidationHost(t)
+	v.faulty().failAttach.Store(true)
+	v.do(t, "PUT", "/api/organizations/a/registry-policy", `{"anonymous_pull_enabled":true}`, 204)
+	api.SetDigestResolverForTest(v.s, &fakeDigests{digest: newDigest})
+	v.policy(t, store.PolicyModeApply)
+	v.tick(tomorrow().Add(10*time.Hour + 30*time.Minute))
+	runs := v.runs(t, "usr_planner")
+	if len(runs) != 1 || runs[0].Outcome != store.RunFailed || runs[0].Detail != "error" || runs[0].DeploymentID == "" {
+		t.Fatalf("runs: %+v", runs)
+	}
+	if state := v.deploymentState(t, runs[0].DeploymentID); state != "failed" {
+		t.Fatalf("deployment: %s", state)
+	}
+	v.noFrame(t)
+}
+
+// Every way a due rollback can fail is recorded as failed with its code, and the policy pauses
+// with the matching sentence.
+func TestValidationRollbackFailures(t *testing.T) {
+	check := func(t *testing.T, v *validationHost, id, detail string, named bool, deployments int) {
+		t.Helper()
+		got := v.validation(t, id)
+		if got.Verdict != store.VerdictUnhealthy || got.Rollback == nil || got.Rollback.Outcome != store.RollbackFailed || got.Rollback.Detail != detail || (got.Rollback.DeploymentID != "") != named {
+			t.Fatalf("validation: %+v %+v", got, got.Rollback)
+		}
+		if pol := v.policyNow(t); pol.Status != store.PolicyPaused || pol.PausedReason != store.ValidationReasonNotRolledBack+detail {
+			t.Fatalf("policy: %+v", pol)
+		}
+		if n := v.deploymentCount(t); n != deployments {
+			t.Fatalf("deployments: %d", n)
+		}
+	}
+	t.Run("creator lost", func(t *testing.T) {
+		v := newValidationHost(t)
+		v.obs.on(newContainer, health("unhealthy"))
+		id, _ := v.automate(t)
+		if err := v.st.Tenancy().SetMembership(context.Background(), &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_planner", Role: store.RoleOperator, Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+		v.at(t, id, afterGrace)
+		check(t, v, id, store.RollbackCreatorLost, false, 2)
+		v.noFrame(t)
+	})
+	t.Run("policy changed", func(t *testing.T) {
+		v := newValidationHost(t)
+		v.obs.on(newContainer, health("unhealthy"))
+		id, _ := v.automate(t)
+		v.faulty().beforeApply = func() { v.policy(t, store.PolicyModePlanOnly) }
+		v.at(t, id, afterGrace)
+		check(t, v, id, "policy_changed", true, 3)
+		v.noFrame(t)
+	})
+	t.Run("endpoint offline", func(t *testing.T) {
+		v := newValidationHost(t)
+		v.obs.on(newContainer, func(in *protocol.ContainerInspection) error {
+			in.Health = "unhealthy"
+			v.disconnect(t)
+			return nil
+		})
+		id, _ := v.automate(t)
+		v.at(t, id, afterGrace)
+		check(t, v, id, "endpoint_offline", false, 2)
+	})
+	t.Run("not sent", func(t *testing.T) {
+		v := newValidationHost(t)
+		v.obs.on(newContainer, health("unhealthy"))
+		id, _ := v.automate(t)
+		v.faulty().afterApply = func() { v.disconnect(t) }
+		v.at(t, id, afterGrace)
+		check(t, v, id, store.RollbackNotSent, true, 3)
+		if state := v.deploymentState(t, v.validation(t, id).Rollback.DeploymentID); state != "failed" {
+			t.Fatalf("rollback deployment: %s", state)
+		}
+	})
 }

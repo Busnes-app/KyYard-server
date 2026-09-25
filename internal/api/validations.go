@@ -60,6 +60,10 @@ func (s *Server) validationTick(ctx context.Context, now time.Time) {
 	if s.stopping.Load() {
 		return
 	}
+	// A rollback whose outcome write failed is decided from its deployment, pausing its policy.
+	if err := s.store.Tenancy().DecideNamedRollbacks(ctx); err != nil {
+		log.Printf("[VALIDATION] deciding named rollbacks: %v", err)
+	}
 	pending, err := s.store.Tenancy().PendingValidations(ctx)
 	if err != nil {
 		log.Printf("[VALIDATION] pending validations unreadable: %v", err)
@@ -102,7 +106,8 @@ func (s *Server) validate(ctx context.Context, p store.PendingValidation, now ti
 		s.finishValidation(ctx, p, store.VerdictUnverifiable, store.ValidationDetailNoHealth)
 		return
 	case !s.Connected(p.EndpointID):
-		if p.Phase == store.PhaseGrace || late {
+		// Offline waits, at the baseline too: only a host unseen for the whole window is unverifiable.
+		if late {
 			s.finishValidation(ctx, p, store.VerdictUnverifiable, store.ValidationDetailUnobserved)
 		}
 		return
@@ -201,6 +206,10 @@ func (s *Server) performRollback(ctx context.Context, p store.PendingValidation)
 	}
 	if reason != "" {
 		return store.RollbackIneligible, reason
+	}
+	// Offline leaves no rollback plan behind to occupy the endpoint.
+	if !s.Connected(p.EndpointID) {
+		return store.RollbackFailed, "endpoint_offline"
 	}
 	ep, err := ts.ReadEndpoint(ctx, a, p.EndpointID)
 	if err != nil {
