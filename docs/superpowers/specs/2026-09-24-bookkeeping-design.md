@@ -98,7 +98,7 @@ An unknown code renders as "unrecognised outcome `<code>`" with the code escaped
   (`json:"request_id"`, required, the same grammar `Command.RequestID` uses). The agent logs
   it beside the deployment ID at receipt, start and finish, and echoes it in
   `DeploymentResult.RequestID`; `SettleDeployment` refuses a result whose `RequestID` differs
-  from the row's (`ErrInvalid`, audited `denied`), which also catches a result replayed
+  from the row's (`ErrInvalid`; the as-built note below records how the refusal is audited), which also catches a result replayed
   against a re-planned deployment.
 - (as built) The agent socket handler answers that `ErrInvalid` with `RefuseDeploymentResult`:
   an `applying` row becomes `unknown` "the host's result did not match the plan; inspect the
