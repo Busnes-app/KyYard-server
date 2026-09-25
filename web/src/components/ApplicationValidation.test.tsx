@@ -39,3 +39,16 @@ it('explains each validation pause and nothing else', () => {
   expect(pauseText('update could not be validated: secret-canary')).not.toContain('secret-canary');
   expect(pauseText('three consecutive windows failed')).toBe('');
 });
+
+// Mirrors internal/api/policies.go policyErrorCodes + internal/store/validations.go's Rollback*
+// constants (plus policy_changed from validations.go and the "error" fallback): every code the
+// server can emit in a rollback's detail must have a fixed text here.
+it('has a fixed text for every rollback code the server can emit', () => {
+  const emitted = [
+    'no_prior_identity', 'prior_definition_invalid', 'service_set_changed', 'prior_images_missing',
+    'rollback_in_flight', 'already_rolled_back', 'creator_lost', 'not_sent', 'interrupted',
+    'policy_changed', 'endpoint_offline', 'not_adopted', 'mapping_required', 'adoption_changed',
+    'deployment_in_progress', 'invalid', 'error',
+  ];
+  for (const code of emitted) expect(Object.hasOwn(ROLLBACK_REASONS, code)).toBe(true);
+});

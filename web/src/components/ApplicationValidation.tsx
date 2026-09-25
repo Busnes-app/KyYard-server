@@ -21,7 +21,7 @@ const VALIDATION_DETAILS: Record<string, string> = {
 };
 // Why an automated update was not rolled back: eligibility first, then what stopped an attempt.
 export const ROLLBACK_REASONS: Record<string, string> = {
-  no_prior_identity: 'no record of what ran before',
+  no_prior_identity: 'No record of what ran before this update.',
   prior_definition_invalid: 'The earlier revision no longer validates.',
   service_set_changed: "The application's services changed since the earlier revision.",
   prior_images_missing: 'The earlier images are no longer on the host.',
@@ -32,6 +32,11 @@ export const ROLLBACK_REASONS: Record<string, string> = {
   interrupted: 'The server restarted during the rollback.',
   policy_changed: 'The policy changed while the rollback was prepared.',
   endpoint_offline: 'The host was not connected.',
+  not_adopted: 'The application is no longer adopted.',
+  mapping_required: 'The services are not mapped.',
+  adoption_changed: 'Adoption or inventory changed during the rollback.',
+  deployment_in_progress: 'Another deployment was being applied.',
+  invalid: 'The rollback was refused as invalid.',
   error: 'The rollback failed on the server; check the server log.',
 };
 const SERVICE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
