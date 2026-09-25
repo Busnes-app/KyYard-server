@@ -453,8 +453,8 @@ func TestPendingValidationsIsFairPerOrganization(t *testing.T) {
 		got = append(got, p.OrganizationID+"/"+p.DeploymentID)
 	}
 	mine, theirs := a.OrganizationID+"/"+updated.ID, []string{"flood/" + flood[0], "flood/" + flood[1]}
-	if !slices.Equal(got, append([]string{mine}, theirs...)) && !slices.Equal(got, append(theirs, mine)) {
-		t.Fatalf("pending: %v, want %s and %v by organization", got, mine, theirs)
+	if want := append(theirs, mine); !slices.Equal(got, want) {
+		t.Fatalf("pending: %v, want %v oldest first", got, want)
 	}
 }
 
