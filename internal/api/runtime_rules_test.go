@@ -83,9 +83,13 @@ func expectClose(t *testing.T, ctx context.Context, c *websocket.Conn) string {
 }
 
 // A hello naming a capability outside the endpoint's runtime is answered capability_mismatch
-// and closed; a hello that fits is stored.
+// and closed, before approval too; a hello that fits is stored.
 func TestHelloCapabilitiesMustFitTheRuntime(t *testing.T) {
 	f := newRuntimeFleet(t)
+	pending := enrollClusterAgent(t, f.s, f.st, "usr_envadmin", "cluster-pending")
+	if state := f.endpoint(t, pending.id)["state"]; state != "pending" {
+		t.Fatalf("pending agent is %v", state)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, tc := range []struct {
@@ -95,6 +99,7 @@ func TestHelloCapabilitiesMustFitTheRuntime(t *testing.T) {
 		fits  bool
 	}{
 		{"docker capability from a cluster", f.cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityContainerInspect}, false},
+		{"docker capability from a cluster awaiting approval", pending, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityContainerInspect}, false},
 		{"cluster capability from a host", f.host, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityPodLogs}, false},
 		{"cluster capabilities from a cluster", f.cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs}, true},
 		{"docker capabilities from a host", f.host, []string{protocol.CapabilityContainerInspect, protocol.CapabilityDeploymentApply}, true},
@@ -274,13 +279,33 @@ func TestDockerRoutesRefuseAKubernetesEndpoint(t *testing.T) {
 			t.Errorf("%s %s: %d %s", route.method, route.path, w.Code, w.Body.String())
 		}
 	}
-	// The terminal is a WebSocket upgrade; the refusal comes before it.
-	r := httptest.NewRequest("GET", ep+"/containers/shop-web/exec", nil)
-	r.Header.Set("Origin", h.cfg.Server.AppURL)
-	r.AddCookie(h.admin)
-	w := httptest.NewRecorder()
-	h.s.ServeHTTP(w, r)
-	if w.Code != 409 || !strings.Contains(w.Body.String(), "runtime_unsupported") {
+	// The terminal is a WebSocket upgrade; the refusal comes before it, and after the exec
+	// permission, so a member without it is denied and audited rather than told the runtime.
+	exec := func(c *http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", ep+"/containers/shop-web/exec", nil)
+		r.Header.Set("Origin", h.cfg.Server.AppURL)
+		r.AddCookie(c)
+		w := httptest.NewRecorder()
+		h.s.ServeHTTP(w, r)
+		return w
+	}
+	viewer := loginAs(t, h.s, h.st, "viewer", "user")
+	if err := h.st.Tenancy().SetMembership(context.Background(), &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_viewer", Role: store.RoleReadOnly, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := exec(viewer); w.Code != 403 {
+		t.Errorf("viewer exec: %d %s", w.Code, w.Body.String())
+	}
+	rows, _, err := h.st.Audit().ListAuditRecords(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(rows, func(row *store.AuditRecord) bool {
+		return row.UserID == "usr_viewer" && row.Action == "container.exec" && row.Result == "denied"
+	}) {
+		t.Error("the viewer's exec attempt left no denied audit row")
+	}
+	if w := exec(h.admin); w.Code != 409 || !strings.Contains(w.Body.String(), "runtime_unsupported") {
 		t.Errorf("exec: %d %s", w.Code, w.Body.String())
 	}
 	// Reads stay open: the endpoint and its inventory are still visible.

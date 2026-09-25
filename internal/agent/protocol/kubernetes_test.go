@@ -41,6 +41,25 @@ func TestKubernetesSnapshotDecodesBounded(t *testing.T) {
 	}
 }
 
+// A pod whose containers were cut while decoding marks "pods" even when the agent named no
+// cut and the pod list itself fits, and marks it once when the agent did.
+func TestPodContainerCutMarksPods(t *testing.T) {
+	many := strings.TrimSuffix(strings.Repeat(`{"name":"c"},`, 40), ",")
+	pod := `{"namespace":"shop","name":"web","containers":[` + many + `]}`
+	for doc, want := range map[string][]string{
+		`{"generation":1,"kubernetes":{"pods":[` + pod + `]}}`:                      {"pods"},
+		`{"generation":1,"truncated":["pods"],"kubernetes":{"pods":[` + pod + `]}}`: {"pods"},
+	} {
+		var s Snapshot
+		if err := UnmarshalSnapshotBounded([]byte(doc), &s); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.Kubernetes.Pods[0].Containers) != MaxPodContainers || !slices.Equal(s.Truncated, want) {
+			t.Fatalf("containers %d truncated %v", len(s.Kubernetes.Pods[0].Containers), s.Truncated)
+		}
+	}
+}
+
 // A cluster inventory many times the shared byte limit fits it after Clamp and Shrink, text is
 // cleaned and cut, the adapter's own truncation names survive, and no list is left nil.
 func TestClampAndShrinkKubernetes(t *testing.T) {

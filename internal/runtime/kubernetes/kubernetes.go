@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -80,10 +81,11 @@ func OwnNamespace() (string, error) {
 	return ns, nil
 }
 
-// engine is the API server's version. Discovery takes no context; the clientset's own
-// timeouts bound it.
-func (c *Client) engine() (protocol.Engine, error) {
-	v, err := c.cs.Discovery().ServerVersion()
+// engine is the API server's version, read within ctx.
+func (c *Client) engine(ctx context.Context) (protocol.Engine, error) {
+	ctx, cancel := context.WithTimeout(ctx, callBudget)
+	defer cancel()
+	v, err := c.cs.Discovery().ServerVersionWithContext(ctx)
 	if err != nil {
 		return protocol.Engine{Runtime: protocol.RuntimeKubernetes}, err
 	}
@@ -95,89 +97,62 @@ func (c *Client) engine() (protocol.Engine, error) {
 // they meant to enroll. A fact the agent cannot read is "unknown", never left out.
 func (c *Client) Facts(ctx context.Context) map[string]string {
 	facts := map[string]string{"runtime": protocol.RuntimeKubernetes, "server_version": "unknown", "node_count": "unknown", "platform": "unknown"}
-	if v, err := c.cs.Discovery().ServerVersion(); err == nil {
-		facts["server_version"], facts["platform"] = v.GitVersion, v.Platform
-	}
 	ctx, cancel := context.WithTimeout(ctx, callBudget)
 	defer cancel()
+	if v, err := c.cs.Discovery().ServerVersionWithContext(ctx); err == nil {
+		facts["server_version"], facts["platform"] = v.GitVersion, v.Platform
+	}
 	if nodes, err := listAll(ctx, protocol.MaxNodes, c.nodes); err == nil {
 		facts["node_count"] = strconv.Itoa(len(nodes))
 	}
 	return facts
 }
 
-// Snapshot reads the cluster's inventory. A list the ServiceAccount cannot read is reported
-// empty and named in Truncated, so one forbidden verb does not blank the whole endpoint; the
-// error return is only ever nil.
+// Snapshot reads the cluster's inventory, every list at once so a slow API server costs the
+// slowest list rather than the sum. A list the ServiceAccount cannot read is reported empty
+// and named in Truncated, so one forbidden verb does not blank the whole endpoint; the error
+// return is only ever nil.
 func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
-	k := &protocol.KubernetesInventory{Nodes: []protocol.Node{}, Namespaces: []string{}, Workloads: []protocol.Workload{}, Pods: []protocol.Pod{}, Services: []protocol.Service{}, Claims: []protocol.Claim{}}
-	snap := &protocol.Snapshot{ObservedAt: time.Now().UTC(), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}, Kubernetes: k}
-	engine, err := c.engine()
-	if err != nil {
-		c.log.Printf("kubernetes: reading the server version: %v", err)
+	k := &protocol.KubernetesInventory{Nodes: []protocol.Node{}, Namespaces: []string{}, Pods: []protocol.Pod{}, Services: []protocol.Service{}, Claims: []protocol.Claim{}}
+	// Each read owns its slot; the three workload kinds are joined after the wait.
+	var deployments, statefulSets, daemonSets []protocol.Workload
+	lists := []struct {
+		name string
+		read func() error
+	}{
+		{"nodes", reader(ctx, protocol.MaxNodes, c.nodes, node, &k.Nodes)},
+		{"namespaces", reader(ctx, protocol.MaxNamespaces, c.namespaces, namespace, &k.Namespaces)},
+		{"workloads", reader(ctx, protocol.MaxWorkloads, c.deployments, deployment, &deployments)},
+		{"workloads", reader(ctx, protocol.MaxWorkloads, c.statefulSets, statefulSet, &statefulSets)},
+		{"workloads", reader(ctx, protocol.MaxWorkloads, c.daemonSets, daemonSet, &daemonSets)},
+		{"pods", reader(ctx, protocol.MaxPods, c.pods, pod, &k.Pods)},
+		{"services", reader(ctx, protocol.MaxServices, c.services, service, &k.Services)},
+		{"claims", reader(ctx, protocol.MaxClaims, c.claims, claim, &k.Claims)},
 	}
-	snap.Engine = engine
+	var (
+		engine    protocol.Engine
+		engineErr error
+		errs      = make([]error, len(lists))
+		wg        sync.WaitGroup
+	)
+	wg.Go(func() { engine, engineErr = c.engine(ctx) })
+	for i, l := range lists {
+		wg.Go(func() { errs[i] = l.read() })
+	}
+	wg.Wait()
+
+	if engineErr != nil {
+		c.log.Printf("kubernetes: reading the server version: %v", engineErr)
+	}
 	truncated := map[string]bool{}
-	failed := func(list string, err error) {
-		c.log.Printf("kubernetes: listing %s: %v; reported empty", list, err)
-		truncated[list] = true
-	}
-	if nodes, err := listAll(ctx, protocol.MaxNodes, c.nodes); err != nil {
-		failed("nodes", err)
-	} else {
-		for _, n := range nodes {
-			k.Nodes = append(k.Nodes, node(n))
+	for i, l := range lists {
+		if errs[i] != nil {
+			c.log.Printf("kubernetes: listing %s: %v; reported empty", l.name, errs[i])
+			truncated[l.name] = true
 		}
 	}
-	if namespaces, err := listAll(ctx, protocol.MaxNamespaces, c.namespaces); err != nil {
-		failed("namespaces", err)
-	} else {
-		for _, ns := range namespaces {
-			k.Namespaces = append(k.Namespaces, ns.Name)
-		}
-	}
-	if deployments, err := listAll(ctx, protocol.MaxWorkloads, c.deployments); err != nil {
-		failed("workloads", err)
-	} else {
-		for _, d := range deployments {
-			k.Workloads = append(k.Workloads, protocol.Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Desired: replicas(d.Spec.Replicas), Ready: d.Status.ReadyReplicas, Updated: d.Status.UpdatedReplicas, Images: images(d.Spec.Template.Spec), Paused: d.Spec.Paused})
-		}
-	}
-	if sets, err := listAll(ctx, protocol.MaxWorkloads, c.statefulSets); err != nil {
-		failed("workloads", err)
-	} else {
-		for _, s := range sets {
-			k.Workloads = append(k.Workloads, protocol.Workload{Kind: "StatefulSet", Namespace: s.Namespace, Name: s.Name, Desired: replicas(s.Spec.Replicas), Ready: s.Status.ReadyReplicas, Updated: s.Status.UpdatedReplicas, Images: images(s.Spec.Template.Spec)})
-		}
-	}
-	if sets, err := listAll(ctx, protocol.MaxWorkloads, c.daemonSets); err != nil {
-		failed("workloads", err)
-	} else {
-		for _, s := range sets {
-			k.Workloads = append(k.Workloads, protocol.Workload{Kind: "DaemonSet", Namespace: s.Namespace, Name: s.Name, Desired: s.Status.DesiredNumberScheduled, Ready: s.Status.NumberReady, Updated: s.Status.UpdatedNumberScheduled, Images: images(s.Spec.Template.Spec)})
-		}
-	}
-	if pods, err := listAll(ctx, protocol.MaxPods, c.pods); err != nil {
-		failed("pods", err)
-	} else {
-		for _, p := range pods {
-			k.Pods = append(k.Pods, pod(p))
-		}
-	}
-	if services, err := listAll(ctx, protocol.MaxServices, c.services); err != nil {
-		failed("services", err)
-	} else {
-		for _, s := range services {
-			k.Services = append(k.Services, service(s))
-		}
-	}
-	if claims, err := listAll(ctx, protocol.MaxClaims, c.claims); err != nil {
-		failed("claims", err)
-	} else {
-		for _, pvc := range claims {
-			k.Claims = append(k.Claims, claim(pvc))
-		}
-	}
+	k.Workloads = slices.Concat([]protocol.Workload{}, deployments, statefulSets, daemonSets)
+	snap := &protocol.Snapshot{ObservedAt: time.Now().UTC(), Engine: engine, Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}, Kubernetes: k}
 	slices.SortFunc(k.Nodes, func(a, b protocol.Node) int { return strings.Compare(a.Name, b.Name) })
 	slices.Sort(k.Namespaces)
 	slices.SortFunc(k.Workloads, func(a, b protocol.Workload) int {
@@ -200,6 +175,21 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 	protocol.Clamp(snap)
 	_ = protocol.Shrink(snap)
 	return snap, nil
+}
+
+// reader lists one kind into dst, mapped into product types; a failed list leaves dst as it
+// was.
+func reader[T, P any](ctx context.Context, max int, page func(context.Context, metav1.ListOptions) ([]T, string, error), conv func(T) P, dst *[]P) func() error {
+	return func() error {
+		items, err := listAll(ctx, max, page)
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			*dst = append(*dst, conv(item))
+		}
+		return nil
+	}
 }
 
 // listAll pages through one kind with Limit and Continue. It stops once it holds more than
@@ -285,6 +275,20 @@ func (c *Client) claims(ctx context.Context, o metav1.ListOptions) ([]corev1.Per
 		return nil, "", err
 	}
 	return l.Items, l.Continue, nil
+}
+
+func namespace(ns corev1.Namespace) string { return ns.Name }
+
+func deployment(d appsv1.Deployment) protocol.Workload {
+	return protocol.Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Desired: replicas(d.Spec.Replicas), Ready: d.Status.ReadyReplicas, Updated: d.Status.UpdatedReplicas, Images: images(d.Spec.Template.Spec), Paused: d.Spec.Paused}
+}
+
+func statefulSet(s appsv1.StatefulSet) protocol.Workload {
+	return protocol.Workload{Kind: "StatefulSet", Namespace: s.Namespace, Name: s.Name, Desired: replicas(s.Spec.Replicas), Ready: s.Status.ReadyReplicas, Updated: s.Status.UpdatedReplicas, Images: images(s.Spec.Template.Spec)}
+}
+
+func daemonSet(s appsv1.DaemonSet) protocol.Workload {
+	return protocol.Workload{Kind: "DaemonSet", Namespace: s.Namespace, Name: s.Name, Desired: s.Status.DesiredNumberScheduled, Ready: s.Status.NumberReady, Updated: s.Status.UpdatedNumberScheduled, Images: images(s.Spec.Template.Spec)}
 }
 
 func node(n corev1.Node) protocol.Node {

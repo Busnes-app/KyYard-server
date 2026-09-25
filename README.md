@@ -375,6 +375,11 @@ for a cluster (`409 runtime_unsupported`) and not shown. Uninstall with
 cluster again after a revocation, delete the Secret `kyyard-agent-identity` (or uninstall)
 before applying a new manifest: an identity from an old enrollment refuses a new link.
 
+Upgrade a cluster agent in place with
+`kubectl -n kyyard-agent set image deploy/kyyard-agent agent=<pinned image digest>`. The
+identity Secret survives the new pod, so no re-enrollment is needed. Regenerating the
+manifest instead mints a new enrollment link, which an already-enrolled identity does not use.
+
 ## Persistent keys
 
 First boot creates `KY_DATA_DIR` (default `./data`) privately and creates `encryption.key`,

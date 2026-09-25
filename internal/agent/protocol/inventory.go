@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -83,7 +84,11 @@ func UnmarshalSnapshotBounded(data []byte, s *Snapshot) error {
 			return err
 		}
 		s.Kubernetes = k
-		s.Truncated = append(s.Truncated, cut...)
+		for _, list := range cut {
+			if !slices.Contains(s.Truncated, list) {
+				s.Truncated = append(s.Truncated, list)
+			}
+		}
 	}
 	return nil
 }

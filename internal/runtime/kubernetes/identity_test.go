@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"crypto/ed25519"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -104,5 +106,59 @@ func TestSecretIdentityStoreConflicts(t *testing.T) {
 	}
 	if got, _ := store.Load(); got.EndpointID != "ep_other" {
 		t.Fatalf("stored %s", got.EndpointID)
+	}
+}
+
+// resourceVersions makes the fake clientset's Secrets behave like the API server's: every
+// write stamps a new resourceVersion and an update against an older one is a conflict.
+func resourceVersions(cs *fake.Clientset) {
+	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
+	next := 0
+	stamp := func(sec *corev1.Secret) *corev1.Secret {
+		next++
+		sec = sec.DeepCopy()
+		sec.ResourceVersion = strconv.Itoa(next)
+		return sec
+	}
+	cs.PrependReactor("create", "secrets", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		sec := stamp(a.(k8stesting.CreateAction).GetObject().(*corev1.Secret))
+		return true, sec, cs.Tracker().Create(gvr, sec, a.GetNamespace())
+	})
+	cs.PrependReactor("update", "secrets", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		sec := a.(k8stesting.UpdateAction).GetObject().(*corev1.Secret)
+		cur, err := cs.Tracker().Get(gvr, a.GetNamespace(), sec.Name)
+		if err != nil {
+			return true, nil, err
+		}
+		if cur.(*corev1.Secret).ResourceVersion != sec.ResourceVersion {
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "secrets"}, sec.Name, errors.New("stale resourceVersion"))
+		}
+		sec = stamp(sec)
+		return true, sec, cs.Tracker().Update(gvr, sec, a.GetNamespace())
+	})
+}
+
+// Two agents holding one identity: the one that loaded earlier and writes an older generation
+// stops instead of rolling the counter back.
+func TestSecretIdentityStoreStaleWriterStops(t *testing.T) {
+	c, cs := cluster(t)
+	resourceVersions(cs)
+	a, _ := NewSecretIdentityStore(c, "kyyard-agent", "kyyard-agent-identity")
+	b, _ := NewSecretIdentityStore(c, "kyyard-agent", "kyyard-agent-identity")
+	if err := a.Save(testIdentity("ep_1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []*SecretIdentityStore{a, b} {
+		if _, err := s.Load(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.Save(testIdentity("ep_1", 100)); err != nil {
+		t.Fatal(err)
+	}
+	err := b.Save(testIdentity("ep_1", 2))
+	got, _ := a.Load()
+	if !errors.Is(err, ErrIdentityConflict) || got.Generation != 100 {
+		t.Fatalf("stale writer saved: err=%v, stored generation now %d", err, got.Generation)
 	}
 }

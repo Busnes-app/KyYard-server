@@ -82,6 +82,8 @@ type Pod struct {
 	OwnerName  string         `json:"owner_name"`
 	StartedAt  time.Time      `json:"started_at"`
 	Containers []PodContainer `json:"containers"`
+	// containersCut is set by UnmarshalJSON when it dropped containers past MaxPodContainers.
+	containersCut bool
 }
 
 // PodContainer State is running, waiting or terminated; Reason is the runtime's word for why.
@@ -127,8 +129,8 @@ func (p *Pod) UnmarshalJSON(data []byte) error {
 	if len(aux.Containers) == 0 {
 		return nil
 	}
-	containers, _, err := decodeBounded[PodContainer](aux.Containers, MaxPodContainers)
-	p.Containers = containers
+	containers, over, err := decodeBounded[PodContainer](aux.Containers, MaxPodContainers)
+	p.Containers, p.containersCut = containers, over
 	return err
 }
 
@@ -149,6 +151,9 @@ func decodeKubernetes(raw []byte) (*KubernetesInventory, []string, error) {
 	)
 	if err != nil {
 		return nil, nil, err
+	}
+	if !slices.Contains(cut, "pods") && slices.ContainsFunc(k.Pods, func(p Pod) bool { return p.containersCut }) {
+		cut = append(cut, "pods")
 	}
 	return k, cut, nil
 }

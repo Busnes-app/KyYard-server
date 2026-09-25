@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/version"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -280,5 +284,42 @@ func TestLogsStopAtTheLineCeiling(t *testing.T) {
 	})
 	if err != nil || lines != protocol.MaxLogLines {
 		t.Fatalf("%d lines, %v", lines, err)
+	}
+}
+
+// The lists are read side by side: an API server that takes 2 s per list still fills every
+// list inside a 5 s budget, which reading them one after another would overrun. The fake
+// clientset runs reactors under one lock, so this test serves a real clientset over HTTP.
+func TestSnapshotListsConcurrently(t *testing.T) {
+	kinds := map[string]string{"nodes": "NodeList", "namespaces": "NamespaceList", "deployments": "DeploymentList", "statefulsets": "StatefulSetList", "daemonsets": "DaemonSetList", "pods": "PodList", "services": "ServiceList", "persistentvolumeclaims": "PersistentVolumeClaimList"}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/version" {
+			_, _ = io.WriteString(w, `{"major":"1","minor":"36","gitVersion":"v1.36.0","platform":"linux/amd64"}`)
+			return
+		}
+		select {
+		case <-time.After(2 * time.Second):
+		case <-r.Context().Done():
+			return
+		}
+		group, resource := "v1", path.Base(r.URL.Path)
+		if strings.HasPrefix(r.URL.Path, "/apis/apps/") {
+			group = "apps/v1"
+		}
+		fmt.Fprintf(w, `{"kind":%q,"apiVersion":%q,"metadata":{},"items":[{"metadata":{"namespace":"shop","name":"web"}}]}`, kinds[resource], group)
+	}))
+	defer ts.Close()
+	c, err := New(&rest.Config{Host: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.log = log.New(io.Discard, "", 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	snap, _ := c.Snapshot(ctx)
+	k := snap.Kubernetes
+	if len(k.Services) != 1 || len(k.Claims) != 1 || len(k.Workloads) != 3 || len(snap.Truncated) != 0 || snap.Engine.Version != "v1.36.0" {
+		t.Fatalf("services %d claims %d workloads %d truncated %v engine %+v", len(k.Services), len(k.Claims), len(k.Workloads), snap.Truncated, snap.Engine)
 	}
 }
