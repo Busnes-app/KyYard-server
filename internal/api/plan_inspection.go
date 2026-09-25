@@ -20,13 +20,21 @@ const planInspectionBudget = 10 * time.Second
 // here is the latest revision's, so it does not gate the fan-out: the store judges the revision
 // being planned. The observations are consumed by the plan and never stored.
 func (s *Server) planInspections(w http.ResponseWriter, r *http.Request, a store.TenantAccess, ep *store.Endpoint, pre *store.DeploymentPreflight) map[string]protocol.ContainerInspection {
+	return s.inspectForPlan(r.Context(), a, ep, pre, func() {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(planInspectionBudget + 5*time.Second))
+	}, func(ctx context.Context) bool { return s.inspectionAllowed(r.WithContext(ctx), a, ep.ID) })
+}
+
+// inspectForPlan is planInspections without a request: started runs once the fan-out is
+// admitted, and allowed re-checks the caller's authority during each inspection.
+func (s *Server) inspectForPlan(ctx context.Context, a store.TenantAccess, ep *store.Endpoint, pre *store.DeploymentPreflight, started func(), allowed func(context.Context) bool) map[string]protocol.ContainerInspection {
 	out := map[string]protocol.ContainerInspection{}
 	if !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspect) || !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectVerdict) || !s.allowAttempt("inspection:"+a.ActorID, 30, time.Minute) {
 		return out
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), planInspectionBudget)
+	ctx, cancel := context.WithTimeout(ctx, planInspectionBudget)
 	defer cancel()
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(planInspectionBudget + 5*time.Second))
+	started()
 	inspect := s.planInspector
 	if inspect == nil {
 		inspect = func(ctx context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
@@ -36,7 +44,7 @@ func (s *Server) planInspections(w http.ResponseWriter, r *http.Request, a store
 			if agent == nil {
 				return protocol.ContainerInspection{}, store.ErrEndpointOffline
 			}
-			return s.inspect(ctx, agent, a.ActorID, a.OrganizationID, target, func() bool { return s.inspectionAllowed(r.WithContext(ctx), a, ep.ID) })
+			return s.inspect(ctx, agent, a.ActorID, a.OrganizationID, target, func() bool { return allowed(ctx) })
 		}
 	}
 	for _, svc := range pre.Services {

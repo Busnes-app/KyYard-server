@@ -63,6 +63,8 @@ type Server struct {
 	registrySlots chan struct{}
 	registryMu    sync.Mutex
 	registryHeld  map[string]int
+	// policies is the update-policy scheduler's in-memory state (policies.go).
+	policies policyScheduler
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is

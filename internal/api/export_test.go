@@ -56,3 +56,14 @@ const PlanInspectionBudgetForTest = planInspectionBudget
 
 // RegistrySlotsHeldForTest counts the registry slots in use server-wide. Test-only.
 func RegistrySlotsHeldForTest(s *Server) int { return len(s.registrySlots) }
+
+// PolicyTickForTest runs one scheduler tick at now; the runs it starts are not waited for.
+func PolicyTickForTest(s *Server, now time.Time) { s.policyTick(context.Background(), now) }
+
+// WaitPolicyRunsForTest blocks until every run a tick started has finished.
+func WaitPolicyRunsForTest(s *Server) { s.policies.runs.Wait() }
+
+// SetPolicyClockForTest makes RunPolicies tick every interval and read the time from clock.
+func SetPolicyClockForTest(s *Server, interval time.Duration, clock func() time.Time) {
+	s.policies.interval, s.policies.now = interval, clock
+}

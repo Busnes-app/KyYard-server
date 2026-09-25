@@ -26,9 +26,17 @@ const (
 // guardApplication admits one registry operation per application at a time, an update check or
 // an update plan, keyed by the canonical application ID, or answers 409 check_in_progress.
 func (s *Server) guardApplication(w http.ResponseWriter, a store.TenantAccess, app string) (release func(), ok bool) {
+	release, ok = s.holdApplication(a, app)
+	if !ok {
+		s.tenantError(w, errCheckInProgress)
+	}
+	return release, ok
+}
+
+// holdApplication is guardApplication without a response, for the policy scheduler.
+func (s *Server) holdApplication(a store.TenantAccess, app string) (release func(), ok bool) {
 	key := a.OrganizationID + "/" + a.EnvironmentID + "/" + app
 	if _, busy := s.imageChecks.LoadOrStore(key, struct{}{}); busy {
-		s.tenantError(w, errCheckInProgress)
 		return nil, false
 	}
 	return func() { s.imageChecks.Delete(key) }, true
@@ -36,29 +44,53 @@ func (s *Server) guardApplication(w http.ResponseWriter, a store.TenantAccess, a
 
 // acquireRegistrySlot takes one of org's registry slots and one of the server's, or answers 429.
 func (s *Server) acquireRegistrySlot(w http.ResponseWriter, org string) (release func(), ok bool) {
+	release, ok = s.takeRegistrySlot(org)
+	if !ok {
+		w.Header().Set("Retry-After", "5")
+		s.tenantError(w, errTooManyChecks)
+	}
+	return release, ok
+}
+
+// takeRegistrySlot is acquireRegistrySlot without a response.
+func (s *Server) takeRegistrySlot(org string) (release func(), ok bool) {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
 	if s.registryHeld == nil {
 		s.registryHeld = map[string]int{}
 	}
-	if s.registryHeld[org] < registrySlotsPerOrganization {
-		select {
-		case s.registrySlots <- struct{}{}:
-			s.registryHeld[org]++
-			return func() {
-				s.registryMu.Lock()
-				defer s.registryMu.Unlock()
-				if s.registryHeld[org]--; s.registryHeld[org] == 0 {
-					delete(s.registryHeld, org)
-				}
-				<-s.registrySlots
-			}, true
-		default:
-		}
+	if s.registryHeld[org] >= registrySlotsPerOrganization {
+		return nil, false
 	}
-	w.Header().Set("Retry-After", "5")
-	s.tenantError(w, errTooManyChecks)
-	return nil, false
+	select {
+	case s.registrySlots <- struct{}{}:
+	default:
+		return nil, false
+	}
+	s.registryHeld[org]++
+	return func() {
+		s.registryMu.Lock()
+		defer s.registryMu.Unlock()
+		if s.registryHeld[org]--; s.registryHeld[org] == 0 {
+			delete(s.registryHeld, org)
+		}
+		<-s.registrySlots
+	}, true
+}
+
+// waitRegistrySlot polls takeRegistrySlot about once a second until wait has passed.
+func (s *Server) waitRegistrySlot(org string, wait time.Duration) (release func(), ok bool) {
+	deadline := time.Now().Add(wait)
+	for {
+		if release, ok := s.takeRegistrySlot(org); ok {
+			return release, true
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return nil, false
+		}
+		time.Sleep(min(time.Second, left))
+	}
 }
 
 // extendRegistryDeadline outlasts the server's WriteTimeout, which is shorter than registry
