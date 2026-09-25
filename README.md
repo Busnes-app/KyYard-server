@@ -591,3 +591,20 @@ Use the full reported container ID. It returns redacted live runtime facts when
 the agent supports `container.inspect`; older agents return an upgrade response.
 The request requires fresh inventory and ends on access loss or disconnect.
 This API does not expose secrets or enable application deployment.
+
+## Update policies
+
+An organization administrator can give an adopted, mapped application an **Update policy**:
+a weekly maintenance window (days, start and end in a time zone you choose) and a mode. In
+each window the server checks the application's images and, when a registry has a newer
+image, plans the update (**Plan only**, which waits for someone to apply it) or plans and
+applies it (**Plan and apply**). The policy acts as the administrator who last saved it: if
+that person can no longer deploy, the policy pauses itself instead. Three failed windows in a
+row also pause it; **Resume** starts it again. Windows are wall-clock times: a start that a
+daylight-saving jump skips does not run that day, and a window cannot cross midnight. A window
+missed while the server was down is recorded, not run late. Every run, and every step it takes,
+is in the audit log under one correlation ID.
+
+The scheduler runs inside the server; there is nothing extra to deploy. The binary embeds the
+time-zone database (`time/tzdata`), so a bare binary on a host without `/usr/share/zoneinfo`
+evaluates zones the same way as the container.

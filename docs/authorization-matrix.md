@@ -98,7 +98,8 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `registry.manage` (create/update by host, delete; implemented) | ✓ | – | – | – | – | write-only credentials | target `registries/<id>`; put details `host=<h> allow_private=<bool> credential=set\|kept\|cleared`, delete details `host=<h>` |
 | `registry.manage` — anonymous-pull opt-in (implemented) | ✓ | – | – | – | – | no | target `registry-policy`, details `old=<bool> new=<bool>`; per organization, off by default |
 | Registry credential use (implemented as `ResolveRegistryAccess`) | the operation's own permission (`image.pull` or `application.deploy`, an allow-list); no separate permission, and no read permission unlocks it | | | | | internal only, never returned | denials of that operation's action; the operation audits its own result |
-| `update_policy.manage` and `maintenance_window.manage` (M7b) | ✓ | ✓ | – | – | – | no | success; scheduler acts as `system:scheduler` with the policy's organization |
+| `application.policy` (create, edit, delete, resume an update policy; implemented, M7b) | ✓ | – | – | – | – | no | success and failure on `<app>/policies/<policy>`; reading a policy and its runs is `application.read` |
+| Update-policy runs (implemented, M7b) | the scheduler acts as the policy's `created_by` with `application.deploy` re-checked on every step | | | | | registry credential as for a manual update | the run's check, plan and apply rows under the creator and one correlation ID; `application.policy.run` and `application.policy.paused` as `system` |
 
 ## Streams and revocation
 
