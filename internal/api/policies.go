@@ -28,9 +28,11 @@ type policyScheduler struct {
 	runs     sync.WaitGroup
 	mu       sync.Mutex
 	inFlight map[string]string // policy ID -> endpoint ID; under mu
-	// Tests only: the tick interval (zero is one minute) and the clock (nil is time.Now).
-	interval time.Duration
-	now      func() time.Time
+	// Tests only: the tick interval (zero is one minute), the clock (nil is time.Now), and a
+	// hook fired once a run's row is open (nil in production; exercises the panic recover below).
+	interval  time.Duration
+	now       func() time.Time
+	panicHook func()
 }
 
 // policyWindow is one occurrence of one policy.
@@ -150,8 +152,24 @@ func (s *Server) policyTick(ctx context.Context, now time.Time) {
 		go func(sp store.ScheduledPolicy) {
 			defer p.runs.Done()
 			defer p.release(sp.Policy.ID)
+			// A panic here would otherwise end RunPolicies mid-tick, taking every other policy's
+			// schedule down with it. openedRun is set the moment the run's row exists, so a panic
+			// after that point still finishes the row instead of leaving it open forever.
+			var openedRun string
+			runCtx := context.WithoutCancel(ctx)
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[POLICY] policy run %s panicked: %v", sp.Policy.ID, r)
+					if openedRun == "" {
+						return
+					}
+					if err := s.store.Tenancy().FinishPolicyRun(runCtx, openedRun, store.RunFailed, "", "panic"); err != nil {
+						log.Printf("[POLICY] policy %s run %s: recording panic: %v", sp.Policy.ID, openedRun, err)
+					}
+				}
+			}()
 			// A run in flight finishes: shutdown waits for it rather than cut an apply in half.
-			s.runPolicy(context.WithoutCancel(ctx), sp)
+			s.runPolicy(runCtx, sp, &openedRun)
 		}(sp)
 	}
 }
@@ -168,8 +186,9 @@ func (s *Server) skipWindow(ctx context.Context, w policyWindow, outcome, detail
 }
 
 // runPolicy opens the window's run row, does the work as the policy's last editor under one
-// correlation ID, and records the outcome.
-func (s *Server) runPolicy(ctx context.Context, sp store.ScheduledPolicy) {
+// correlation ID, and records the outcome. openedRun is set to the run's ID the moment it opens,
+// so the caller's panic recover can still finish the row if performPolicyRun panics.
+func (s *Server) runPolicy(ctx context.Context, sp store.ScheduledPolicy, openedRun *string) {
 	pol := sp.Policy
 	a := store.TenantAccess{ActorID: pol.CreatedBy, OrganizationID: pol.OrganizationID, EnvironmentID: pol.EnvironmentID, CorrelationID: uuid.NewString()}
 	ts := s.store.Tenancy()
@@ -180,6 +199,12 @@ func (s *Server) runPolicy(ctx context.Context, sp store.ScheduledPolicy) {
 	if err != nil {
 		log.Printf("[POLICY] policy %s: opening a run: %v", pol.ID, err)
 		return
+	}
+	*openedRun = run
+	if s.policies.panicHook != nil {
+		hook := s.policies.panicHook
+		s.policies.panicHook = nil
+		hook()
 	}
 	outcome, deployment, detail := s.performPolicyRun(ctx, a, pol)
 	if err := ts.FinishPolicyRun(ctx, run, outcome, deployment, detail); err != nil {

@@ -67,3 +67,7 @@ func WaitPolicyRunsForTest(s *Server) { s.policies.runs.Wait() }
 func SetPolicyClockForTest(s *Server, interval time.Duration, clock func() time.Time) {
 	s.policies.interval, s.policies.now = interval, clock
 }
+
+// SetPolicyPanicHookForTest fires f once, the moment the next run's row is open, then clears
+// itself. Test-only: exercises the scheduler's panic recover.
+func SetPolicyPanicHookForTest(s *Server, f func()) { s.policies.panicHook = f }

@@ -414,6 +414,28 @@ func TestRunPoliciesClosesDoneOnlyAfterTheRunInFlight(t *testing.T) {
 	}
 }
 
+// A run that panics is recovered, recorded failed with detail "panic", and its endpoint and
+// server-wide slot released; the scheduler keeps ticking afterward.
+func TestPolicyRunPanicRecoversAndRecordsFailed(t *testing.T) {
+	h := newPlanHost(t, policyCaps, "web")
+	api.SetPlanInspectorForTest(h.s, verifiedInspector)
+	h.updatable(t)
+	h.policy(t, store.PolicyModeApply)
+	api.SetPolicyPanicHookForTest(h.s, func() { panic("boom") })
+	day := tomorrow()
+	h.tick(day.Add(10*time.Hour + 30*time.Minute))
+
+	runs := h.runs(t, "usr_planner")
+	if len(runs) != 1 || runs[0].Outcome != store.RunFailed || runs[0].Detail != "panic" || runs[0].DeploymentID != "" || runs[0].FinishedAt == nil {
+		t.Fatalf("runs: %+v", runs)
+	}
+	// The scheduler survives the panic: the next window still runs.
+	h.tick(day.Add(34*time.Hour + 30*time.Minute))
+	if runs := h.runs(t, "usr_planner"); len(runs) != 2 {
+		t.Fatalf("scheduler stopped ticking after the panic: %+v", runs)
+	}
+}
+
 // A window passed over as busy until it closed is skipped_busy even when the next tick comes
 // after a later window has ended too: that one is the missed window, not the busy one.
 func TestPolicyRemembersABusyWindowAcrossAGap(t *testing.T) {
