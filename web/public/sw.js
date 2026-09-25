@@ -1,8 +1,16 @@
-const CACHE_NAME = 'ky-base-pwa-busnes-v2';
+const CACHE_NAME = 'kyyard-busnes-icons-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/favicon.svg',
+  '/favicon.png',
+  '/app-icon.png',
+  '/app-icon-192.png',
+  '/app-icon-512.png',
+  '/favicon.ico',
+  '/icon-192.png',
+  '/icon-512.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -32,6 +40,12 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   // Only cache GET requests and non-API paths
   if (event.request.method !== 'GET' || event.request.url.includes('/api/') || event.request.url.includes('/scim/')) {
+    return;
+  }
+
+  // Deep links are served by the app shell, so an offline navigation falls back to it.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).catch(() => caches.match('/')));
     return;
   }
 

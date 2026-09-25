@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Busness-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
 )
 
 func TestAESGCMEncryption(t *testing.T) {

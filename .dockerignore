@@ -22,3 +22,5 @@
 .superpowers/
 **/.env.*
 !**/.env.example
+
+/kyyard-agent

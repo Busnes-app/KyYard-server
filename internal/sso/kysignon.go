@@ -5,12 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/crypto"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
+
+// ErrUsernameTaken refuses a directory user whose username matches an existing account ignoring
+// case: sign-in matches LOWER(username), and a directory's claim is never a link to that account.
+var ErrUsernameTaken = errors.New("username is taken by another account")
 
 // KySignOnClient manages interactions with the central KySignOn identity provider.
 type KySignOnClient struct {
@@ -40,6 +46,14 @@ func (k *KySignOnClient) ExchangeCode(ctx context.Context, code, verifier, redir
 	}
 	claims.Provider = "kysignon"
 	return claims, nil
+}
+
+// refuse audits a directory user refused for a taken username and returns ErrUsernameTaken.
+func (k *KySignOnClient) refuse(ctx context.Context, username string) error {
+	if err := k.store.Audit().LogAudit(ctx, &store.AuditRecord{Action: "auth.sso.refused", Result: "denied", Resource: "kysignon", Details: "username=" + protocol.CleanText(username, 64)}); err != nil {
+		log.Printf("[SSO] audit auth.sso.refused not recorded: %v", err)
+	}
+	return fmt.Errorf("%w: %s", ErrUsernameTaken, username)
 }
 
 // KySignOnSyncPayload defines the schema received during automatic directory replication webhooks.
@@ -95,7 +109,9 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			existing.DisplayName = payload.DisplayName
 			existing.Role = role
 			existing.Status = status
-			if err := k.store.Users().UpdateUser(ctx, existing); err != nil {
+			if err := k.store.Users().UpdateUser(ctx, existing); errors.Is(err, store.ErrAlreadyExists) {
+				return k.refuse(ctx, payload.Username)
+			} else if err != nil {
 				return err
 			}
 			if privilegesChanged {
@@ -104,6 +120,11 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			return nil
 		}
 
+		if _, err := k.store.Users().GetUserByUsername(ctx, payload.Username); err == nil {
+			return k.refuse(ctx, payload.Username)
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
 		newUser := &store.User{
 			ID:          fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
 			Username:    payload.Username,
@@ -114,7 +135,11 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			SSOProvider: "kysignon",
 			SSOSubject:  payload.ID,
 		}
-		return k.store.Users().CreateUser(ctx, newUser)
+		err = k.store.Users().CreateUser(ctx, newUser)
+		if errors.Is(err, store.ErrAlreadyExists) {
+			return k.refuse(ctx, payload.Username)
+		}
+		return err
 
 	case "user.deactivated":
 		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)

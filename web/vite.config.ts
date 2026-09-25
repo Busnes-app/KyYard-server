@@ -7,9 +7,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8080',
-      '/scim': 'http://localhost:8080',
-      '/saml': 'http://localhost:8080',
+      '/api': 'http://localhost:9273',
+      '/scim': 'http://localhost:9273',
+      '/saml': 'http://localhost:9273',
     },
   },
   build: {

@@ -3,20 +3,22 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/auth"
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/devices"
-	"github.com/Busness-app/kyyard-server/internal/scim"
-	"github.com/Busness-app/kyyard-server/internal/sso"
-	"github.com/Busness-app/kyyard-server/internal/store"
-	"github.com/Busness-app/kyyard-server/web"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/sso"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/web"
 )
 
 // recoveryClient is the KyRecovery client as the handlers use it, narrowed so tests can stand
@@ -27,22 +29,44 @@ type recoveryClient interface {
 }
 
 type Server struct {
-	config     *config.Config
-	store      store.Store
-	sessions   *auth.SessionManager
-	pairing    *devices.PairingService
-	kysignon   *sso.KySignOnClient
-	oidc       *sso.GenericOIDCClient
-	saml       *sso.SAMLServiceProvider
-	scim       *scim.Server
-	recovery   recoveryClient
-	mux        *http.ServeMux
-	attemptsMu sync.Mutex
-	attempts   map[string]attemptWindow
+	providersMu sync.Mutex
+	loginMu     sync.Mutex
+	logins      map[string]loginAttempt
+	config      *config.Config
+	store       store.Store
+	sessions    *auth.SessionManager
+	kysignon    *sso.KySignOnClient
+	saml        *sso.SAMLServiceProvider
+	recovery    recoveryClient
+	mux         *http.ServeMux
+	attemptsMu  sync.Mutex
+	attempts    map[string]attemptWindow
 	// detached counts the requests running on a context deliberately separated from their
 	// connection. http.Server.Shutdown does not know about them, so runServer waits on this
 	// before the store closes.
-	detached detachedCounter
+	detached    detachedCounter
+	stopping    atomic.Bool
+	agents      agentRegistry
+	logs        *logRegistry
+	execs       execRegistry
+	inspections inspectionRegistry
+	// imageChecks holds "org/env/app" while an update check runs; one process is the supported
+	// deployment, so an in-memory guard is enough.
+	imageChecks sync.Map
+	// digestResolver answers update checks and update plans; nil means the real registry client.
+	digestResolver store.DigestResolver
+	// planInspector replaces the agent round trip of one plan-time inspection; nil means the
+	// connected agent. Tests only.
+	planInspector func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error)
+	// registrySlots bounds update checks and update plans in flight across the server;
+	// registryHeld counts each organization's share of them, under registryMu.
+	registrySlots chan struct{}
+	registryMu    sync.Mutex
+	registryHeld  map[string]int
+	// policies is the update-policy scheduler's in-memory state (policies.go).
+	policies policyScheduler
+	// validations is the health-validation loop's in-memory state (validations.go).
+	validations validationLoop
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -130,25 +154,23 @@ const attemptsCap = 10000
 
 func NewServer(cfg *config.Config, st store.Store) *Server {
 	sessions := auth.NewSessionManager(st, cfg.Security)
-	pairing := devices.NewPairingService(st, cfg.Server.AppName, cfg.Server.AppURL)
 	kysignon := sso.NewKySignOnClient(cfg.SSO, st)
-	oidc := sso.NewGenericOIDCClient(cfg.SSO, st)
 	saml := sso.NewSAMLServiceProvider(cfg.SSO.SAMLEntityID, cfg.Server.AppURL+"/saml/acs")
-	scimSrv := scim.NewServer(st, cfg.SCIM, cfg.Server.AppURL)
 	recovery := recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery})
 
 	s := &Server{
 		config:   cfg,
 		store:    st,
 		sessions: sessions,
-		pairing:  pairing,
 		kysignon: kysignon,
-		oidc:     oidc,
 		saml:     saml,
-		scim:     scimSrv,
 		recovery: recovery,
 		mux:      http.NewServeMux(),
+		logs:     newLogRegistry(),
 		attempts: make(map[string]attemptWindow),
+		// Each check or update plan may hold a registry connection per service for up to
+		// store.ImageCheckDeadline.
+		registrySlots: make(chan struct{}, registrySlotsTotal),
 	}
 
 	s.routes()
@@ -202,6 +224,83 @@ func (s *Server) requestIP(r *http.Request) string {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /api/organizations/{organization}", s.tenantRoute(s.handleTenantOrganization))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/instances", s.tenantRoute(s.handleApplicationInstances))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/applications", s.tenantRoute(s.handleApplicationInstances))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/preflight", s.tenantRoute(s.handleApplicationPreflight))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/deployments", s.tenantRoute(s.handlePlanDeployment))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/deployments", s.tenantRoute(s.handleDeployments))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/deployments/{deployment}", s.tenantRoute(s.handleDeployment))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/deployments/{deployment}/apply", s.tenantRoute(s.handleApplyDeployment))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/removal", s.tenantRoute(s.handleRemoveApplication))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/mapping", s.tenantRoute(s.handleApplicationMapping))
+	s.mux.HandleFunc("PUT /api/organizations/{organization}/environments/{environment}/applications/{application}/mapping", s.tenantRoute(s.handleSetApplicationMapping))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/revisions", s.tenantRoute(s.handleReplaceApplicationRevision))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/comparison", s.tenantRoute(s.handleApplicationComparison))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/updates", s.tenantRoute(s.handleImageChecks))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/updates/check", s.tenantRoute(s.handleCheckImageUpdates))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy", s.tenantRoute(s.handleUpdatePolicy))
+	s.mux.HandleFunc("PUT /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy", s.tenantRoute(s.handlePutUpdatePolicy))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy", s.tenantRoute(s.handleDeleteUpdatePolicy))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy/resume", s.tenantRoute(s.handleResumeUpdatePolicy))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/update-policy/runs", s.tenantRoute(s.handlePolicyRuns))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleAdoptionPreview))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleAdoption))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}/applications/{application}/adoption", s.tenantRoute(s.handleReleaseApplication))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications", s.tenantRoute(s.handleApplications))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications", s.tenantRoute(s.handleImportApplication))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/revisions/{revision}", s.tenantRoute(s.handleApplicationRevision))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}/applications/{application}", s.tenantRoute(s.handleDiscardApplication))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments", s.tenantRoute(s.handleTenantEnvironments))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments", s.tenantRoute(s.handleCreateEnvironment))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}", s.tenantRoute(s.handleTenantEnvironment))
+	s.mux.HandleFunc("PATCH /api/organizations/{organization}/environments/{environment}", s.tenantRoute(s.handleUpdateEnvironment))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}", s.tenantRoute(s.handleRemoveEnvironment))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/audit", s.tenantRoute(s.handleTenantAudit))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/audit", s.tenantRoute(s.handleTenantAudit))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/members", s.tenantRoute(s.handleTenantMembers))
+	s.mux.HandleFunc("PUT /api/organizations/{organization}/members/{user}", s.tenantRoute(s.handlePutMembership))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/members/{user}", s.tenantRoute(s.handleRemoveMembership))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/registries", s.tenantRoute(s.handleRegistries))
+	s.mux.HandleFunc("PUT /api/organizations/{organization}/registries", s.tenantRoute(s.handlePutRegistry))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/registries/{registry}", s.tenantRoute(s.handleDeleteRegistry))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/registry-policy", s.tenantRoute(s.handleRegistryPolicy))
+	s.mux.HandleFunc("PUT /api/organizations/{organization}/registry-policy", s.tenantRoute(s.handleSetRegistryPolicy))
+	s.mux.HandleFunc("GET /api/organizations", s.handleMyOrganizations)
+	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/enrollment-tokens", s.tenantRoute(s.handleCreateEnrollmentToken))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints", s.tenantRoute(s.handleTenantEndpoints))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/endpoints", s.tenantRoute(s.handleTenantEndpoints))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleTenantEndpoint))
+	s.mux.HandleFunc("PATCH /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleRenameEndpoint))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/inventory", s.tenantRoute(s.handleEndpointInventory))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/samples", s.tenantRoute(s.handleLatestSamples))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/samples", s.tenantRoute(s.handleContainerSamples))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/rollups", s.tenantRoute(s.handleContainerRollups))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/removal", s.tenantRoute(s.handleRemovalPreview))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleDispatchCommand))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleListCommands))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands/{command}", s.tenantRoute(s.handleReadCommand))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/inspection", s.tenantRoute(s.handleContainerInspection))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/logs", s.tenantRoute(s.handleContainerLogs))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/exec", s.tracked(s.tenantRoute(s.handleContainerExec)))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/approve", s.tenantRoute(s.handleApproveEndpoint))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/reject", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RejectEndpoint)))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/revoke", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RevokeEndpoint)))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/keys/{fingerprint}/acknowledge", s.tenantRoute(s.handleAcknowledgeKey))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/events/{event}/acknowledge", s.tenantRoute(s.handleAcknowledgeEvent))
+	s.mux.HandleFunc("POST /api/agent/v1/enroll", s.handleAgentEnroll)
+	s.mux.HandleFunc("GET /api/agent/v1/connect", s.handleAgentConnect)
+	s.mux.HandleFunc("/api/agent/", func(w http.ResponseWriter, r *http.Request) {
+		s.writeError(w, http.StatusNotFound, "Agent route not found")
+	})
+	s.mux.HandleFunc("/api/organizations/", func(w http.ResponseWriter, r *http.Request) {
+		s.writeError(w, http.StatusNotFound, "Tenant route not found")
+	})
+
+	// Public, secret-free probes; readiness includes the database.
+	s.mux.HandleFunc("/health/live", s.handleHealth)
+	s.mux.HandleFunc("/health/ready", s.handleHealth)
+
 	// Auth
 	s.mux.HandleFunc("/api/auth/pow-challenge", s.handlePoWChallenge)
 	s.mux.HandleFunc("/api/auth/login", s.handleLogin)
@@ -209,17 +308,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/mfa/recovery-code", s.handleMFARecovery)
 	s.mux.HandleFunc("/api/auth/logout", s.handleLogout)
 	s.mux.HandleFunc("/api/auth/me", s.handleMe)
+	s.mux.HandleFunc("/api/auth/change-password", s.handleChangePassword)
 
 	// SSO
-	s.mux.HandleFunc("/api/sso/kysignon/login", s.handleKySignOnLogin)
-	s.mux.HandleFunc("/api/sso/kysignon/callback", s.handleKySignOnCallback)
+	s.mux.HandleFunc("GET /api/sso/{provider}/login", s.handleProviderLogin)
+	s.mux.HandleFunc("GET /api/sso/{provider}/callback", s.handleProviderCallback)
 	s.mux.HandleFunc("/api/sso/kysignon/sync", s.handleKySignOnSyncWebhook)
 	s.mux.HandleFunc("/saml/metadata", s.handleSAMLMetadata)
 
-	// Devices & Ephemeral QR Pairing
-	s.mux.HandleFunc("/api/devices/pair/init", s.requireAuthenticated(s.handlePairInit))
-	s.mux.HandleFunc("/api/devices/pair/verify", s.handlePairVerify)
-	s.mux.HandleFunc("/api/devices/pair/poll", s.handlePairPoll)
+	// Retired mobile pairing namespace.
+	s.mux.HandleFunc("/api/devices/", func(w http.ResponseWriter, r *http.Request) {
+		s.writeError(w, http.StatusNotFound, "Mobile pairing is not available in KyYard")
+	})
 
 	// Feature 0 KyBackup & Restore Drills. Capsules carry site data and keys: admins only.
 	// Method patterns: only the declared method reaches a handler. Export is a POST so the
@@ -233,12 +333,19 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/backup/schedule", s.requireAdmin(s.handleSetSchedule))
 	s.mux.HandleFunc("GET /api/backup/status", s.requireAdmin(s.handleBackupStatus))
 
+	// Platform administration: organizations and local accounts.
+	s.mux.HandleFunc("GET /api/admin/organizations", s.requireAdmin(s.handleAdminListOrganizations))
+	s.mux.HandleFunc("POST /api/admin/organizations", s.requireAdmin(s.handleAdminCreateOrganization))
+	s.mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.handleAdminListUsers))
+	s.mux.HandleFunc("POST /api/admin/users", s.requireAdmin(s.handleAdminCreateUser))
+
+	s.mux.HandleFunc("GET /api/settings/sso", s.requireAdmin(s.handleProviders))
+	s.mux.HandleFunc("POST /api/settings/sso", s.requireAdmin(s.handleSaveProvider))
+	s.mux.HandleFunc("PUT /api/settings/sso/{provider}", s.requireAdmin(s.handleUpdateProvider))
+	s.mux.HandleFunc("DELETE /api/settings/sso/{provider}", s.requireAdmin(s.handleDeleteProvider))
 	// Settings & Theme. The read endpoint tiers its own payload by role.
 	s.mux.HandleFunc("/api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("/api/settings/theme", s.requireAdmin(s.handleSetTheme))
-
-	// SCIM 2.0 routes
-	s.scim.RegisterRoutes(s.mux)
 
 	// Embedded React PWA Frontend
 	s.mux.Handle("/", web.Handler())
@@ -249,10 +356,14 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, _, err := s.sessions.AuthenticateRequest(r)
 		if err != nil {
-			s.writeError(w, http.StatusUnauthorized, "Authentication required")
+			if errors.Is(err, auth.ErrPasswordChangeRequired) {
+				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Change your password before continuing", "code": "password_change_required"})
+			} else {
+				s.writeError(w, http.StatusUnauthorized, "Authentication required")
+			}
 			return
 		}
-		if user.Role != "admin" {
+		if !permissions.PlatformAllows(user.Role, permissions.PlatformAdmin) {
 			s.writeError(w, http.StatusForbidden, "Administrator role required")
 			return
 		}
@@ -263,7 +374,11 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 func (s *Server) requireAuthenticated(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, _, err := s.sessions.AuthenticateRequest(r); err != nil {
-			s.writeError(w, http.StatusUnauthorized, "Authentication required")
+			if errors.Is(err, auth.ErrPasswordChangeRequired) {
+				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Change your password before continuing", "code": "password_change_required"})
+			} else {
+				s.writeError(w, http.StatusUnauthorized, "Authentication required")
+			}
 			return
 		}
 		h(w, r)
@@ -297,6 +412,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isUnsafeMethod(r.Method) && origin != "" && !sameOrigin(origin, s.config.Server.AppURL) {
+		s.writeError(w, http.StatusForbidden, "Origin not allowed; use the configured KY_APP_URL")
+		return
+	}
 	if isUnsafeMethod(r.Method) && hasSessionCookie(r) && !csrfExempt(r.URL.Path) && !auth.ValidateCSRF(r) {
 		s.writeError(w, http.StatusForbidden, "Invalid CSRF token")
 		return
@@ -305,9 +424,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	}
 
-	// SCIM middleware
+	if !s.config.SSO.Enabled && (r.URL.Path == "/api/sso/kysignon/sync" || strings.HasPrefix(r.URL.Path, "/saml/")) {
+		s.writeError(w, http.StatusNotFound, "SSO is disabled")
+		return
+	}
+
+	// Retired SCIM namespace.
 	if strings.HasPrefix(r.URL.Path, "/scim/v2") {
-		s.scim.AuthMiddleware(s.mux).ServeHTTP(w, r)
+		s.writeError(w, http.StatusNotFound, "SCIM is not available in KyYard")
 		return
 	}
 
@@ -333,7 +457,7 @@ func sameOrigin(origin, appURL string) bool {
 		return false
 	}
 	o, err := url.Parse(origin)
-	return err == nil && o.Scheme == a.Scheme && o.Host == a.Host
+	return err == nil && o.User == nil && o.Path == "" && o.RawQuery == "" && !o.ForceQuery && o.Fragment == "" && o.Scheme == a.Scheme && o.Host == a.Host
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {

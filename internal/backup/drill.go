@@ -3,15 +3,17 @@ package backup
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/keyfile"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	_ "modernc.org/sqlite"
 )
 
@@ -37,7 +39,11 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 	if enabled, ok := recipe["check_sqlite_integrity"].(bool); !ok || !enabled {
 		return recipeFailure("check_sqlite_integrity must be true")
 	}
-	for _, name := range []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath} {
+	schemaVersion, ok := recipeInt(recipe["schema_version"])
+	if !ok || schemaVersion < 1 {
+		return recipeFailure("schema_version must be the latest migration number")
+	}
+	for _, name := range []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath, sessionKeyPath, instanceKeyPath} {
 		if !slices.Contains(required, name) {
 			return recipeFailure("required_files omits " + name)
 		}
@@ -77,9 +83,20 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 	if allFound {
 		checks = append(checks, recoveryclient.Check{Name: "Required Files", Passed: true, Message: fmt.Sprintf("All %d required files verified", len(required))})
 	}
+	for _, name := range []string{encryptionKeyPath, sessionKeyPath, instanceKeyPath} {
+		_, err := keyfile.Load(filepath.Join(dir, name), 32)
+		check := recoveryclient.Check{Name: "Key: " + name, Passed: err == nil, Message: "Valid private 32-byte key"}
+		if err != nil {
+			check.Message = "Key missing, malformed or unsafe"
+		}
+		checks = append(checks, check)
+	}
 	for _, name := range sqlitePaths {
 		full, _ := drillPath(dir, name)
 		checks = append(checks, sqliteIntegrityCheck(name, full))
+		if name == "data/ky_server.db" {
+			checks = append(checks, schemaVersionCheck(name, full, schemaVersion))
+		}
 	}
 	for _, name := range env {
 		_, found := os.LookupEnv(name)
@@ -124,23 +141,65 @@ func recipeStrings(value any) ([]string, error) {
 	return result, nil
 }
 
-func sqliteIntegrityCheck(name, path string) recoveryclient.Check {
-	fail := func(message string) recoveryclient.Check {
-		return recoveryclient.Check{Name: "SQLite Integrity: " + name, Message: message}
+// recipeInt accepts an int from an in-process manifest or an integral float64 from JSON.
+func recipeInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case float64:
+		return int(v), v == math.Trunc(v)
 	}
+	return 0, false
+}
+
+// openReadOnly opens an existing, nonempty SQLite file without letting SQLite create or write it.
+func openReadOnly(path string) (*sql.DB, string) {
 	fi, err := os.Lstat(path)
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
-		return fail("Database missing, empty or not regular")
+		return nil, "Database missing, empty or not regular"
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return fail("Invalid database path")
+		return nil, "Invalid database path"
 	}
 	// URL encoding prevents a filename's '?' or '#' from changing SQLite's options.
 	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute), RawQuery: "mode=ro"}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return fail("Failed to open database")
+		return nil, "Failed to open database"
+	}
+	return db, ""
+}
+
+func schemaVersionCheck(name, path string, expected int) recoveryclient.Check {
+	check := recoveryclient.Check{Name: "Schema Version: " + name}
+	db, problem := openReadOnly(path)
+	if db == nil {
+		check.Message = problem
+		return check
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRow("SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&version); err != nil {
+		check.Message = "schema_migrations table missing or unreadable"
+		return check
+	}
+	if version != expected {
+		check.Message = fmt.Sprintf("database schema is version %d, capsule expects %d", version, expected)
+		return check
+	}
+	check.Passed = true
+	check.Message = fmt.Sprintf("Database schema is version %d", version)
+	return check
+}
+
+func sqliteIntegrityCheck(name, path string) recoveryclient.Check {
+	fail := func(message string) recoveryclient.Check {
+		return recoveryclient.Check{Name: "SQLite Integrity: " + name, Message: message}
+	}
+	db, problem := openReadOnly(path)
+	if db == nil {
+		return fail(problem)
 	}
 	defer db.Close()
 	var result string

@@ -1,5 +1,7 @@
 # Suite Shared Primitives Implementation Plan
 
+> **Retired owner:** `Busness-app` below is the organisation's former name, renamed to `Busnes-app` on 2026-09-16 and no longer held by this project. It is kept as a dated record; do not fetch from it.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop the KySecurity suite from carrying divergent copies of the primitives where divergence is a correctness bug rather than a maintenance annoyance — threshold key splitting, the backup capsule format, the hash-chained audit record, and the pairing protocol spec — and cut the scaffold back to the suite's dependency floor so every future product starts lean instead of starting heavy.
@@ -15,7 +17,7 @@
 - **The new shared module has zero dependencies.** Standard library only, forever. It is importable by `kysignon-server`, whose entire architecture argument rests on having three direct dependencies; a module that drags in anything else is unusable there and the plan fails.
 - Every consuming repo keeps its own gates green: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`, `govulncheck ./...`.
 - **No behaviour change to any capsule, kit or audit record that already exists on disk.** Existing backups must still restore. Any change that cannot preserve that is out of scope and must be reported, not worked around.
-- Module path and repo naming follow the GitHub org exactly (`github.com/Busness-app/<name>`) — see the amendment under Task 2.
+- Module path and repo naming follow the GitHub org exactly (`github.com/Busnes-app/<name>`) — see the amendment under Task 2.
 
 ---
 
@@ -146,14 +148,14 @@ git commit -m "docs: establish Shamir interoperability across suite implementati
 ## Task 2: Create the `ky-primitives` module
 
 > **Amended 2026-09-02:** the prefix here is correct and confirmed against GitHub —
-> `gh api orgs/Busness-app --jq .login` returns `Busness-app`. Go module paths are
+> `gh api orgs/Busnes-app --jq .login` returns `Busnes-app`. Go module paths are
 > case-sensitive, so every plan in this directory now uses this exact casing; a lowercase
 > variant would be a different module to the toolchain. See
 > [the module path migration plan](2026-09-02-module-path-migration.md), which brings all
 > eight existing repos onto it — none of them followed the org move.
 
 **Files:**
-- Create: a new repository `github.com/Busness-app/ky-primitives` with `go.mod`, `shamir/`, `capsule/`, `auditchain/`, `testdata/`
+- Create: a new repository `github.com/Busnes-app/ky-primitives` with `go.mod`, `shamir/`, `capsule/`, `auditchain/`, `testdata/`
 - Depends on: Task 1's verdict and vectors
 
 **Interfaces produced:**
@@ -164,7 +166,7 @@ git commit -m "docs: establish Shamir interoperability across suite implementati
 - [ ] **Step 1: Initialise with an empty require block**
 
 ```
-module github.com/Busness-app/ky-primitives
+module github.com/Busnes-app/ky-primitives
 
 go 1.26
 ```
@@ -216,7 +218,7 @@ Do this repo first: it has the most demanding dependency constraint, the most va
 - [ ] **Step 1: Add the dependency and check the cost**
 
 ```bash
-go get github.com/Busness-app/ky-primitives@v0.1.0
+go get github.com/Busnes-app/ky-primitives@v0.1.0
 go mod tidy
 ```
 

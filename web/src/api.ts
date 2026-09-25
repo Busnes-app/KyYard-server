@@ -1,4 +1,4 @@
-function cookieValue(name: string): string {
+export function cookieValue(name: string): string {
   const prefix = `${encodeURIComponent(name)}=`;
   const item = document.cookie.split('; ').find((part) => part.startsWith(prefix));
   return item ? decodeURIComponent(item.slice(prefix.length)) : '';

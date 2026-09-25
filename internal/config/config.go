@@ -5,13 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
-	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/Busness-app/ky-primitives/keyfile"
 )
 
 // Config encapsulates all runtime configuration for kyyard-server.
@@ -22,25 +21,38 @@ type Config struct {
 	SSO      SSOConfig      `json:"sso"`
 	SCIM     SCIMConfig     `json:"scim"`
 	Backup   BackupConfig   `json:"backup"`
+	Registry RegistryConfig `json:"registry"`
 	Captcha  CaptchaConfig  `json:"captcha"`
 }
 
 // ServerConfig defines HTTP and network settings.
 type ServerConfig struct {
-	Host         string        `json:"host"`
-	Port         int           `json:"port"`
-	AppURL       string        `json:"app_url"`
-	AppName      string        `json:"app_name"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	AppURL       string `json:"app_url"`
+	AppName      string `json:"app_name"`
+	DockerSocket string `json:"docker_socket"`
+	// AgentImage overrides installed-image discovery with a digest-pinned remote image.
+	AgentImage   string        `json:"agent_image"`
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`
-	Environment  string        `json:"environment"`
 }
+
+// maxDiskBudget is a petabyte: past this the value is a typo, not a policy, and an operator
+// who means "no limit" has 0 for that.
+const maxDiskBudget = 1 << 50
 
 // DatabaseConfig holds connection settings for pluggable storage (SQLite, PostgreSQL, MySQL).
 type DatabaseConfig struct {
-	Driver          string        `json:"driver"` // "sqlite", "postgres", "mysql"
-	DSN             string        `json:"dsn"`    // Connection string or file path
-	DataDir         string        `json:"data_dir"`
+	Driver  string `json:"driver"` // "sqlite", "postgres", "mysql"
+	DSN     string `json:"dsn"`    // Connection string or file path
+	DataDir string `json:"data_dir"`
+	// DiskBudget bounds what telemetry may occupy (docs/retention-policy.md). Zero disables
+	// the check; the default is the documented 2 GiB.
+	DiskBudget int64 `json:"disk_budget"`
+	// SampleCeiling bounds stored metric rows per endpoint (docs/retention-policy.md). Zero
+	// means the built-in default; it is configured once, before the store opens.
+	SampleCeiling   int           `json:"sample_ceiling"`
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
@@ -48,8 +60,9 @@ type DatabaseConfig struct {
 
 // SecurityConfig holds encryption keys, cookie secrets, and session settings.
 type SecurityConfig struct {
-	SessionSecret string `json:"session_secret"`
+	SessionSecret string `json:"-"`
 	EncryptionKey []byte `json:"-"` // 32 bytes for AES-256-GCM; never serialised
+	InstanceKey   []byte `json:"-"` // 32-byte Ed25519 seed; reserved for control-plane identity
 	CookieSecure  bool   `json:"cookie_secure"`
 	CookieDomain  string `json:"cookie_domain"`
 	SessionTTL    time.Duration
@@ -92,6 +105,13 @@ type BackupConfig struct {
 	AllowPrivateRecovery bool `json:"allow_private_recovery"`
 }
 
+// RegistryConfig holds the operator's limits on organization registries.
+type RegistryConfig struct {
+	// AllowPrivate lets organization admins set allow_private on a registry, admitting
+	// private and CGNAT destinations. Off by default: a tenant must not reach the server's network.
+	AllowPrivate bool `json:"allow_private"`
+}
+
 // CaptchaConfig holds anti-abuse settings (PoW default, Turnstile, Friendly).
 type CaptchaConfig struct {
 	Provider      string `json:"provider"` // "pow", "turnstile", "friendly", "none"
@@ -108,13 +128,74 @@ const MinDepositInterval = 15 * time.Minute
 // under it, so the restore CLI has to agree with it without loading a whole Config.
 const DefaultAppName = "KyYard"
 
-// LoadFromEnv initializes a Config struct populated from environment variables with sensible defaults.
+// DefaultPort is where KyYard listens when nothing says otherwise. It is deliberately not one
+// of the ports every other self-hosted tool wants: a homelab runs several, and a default that
+// collides is a setup step for everybody rather than a convenience for anybody.
+const DefaultPort = 9273
+
+// A mutable tag would let the registry decide what runs as root on every enrolled host.
+var agentImageRef = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(:[0-9]+)?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)+@sha256:[0-9a-f]{64}$`)
+
+// IsPinnedAgentImage applies the same immutable-reference policy to defaults and overrides.
+func IsPinnedAgentImage(image string) bool { return agentImageRef.MatchString(image) }
+
+// LoadFromEnv initializes a Config from environment variables and defaults.
 func LoadFromEnv() (*Config, error) {
-	port := getEnvInt("KY_PORT", getEnvInt("PORT", 8080))
-	host := getEnv("KY_HOST", "0.0.0.0")
+	port, portErr := strconv.Atoi(getEnv("KY_PORT", getEnv("PORT", strconv.Itoa(DefaultPort))))
+	host := getEnv("KY_HOST", "127.0.0.1")
 	appURL := getEnv("KY_APP_URL", fmt.Sprintf("http://localhost:%d", port))
 	appName := getEnv("KY_APP_NAME", DefaultAppName)
-	env := getEnv("KY_ENV", "development")
+	agentImage := getEnv("KY_AGENT_IMAGE", "")
+	if agentImage != "" && !IsPinnedAgentImage(agentImage) {
+		return nil, fmt.Errorf("KY_AGENT_IMAGE: must be a digest-pinned reference like ghcr.io/org/kyyard-agent@sha256:<64 hex>, never a tag")
+	}
+
+	if portErr != nil || port < 1 || port > 65535 {
+		return nil, fmt.Errorf("KY_PORT: must be between 1 and 65535")
+	}
+	trustedProxies, err := ParseTrustedProxies(getEnv("KY_TRUSTED_PROXIES", ""))
+	if err != nil {
+		return nil, fmt.Errorf("KY_TRUSTED_PROXIES: %w", err)
+	}
+	advertised, err := url.Parse(appURL)
+	if err != nil || advertised.Hostname() == "" || (advertised.Scheme != "http" && advertised.Scheme != "https") || advertised.User != nil || (advertised.Path != "" && advertised.Path != "/") || advertised.RawQuery != "" || advertised.ForceQuery || advertised.Fragment != "" || advertised.Opaque != "" {
+		return nil, fmt.Errorf("KY_APP_URL: use an http(s) origin without credentials, path, query or fragment")
+	}
+	if p := advertised.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("KY_APP_URL: invalid port")
+		}
+	}
+	advertised.Host = strings.ToLower(advertised.Host)
+	if strings.HasSuffix(advertised.Host, ":") {
+		return nil, fmt.Errorf("KY_APP_URL: invalid empty port")
+	}
+	if (advertised.Scheme == "https" && advertised.Port() == "443") || (advertised.Scheme == "http" && advertised.Port() == "80") {
+		advertised.Host = advertised.Hostname()
+		if strings.Contains(advertised.Host, ":") {
+			advertised.Host = "[" + advertised.Host + "]"
+		}
+	}
+	// A URL is advertised as an origin, matching the browser's Origin header.
+	advertised.Path = ""
+	appURL = advertised.String()
+	secure := advertised.Scheme == "https"
+	if !secure {
+		bind, err := netip.ParseAddr(host)
+		if (err != nil || !bind.IsLoopback()) && !getEnvBool("KY_ALLOW_PLAINTEXT_BIND", false) {
+			return nil, fmt.Errorf("KY_HOST: plaintext outside a literal loopback address requires KY_ALLOW_PLAINTEXT_BIND=true; keep the published port on loopback or configure an HTTPS reverse proxy")
+		}
+		addr, _ := netip.ParseAddr(advertised.Hostname())
+		if advertised.Hostname() != "localhost" && !addr.IsLoopback() {
+			return nil, fmt.Errorf("KY_APP_URL: HTTP is only for localhost or loopback; remote access requires HTTPS through a reverse proxy and KY_TRUSTED_PROXIES")
+		}
+	} else if len(trustedProxies) == 0 {
+		return nil, fmt.Errorf("KY_TRUSTED_PROXIES: HTTPS requires the TLS reverse proxy's explicit IP or CIDR")
+	}
+	if raw := getEnv("KY_COOKIE_SECURE", ""); raw != "" && getEnvBool("KY_COOKIE_SECURE", secure) != secure {
+		return nil, fmt.Errorf("KY_COOKIE_SECURE: must match the KY_APP_URL scheme (true for HTTPS, false for loopback HTTP)")
+	}
 
 	driver := strings.ToLower(getEnv("KY_DB_DRIVER", "sqlite"))
 	dataDir := getEnv("KY_DATA_DIR", "./data")
@@ -123,25 +204,31 @@ func LoadFromEnv() (*Config, error) {
 		driver = "postgres"
 		defaultDSN = "postgres://postgres:postgres@localhost:5432/ky_server?sslmode=disable"
 	}
+	diskBudget := int64(getEnvInt("KY_RETENTION_DISK_BUDGET", 2<<30))
+	// A negative budget would disable the control as quietly as zero does, and zero is the
+	// documented way to say so. An absurd one would only ever be a typo.
+	if diskBudget < 0 {
+		return nil, fmt.Errorf("KY_RETENTION_DISK_BUDGET: must not be negative (0 disables the check), got %d", diskBudget)
+	}
+	if diskBudget > maxDiskBudget {
+		return nil, fmt.Errorf("KY_RETENTION_DISK_BUDGET: %d is larger than any real disk; use 0 to disable the check", diskBudget)
+	}
 	dsn := getEnv("KY_DB_DSN", defaultDSN)
 
-	sessionSecret := getEnv("KY_SESSION_SECRET", "")
-	if env == "production" && sessionSecret == "" {
-		return nil, fmt.Errorf("KY_SESSION_SECRET is required in production")
+	if err := secureDataDir(dataDir); err != nil {
+		return nil, fmt.Errorf("data directory: %w", err)
 	}
-	if sessionSecret == "" {
-		sessionSecret = generateRandomHex(32)
-	}
-
-	encryptionKey, ok, err := keyfile.FromEnv("KY_ENCRYPTION_KEY", 32)
+	sessionKey, err := loadKey(dataDir, "session.key", "KY_SESSION_SECRET")
 	if err != nil {
-		return nil, fmt.Errorf("KY_ENCRYPTION_KEY: %w", err)
+		return nil, err
 	}
-	if !ok {
-		encryptionKey, err = keyfile.LoadOrCreate(filepath.Join(dataDir, "encryption.key"), 32)
-		if err != nil {
-			return nil, fmt.Errorf("encryption key: %w", err)
-		}
+	encryptionKey, err := loadKey(dataDir, "encryption.key", "KY_ENCRYPTION_KEY")
+	if err != nil {
+		return nil, err
+	}
+	instanceKey, err := loadKey(dataDir, "instance.key", "")
+	if err != nil {
+		return nil, err
 	}
 
 	depositInterval, err := getEnvDuration("KY_BACKUP_DEPOSIT_INTERVAL", 24*time.Hour)
@@ -157,39 +244,37 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("KY_BACKUP_KEEP: must be at least 1, got %d", backupKeep)
 	}
 
-	trustedProxies, err := ParseTrustedProxies(getEnv("KY_TRUSTED_PROXIES", ""))
-	if err != nil {
-		return nil, fmt.Errorf("KY_TRUSTED_PROXIES: %w", err)
-	}
-
 	cfg := &Config{
 		Server: ServerConfig{
+			DockerSocket: localDockerSocket(),
 			Host:         host,
 			Port:         port,
 			AppURL:       strings.TrimRight(appURL, "/"),
 			AppName:      appName,
+			AgentImage:   agentImage,
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
-			Environment:  env,
 		},
 		Database: DatabaseConfig{
 			Driver:          driver,
 			DSN:             dsn,
 			DataDir:         dataDir,
+			DiskBudget:      diskBudget,
 			MaxOpenConns:    getEnvInt("KY_DB_MAX_OPEN_CONNS", 25),
 			MaxIdleConns:    getEnvInt("KY_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: 15 * time.Minute,
 		},
 		Security: SecurityConfig{
-			SessionSecret:  sessionSecret,
+			SessionSecret:  hex.EncodeToString(sessionKey),
+			InstanceKey:    instanceKey,
 			EncryptionKey:  encryptionKey,
-			CookieSecure:   getEnvBool("KY_COOKIE_SECURE", env == "production"),
+			CookieSecure:   secure,
 			CookieDomain:   getEnv("KY_COOKIE_DOMAIN", ""),
 			SessionTTL:     7 * 24 * time.Hour,
 			TrustedProxies: trustedProxies,
 		},
 		SSO: SSOConfig{
-			Enabled:             getEnvBool("KY_SSO_ENABLED", true),
+			Enabled:             getEnvBool("KY_SSO_ENABLED", false),
 			KySignOnIssuer:      getEnv("KY_KYSIGNON_ISSUER", ""),
 			KySignOnClientID:    getEnv("KY_KYSIGNON_CLIENT_ID", ""),
 			KySignOnSecret:      getEnv("KY_KYSIGNON_SECRET", ""),
@@ -201,16 +286,14 @@ func LoadFromEnv() (*Config, error) {
 			SAMLMetadataURL:     getEnv("KY_SAML_METADATA_URL", ""),
 			AutoProvision:       getEnvBool("KY_SSO_AUTO_PROVISION", true),
 		},
-		SCIM: SCIMConfig{
-			Enabled:     getEnvBool("KY_SCIM_ENABLED", true),
-			BearerToken: getEnv("KY_SCIM_TOKEN", generateRandomHex(24)),
-		},
+		SCIM: SCIMConfig{}, // Retained type for legacy adapters; no runtime SCIM service.
 		Backup: BackupConfig{
 			Dir:                  getEnv("KY_BACKUP_DIR", ""),
 			Keep:                 backupKeep,
 			DepositInterval:      depositInterval,
 			AllowPrivateRecovery: getEnvBool("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", false),
 		},
+		Registry: RegistryConfig{AllowPrivate: getEnvBool("KY_REGISTRY_ALLOW_PRIVATE", false)},
 		Captcha: CaptchaConfig{
 			Provider:      getEnv("KY_CAPTCHA_PROVIDER", "pow"),
 			SiteKey:       getEnv("KY_CAPTCHA_SITE_KEY", ""),
@@ -311,4 +394,12 @@ func unmapPrefix(p netip.Prefix) netip.Prefix {
 		return p
 	}
 	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+}
+
+// An explicitly empty value selects a control-plane-only installation.
+func localDockerSocket() string {
+	if path, ok := os.LookupEnv("KY_DOCKER_SOCKET"); ok {
+		return path
+	}
+	return "/var/run/docker.sock"
 }

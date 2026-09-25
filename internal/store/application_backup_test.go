@@ -1,0 +1,131 @@
+package store_test
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"database/sql"
+	"encoding/json"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
+)
+
+func TestApplicationRevisionsSurviveBackup(t *testing.T) {
+	ctx := context.Background()
+	db := testdb.Config(t)
+	if db.Driver != "sqlite" {
+		t.Skip("capsules require SQLite")
+	}
+	db.DataDir = t.TempDir()
+	cfg := &config.Config{Database: db}
+	cfg.Security.EncryptionKey = make([]byte, 32)
+	cfg.Security.InstanceKey = make([]byte, 32)
+	cfg.Security.SessionSecret = strings.Repeat("00", 32)
+	st, err := store.Open(ctx, db)
+	mustTenant(t, err)
+	defer st.Close()
+	ts := st.Tenancy()
+	mustTenant(t, ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "a"}))
+	mustTenant(t, ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "prod"}))
+	tenantUser(t, st, "actor", "user", "local", "active")
+	mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "actor", Role: store.RoleOrganizationAdmin, Status: "active"}))
+	a := store.TenantAccess{ActorID: "actor", OrganizationID: "a", EnvironmentID: "env-a"}
+	app, err := ts.ImportApplication(ctx, a, "shop", desired("nginx:1"), map[string]string{"database-password": "backup-plain-value"}, cfg.Security.EncryptionKey)
+	mustTenant(t, err)
+	_, err = ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, desired("nginx:2"), map[string]string{"database-password": "backup-plain-value"}, cfg.Security.EncryptionKey)
+	mustTenant(t, err)
+	secretApp, err := ts.ImportApplication(ctx, a, "secret-shop", desired("nginx:1"), map[string]string{"database-password": "backup-secret-canary"}, cfg.Security.EncryptionKey)
+	mustTenant(t, err)
+	_, err = ts.ReplaceApplicationRevision(ctx, a, secretApp.ID, 1, desired("nginx:2"), map[string]string{"database-password": "second-backup-canary"}, cfg.Security.EncryptionKey)
+	mustTenant(t, err)
+	tok, err := ts.CreateEnrollmentToken(ctx, a, "docker", "")
+	mustTenant(t, err)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	endpoint, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "backup-host"})
+	mustTenant(t, err)
+	mustTenant(t, ts.ApproveEndpoint(ctx, a, endpoint.ID, endpoint.Fingerprint))
+	mustTenant(t, ts.SetEndpointCapabilities(ctx, endpoint.ID, []string{protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityDeploymentApply}))
+	raw, err := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: strings.Repeat("a", 64), Name: "shop-web", ImageID: "sha256:" + strings.Repeat("b", 64), ComposeProject: "shop", CreatedAt: time.Now().UTC(), Mounts: []protocol.Mount{}}}, Images: []protocol.Image{{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:2"}}}})
+	mustTenant(t, err)
+	_, err = ts.AcceptInventory(ctx, endpoint.ID, uint64(time.Now().Unix()), time.Now(), raw)
+	mustTenant(t, err)
+	preview, err := ts.PreviewApplicationAdoption(ctx, a, app.ID, endpoint.ID, "shop")
+	mustTenant(t, err)
+	instance, err := ts.AdoptApplication(ctx, a, app.ID, store.AdoptionRequest{EndpointID: endpoint.ID, Project: "shop", Digest: preview.Digest, Confirm: "shop"})
+	mustTenant(t, err)
+	mapping, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+	mustTenant(t, err)
+	mustTenant(t, ts.SetApplicationMapping(ctx, a, app.ID, store.MappingRequest{InstanceID: instance.ID, Version: mapping.Version, Digest: mapping.Preview.Digest, Confirm: "shop", Bindings: map[string]string{"web": strings.Repeat("a", 64)}}))
+	planned, err := ts.PlanDeployment(ctx, a, app.ID, verifiedPlan(store.PlanRequest{InstanceID: instance.ID, MappingVersion: 1, Revision: 2, Confirm: "shop"}, mapping.Preview.Containers), nil, cfg.Security.EncryptionKey, false)
+	mustTenant(t, err)
+	checkedAt := time.Now().UTC().Truncate(time.Second)
+	rawDB, err := sql.Open("sqlite", db.DSN)
+	mustTenant(t, err)
+	_, err = rawDB.ExecContext(ctx, `INSERT INTO image_checks(instance_id,service_name,reference,verdict,checked_at) VALUES(?,?,?,?,?)`, instance.ID, "web", "nginx:2", "update_available", checkedAt)
+	mustTenant(t, err)
+	mustTenant(t, rawDB.Close())
+	registryCredential := "registry-backup-canary"
+	orgAccess := store.TenantAccess{ActorID: "actor", OrganizationID: "a"}
+	_, err = ts.PutRegistry(ctx, orgAccess, store.RegistryInput{Host: "ghcr.io", Name: "GitHub", Username: "bot", Credential: &registryCredential}, cfg.Security.EncryptionKey, false)
+	mustTenant(t, err)
+	payload, err := backup.Collect(ctx, cfg, "test")
+	mustTenant(t, err)
+	path, restoredKey := restoreThroughCapsule(t, payload)
+	restored, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path})
+	mustTenant(t, err)
+	defer restored.Close()
+	for _, number := range []int{1, 2} {
+		before, err := ts.ReadApplicationRevision(ctx, a, app.ID, number)
+		mustTenant(t, err)
+		after, err := restored.Tenancy().ReadApplicationRevision(ctx, a, app.ID, number)
+		mustTenant(t, err)
+		if before.ID != after.ID || before.Digest != after.Digest || before.Spec.Services[0].Image != after.Spec.Services[0].Image || after.Spec.Services[0].Environment["DATABASE_PASSWORD"].SecretRef != "database-password" {
+			t.Fatal("backup lost revision")
+		}
+	}
+	rows, err := restored.Tenancy().ListApplications(ctx, a, 0, 10)
+	mustTenant(t, err)
+	if len(rows) != 2 {
+		t.Fatal("backup lost application head")
+	}
+	instances, err := restored.Tenancy().ListApplicationInstances(ctx, a, endpoint.ID)
+	mustTenant(t, err)
+	if len(instances) != 1 || instances[0].ID != instance.ID || len(instances[0].Containers) != 1 || instances[0].Containers[0].ID != strings.Repeat("a", 64) {
+		t.Fatal("backup lost adoption ownership")
+	}
+	restoredMapping, err := restored.Tenancy().ReadApplicationMapping(ctx, a, app.ID)
+	mustTenant(t, err)
+	if restoredMapping.Version != 1 || restoredMapping.MappedRevision != 2 || restoredMapping.Bindings["web"] != strings.Repeat("a", 64) {
+		t.Fatal("backup lost service mapping")
+	}
+	restoredPlan, err := restored.Tenancy().ReadDeployment(ctx, a, app.ID, planned.ID)
+	mustTenant(t, err)
+	if restoredPlan.Plan.Services[0].ImageID != "sha256:"+strings.Repeat("c", 64) || restoredPlan.MappingVersion != 1 {
+		t.Fatalf("plan did not survive restore: %+v", restoredPlan)
+	}
+	checks, err := restored.Tenancy().ReadImageChecks(ctx, a, app.ID)
+	mustTenant(t, err)
+	if checks.InstanceID != instance.ID || len(checks.Services) != 1 || checks.Services[0].Verdict != "update_available" || !checks.Services[0].CheckedAt.Equal(checkedAt) {
+		t.Fatalf("backup lost the image check: %+v", checks)
+	}
+	for number, want := range map[int]string{1: "backup-secret-canary", 2: "second-backup-canary"} {
+		values, err := restored.Tenancy().ResolveApplicationSecrets(ctx, a, secretApp.ID, number, restoredKey)
+		mustTenant(t, err)
+		if values["database-password"] != want {
+			t.Fatal("backup lost encrypted values")
+		}
+	}
+	access, err := restored.Tenancy().ResolveRegistryAccess(ctx, orgAccess, permissions.ApplicationDeploy, "ghcr.io/org/app:v1", restoredKey, true)
+	mustTenant(t, err)
+	if access.Credential == nil || access.Credential.Username != "bot" || access.Credential.Secret != registryCredential {
+		t.Fatal("backup lost the registry credential")
+	}
+}

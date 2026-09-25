@@ -1,0 +1,37 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { ApplicationMapping } from './ApplicationMapping';
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.cookie = 'ky_csrf=; Max-Age=0'; });
+const data = { instance_id: 'i', version: 0, mapped_revision: 0, services: ['web', 'db'], bindings: {}, preview: { revision: 1, digest: 'digest', project: 'shop', endpoint_name: 'Docker', containers: [{ id: 'a'.repeat(64), name: 'shop-web', image_id: 'sha256:image' }] } };
+it('requires explicit choices and confirmation, then submits immutable IDs and CSRF', async () => {
+  document.cookie = 'ky_csrf=csrf';
+  const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'PUT' ? new Response(null, { status: 204 }) : new Response(JSON.stringify(data)));
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationMapping base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Map services to containers' }));
+  const web = await screen.findByLabelText('web');
+  expect(web).toHaveProperty('value', '');
+  expect(screen.getByRole('button', { name: 'Save service mapping' }).hasAttribute('disabled')).toBe(true);
+  fireEvent.change(web, { target: { value: 'a'.repeat(64) } });
+  fireEvent.change(screen.getByLabelText('Confirm mapping project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save service mapping' }));
+  await screen.findByText('Service mapping saved. Containers were not changed.');
+  const write = fetcher.mock.calls.find(c => c[1]?.method === 'PUT');
+  expect(JSON.parse(String(write?.[1]?.body))).toEqual({ instance_id: 'i', version: 0, digest: 'digest', confirm: 'shop', bindings: { web: 'a'.repeat(64) } });
+  expect(new Headers(write?.[1]?.headers).get('X-CSRF-Token')).toBe('csrf');
+});
+it('blocks stale submissions and refuses a replacement adoption', async () => {
+  let replaced = false;
+  vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'PUT' ? new Response('secret-canary', { status: 409 }) : new Response(JSON.stringify({ ...data, instance_id: replaced ? 'new' : 'i' }))));
+  render(<ApplicationMapping base="/app" instanceID="i" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Map services to containers' }));
+  fireEvent.change(await screen.findByLabelText('Confirm mapping project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save service mapping' }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('button', { name: 'Save service mapping' }).hasAttribute('disabled')).toBe(true);
+  expect(document.body.textContent).not.toContain('secret-canary');
+  replaced = true;
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh mapping' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('Adoption changed');
+  expect(screen.queryByRole('button', { name: 'Save service mapping' })).toBeNull();
+});

@@ -2,6 +2,8 @@ package store
 
 import (
 	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/registry"
 )
 
 // User represents an identity within the system.
@@ -67,15 +69,20 @@ type Group struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// AuditRecord logs security and operational events with tamper-evident structure.
+// AuditRecord records actor (UserID), target (Resource), scope and outcome.
 type AuditRecord struct {
-	ID        int64     `json:"id"`
-	UserID    string    `json:"user_id"`
-	Action    string    `json:"action"` // e.g. "auth.login", "scim.user_created"
-	Resource  string    `json:"resource"`
-	Details   string    `json:"details,omitempty"`
-	IPAddress string    `json:"ip_address"`
-	CreatedAt time.Time `json:"created_at"`
+	Scope          string    `json:"scope"`
+	OrganizationID string    `json:"organization_id"`
+	EnvironmentID  string    `json:"environment_id"`
+	CorrelationID  string    `json:"correlation_id"`
+	Result         string    `json:"result"`
+	ID             int64     `json:"id"`
+	UserID         string    `json:"user_id"`
+	Action         string    `json:"action"` // e.g. "auth.login", "scim.user_created"
+	Resource       string    `json:"resource"`
+	Details        string    `json:"details,omitempty"`
+	IPAddress      string    `json:"ip_address"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // Setting represents a durable server-wide key-value configuration entry.
@@ -83,4 +90,153 @@ type Setting struct {
 	Key       string    `json:"key"`
 	Value     string    `json:"value"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Platform authority remains User.Role; it never implies one of these tenant roles.
+type TenantRole string
+
+const (
+	RoleOrganizationAdmin TenantRole = "organization_admin"
+	RoleEnvironmentAdmin  TenantRole = "environment_admin"
+	RoleOperator          TenantRole = "operator"
+	RoleDeveloper         TenantRole = "developer"
+	RoleReadOnly          TenantRole = "read_only"
+	InitialOrganizationID            = "org_initial"
+)
+
+type Organization struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+type OrganizationSummary struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	Members   int       `json:"members"` // active memberships
+}
+type OrganizationMembership struct {
+	OrganizationID string     `json:"organization_id"`
+	UserID         string     `json:"user_id"`
+	Role           TenantRole `json:"role"`
+	Status         string     `json:"status"`
+}
+
+// OrganizationMember is a membership joined with the account it names.
+type OrganizationMember struct {
+	UserID   string     `json:"user_id"`
+	Username string     `json:"username"`
+	Role     TenantRole `json:"role"`
+	Status   string     `json:"status"`
+}
+
+// MemberOrganization is one of the caller's own organizations with the role held there.
+type MemberOrganization struct {
+	ID   string     `json:"id"`
+	Name string     `json:"name"`
+	Role TenantRole `json:"role"`
+}
+type Environment struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	Name           string `json:"name"`
+}
+type OrganizationGroup struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	Name           string `json:"name"`
+}
+
+// Endpoint is an enrolled (or enrolling) host. Facts are the bounded enrollment report.
+type Endpoint struct {
+	ID             string            `json:"id"`
+	OrganizationID string            `json:"organization_id"`
+	EnvironmentID  string            `json:"environment_id"`
+	Name           string            `json:"name"`
+	Runtime        string            `json:"runtime"`
+	State          string            `json:"state"`
+	Facts          map[string]string `json:"facts"`
+	Fingerprint    string            `json:"fingerprint"` // key under review while pending, approved key afterwards
+	// PendingFingerprint is a rotated key awaiting operator acknowledgement, if any.
+	PendingFingerprint string          `json:"pending_fingerprint,omitempty"`
+	Capabilities       []string        `json:"capabilities"`
+	Alerts             []EndpointEvent `json:"alerts"` // unacknowledged high-severity events
+	CreatedAt          time.Time       `json:"created_at"`
+	ApprovedAt         *time.Time      `json:"approved_at,omitempty"`
+	ApprovedBy         string          `json:"approved_by,omitempty"`
+	RevokedAt          *time.Time      `json:"revoked_at,omitempty"`
+	LastSeenAt         *time.Time      `json:"last_seen_at,omitempty"`
+}
+
+// EndpointEvent is a bounded, operator-facing record; high-severity ones surface until acknowledged.
+type EndpointEvent struct {
+	ID             int64      `json:"id"`
+	Severity       string     `json:"severity"`
+	Kind           string     `json:"kind"`
+	Details        string     `json:"details"`
+	CreatedAt      time.Time  `json:"created_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
+}
+
+// EnrollmentToken is returned once; Secret is the raw token and is never stored.
+type EnrollmentToken struct {
+	ID            string    `json:"id"`
+	EnvironmentID string    `json:"environment_id"`
+	Runtime       string    `json:"runtime"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	AgentImage    string    `json:"agent_image,omitempty"`
+	Secret        []byte    `json:"-"`
+}
+
+// EnrollmentRequest is what an agent presents; everything in it is untrusted.
+type EnrollmentRequest struct {
+	Token     []byte
+	PublicKey []byte
+	Proof     []byte
+	Name      string
+	Facts     map[string]string
+	IPAddress string
+}
+
+// TenantAccess is server-derived request context. Clients cannot choose ActorID or CorrelationID.
+type TenantAccess struct {
+	ActorID        string
+	OrganizationID string
+	EnvironmentID  string
+	CorrelationID  string
+	IPAddress      string
+}
+
+// Registry is a per-organization registry entry. The credential is write-only: rows report
+// HasCredential and never carry the secret or its ciphertext.
+type Registry struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organization_id"`
+	Host           string    `json:"host"`
+	Name           string    `json:"name"`
+	Username       string    `json:"username"`
+	HasCredential  bool      `json:"has_credential"`
+	AllowPrivate   bool      `json:"allow_private"`
+	CreatedBy      string    `json:"created_by"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type RegistryInput struct {
+	Host         string  `json:"host"`
+	Name         string  `json:"name"`
+	Username     string  `json:"username"`
+	Credential   *string `json:"credential"` // nil keeps the stored one, "" clears it
+	AllowPrivate bool    `json:"allow_private"`
+}
+
+type RegistryPolicy struct {
+	AnonymousPullEnabled bool `json:"anonymous_pull_enabled"`
+}
+
+// RegistryAccess is internal: it holds a decrypted secret and is never serialized.
+type RegistryAccess struct {
+	Registry   *Registry
+	Credential *registry.Credential `json:"-"` // nil when anonymous or none stored
+	Anonymous  bool                 // the host has no entry and the opt-in allowed it
 }

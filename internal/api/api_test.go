@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/capsule"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,27 +19,36 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/keyfile"
-	"github.com/Busness-app/ky-primitives/password"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky-primitives/totp"
-	"github.com/Busness-app/kyyard-server/internal/api"
-	"github.com/Busness-app/kyyard-server/internal/auth"
-	"github.com/Busness-app/kyyard-server/internal/backup"
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/crypto"
-	"github.com/Busness-app/kyyard-server/internal/store"
-	"github.com/Busness-app/kyyard-server/internal/testdb"
+	"github.com/Busnes-app/ky-primitives/keyfile"
+	"github.com/Busnes-app/ky-primitives/password"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky-primitives/totp"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
 )
 
 func setupTestServer(t *testing.T) (*api.Server, store.Store, *config.Config) {
+	return setupTestServerWith(t, nil)
+}
+
+// setupTestServerWith lets a test settle storage bounds before the store opens, so nothing
+// mutates a shared limit while sockets are live.
+func setupTestServerWith(t *testing.T, tune func(*config.Config)) (*api.Server, store.Store, *config.Config) {
 	t.Helper()
 	t.Setenv("KY_DATA_DIR", t.TempDir())
 	cfg, _ := config.LoadFromEnv()
 	db := testdb.Config(t)
 	db.DataDir = cfg.Database.DataDir // testdb only picks the backend; keep the temp data dir
 	cfg.Database = db
+	if tune != nil {
+		tune(cfg)
+	}
 	cfg.Captcha.Provider = "none" // disable captcha for unit test speed
 
 	st, err := store.Open(context.Background(), cfg.Database)
@@ -132,8 +141,8 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 	pairReq.Header.Set(auth.HeaderCSRF, csrfCookie.Value)
 	w = httptest.NewRecorder()
 	srv.ServeHTTP(w, pairReq)
-	if w.Code != http.StatusOK {
-		t.Fatalf("pair init expected 200 OK, got %d", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("retired pairing expected 404, got %d", w.Code)
 	}
 
 	// 5. /api/backup/drill
@@ -220,7 +229,7 @@ func TestMFATOTPRefusesReplay(t *testing.T) {
 		raw := crypto.RandomHex(32)
 		_ = st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
 			TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: "usr_mfa", ExpiresAt: time.Now().Add(time.Minute),
-		})
+		}, "")
 		body, _ := json.Marshal(map[string]string{"mfa_token": raw, "code": code})
 		req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -399,6 +408,13 @@ func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
 	// A real database one blob past the per-member cap: the collector snapshots with VACUUM
 	// INTO, so the file has to be a database, and zeroblob makes a large one instantly.
 	big := filepath.Join(t.TempDir(), "oversized.db")
+	bigStore, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: big})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bigStore.Close(); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", big)
 	if err != nil {
 		t.Fatal(err)
@@ -478,53 +494,19 @@ func TestMFALimiterKeyIsBounded(t *testing.T) {
 	}
 }
 
-// The poll route is unauthenticated: anyone holding a secret must not learn the code, the
-// user behind it, or the device's push token.
-func TestPairPollProjectsTheRecord(t *testing.T) {
-	srv, st, _ := setupTestServer(t)
-
-	pairing := &store.DevicePairing{
-		Code:       "424242",
-		Secret:     "s3cr3t-pairing-secret",
-		UserID:     "usr_alice",
-		DeviceName: "Alice Phone",
-		Platform:   "android",
-		PushToken:  "push-token-value",
-		Status:     "pending",
-		CreatedAt:  time.Now().UTC(),
-		ExpiresAt:  time.Now().UTC().Add(90 * time.Second),
-	}
-	if err := st.Devices().CreatePairing(context.Background(), pairing); err != nil {
-		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest("GET", "/api/devices/pair/poll?secret="+pairing.Secret, nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("poll expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	body := w.Body.String()
-	for _, leak := range []string{"secret", "push_token", "code", "user_id", pairing.Secret, pairing.Code, pairing.PushToken, pairing.UserID} {
-		if strings.Contains(body, leak) {
-			t.Errorf("poll response leaks %q: %s", leak, body)
+func TestRetiredIdentityRoutes(t *testing.T) {
+	srv, _, _ := setupTestServerWith(t, func(c *config.Config) { c.SCIM.Enabled = true; c.SCIM.BearerToken = "legacy-token" })
+	for _, path := range []string{"/api/devices/pair/poll?secret=old-secret", "/api/devices/pair/verify", "/scim/v2/Users", "/scim/v2/Groups"} {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Header.Set("Authorization", "Bearer legacy-token")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != 404 {
+			t.Fatalf("%s: %d", path, w.Code)
 		}
-	}
-	var got map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got["status"] != "pending" || got["device_name"] != "Alice Phone" {
-		t.Errorf("poll response lost the fields the client needs: %v", got)
-	}
-	if _, ok := got["expires_at"]; !ok {
-		t.Errorf("poll response has no expires_at: %v", got)
 	}
 }
 
-// Eviction must not favour long windows. Login windows are a minute and MFA windows a minute,
-// but any caller that can mint keys at all would starve whichever window is shortest.
 func TestFullLimiterStillThrottlesLogin(t *testing.T) {
 	srv, _, _ := setupTestServer(t)
 
@@ -587,7 +569,7 @@ func TestMFAPerAccountWindow(t *testing.T) {
 			TokenHash: crypto.SHA256Hex([]byte(raw)),
 			UserID:    "usr_carol",
 			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
-		}); err != nil {
+		}, passHash); err != nil {
 			t.Fatal(err)
 		}
 
@@ -965,5 +947,46 @@ func TestDepositOutlivesTheRequest(t *testing.T) {
 	}
 	if !audited {
 		t.Error("no successful admin.backup_run audit record for the acting admin after the request went away")
+	}
+}
+
+func TestMFAChallengeRejectedAfterPasswordRotation(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+	secret, _ := totp.GenerateSecret()
+	enc, _ := crypto.EncryptAESGCM([]byte(secret), cfg.Security.EncryptionKey)
+	if err := st.Users().CreateUser(ctx, &store.User{
+		ID: "usr_mfa", Username: "mfa", Role: "user", Status: "active", SSOProvider: "local",
+		PasswordHash: "old", TOTPEnabled: true, TOTPSecretEnc: enc,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.Code(secret, time.Now())
+
+	post := func() int {
+		raw := crypto.RandomHex(32)
+		if err := st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
+			TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: "usr_mfa", ExpiresAt: time.Now().Add(time.Minute),
+		}, "old"); err != nil {
+			t.Fatal(err)
+		}
+		user, err := st.Users().GetUserByID(ctx, "usr_mfa")
+		if err != nil {
+			t.Fatal(err)
+		}
+		user.PasswordHash = "new"
+		if err := st.Users().UpdateUser(ctx, user); err != nil {
+			t.Fatal(err)
+		}
+
+		body, _ := json.Marshal(map[string]string{"mfa_token": raw, "code": code})
+		req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
+	if got := post(); got != http.StatusForbidden {
+		t.Fatalf("stale challenge: got %d, want 403", got)
 	}
 }

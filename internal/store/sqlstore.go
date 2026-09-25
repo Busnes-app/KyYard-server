@@ -6,15 +6,21 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/store/migrations"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
 // SQLStore implements Store on top of database/sql.
 type SQLStore struct {
 	db       *sql.DB
 	driver   string
+	budget   int64        // bytes of telemetry allowed; zero disables the check
+	lastUsed atomic.Int64 // bytes at the previous evaluation, to tell growth from a plateau
+	ceiling  int          // stored sample rows allowed per endpoint
+	pressure atomic.Int32 // current Pressure, read on every telemetry write
 	users    *userStore
 	sessions *sessionStore
 	devices  *deviceStore
@@ -24,7 +30,7 @@ type SQLStore struct {
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, lim limits) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
@@ -34,9 +40,14 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 		return nil, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
 
+	if lim.ceiling <= 0 {
+		lim.ceiling = MaxSampleRowsPerEndpoint
+	}
 	s := &SQLStore{
-		db:     db,
-		driver: driver,
+		db:      db,
+		driver:  driver,
+		budget:  lim.budget,
+		ceiling: lim.ceiling,
 	}
 
 	s.users = &userStore{store: s}
@@ -48,6 +59,8 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 
 	return s, nil
 }
+
+func (s *SQLStore) Tenancy() TenancyStore { return &tenancyStore{store: s} }
 
 func (s *SQLStore) Users() UserStore        { return s.users }
 func (s *SQLStore) Sessions() SessionStore  { return s.sessions }
@@ -224,6 +237,9 @@ WHERE id = ?
 		lastLogin, user.ID,
 	)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key") {
+			return ErrAlreadyExists
+		}
 		return err
 	}
 	rows, _ := res.RowsAffected()
@@ -353,15 +369,88 @@ type sessionStore struct {
 	store *SQLStore
 }
 
-func (s *sessionStore) CreateSession(ctx context.Context, sess *Session) error {
-	q := s.store.rebind(`
-INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?)
-`)
-	_, err := s.store.db.ExecContext(ctx, q,
-		sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress,
-		sess.CreatedAt, sess.ExpiresAt,
-	)
+// withPassword serializes credential-derived grants with password replacement.
+// Updating the same user row takes a write lock on both supported databases.
+func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string, apply func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, s.rebind("UPDATE users SET id = id WHERE id = ? AND password_hash = ? AND status = 'active'"), userID, expectedHash)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
+	}
+	if err := apply(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expectedPasswordHash string) error {
+	return s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt)
+		return err
+	})
+}
+
+func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error {
+	return u.store.withPassword(ctx, userID, oldHash, func(tx *sql.Tx) error {
+		now := time.Now().UTC()
+		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND must_change_password = ? AND sso_provider = 'local'`), newHash, false, now, userID, true)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrNotFound
+		}
+		return u.revokePasswordGrants(ctx, tx, userID, "forced replacement; sessions revoked", ip, now)
+	})
+}
+
+// ResetAdminPassword is the operator recovery path, including disabled local accounts.
+func (u *userStore) ResetAdminPassword(ctx context.Context, userID, newHash string) error {
+	tx, err := u.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, status = 'active', role = 'admin', updated_at = ? WHERE id = ? AND sso_provider = 'local'`), newHash, true, now, userID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
+	}
+	if err := u.revokePasswordGrants(ctx, tx, userID, "operator reset; sessions revoked", "", now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (u *userStore) revokePasswordGrants(ctx context.Context, tx *sql.Tx, userID, details, ip string, now time.Time) error {
+	for _, table := range []string{"sessions", "mfa_challenges", "device_pairings"} {
+		if _, err := tx.ExecContext(ctx, u.store.rebind("DELETE FROM "+table+" WHERE user_id = ?"), userID); err != nil {
+			return err
+		}
+	}
+	_, err := tx.ExecContext(ctx, u.store.rebind(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`), userID, "auth.password_changed", "user", details, ip, now)
 	return err
 }
 
@@ -406,43 +495,44 @@ func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {
 	return err
 }
 
-func (s *sessionStore) CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge) error {
-	q := s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
-	_, err := s.store.db.ExecContext(ctx, q, challenge.TokenHash, challenge.UserID, challenge.ExpiresAt)
-	return err
+func (s *sessionStore) CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error {
+	return s.store.withPassword(ctx, challenge.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at, password_hash) VALUES (?, ?, ?, ?)"), challenge.TokenHash, challenge.UserID, challenge.ExpiresAt, expectedPasswordHash)
+		return err
+	})
 }
 
-func (s *sessionStore) ConsumeMFAChallenge(ctx context.Context, tokenHash string) (string, error) {
+func (s *sessionStore) ConsumeMFAChallenge(ctx context.Context, tokenHash string) (string, string, error) {
 	tx, err := s.store.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer tx.Rollback()
-	q := s.store.rebind("SELECT user_id, expires_at FROM mfa_challenges WHERE token_hash = ?")
-	var userID string
+	q := s.store.rebind("SELECT user_id, expires_at, password_hash FROM mfa_challenges WHERE token_hash = ?")
+	var userID, passwordHash string
 	var expiresAt time.Time
-	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&userID, &expiresAt); err != nil {
+	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&userID, &expiresAt, &passwordHash); err != nil {
 		if errorsIs(err, sql.ErrNoRows) {
-			return "", ErrNotFound
+			return "", "", ErrNotFound
 		}
-		return "", err
+		return "", "", err
 	}
 	if !time.Now().UTC().Before(expiresAt) {
-		return "", ErrSessionExpired
+		return "", "", ErrSessionExpired
 	}
 	deleteQ := s.store.rebind("DELETE FROM mfa_challenges WHERE token_hash = ?")
 	res, err := tx.ExecContext(ctx, deleteQ, tokenHash)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	rows, err := res.RowsAffected()
 	if err != nil || rows != 1 {
-		return "", ErrNotFound
+		return "", "", ErrNotFound
 	}
 	if err := tx.Commit(); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return userID, nil
+	return userID, passwordHash, nil
 }
 
 // ---------------------------------------------------------------------
@@ -726,14 +816,21 @@ type auditStore struct {
 }
 
 func (a *auditStore) LogAudit(ctx context.Context, r *AuditRecord) error {
+	r.Resource = protocol.CleanText(r.Resource, 255)
+	if r.Scope == "" {
+		r.Scope = "platform"
+	}
+	if r.Result == "" {
+		r.Result = "unknown"
+	}
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now().UTC()
 	}
 	q := a.store.rebind(`
-INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at, scope, organization_id, environment_id, correlation_id, result)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
-	_, err := a.store.db.ExecContext(ctx, q, r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt)
+	_, err := a.store.db.ExecContext(ctx, q, r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt, r.Scope, r.OrganizationID, r.EnvironmentID, r.CorrelationID, r.Result)
 	return err
 }
 
@@ -752,7 +849,7 @@ func (a *auditStore) ListAuditRecords(ctx context.Context, offset, limit int) ([
 	}
 
 	q := a.store.rebind(`
-SELECT id, user_id, action, resource, details, ip_address, created_at
+SELECT id, user_id, action, resource, details, ip_address, created_at, scope, organization_id, environment_id, correlation_id, result
 FROM audit_records
 ORDER BY created_at DESC LIMIT ? OFFSET ?
 `)
@@ -765,7 +862,7 @@ ORDER BY created_at DESC LIMIT ? OFFSET ?
 	var records []*AuditRecord
 	for rows.Next() {
 		var r AuditRecord
-		if err := rows.Scan(&r.ID, &r.UserID, &r.Action, &r.Resource, &r.Details, &r.IPAddress, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Action, &r.Resource, &r.Details, &r.IPAddress, &r.CreatedAt, &r.Scope, &r.OrganizationID, &r.EnvironmentID, &r.CorrelationID, &r.Result); err != nil {
 			return nil, 0, err
 		}
 		records = append(records, &r)
@@ -833,3 +930,85 @@ func errorsIs(err, target error) bool {
 	}
 	return err == target || strings.Contains(err.Error(), target.Error())
 }
+
+// Usage reports what the database holds, cheaply enough to read every minute: SQLite counts
+// its pages minus the freelist, PostgreSQL reports the database size. Neither number is a
+// measure of reclaimable data alone, which is why the level's release does not depend on it.
+func (s *SQLStore) Usage(ctx context.Context) (int64, error) {
+	if s.driver == "postgres" {
+		var n int64
+		err := s.db.QueryRowContext(ctx, "SELECT pg_database_size(current_database())").Scan(&n)
+		return n, err
+	}
+	var pages, free, size int64
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&free); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&size); err != nil {
+		return 0, err
+	}
+	if free > pages {
+		free = pages
+	}
+	return (pages - free) * size, nil
+}
+
+// EvaluatePressure re-reads usage and settles the level, returning it. Degrading at 95 % leaves
+// room to prune before anything must stop; the threshold divides before multiplying so a very
+// large budget cannot overflow into a negative one.
+//
+// What raises the level is being over budget *and still growing*. Any prune pass under
+// pressure releases it, whether or not it freed rows.
+//
+// Release cannot depend on the reading falling. A delete returns pages to the table rather than
+// the file, a plain PostgreSQL vacuum never shrinks an index, and the reading counts data
+// retention cannot touch at all: audit, which is never refused and not yet pruned, and
+// inventory, where a report replaces a row rather than adding one. So once a pass has taken
+// everything retention is owed, holding the level achieves nothing that dropping more metrics
+// could fix — it would only refuse telemetry for the rest of the server's life.
+//
+// The result at the ceiling is a throttle rather than a stop: telemetry resumes, usage grows,
+// the level returns. That is escapable by construction, and a condition that persists is
+// reported at intervals rather than once, because it needs an operator, not a log line.
+func (s *SQLStore) EvaluatePressure(ctx context.Context) (Pressure, error) {
+	current := s.Pressure()
+	if s.budget <= 0 {
+		return current, nil
+	}
+	used, err := s.Usage(ctx)
+	if err != nil {
+		return current, err
+	}
+	implied := PressureNormal
+	switch {
+	case used >= s.budget:
+		implied = PressureStopped
+	case used >= s.budget/100*95:
+		implied = PressureDegraded
+	}
+	next := current
+	switch {
+	case implied > current && used > s.lastUsed.Load():
+		next = implied
+	case implied < current:
+		next = implied
+	case current > PressureNormal:
+		next = PressureNormal
+	}
+	s.lastUsed.Store(used)
+	s.SetPressure(next)
+	return next, nil
+}
+
+// Budget is the configured ceiling, zero when the check is disabled.
+func (s *SQLStore) Budget() int64 { return s.budget }
+
+func (s *SQLStore) Pressure() Pressure { return Pressure(s.pressure.Load()) }
+
+func (s *SQLStore) SetPressure(p Pressure) { s.pressure.Store(int32(p)) }
+
+// SampleCeiling is the stored-rows-per-endpoint limit this store enforces.
+func (s *SQLStore) SampleCeiling() int { return s.ceiling }

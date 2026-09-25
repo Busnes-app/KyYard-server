@@ -24,6 +24,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: image and attestation coordinates match this repository
+        run: |
+          set -euo pipefail
+          img="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kyyard"
+          ident="https://github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml@refs/heads/master"
+          # every compose file and every non-historical doc an operator might copy from
+          mapfile -t all < <(git ls-files 'docker-compose*.yml' '*.md')
+          grep -qxF '## Upgrading after the Busnes-app owner move' README.md || { echo 'README upgrade warning is missing'; exit 1; }
+          grep -qxF 'The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr.io/busnes-app/kyyard`. The project no longer controls `ghcr.io/busness-app`; GHCR does not redirect it, and anything served under that name must be treated as untrusted. If `KY_IMAGE` in `.env` still names the old namespace, re-pinning is required, not optional: inspect `git remote -v` before any `git pull`, `make ci`, or `docker compose` command, and replace a retired-owner remote with `https://github.com/Busnes-app/KyYard-server.git` (prefer a fresh clone plus a known commit). Then remove `KY_IMAGE` to follow the compose default or verify and pin a digest using `docs/RESTORE.md` before pulling.' README.md || { echo 'README upgrade warning text is missing'; exit 1; }
+          bad=$(grep -in 'busness-app' README.md | grep -vE '^[0-9]+:(## Upgrading after the Busnes-app owner move|The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr\.io/busnes-app/kyyard`\.)' || true); [ -z "$bad" ] || { echo "retired owner outside the README warning lines:"; echo "$bad"; exit 1; }
+          bad=$(grep -il 'busness-app' "${all[@]}" | grep -vx README.md | while read -r f; do grep -q '^> \*\*Retired owner:\*\*' "$f" || echo "$f"; done || true); [ -z "$bad" ] || { echo "retired owner named without the retirement annotation in:"; echo "$bad"; exit 1; }
+          bad=$(grep -inE 'github\.com/busness-app|ghcr\.io/busness-app|go get.*busness-app|go mod edit -replace.*busness-app|^module.*busness-app|gh api orgs/busness-app' "${all[@]}" | grep -vE '^README.md:[0-9]+:(## Upgrading|The GitHub organisation was renamed)' | grep -vE 'gh api orgs/Busness-app.*returns 404' || true); [ -z "$bad" ] || { echo "fetchable coordinate under the retired owner:"; echo "$bad"; exit 1; }
+          bad=$(grep -inE 'returns[[:space:]]+[`]?Busness-app|moved to[^[:cntrl:]]*Busness-app|canonical[^[:cntrl:]]*Busness-app|prefix is[^[:cntrl:]]*Busness-app' "${all[@]}" || true); [ -z "$bad" ] || { echo "present-tense retired-owner claim:"; echo "$bad"; exit 1; }
+          mapfile -t files < <(printf '%s\n' "${all[@]}" | grep -v '^docs/superpowers/')
+          [ "${#files[@]}" -ge 2 ] || { echo "no compose/doc files found"; exit 1; }
+          for f in "${files[@]}"; do [ -r "$f" ] || { echo "$f is not readable"; exit 1; }; done
+          # the image key itself, not just some occurrence in a comment
+          grep -E '^\s*image:' docker-compose.yml | grep -qF "$img" || { echo "image: does not default to $img"; exit 1; }
+          # every image coordinate, in either spelling of any org; the retired namespace only as
+          # the bare name in the README's warning, never as an image
+          seen=$(grep -ohE 'ghcr\.io/[A-Za-z0-9._/-]+' "${files[@]}" | sort -u || true)
+          [ -n "$seen" ] || { echo "no image coordinate found"; exit 1; }
+          if bad=$(printf '%s\n' "$seen" | grep -vxF -e "$img" -e "ghcr.io/busness-app" -e "$img-agent"); then echo "image coordinate outside $img:"; echo "$bad"; exit 1; fi
+          # the pin block itself must carry both flags; a value elsewhere does not excuse it
+          for f in docker-compose.yml $( [ -f docs/RESTORE.md ] && echo docs/RESTORE.md ); do
+            if [ "$f" = docker-compose.yml ] || grep -qE -- '--(repo|cert-identity)[ =]' "$f"; then
+              grep -qE -- '--repo[ =]' "$f" && grep -qE -- '--cert-identity[ =]' "$f" || { echo "$f lacks --repo or --cert-identity"; exit 1; }
+            fi
+          done
+          # every --repo and the whole of every --cert-identity (workflow file and ref included),
+          # collected by option name so a malformed value cannot slip past the check
+          repos=$(grep -ohE -- '--repo[ =][^ ]+' "${files[@]}" | sed 's/^--repo[ =]//' | sort -u || true)
+          [ -n "$repos" ] || { echo "no --repo found"; exit 1; }
+          if bad=$(printf '%s\n' "$repos" | grep -vxF "$GITHUB_REPOSITORY"); then echo "--repo outside $GITHUB_REPOSITORY:"; echo "$bad"; exit 1; fi
+          certs=$(grep -ohE -- '--cert-identity[ =][^ ]+' "${files[@]}" | sed 's/^--cert-identity[ =]//' | sort -u || true)
+          [ -n "$certs" ] || { echo "no --cert-identity found"; exit 1; }
+          if bad=$(printf '%s\n' "$certs" | grep -vxF "$ident"); then echo "--cert-identity outside $ident:"; echo "$bad"; exit 1; fi
+          # README may only point at docs that exist
+          (grep -ohE 'docs/[A-Za-z0-9._/-]+\.md' README.md || true) | sort -u | xargs -r -I{} test -f {}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -47,6 +86,20 @@ jobs:
 
       - name: Tests with race detector and coverage
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Real Docker runtime regressions
+        env:
+          KY_TEST_DOCKER_EXEC_IMAGE: alpine:3.24
+          KY_TEST_DOCKER_INSPECTION_IMAGE: alpine:3.24
+          KY_TEST_DOCKER_DEPLOY_IMAGE: alpine:3.24
+          KY_TEST_REGISTRY_ONLINE: "1"
+        run: |
+          docker pull "$KY_TEST_DOCKER_EXEC_IMAGE"
+          export KY_TEST_DOCKER_PULL_DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' alpine:3.24 | cut -d@ -f2)
+          test -n "$KY_TEST_DOCKER_PULL_DIGEST"
+          go test -race ./internal/runtime/docker -run '^Test(Exec|Inspection|Deploy|Recheck|Remove)RealDocker$' -count=1
+          go test -race ./internal/api -run '^Test(BrowserExec|Apply)RealDocker$' -count=1
+          go test -race ./internal/registry -run '^TestResolveDockerHubAlpine$' -count=1
 
       - name: Coverage summary
         run: |
@@ -139,7 +192,7 @@ jobs:
           cache: true
 
       - run: shellcheck scripts/*.sh
-      - run: go build -o kyyard-server ./cmd/server
+      - run: make build
       - run: scripts/smoke-test.sh
 
   docker:
@@ -150,19 +203,47 @@ jobs:
       - name: Build image
         run: docker build -t kyyard:ci .
 
+      - name: Bare image refuses an unacknowledged plaintext bind
+        run: |
+          if docker run --rm kyyard:ci > bare-image.log 2>&1; then
+            echo "Bare image unexpectedly accepted a plaintext wildcard bind" >&2
+            exit 1
+          fi
+          grep -q 'KY_ALLOW_PLAINTEXT_BIND' bare-image.log
+
       - name: Container serves the app
         run: |
-          docker run -d --name ky_ci -p 18080:8080 \
+          docker run -d --name ky_ci -p 127.0.0.1:18080:9273 \
+            -e KY_ALLOW_PLAINTEXT_BIND=true \
             -e KY_ADMIN_PASSWORD='CiSmokeAdminPass123!' \
             -e KY_CAPTCHA_PROVIDER=none \
             kyyard:ci
           trap 'docker logs ky_ci; docker rm -f ky_ci' EXIT
 
           curl -sf -o /dev/null --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:18080/
+          curl -sf http://127.0.0.1:18080/health/ready | grep -q '"status":"ok"'
+          docker exec ky_ci /app/kyyard-server healthcheck
           curl -sf -o /dev/null http://127.0.0.1:18080/api/settings
           curl -sf -X POST -H 'Content-Type: application/json' \
             -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \
             http://127.0.0.1:18080/api/auth/login | grep -q '"authenticated":true'
+
+      - name: Packaged agent enrolls and discovers containers
+        run: python3 scripts/agent-install-test.py kyyard:ci
+
+      # Render legacy overlay chains too: they must use Docker's existing bridge.
+      - name: Compose uses the existing bridge without dedicated networks
+        run: |
+          set -euo pipefail
+          merged=$(KY_APP_URL=https://ky.example.com \
+            KY_TRUSTED_PROXIES=172.18.0.2/32 \
+            docker compose -f docker-compose.yml -f docker-compose.proxy.yml \
+              -f docker-compose.proxy-network.yml config --format json)
+          echo "$merged" | jq -e '.services.kyyard.network_mode == "bridge"' > /dev/null
+          echo "$merged" | jq -e '(.networks // {}) | length == 0' > /dev/null
+          echo "$merged" | jq -e '[.services.kyyard.ports[].host_ip] == ["127.0.0.1"]' > /dev/null
+          docker compose -f docker-compose.yml config --format json \
+            | jq -e '.services.kyyard.network_mode == "bridge" and ((.networks // {}) | length == 0) and ([.services.kyyard.ports[].host_ip] == ["127.0.0.1"])' > /dev/null
 
       # Hand the exact image the checks above ran against to the publish job,
       # so what gets pushed is what was tested, never a second build.

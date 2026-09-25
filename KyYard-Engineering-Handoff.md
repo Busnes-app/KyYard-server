@@ -1,9 +1,13 @@
+**Repo:** Busnes-app/KyYard-server
+**PR:** #33 — https://github.com/Busnes-app/KyYard-server/pull/33
+**Worktree:** /home/yoshi/busness.app/KyYard-Server/.worktrees/product-ui (branch fix/product-ui)
+
 # KyYard Engineering Handoff
 
 > **KyYard — The simple control plane for your container fleet.**
 
 **Status:** Product and implementation handoff  
-**Starting repository:** `https://github.com/Busness-app/ky_server_base`  
+**Starting repository:** `https://github.com/Busnes-app/ky_server_base`  
 **Reviewed base revision:** `f4ca19a`  
 **Primary implementation language:** Go backend; React 19 + TypeScript frontend  
 
@@ -20,7 +24,7 @@ KyYard is not intended to reproduce every Portainer feature. The product should 
 1. Start the KyYard container.
 2. Read a one-time administrator credential from its logs.
 3. Sign in and change the password.
-4. Enroll a Docker host or Kubernetes cluster with one generated command.
+4. See local Docker automatically; add another Docker host with one generated image-pulling command and enrollment link. Kubernetes enrollment follows its milestone.
 5. Operate containers without first configuring a database, cache, reverse proxy, identity provider, or large environment file.
 
 Environment variables remain available for unattended and advanced deployments, but they are overrides—not the primary configuration interface.
@@ -51,7 +55,7 @@ Environment variables remain available for unattended and advanced deployments, 
 - Migration framework and pluggable store interface.
 - Bootstrap administrator creation and forced password change.
 - Session authentication, CSRF protection, MFA, rate limiting, and security headers.
-- KySignOn, generic OIDC, SAML, and SCIM support.
+- Configurable OAuth 2/OIDC sign-in, including KyIdentity; local recovery login stays available. SCIM and mobile pairing are excluded by user decision.
 - Audit logging foundation.
 - KyBackup/KyRecovery integration and restore-drill workflow.
 - Docker image, Compose packaging, smoke tests, race tests, frontend tests, vulnerability checks, and attested-image publishing pattern.
@@ -65,7 +69,7 @@ Environment variables remain available for unattended and advanced deployments, 
 4. **Configuration:** Move optional product configuration into persistent typed settings exposed through the UI/API. Do not expand the environment-variable surface for ordinary features.
 5. **Audit scope:** Add organization, environment, actor, target, request/correlation, and result fields. Container exec sessions and secret-revealing operations require particularly clear audit records.
 6. **Frontend structure:** The current tab switcher is suitable for the scaffold but not the product. Introduce route-based navigation and organization/environment context before the UI grows.
-7. **Device pairing separation:** Existing QR device pairing is for PWA/mobile devices. Agent enrollment must use a separate model, token type, API namespace, and lifecycle.
+7. **Agent enrollment:** Use dedicated endpoint identities and enrollment tokens. Mobile/phone pairing is excluded.
 
 ## 4. Product vocabulary
 
@@ -93,7 +97,7 @@ Do not call endpoints “devices”; that term already belongs to user/PWA pairi
 The KyYard server owns:
 
 - Web UI and public API.
-- Authentication, SSO, SCIM, organizations, membership, and RBAC.
+- Authentication, SSO, organizations, membership, and RBAC.
 - Endpoint inventory and health.
 - Desired application state and deployment history.
 - Registry metadata and encrypted credentials.
@@ -162,8 +166,7 @@ Permissions should be named actions such as `endpoint.read`, `container.exec`, `
 - `application_instances`
 - `deployments`
 - `deployment_events`
-- `registries`
-- `registry_credentials`
+- `registries` (the credential is a sealed column)
 - `update_policies`
 - `maintenance_windows`
 
@@ -184,7 +187,7 @@ The default deployment should resemble:
 ```yaml
 services:
   kyyard:
-    image: ghcr.io/busness-app/kyyard:latest
+    image: ghcr.io/busnes-app/kyyard:latest
     restart: unless-stopped
     ports:
       - "9443:9443"
@@ -203,7 +206,7 @@ On first boot, KyYard:
 4. Creates the initial organization and local platform administrator.
 5. Prints the URL, username, and one-time password once to the logs.
 6. Requires password replacement at first login.
-7. Starts with SSO, SCIM, external database, TLS customization, and remote agents unconfigured but available through guided UI flows.
+7. Starts with SSO, external database, TLS customization, and remote agents unconfigured but available through guided UI flows.
 
 The shipped container must have a useful health check. If automatic locally trusted TLS cannot be delivered honestly, bind HTTP by default and make the UI explicitly guide TLS/reverse-proxy configuration; do not silently ship a misleading self-signed “secure” experience.
 
@@ -275,7 +278,7 @@ Version 0.1 replaces everyday single-host Portainer use for KyYard's own Docker 
 - Persistently generate the session secret and instance identity at first boot.
 - Define permissions and protect the data directory against unsafe modes.
 - Reduce the default Compose file to the one-container experience.
-- Keep PostgreSQL, SSO, SCIM, proxy trust, and recovery customization optional.
+- Keep PostgreSQL, SSO, proxy trust, and recovery customization optional.
 - Add a clean readiness/health endpoint that does not disclose secrets.
 
 **Exit:** A fresh named volume and one `docker compose up -d` are sufficient for a production-mode local installation.
@@ -350,9 +353,9 @@ The first pull request should be a scaffold-only change. Do not combine renaming
 Expected contents:
 
 - New `kyyard-server` repository scaffolded from `ky_server_base`.
-- Go module `github.com/Busness-app/kyyard-server`.
+- Go module `github.com/Busnes-app/kyyard-server`.
 - Product display name `KyYard`.
-- Image `ghcr.io/busness-app/kyyard`.
+- Image `ghcr.io/busnes-app/kyyard`.
 - Container name `kyyard`.
 - Persistent paths standardized under `/data` inside the product container.
 - Existing behavior and test coverage preserved.
@@ -362,7 +365,7 @@ Expected contents:
 Suggested verification:
 
 ```bash
-rg -n 'ky_server_base|Busnes\.app Base|ghcr\.io/busness-app/ky_server_base' . \
+rg -n 'ky_server_base|Busnes\.app Base|ghcr\.io/busnes-app/ky_server_base' . \
   --glob '!web/dist/**' --glob '!.git/**'
 make ci
 docker compose config
@@ -418,7 +421,7 @@ The acceptance test is not merely that every API works. A person familiar with c
 
 - Product name: **KyYard**.
 - Tagline: **The simple control plane for your container fleet.**
-- Base: `Busness-app/ky_server_base` at or after reviewed revision `f4ca19a`.
+- Base: `Busnes-app/ky_server_base` at or after reviewed revision `f4ca19a`.
 - Docker-first delivery; Kubernetes adapter follows a proven Docker control plane.
 - One agent implementation with runtime adapters unless evidence requires separation.
 - Multi-tenancy and scoped authorization precede workload management.

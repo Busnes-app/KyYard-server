@@ -14,32 +14,38 @@ services:
     # in full, so a failed check, an unreadable .env or a short write never replaces your
     # secrets. Re-run with a newer sha to move; delete the KY_IMAGE line to follow :latest
     # again. A source install is unaffected: the build overlay's image wins over this pin.
+#   Images built before 2026-09-16 cannot be verified by name any more (their owner is no longer held by this project); pin a later commit or build from source with docker-compose.build.yml.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
-    #     && gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
-    #          --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
-    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kyyard@$d" --repo Busness-app/kyyard-server \
-    #          --cert-identity https://github.com/Busness-app/kyyard-server/.github/workflows/ci.yml@refs/heads/master \
+    #   d=$(docker buildx imagetools inspect ghcr.io/busnes-app/kyyard:$sha --format '{{.Manifest.Digest}}') \
+    #     && gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/KyYard-server \
+    #          --cert-identity https://github.com/Busnes-app/KyYard-server/.github/workflows/ci.yml@refs/heads/master \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyyard@$d" --repo Busnes-app/KyYard-server \
+    #          --cert-identity https://github.com/Busnes-app/KyYard-server/.github/workflows/ci.yml@refs/heads/master \
     #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
     #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-    #         && echo "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" >> "$t" && mv "$t" .env) \
-    #     && grep -qxF "KY_IMAGE=ghcr.io/busness-app/kyyard@$d" .env
-    image: ${KY_IMAGE:-ghcr.io/busness-app/kyyard:latest}
+    #         && echo "KY_IMAGE=ghcr.io/busnes-app/kyyard@$d" >> "$t" && mv "$t" .env) \
+    #     && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/kyyard@$d" .env
+    image: ${KY_IMAGE:-ghcr.io/busnes-app/kyyard:latest}
     pull_policy: missing
     container_name: kyyard
     restart: unless-stopped
+    network_mode: bridge
     # Covers cmd/server's shutdownTimeout (5s HTTP drain) plus backupWaitTimeout (17m for a
     # deposit already on the wire), so SIGKILL cannot land on a capsule mid-upload.
     stop_grace_period: 20m
     ports:
-      - "8080:8080"
+      - "127.0.0.1:9273:9273"
     environment:
-      - KY_PORT=8080
+      - KY_PORT=9273
       - KY_HOST=0.0.0.0
+      # Bridge peers can reach this plaintext bind. This deployment trusts the host and
+      # co-resident containers; the loopback host publish is not bridge isolation.
+      - KY_ALLOW_PLAINTEXT_BIND=true
       - KY_APP_NAME=KyYard
-      - KY_APP_URL=http://localhost:8080
+      - KY_APP_URL=http://localhost:9273
       - KY_DB_DRIVER=sqlite
       - KY_DATA_DIR=/data
+      - KY_DOCKER_SOCKET=${KY_DOCKER_SOCKET-/var/run/docker.sock}
       # Disaster recovery. Sealed capsules land in KY_BACKUP_DIR (empty = no local copies);
       # the schedule below is only the default the admin screen overrides. KY_DNS lives in
       # docker-compose.lan-dns.yml, never here.
@@ -47,29 +53,15 @@ services:
       - KY_BACKUP_KEEP=${KY_BACKUP_KEEP:-7}
       - KY_BACKUP_DEPOSIT_INTERVAL=${KY_BACKUP_DEPOSIT_INTERVAL:-24h}
       - KY_BACKUP_ALLOW_PRIVATE_RECOVERY=${KY_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
-      # Set to the reverse proxy container's own address when one fronts this service, e.g.
-      # its address on the Docker network below (never a whole bridge range like 172.16.0.0/12,
-      # which trusts every other container). 0.0.0.0/0 and ::/0 are refused at startup.
-      # - KY_TRUSTED_PROXIES=172.18.0.2/32
-      - KY_SSO_ENABLED=true
-      - KY_SCIM_ENABLED=true
+      - KY_REGISTRY_ALLOW_PRIVATE=${KY_REGISTRY_ALLOW_PRIVATE:-false}
     volumes:
-      - ./data:/data
-
-  # Optional PostgreSQL service for enterprise heavy DB mode
-  postgres:
-    image: postgres:17-alpine
-    container_name: ky_postgres
-    restart: unless-stopped
-    profiles: ["postgres"]
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: ky_server
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+      - kyyard-data:/data
+      # Built-in local connection: Docker socket access grants host-level authority.
+      - type: bind
+        source: ${KY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
 
 volumes:
-  pgdata:
+  kyyard-data:

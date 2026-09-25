@@ -1,6 +1,7 @@
 package backup_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -8,11 +9,13 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/backup"
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
 // payloadConfig is a real SQLite store in a temp data dir: the collectors snapshot the live
@@ -154,5 +157,84 @@ func TestCollectRefusesADriverItCannotSnapshot(t *testing.T) {
 	cfg.Database.Driver = "postgres"
 	if _, err := backup.Collect(context.Background(), cfg, "1.0.0"); !errors.Is(err, backup.ErrNoDatabaseSnapshot) {
 		t.Fatalf("got %v, want ErrNoDatabaseSnapshot", err)
+	}
+}
+
+func TestRestorePreservesKeysAndRevokesOnlySnapshotGrants(t *testing.T) {
+	cfg, st := sqliteInstance(t)
+	ctx := context.Background()
+	user := &store.User{ID: "restore-user", Username: "restore-user", Status: "active", Role: "admin", SSOProvider: "local", PasswordHash: "hash"}
+	if err := st.Users().CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: "session", UserID: user.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, user.PasswordHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{TokenHash: "challenge", UserID: user.ID, ExpiresAt: now.Add(time.Hour)}, user.PasswordHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Devices().CreatePairing(ctx, &store.DevicePairing{Secret: "pair", Code: "123456", UserID: user.ID, Status: "pending", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := backup.Collect(ctx, cfg, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for _, file := range payload.Files {
+		path := filepath.Join(root, file.Path)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, file.Data, os.FileMode(file.Mode)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("KY_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("KY_ENCRYPTION_KEY", "")
+	t.Setenv("KY_SESSION_SECRET", "")
+	t.Setenv("KY_DB_DRIVER", "sqlite")
+	restored, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Security.SessionSecret != cfg.Security.SessionSecret || !bytes.Equal(restored.Security.InstanceKey, cfg.Security.InstanceKey) || !bytes.Equal(restored.Security.EncryptionKey, cfg.Security.EncryptionKey) {
+		t.Fatal("restored keys differ from active keys")
+	}
+	copyStore, err := store.Open(ctx, restored.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copyStore.Close()
+	if _, err := copyStore.Sessions().GetSession(ctx, "session"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("restored session survived", err)
+	}
+	if _, _, err := copyStore.Sessions().ConsumeMFAChallenge(ctx, "challenge"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("restored challenge survived", err)
+	}
+	if _, err := copyStore.Devices().GetPairingBySecret(ctx, "pair"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("restored pairing survived", err)
+	}
+	if _, err := st.Sessions().GetSession(ctx, "session"); err != nil {
+		t.Fatal("live session was revoked", err)
+	}
+	if _, _, err := st.Sessions().ConsumeMFAChallenge(ctx, "challenge"); err != nil {
+		t.Fatal("live challenge was revoked", err)
+	}
+	if _, err := st.Devices().GetPairingBySecret(ctx, "pair"); err != nil {
+		t.Fatal("live pairing was revoked", err)
+	}
+}
+
+// The drill compares the restored database against the schema the capsule was taken from.
+func TestCollectPinsTheSchemaVersion(t *testing.T) {
+	cfg, _ := payloadConfig(t)
+	payload, err := backup.Collect(context.Background(), cfg, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := payload.VerificationRecipe["schema_version"]; got != migrations.Latest() {
+		t.Fatalf("schema_version = %v, want %d", got, migrations.Latest())
 	}
 }

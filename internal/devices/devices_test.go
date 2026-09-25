@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Busness-app/kyyard-server/internal/devices"
-	"github.com/Busness-app/kyyard-server/internal/store"
-	"github.com/Busness-app/kyyard-server/internal/testdb"
+	"github.com/Busnes-app/kyyard-server/internal/devices"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
 )
 
 func TestPairingLifecycle(t *testing.T) {
@@ -17,6 +17,9 @@ func TestPairingLifecycle(t *testing.T) {
 	}
 	defer st.Close()
 
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_alice", Username: "alice", Status: "active", SSOProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
 	svc := devices.NewPairingService(st, "KyYard", "http://localhost:8080")
 
 	// 1. Init
@@ -35,7 +38,7 @@ func TestPairingLifecycle(t *testing.T) {
 	}
 
 	// 3. Verify pairing by code
-	verified, err := svc.VerifyPairing(ctx, initRes.Code, "Alice iPhone", "ios", "apns-token-12345")
+	verified, _, err := svc.VerifyPairing(ctx, initRes.Code, "Alice iPhone", "ios", "apns-token-12345")
 	if err != nil {
 		t.Fatalf("VerifyPairing failed: %v", err)
 	}
@@ -48,7 +51,7 @@ func TestPairingLifecycle(t *testing.T) {
 	if err != nil || p2.Status != "consumed" {
 		t.Fatalf("expected consumed status on second poll, got %v", p2)
 	}
-	if _, err := svc.VerifyPairing(ctx, initRes.Code, "Attacker", "web", "other"); err == nil {
+	if _, _, err := svc.VerifyPairing(ctx, initRes.Code, "Attacker", "web", "other"); err == nil {
 		t.Fatal("consumed pairing was replayed")
 	}
 }

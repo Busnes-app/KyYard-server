@@ -1,11 +1,14 @@
 # Backup
 
 ## Purpose
-Adapts the scaffold to `github.com/Busness-app/ky-primitives/recoveryclient`, which owns the
+Adapts the scaffold to `github.com/Busnes-app/ky-primitives/recoveryclient`, which owns the
 KyRecovery pairing, sealing, deposit, restore and drill contract. This package supplies only
 what differs per product: a `Settings` adapter over `store.SettingsStore`, a `Sealer` under the
 deployment key, the payload the scaffold seals (`Collect`), and the drill's verification
 checks (`Checks`).
+
+## Dependency version
+Requires `ky-primitives` v0.8.0, the first release tagged under `github.com/Busnes-app` (v0.6.0 and v0.7.0 exist only under the retired owner and cannot be required at the new path). Measured with `git diff v0.6.0 v0.8.0 -- . ':!*_test.go'` in ky-primitives: v0.7.0 added `oidcverify.VerifyLogout` (back-channel logout) and nothing else; v0.8.0 is the module-path rename. `capsule`, `recoverykey`, `shamir`, `password`, `keyfile` and `recoveryclient` differ only in import-path strings, and `KycapFileFormat` is unchanged, so a capsule sealed under v0.6.0 opens under v0.8.0.
 
 ## Ownership
 Owns the settings adapter (`settings.go`), payload collection (`payload.go`), and restore-drill
@@ -13,6 +16,7 @@ checks (`drill.go`) and serialized drill entry point (`run_drill.go`). It holds 
 live in `recoveryclient` and in the settings rows it reads and writes through the adapter.
 
 ## Local Contracts
+- UI-configured SSO providers are sealed in the `sso_providers_enc` settings row. The SQLite snapshot and carried encryption key restore their credentials; `TestProviderConfigurationSecretsAndPermissions` in `internal/api` verifies decryption from the collected backup files.
 - `Settings` maps `store.ErrNotFound` to `recoveryclient.ErrNotFound`; every other error passes
   through unchanged.
 - `NewSealer` seals the KyRecovery token under the deployment key with label
@@ -23,14 +27,24 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
 - `Collect` snapshots SQLite with the lib's `SQLiteSnapshot` (`VACUUM INTO`; the store runs in
   WAL mode, so a plain file read misses uncheckpointed commits) and returns
   `ErrNoDatabaseSnapshot` for any other driver, so a capsule without a consistent database is
-  never sealed. It also carries the encryption key (`data/encryption.key`, required — restores
-  a database whose MFA secrets are gone otherwise) and the pinned recovery public key
-  (`data/recovery.pub`, only when paired).
+  never sealed. Only the snapshot is scrubbed of sessions, MFA challenges and device pairings,
+  then vacuumed before sealing; the live grants remain usable. It carries the active encryption,
+  session and instance keys (`data/encryption.key`, `data/session.key`, `data/instance.key`),
+  including active environment overrides, plus `data/recovery.pub` when pinned. Keys are
+  required 32-byte values stored as hex with mode 0600. Restore preserves instance identity;
+  never run a restored clone alongside the source.
 - `Checks(dir, opened)` reads the opened capsule's manifest, normalizes JSON lists and
   fails malformed or incomplete recipes. Required files include all capsule members and
-  the database, settings and encryption key; SQLite integrity and required environment
+  the database, settings and all three private keys; key encoding/permissions, SQLite integrity and required environment
   checks cannot be disabled. File checks accept only clean relative manifest members;
   SQLite opens read-only and missing/empty databases fail.
+- `Collect` pins `schema_version: migrations.Latest()` in the recipe. `Checks` requires it
+  (int, or an integral JSON number, at least 1) and, right after the integrity check for
+  `data/ky_server.db`, adds `Schema Version: data/ky_server.db`: `MAX(version)` from the
+  restored `schema_migrations` must equal it, else `database schema is version N, capsule
+  expects M`. A snapshot whose schema disagrees with the sealing binary fails the drill; the
+  `restore` command does not run this check; it prints the capsule's `schema_version` beside
+  `migrations.Latest()` and `docs/RESTORE.md` tells the operator how to compare them.
 - HTTP and CLI call `RunDrill`, which holds an OS advisory lock on `<data dir>/drill.lock`
   across scratch preparation and the library drill. Contention returns `ErrDrillBusy`;
   closing the descriptor or process exit releases ownership. Keep the lock file in place.

@@ -3,17 +3,20 @@ package sso_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/crypto"
-	"github.com/Busness-app/kyyard-server/internal/sso"
-	"github.com/Busness-app/kyyard-server/internal/store"
-	"github.com/Busness-app/kyyard-server/internal/testdb"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/sso"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
 )
 
 func TestOAuthAuthorizationURLUsesDiscoveryAndPKCE(t *testing.T) {
@@ -109,4 +112,96 @@ func TestSAMLServiceProvider(t *testing.T) {
 		}
 	}
 
+}
+
+// A directory user whose username matches an existing account ignoring case is refused: no second
+// account, and the existing one is not linked (Review Focus 4).
+func TestKySignOnWebhookRefusesACaseVariantUsername(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, testdb.Config(t))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer st.Close()
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_erin", Username: "erin", Role: "admin", Status: "active", SSOProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}, st)
+	body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: "user.created", ID: "ext-erin", Username: "Erin", Email: "erin@busnes.app", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
+	err = client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "webhook-secret-999"))
+	if !errors.Is(err, sso.ErrUsernameTaken) || !strings.Contains(err.Error(), "Erin") {
+		t.Fatalf("case variant: %v", err)
+	}
+	if _, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-erin"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a second account was created: %v", err)
+	}
+	if u, err := st.Users().GetUserByUsername(ctx, "ERIN"); err != nil || u.ID != "usr_erin" || u.SSOProvider != "local" {
+		t.Fatalf("the local account changed: %+v %v", u, err)
+	}
+	// The audited name is cleaned of control characters and capped at 64 bytes.
+	long := "\x07" + strings.Repeat("x", 70)
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_long", Username: long, Role: "user", Status: "active", SSOProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = json.Marshal(sso.KySignOnSyncPayload{Event: "user.created", ID: "ext-long", Username: long, Role: "user", Status: "active", Timestamp: time.Now().Unix()})
+	if err := client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "webhook-secret-999")); !errors.Is(err, sso.ErrUsernameTaken) {
+		t.Fatalf("long name: %v", err)
+	}
+	assertRefusals(t, st, "username=Erin", "username="+strings.Repeat("x", 64))
+}
+
+// assertRefusals checks the auth.sso.refused rows carry exactly these details, in any order.
+func assertRefusals(t *testing.T, st store.Store, details ...string) {
+	t.Helper()
+	records, _, err := st.Audit().ListAuditRecords(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range records {
+		if r.Action != "auth.sso.refused" {
+			continue
+		}
+		if r.Result != "denied" || r.Resource != "kysignon" || r.UserID != "" {
+			t.Fatalf("refusal row %+v", r)
+		}
+		got = append(got, r.Details)
+	}
+	slices.Sort(got)
+	slices.Sort(details)
+	if !slices.Equal(got, details) {
+		t.Fatalf("refusal details %q, want %q", got, details)
+	}
+}
+
+// A directory rename onto another account's username, ignoring case, is refused the same way,
+// and the driver's text (PostgreSQL names the conflicting key) never reaches the caller.
+func TestKySignOnWebhookRefusesARenameOntoATakenUsername(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, testdb.Config(t))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer st.Close()
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_erin", Username: "erin", Role: "admin", Status: "active", SSOProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}, st)
+	send := func(event, username string) error {
+		body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: event, ID: "ext-frank", Username: username, Email: "frank@busnes.app", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
+		return client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "webhook-secret-999"))
+	}
+	if err := send("user.created", "frank"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"erin", "Erin"} {
+		err := send("user.updated", name)
+		if !errors.Is(err, sso.ErrUsernameTaken) || err.Error() != sso.ErrUsernameTaken.Error()+": "+name {
+			t.Fatalf("rename onto %q: %v", name, err)
+		}
+	}
+	if u, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-frank"); err != nil || u.Username != "frank" {
+		t.Fatalf("the directory account changed: %+v %v", u, err)
+	}
+	assertRefusals(t, st, "username=erin", "username=Erin")
 }

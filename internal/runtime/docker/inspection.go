@@ -1,0 +1,339 @@
+package docker
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/netip"
+	"reflect"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+)
+
+var (
+	ErrInspectionUnavailable = errors.New("runtime inspection unavailable")
+	ErrInspectionInvalid     = errors.New("runtime inspection response invalid or exceeds bounds")
+	ErrInspectionChanged     = errors.New("runtime inspection target or observations changed")
+	ErrInspectionNotFound    = errors.New("runtime inspection target not found")
+	platformPart             = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+)
+
+const maxInspectionBody = 1 << 20
+
+type inspectedContainer struct {
+	ID           string `json:"Id"`
+	Image        string
+	Created      time.Time
+	RestartCount int
+	State        *struct {
+		Status string
+		// Health is absent without a healthcheck. Only its status is read: its log carries the
+		// healthcheck command's output.
+		Health *struct{ Status string }
+	}
+	Config     *struct{} // Require presence, but never decode secret-bearing fields.
+	HostConfig *struct {
+		NetworkMode   string
+		Tmpfs         map[string]string
+		RestartPolicy struct {
+			Name              string
+			MaximumRetryCount int
+		}
+		Privileged, ReadonlyRootfs, AutoRemove *bool
+	}
+	Mounts          mountFacts
+	NetworkSettings *struct {
+		Networks map[string]struct{}
+		Ports    map[string][]struct{ HostIP, HostPort string }
+	}
+}
+
+type mountFact struct {
+	Type        string
+	Destination string
+	RW          *bool
+}
+
+// mountFacts decodes sorted, as mountList does, so the before/after compare ignores order.
+type mountFacts []mountFact
+
+func (l *mountFacts) UnmarshalJSON(b []byte) error {
+	var m []mountFact
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	slices.SortFunc(m, func(a, b mountFact) int {
+		return cmp.Or(strings.Compare(a.Destination, b.Destination), strings.Compare(a.Type, b.Type))
+	})
+	*l = m
+	return nil
+}
+
+// InspectContainer reads a bounded, redacted observation through Engine v1.41.
+// It performs GETs only, follows the pinned image ID rather than a tag, and
+// rechecks selected container fields after the image read. It also decodes the
+// container into inspectedForDeploy and reports, as codes only, what a recreate
+// from the definition would drop. Callers own scope, authorization/admission
+// through the agent inspection transport.
+func (c *Client) InspectContainer(parent context.Context, target protocol.InspectionTarget) (*protocol.ContainerInspection, error) {
+	if err := target.Validate(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(parent, callBudget)
+	defer cancel()
+	daemonRuntime, err := c.inspectionRuntime(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var before, after inspectedContainer
+	var full, fullAfter inspectedForDeploy
+	var labels struct {
+		Config *struct{ Labels map[string]string }
+	}
+	path := "/containers/" + target.ContainerID + "/json"
+	if err := c.inspectionGet(ctx, path, &before, &full, &labels); err != nil {
+		return nil, err
+	}
+	if before.ID != target.ContainerID || before.Image != target.ImageID || before.Created.Unix() != target.CreatedUnix {
+		return nil, ErrInspectionChanged
+	}
+	out, err := inspectionFacts(before)
+	if err != nil {
+		return nil, err
+	}
+	if !reported(full) {
+		return nil, ErrInspectionInvalid
+	}
+	var im struct {
+		ID                    string `json:"Id"`
+		OS                    string `json:"Os"`
+		Architecture, Variant string
+		Config                imageDefaults
+	}
+	if err = c.inspectionGet(ctx, "/images/"+target.ImageID+"/json", &im); err != nil {
+		return nil, err
+	}
+	if im.ID != target.ImageID {
+		return nil, ErrInspectionChanged
+	}
+	if !platformPart.MatchString(im.OS) || !platformPart.MatchString(im.Architecture) || (im.Variant != "" && !platformPart.MatchString(im.Variant)) {
+		return nil, ErrInspectionInvalid
+	}
+	if err = c.inspectionGet(ctx, path, &after, &fullAfter); err != nil {
+		return nil, err
+	}
+	if !reflect.DeepEqual(before, after) || !reported(fullAfter) || !sameConfiguration(full, fullAfter) {
+		return nil, ErrInspectionChanged
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	// No Compose label: "" matches no network, so network is reported unless the container is on bridge only.
+	projectNetwork := ""
+	if labels.Config != nil && labels.Config.Labels["com.docker.compose.project"] != "" {
+		projectNetwork = labels.Config.Labels["com.docker.compose.project"] + "_default"
+	}
+	out.Unsupported = undescribed(full, projectNetwork, daemonRuntime)
+	if full.Config.differs(im.Config) {
+		out.Unsupported = append(out.Unsupported, "image_config")
+	}
+	out.ConfigurationVerified = len(out.Unsupported) == 0
+	out.Target = target
+	out.ImagePlatform = protocol.ImagePlatform{OS: im.OS, Architecture: im.Architecture, Variant: im.Variant}
+	out.ObservedAt = time.Now().UTC()
+	return out, nil
+}
+
+// A separate small read budget avoids changing the fleet snapshot contract.
+// Never wrap daemon, decode or transport errors: they can contain configuration.
+// The body is decoded into each of outs.
+func (c *Client) inspectionGet(ctx context.Context, path string, outs ...any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return ErrInspectionUnavailable
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return ErrInspectionUnavailable
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrInspectionNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ErrInspectionUnavailable
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxInspectionBody+1))
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return ErrInspectionUnavailable
+	}
+	if len(body) > maxInspectionBody {
+		return ErrInspectionInvalid
+	}
+	for _, out := range outs {
+		if json.Unmarshal(body, out) != nil {
+			return ErrInspectionInvalid
+		}
+	}
+	return nil
+}
+
+// inspectionRuntime is the daemon's DefaultRuntime, what a container created without one gets,
+// read at most once a minute per client.
+func (c *Client) inspectionRuntime(ctx context.Context) (string, error) {
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
+	if c.runtimeName != "" && time.Since(c.runtimeRead) < time.Minute {
+		return c.runtimeName, nil
+	}
+	var info struct{ DefaultRuntime string }
+	if err := c.inspectionGet(ctx, "/info", &info); err != nil {
+		return "", err
+	}
+	if info.DefaultRuntime == "" {
+		return "", ErrInspectionUnavailable
+	}
+	c.runtimeName, c.runtimeRead = info.DefaultRuntime, time.Now()
+	return c.runtimeName, nil
+}
+
+func inspectionFacts(raw inspectedContainer) (*protocol.ContainerInspection, error) {
+	if raw.State == nil || raw.Config == nil || raw.HostConfig == nil || raw.NetworkSettings == nil || raw.HostConfig.Privileged == nil || raw.HostConfig.ReadonlyRootfs == nil || raw.HostConfig.AutoRemove == nil {
+		return nil, ErrInspectionInvalid
+	}
+	h, n := raw.HostConfig, raw.NetworkSettings
+	out := &protocol.ContainerInspection{State: raw.State.Status, RestartPolicy: h.RestartPolicy.Name, RestartRetries: h.RestartPolicy.MaximumRetryCount, Ports: []protocol.Port{}, NetworkCount: len(n.Networks), Privileged: *h.Privileged, ReadOnlyRootFS: *h.ReadonlyRootfs, AutoRemove: *h.AutoRemove}
+	switch out.State {
+	case "created", "running", "paused", "restarting", "removing", "exited", "dead":
+	default:
+		return nil, ErrInspectionInvalid
+	}
+	out.Health = "none"
+	if raw.State.Health != nil {
+		out.Health = raw.State.Health.Status
+	}
+	switch out.Health {
+	case "none", "starting", "healthy", "unhealthy":
+	default:
+		return nil, ErrInspectionInvalid
+	}
+	if raw.RestartCount < 0 || raw.RestartCount > protocol.MaxRestartCount {
+		return nil, ErrInspectionInvalid
+	}
+	out.RestartCount = raw.RestartCount
+	switch out.RestartPolicy {
+	case "", "no":
+		out.RestartPolicy = "no"
+	case "always", "unless-stopped", "on-failure":
+	default:
+		return nil, ErrInspectionInvalid
+	}
+	if out.RestartRetries < 0 || out.RestartRetries > 2147483647 || len(raw.Mounts) > protocol.MaxInspectionEntries || len(h.Tmpfs) > protocol.MaxInspectionEntries || len(n.Networks) > protocol.MaxInspectionEntries || len(n.Ports) > protocol.MaxInspectionEntries {
+		return nil, ErrInspectionInvalid
+	}
+	switch h.NetworkMode {
+	case "default", "bridge", "host", "none":
+		out.NetworkMode = h.NetworkMode
+	case "":
+		return nil, ErrInspectionInvalid
+	default:
+		out.NetworkMode = "custom"
+		if strings.HasPrefix(h.NetworkMode, "container:") {
+			out.NetworkMode = "container"
+		}
+	}
+	tmpfs := map[string]bool{}
+	for _, m := range raw.Mounts {
+		if m.RW == nil {
+			return nil, ErrInspectionInvalid
+		}
+		switch m.Type {
+		case "bind":
+			out.Mounts.Bind++
+		case "volume":
+			out.Mounts.Volume++
+		case "tmpfs":
+			out.Mounts.Tmpfs++
+			tmpfs[m.Destination] = true
+		default:
+			out.Mounts.Other++
+		}
+		if !*m.RW {
+			out.Mounts.ReadOnly++
+		}
+	}
+	// Engine may report --tmpfs only in HostConfig.Tmpfs. Count each target
+	// once without returning its path or options.
+	for target, options := range h.Tmpfs {
+		if tmpfs[target] {
+			continue
+		}
+		out.Mounts.Tmpfs++
+		readOnly := false
+		for _, option := range strings.Split(options, ",") {
+			if option == "ro" {
+				readOnly = true
+			}
+			if option == "rw" {
+				readOnly = false
+			}
+		}
+		if readOnly {
+			out.Mounts.ReadOnly++
+		}
+	}
+	if out.Mounts.Bind+out.Mounts.Volume+out.Mounts.Tmpfs+out.Mounts.Other > protocol.MaxInspectionEntries {
+		return nil, ErrInspectionInvalid
+	}
+	for key, bindings := range n.Ports {
+		target, proto, ok := strings.Cut(key, "/")
+		port, err := strconv.Atoi(target)
+		if !ok || err != nil || port < 1 || port > 65535 || strconv.Itoa(port) != target || (proto != "tcp" && proto != "udp" && proto != "sctp") {
+			return nil, ErrInspectionInvalid
+		}
+		if len(bindings) == 0 {
+			out.Ports = append(out.Ports, protocol.Port{Container: port, Protocol: proto})
+		}
+		if len(bindings) > protocol.MaxInspectionEntries {
+			return nil, ErrInspectionInvalid
+		}
+		for _, b := range bindings {
+			host, err := strconv.Atoi(b.HostPort)
+			addr, iperr := netip.ParseAddr(b.HostIP)
+			if err != nil || host < 1 || host > 65535 || strconv.Itoa(host) != b.HostPort || iperr != nil || addr.Zone() != "" {
+				return nil, ErrInspectionInvalid
+			}
+			out.Ports = append(out.Ports, protocol.Port{Container: port, Host: host, Protocol: proto, HostIP: addr.String()})
+		}
+		if len(out.Ports) > protocol.MaxInspectionEntries {
+			return nil, ErrInspectionInvalid
+		}
+	}
+	slices.SortFunc(out.Ports, func(a, b protocol.Port) int {
+		if a.Container != b.Container {
+			return a.Container - b.Container
+		}
+		if a.Protocol != b.Protocol {
+			return strings.Compare(a.Protocol, b.Protocol)
+		}
+		if a.Host != b.Host {
+			return a.Host - b.Host
+		}
+		return strings.Compare(a.HostIP, b.HostIP)
+	})
+	return out, nil
+}

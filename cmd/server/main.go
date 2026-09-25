@@ -7,19 +7,26 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/password"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kyyard-server/internal/api"
-	"github.com/Busness-app/kyyard-server/internal/backup"
-	"github.com/Busness-app/kyyard-server/internal/config"
-	"github.com/Busness-app/kyyard-server/internal/crypto"
-	"github.com/Busness-app/kyyard-server/internal/store"
+	_ "time/tzdata" // update-policy zones load the same on every host
+
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/password"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
 // appVersion is what the capsule manifest records for this build.
@@ -28,6 +35,11 @@ const appVersion = "1.0.0"
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "healthcheck":
+			if err := healthcheck(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "init-admin":
 			runInitAdmin(os.Args[2:])
 			return
@@ -71,6 +83,9 @@ func runServer() {
 	if cfg.Backup.AllowPrivateRecovery {
 		log.Printf("[BACKUP] KY_BACKUP_ALLOW_PRIVATE_RECOVERY is on: RFC1918 and CGNAT destinations admitted; loopback, link-local and other reserved addresses remain refused (HTTPS still required)")
 	}
+	if cfg.Registry.AllowPrivate {
+		log.Printf("[REGISTRY] KY_REGISTRY_ALLOW_PRIVATE is on: organization admins may admit RFC1918 and CGNAT registry destinations; loopback and link-local remain refused")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -82,35 +97,53 @@ func runServer() {
 	defer st.Close()
 
 	// Ensure default admin user exists if database is empty
-	count, _ := st.Users().CountUsers(ctx)
+	count, err := st.Users().CountUsers(ctx)
+	if err != nil {
+		log.Fatalf("Failed to inspect bootstrap state: %v", err)
+	}
 	if count == 0 {
 		adminPass := os.Getenv("KY_ADMIN_PASSWORD")
-		if adminPass == "" {
+		generated := adminPass == ""
+		if generated {
 			adminPass = crypto.RandomHex(12)
-			log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
 		}
 		hash, err := password.Hash(adminPass)
 		if err != nil {
 			log.Fatalf("Failed to hash bootstrap admin password: %v", err)
 		}
 		if err := st.Users().CreateUser(ctx, &store.User{
-			ID:           fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
-			Username:     "admin",
-			DisplayName:  "Administrator",
-			PasswordHash: hash,
-			Role:         "admin",
-			Status:       "active",
-			SSOProvider:  "local",
+			ID:                 fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
+			Username:           "admin",
+			DisplayName:        "Administrator",
+			PasswordHash:       hash,
+			Role:               "admin",
+			Status:             "active",
+			SSOProvider:        "local",
+			MustChangePassword: true,
 		}); err != nil {
 			log.Fatalf("Failed to create bootstrap admin: %v", err)
 		}
+		if generated {
+			log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
+		}
+	}
+
+	if err := startStore(ctx, st); err != nil {
+		log.Fatal(err)
 	}
 
 	srv := api.NewServer(cfg, st)
+	localDone := make(chan struct{})
+	go localDockerLoop(ctx, srv.RunLocalDocker, localDone)
 	backupDone := make(chan struct{})
 	go backupLoop(ctx, cfg, st, backupDone)
+	policiesDone := make(chan struct{})
+	go srv.RunPolicies(ctx, policiesDone)
+	validationsDone := make(chan struct{})
+	go srv.RunValidations(ctx, validationsDone)
+	go pruneLoop(ctx, st)
 
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 	httpServer := &http.Server{
 		Addr:         addr,
 		Handler:      srv,
@@ -131,6 +164,7 @@ func runServer() {
 
 	<-stop
 	log.Println("[KYYARD] Shutting down gracefully...")
+	srv.BeginShutdown()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
@@ -141,8 +175,58 @@ func runServer() {
 	cancel()
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), backupWaitTimeout)
 	defer waitCancel()
-	waitForBackupWork(waitCtx, backupDone, srv.WaitDetached)
+	// A policy run and a validation tick in flight finish before the store closes: each records
+	// its apply before the frame leaves. A run's worst case (under 3 minutes) and a tick's (its
+	// rollback's inspections, plan and apply: seconds) fit the same budget.
+	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; <-policiesDone; <-validationsDone; srv.WaitDetached() })
 	log.Println("[KYYARD] Server stopped")
+}
+
+// startStore initialises tenancy and settles every command left in flight by the previous
+// process. runServer calls it before anything serves.
+func startStore(ctx context.Context, st store.Store) error {
+	if err := st.Tenancy().Initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize tenancy: %w", err)
+	}
+	n, err := st.Tenancy().ReconcileAfterStart(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to reconcile in-flight commands: %w", err)
+	}
+	if n > 0 {
+		log.Printf("[RECOVERY] %d in-flight command(s) settled as unknown after restart", n)
+	}
+	return nil
+}
+
+// localDockerLoop retries startup and connection failures, rechecking the persisted
+// authority on every attempt. A revoked/deleted endpoint is never recreated.
+func localDockerLoop(ctx context.Context, run func(context.Context) error, done chan<- struct{}) {
+	defer close(done)
+	delay := time.Second
+	for ctx.Err() == nil {
+		started := time.Now()
+		err := run(ctx)
+		if err == nil || ctx.Err() != nil { // disabled or clean shutdown
+			return
+		}
+		if errors.Is(err, store.ErrForbidden) {
+			log.Printf("[DOCKER] %v; local connection stopped", err)
+			return
+		}
+		if time.Since(started) >= time.Minute {
+			delay = time.Second
+		}
+		pause := time.Duration(float64(delay) * (0.8 + rand.Float64()*0.4))
+		log.Printf("[DOCKER] %v; retrying in %s", err, pause.Round(time.Millisecond))
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		delay = min(2*delay, time.Minute)
+	}
 }
 
 // waitForBackupWork blocks until the scheduler loop and every detached handler have finished,
@@ -296,10 +380,7 @@ func runInitAdmin(args []string) {
 
 	existing, err := st.Users().GetUserByUsername(ctx, *username)
 	if err == nil && existing != nil {
-		existing.PasswordHash = hash
-		existing.Status = "active"
-		existing.Role = "admin"
-		if err := st.Users().UpdateUser(ctx, existing); err != nil {
+		if err := st.Users().ResetAdminPassword(ctx, existing.ID, hash); err != nil {
 			log.Fatalf("Failed to update admin: %v", err)
 		}
 		log.Printf("✓ Admin user %q password successfully reset", *username)
@@ -307,13 +388,14 @@ func runInitAdmin(args []string) {
 	}
 
 	user := &store.User{
-		ID:           fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
-		Username:     *username,
-		DisplayName:  "Administrator",
-		PasswordHash: hash,
-		Role:         "admin",
-		Status:       "active",
-		SSOProvider:  "local",
+		ID:                 fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
+		Username:           *username,
+		DisplayName:        "Administrator",
+		PasswordHash:       hash,
+		Role:               "admin",
+		Status:             "active",
+		SSOProvider:        "local",
+		MustChangePassword: true,
 	}
 
 	if err := st.Users().CreateUser(ctx, user); err != nil {
@@ -398,9 +480,27 @@ func runExportCapsule(args []string) {
 
 // restore is the product-side half of the ceremony, owned by the lib: k custodian shares
 // combined, used once, dropped; a capsule from another service refused before the key is
-// touched; the authenticated manifest printed for comparison with KyRecovery's record.
+// touched; the authenticated manifest printed for comparison with KyRecovery's record. The
+// schema line tells the operator whether this binary matches the capsule or will migrate it.
 func restore(capsulePath, targetDir, expectService string, shares []string, stdout io.Writer) error {
-	return recoveryclient.Restore(capsulePath, targetDir, expectService, shares, stdout)
+	raw, err := os.ReadFile(capsulePath)
+	if err != nil {
+		return err
+	}
+	if err := recoveryclient.Restore(capsulePath, targetDir, expectService, shares, stdout); err != nil {
+		return err
+	}
+	m, err := capsule.ReadUnverifiedManifest(raw)
+	if err != nil {
+		fmt.Fprintf(stdout, "  capsule schema version unknown: %v\n", err)
+		return nil
+	}
+	if recipe, ok := m.VerificationRecipe.(map[string]any); ok {
+		if v, ok := recipe["schema_version"].(float64); ok {
+			fmt.Fprintf(stdout, "  capsule schema version %d; this binary migrates to %d\n", int(v), migrations.Latest())
+		}
+	}
+	return nil
 }
 
 // stdinIsTerminal reports whether a human is typing, so a pipeline gets no stray prompt.
@@ -449,5 +549,100 @@ func runRestore(args []string) {
 	}
 	if err := restore(*capsulePath, *target, *service, shares, os.Stdout); err != nil {
 		log.Fatalf("Restore failed: %v", err)
+	}
+}
+
+const (
+	// recentHours is how far back a steady roll-up pass looks: the hour that just ended plus
+	// the one before it, which is where a late-arriving sample can still land.
+	recentHours = 2 * time.Hour
+	// rollUpBudget bounds one aggregate so a pathological pass cannot pin the database.
+	rollUpBudget = 30 * time.Second
+)
+
+// nextRollUpWindow narrows the catch-up window only after a pass has actually covered it. The
+// wide pass happens once, after a restart, so letting a failed one narrow the window would
+// leave the hours between two and six hours old unsummarised until retention deleted them, and
+// nothing would ever go back for them. Repeating a wide pass is safe: an hour may only widen.
+func nextRollUpWindow(current time.Duration, err error) time.Duration {
+	if err != nil {
+		return current
+	}
+	return recentHours
+}
+
+// pruneLoop enforces retention (docs/retention-policy.md): every minute it summarises ended
+// hours, deletes expired samples, summaries and acknowledged events in bounded batches until a
+// pass removes nothing, and
+// publishes how close the database is to its budget so telemetry writes can back off.
+func pruneLoop(ctx context.Context, st store.Store) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	// The first pass catches up the whole raw window, every later one only the hours that can
+	// still gain samples.
+	rollUpWindow := store.SampleRetention
+	measure(ctx, st)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Summarise before pruning, or the raw rows leave without being counted. A steady
+			// pass covers the hours that can still change; the first pass after start covers
+			// the whole raw window, so hours that ended while the server was down are still
+			// summarised before they age out. The statement gets its own deadline because
+			// SQLite serves the process from one connection, and everything else waits behind
+			// a long one.
+			rollCtx, cancelRoll := context.WithTimeout(ctx, rollUpBudget)
+			_, err := st.Tenancy().RollUp(rollCtx, time.Now().UTC().Add(-rollUpWindow))
+			cancelRoll()
+			rollUpWindow = nextRollUpWindow(rollUpWindow, err)
+			if err != nil {
+				log.Printf("[RETENTION] roll-up: %v", err)
+			}
+			for i := 0; i < 20; i++ {
+				n, err := st.Tenancy().Prune(ctx)
+				if err != nil {
+					log.Printf("[RETENTION] prune: %v", err)
+					break
+				}
+				if n == 0 {
+					break
+				}
+			}
+			measure(ctx, st)
+		}
+	}
+}
+
+// overBudgetReminder is how often a persistent over-budget condition is repeated. Telemetry
+// throttling clears itself every pass, so without this an operator would see the transitions
+// and never learn that the condition behind them has not gone away.
+const overBudgetReminder = 15 * time.Minute
+
+var lastReminder time.Time
+
+// measure settles the retention pressure, reports each change, and keeps saying so while the
+// database stays over its budget, because that needs an operator rather than a log line.
+func measure(ctx context.Context, st store.Store) {
+	if st.Budget() <= 0 {
+		return
+	}
+	prev := st.Pressure()
+	next, err := st.EvaluatePressure(ctx)
+	if err != nil {
+		log.Printf("[RETENTION] usage: %v", err)
+		return
+	}
+	used, err := st.Usage(ctx)
+	if err != nil {
+		return
+	}
+	if next != prev {
+		log.Printf("[RETENTION] %d of %d bytes in use: telemetry %s (was %s)", used, st.Budget(), next, prev)
+	}
+	if used >= st.Budget()/100*95 && time.Since(lastReminder) >= overBudgetReminder {
+		lastReminder = time.Now()
+		log.Printf("[RETENTION] %d of %d bytes in use: telemetry is being throttled and will stay throttled until the budget is raised, disk is added, or retention is shortened", used, st.Budget())
 	}
 }

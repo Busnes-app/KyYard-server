@@ -1,0 +1,30 @@
+# Optional database. SQLite remains the only database supported by capsule backups.
+services:
+  kyyard:
+    environment:
+      - KY_DB_DRIVER=postgres
+      - KY_DB_DSN=${KY_DB_DSN:?Set a PostgreSQL DSN with sslmode=verify-full and sslrootcert=/etc/kyyard-db-ca.crt}
+    volumes:
+      - ${KY_POSTGRES_TLS_DIR:?Set the absolute PostgreSQL TLS directory}/ca.crt:/etc/kyyard-db-ca.crt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:17-alpine
+    network_mode: bridge
+    restart: unless-stopped
+    command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/tls/server.crt", "-c", "ssl_key_file=/tls/server.key"]
+    environment:
+      POSTGRES_USER: kyyard
+      POSTGRES_PASSWORD: ${KY_POSTGRES_PASSWORD:?Set a database password}
+      POSTGRES_DB: kyyard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ${KY_POSTGRES_TLS_DIR:?Set the absolute PostgreSQL TLS directory}:/tls:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kyyard -d kyyard"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  pgdata:

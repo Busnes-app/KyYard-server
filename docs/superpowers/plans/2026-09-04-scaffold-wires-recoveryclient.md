@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bring ky_server_base to the KySignOn backup spec by replacing `internal/backup`'s copied code with the `github.com/Busness-app/ky-primitives/recoveryclient` package, then adding the product work the spec leaves per product: routes, screen, compose, runbook, docs.
+**Goal:** Bring ky_server_base to the KySignOn backup spec by replacing `internal/backup`'s copied code with the `github.com/Busnes-app/ky-primitives/recoveryclient` package, then adding the product work the spec leaves per product: routes, screen, compose, runbook, docs.
 
 **Architecture:** `internal/backup` shrinks to what is scaffold-specific: payload collection (SQLite `VACUUM INTO` snapshot, keys, config manifest), the drill's SQLite checks, a `Settings` adapter over `store.SettingsStore`, and a `Sealer` built from the deployment key. Handlers in `internal/api/backup_handlers.go` call the lib. `cmd/server/main.go` gets a minute-polling `backupLoop` and a ten-line `restore`. The old plaintext `KY_BACKUP_DIR` local backup is replaced by sealed local copies under the same env var.
 
@@ -107,7 +107,7 @@ Expected: FAIL (undefined method / field)
 - [ ] **Step 3: Implement**
 
 ```bash
-go get github.com/Busness-app/ky-primitives@v0.5.0 && go mod tidy
+go get github.com/Busnes-app/ky-primitives@v0.5.0 && go mod tidy
 ```
 
 `store.go`: add `DeleteSetting(ctx context.Context, key string) error` to `SettingsStore`. `sqlstore.go`, beside `SetSetting`:
@@ -209,9 +209,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky_server_base/internal/config"
-	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky_server_base/internal/config"
+	"github.com/Busnes-app/ky_server_base/internal/store"
 )
 
 const recoveryTokenLabel = "ky_server_base:setting:kyrecovery_token"

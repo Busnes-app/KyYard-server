@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/store"
-	"github.com/Busness-app/kyyard-server/internal/testdb"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/testdb"
 	"github.com/google/uuid"
 )
 
@@ -130,7 +130,7 @@ func TestSessionStoreLifecycle(t *testing.T) {
 		ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
 	}
 
-	if err := st.Sessions().CreateSession(ctx, sess); err != nil {
+	if err := st.Sessions().CreateSession(ctx, sess, user.PasswordHash); err != nil {
 		t.Fatalf("failed to create session: %v", err)
 	}
 

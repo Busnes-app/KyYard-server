@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
-	"github.com/Busness-app/ky-primitives/recoverycode"
+	"github.com/Busnes-app/ky-primitives/recoverycode"
 )
 
 // digest is the product's recovery-code hash: SHA-256 of the normalised code, hex.

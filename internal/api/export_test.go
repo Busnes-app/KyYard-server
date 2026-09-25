@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 // SetRecoveryClientForTest replaces the KyRecovery pairing client. Test-only: this file is not
@@ -40,3 +42,46 @@ func RegisterDetachedForTest(s *Server) func() {
 	s.detached.add()
 	return s.detached.done
 }
+
+// SetDigestResolverForTest replaces the registry resolver behind update checks. Test-only.
+func SetDigestResolverForTest(s *Server, r store.DigestResolver) { s.digestResolver = r }
+
+// SetPlanInspectorForTest replaces the agent round trip of each plan-time inspection. Test-only.
+func SetPlanInspectorForTest(s *Server, f func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error)) {
+	s.planInspector = f
+}
+
+// PlanInspectionBudgetForTest is the plan's inspection budget.
+const PlanInspectionBudgetForTest = planInspectionBudget
+
+// RegistrySlotsHeldForTest counts the registry slots in use server-wide. Test-only.
+func RegistrySlotsHeldForTest(s *Server) int { return len(s.registrySlots) }
+
+// PolicyTickForTest runs one scheduler tick at now; the runs it starts are not waited for.
+func PolicyTickForTest(s *Server, now time.Time) { s.policyTick(context.Background(), now) }
+
+// WaitPolicyRunsForTest blocks until every run a tick started has finished.
+func WaitPolicyRunsForTest(s *Server) { s.policies.runs.Wait() }
+
+// SetPolicyClockForTest makes RunPolicies tick every interval and read the time from clock.
+func SetPolicyClockForTest(s *Server, interval time.Duration, clock func() time.Time) {
+	s.policies.interval, s.policies.now = interval, clock
+}
+
+// SetPolicyPanicHookForTest fires f once, the moment the next run's row is open, then clears
+// itself. Test-only: exercises the scheduler's panic recover.
+func SetPolicyPanicHookForTest(s *Server, f func()) { s.policies.panicHook = f }
+
+// ValidationTickForTest runs one validation tick with the clock at now; it returns when the tick,
+// rollback included, is done.
+func ValidationTickForTest(s *Server, now time.Time) {
+	s.validationTick(context.Background(), func() time.Time { return now })
+}
+
+// SetValidationClockForTest makes RunValidations tick every interval and read the time from clock.
+func SetValidationClockForTest(s *Server, interval time.Duration, clock func() time.Time) {
+	s.validations.interval, s.validations.now = interval, clock
+}
+
+// ErrInspectionInvalidForTest is what an inspection that failed validation returns.
+var ErrInspectionInvalidForTest = errInspectionInvalid

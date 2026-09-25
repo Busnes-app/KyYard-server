@@ -14,7 +14,7 @@
 
 - **No behaviour change to any capsule that already exists on disk.**
 - Gates stay green: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`.
-- Module path prefix is `github.com/Busness-app/`.
+- Module path prefix is `github.com/Busnes-app/`.
 - `ky-primitives` has zero dependencies; adding it must add **no new indirect entries** to this repo's `go.mod`.
 
 ---
@@ -52,11 +52,11 @@ Migrating this repo without renaming it first would add `ky-primitives` to a mod
 `gridlock-server` declares `module github.com/Yoshiofthewire/ky_server_base` and 32 of its
 Go files import under that prefix. That rename is **Task 1 of
 [the module path migration plan](2026-09-02-module-path-migration.md)**, which renames all
-eight Go repos to `github.com/Busness-app/<name>` in one coordinated pass.
+eight Go repos to `github.com/Busnes-app/<name>` in one coordinated pass.
 
 **Do not do it here.** Two plans renaming the same repo is how `gridlock-server` came to
 claim the scaffold's path in the first place. This plan assumes the rename has landed and
-that this repo is `github.com/Busness-app/gridlock-server`.
+that this repo is `github.com/Busnes-app/gridlock-server`.
 
 Verify before starting Task 2:
 
@@ -64,7 +64,7 @@ Verify before starting Task 2:
 head -1 /home/yoshi/busness.app/gridlock-server/go.mod
 ```
 
-Expected: `module github.com/Busness-app/gridlock-server`. If it still reads
+Expected: `module github.com/Busnes-app/gridlock-server`. If it still reads
 `github.com/Yoshiofthewire/ky_server_base`, stop and run the module path migration first.
 
 ---
@@ -91,7 +91,7 @@ Shamir is the safe half of this migration: [the interop findings](../../shamir-i
 mkdir -p testdata
 cp /home/yoshi/busness.app/ky_server_base/testdata/shamir-vectors.json testdata/
 cp /home/yoshi/busness.app/ky_server_base/internal/backup/shamir_vectors_test.go internal/backup/
-sed -i 's|github.com/Busness-app/ky_server_base/internal/backup|github.com/Busness-app/gridlock-server/internal/backup|' \
+sed -i 's|github.com/Busnes-app/ky_server_base/internal/backup|github.com/Busnes-app/gridlock-server/internal/backup|' \
   internal/backup/shamir_vectors_test.go
 go test -race -count=1 -run TestShamirGoldenVectors ./internal/backup/...
 ```
@@ -102,7 +102,7 @@ Expected: PASS, **before** anything is replaced. This proves the vectors describ
 
 ```bash
 go list -m all | wc -l > /tmp/gridlock-modcount-before.txt
-go get github.com/Busness-app/ky-primitives@v0.1.0
+go get github.com/Busnes-app/ky-primitives@v0.1.0
 go mod tidy
 go list -m all | wc -l
 ```
@@ -117,7 +117,7 @@ Replace the body of `internal/backup/shamir.go` with delegation. `SplitSecret` a
 package backup
 
 import (
-	"github.com/Busness-app/ky-primitives/shamir"
+	"github.com/Busnes-app/ky-primitives/shamir"
 )
 
 // Share is one custodian's key shard in a (k, n) threshold scheme.

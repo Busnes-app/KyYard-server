@@ -1,0 +1,629 @@
+// internal/runtime/docker/deploy.go
+package docker
+
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"reflect"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+)
+
+// stopGrace is the seconds Docker waits before killing a container being stopped; ten is
+// Docker's own default and Compose's.
+const stopGrace = 10
+
+// replaceBudget is the time one service's phase-two steps may need: stop and start at
+// operationBudget, recheck, rename, create and the identity read at callBudget.
+const replaceBudget = 2*operationBudget + 4*callBudget
+
+// Deploy replaces each service's mapped container with one created from the pinned image ID.
+// First every service's precondition and image (pull, for a service naming a digest), in plan
+// order, with each frame volume ensured after the precondition of the first service mounting
+// it; then per service recheck, rename, create, stop, start, remove. Renaming and creating while the
+// old container still runs means a name conflict or a refused create costs no downtime. The
+// first step that is not a success ends the run and every later step is recorded as skipped.
+// Nothing is rolled back: the steps say where the old container was left. No volume is ever
+// removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
+// 2026-09-23-pull-step-design.md and 2026-09-24-volumes-design.md.
+// started is called once, immediately before the first phase-two call (after the first recheck's
+// deadline guard); a run that ends in phase one never calls it.
+func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
+	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	if err := req.Validate(time.Now()); err != nil {
+		return refused(res, err)
+	}
+	ctx, cancel := context.WithDeadline(parent, req.Deadline)
+	defer cancel()
+	r := &deployRun{c: c, parent: parent, req: req, res: res, ensured: map[string]bool{}, keepOnly: map[string]bool{}, started: started}
+	// The daemon default runtime is what a container created without one gets; read once per run.
+	ictx, icancel := context.WithTimeout(ctx, callBudget)
+	var info struct{ DefaultRuntime string }
+	if r.c.get(ictx, "/info", &info) == nil && info.DefaultRuntime != "" {
+		r.defaultRuntime = info.DefaultRuntime
+	}
+	icancel()
+	r.pullDeadline = time.Now().Add(pullPhase(time.Until(req.Deadline)))
+	// Every service is checked and its image made present before any container is touched, so
+	// a refused precondition or a failed pull on any service leaves the host unchanged.
+	ready := make([]prepared, 0, len(req.Services))
+	for _, s := range req.Services {
+		ready = append(ready, r.prepare(ctx, s))
+	}
+	for _, p := range ready {
+		r.replace(ctx, p)
+	}
+	if r.res.Outcome == "" {
+		r.res.Outcome = protocol.OutcomeSucceeded
+	}
+	return r.res
+}
+
+type deployRun struct {
+	c              *Client
+	parent         context.Context
+	req            protocol.DeploymentRequest
+	res            protocol.DeploymentResult
+	defaultRuntime string          // "" when it could not be read; the first precondition then fails
+	pullDeadline   time.Time       // shared by every pull; see pullPhase
+	ensured        map[string]bool // volumes whose step is recorded
+	keepOnly       map[string]bool // existing volumes not the project's own: each service may only keep its mounts of them
+	started        func()          // called once before the run first reads or changes a container in phase two
+	begun          bool
+}
+
+// begin tells the caller, once, that the run is about to change the host.
+func (r *deployRun) begin() {
+	if !r.begun {
+		r.begun = true
+		r.started()
+	}
+}
+
+// refused answers a frame Validate refused, with no step run: invalid_request, or clock_skew
+// failed. A request ID that is not valid is not echoed.
+func refused(res protocol.DeploymentResult, err error) protocol.DeploymentResult {
+	if !protocol.ValidRequestID(res.RequestID) {
+		res.RequestID = ""
+	}
+	res.Outcome, res.Code = protocol.OutcomeDenied, protocol.ResultInvalidRequest
+	if errors.Is(err, protocol.ErrClockSkew) {
+		res.Outcome, res.Code = protocol.OutcomeFailed, protocol.ResultClockSkew
+	}
+	return res
+}
+
+// step records one outcome with its code and the code's parameter. The first non-success fixes
+// the run's outcome, coded step_failed: the steps say which.
+func (r *deployRun) step(service, step string, run func() (outcome, code, detail string)) {
+	if r.res.Outcome != "" {
+		r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: service, Step: step, Outcome: protocol.OutcomeSkipped})
+		return
+	}
+	outcome, code, detail := run()
+	s := protocol.DeploymentStep{Service: service, Step: step, Outcome: outcome}
+	if outcome != protocol.OutcomeSucceeded {
+		s.Code, s.Detail = code, detail
+		r.res.Outcome, r.res.Code = outcome, protocol.ResultStepFailed
+	}
+	r.res.Steps = append(r.res.Steps, s)
+}
+
+// succeeded, deny and fail are a step's plain answers.
+func succeeded() (string, string, string)       { return protocol.OutcomeSucceeded, "", "" }
+func deny(code string) (string, string, string) { return protocol.OutcomeDenied, code, "" }
+func fail(code string) (string, string, string) { return protocol.OutcomeFailed, code, "" }
+
+// outcomeFor classifies a call that did not succeed. A status is an answer: failed,
+// runtime_status with the status. With no answer, a cancelled parent means the run was cancelled
+// (agent shutdown under the detached-context contract) before the runtime answered, and the
+// Engine may have acted: unknown, never retried by itself.
+func (r *deployRun) outcomeFor(ctx context.Context, err error, status int) (string, string, string) {
+	if statusOf(err) != 0 {
+		err = nil
+	}
+	switch {
+	case err != nil && r.parent.Err() == context.Canceled:
+		return protocol.OutcomeUnknown, "cancelled", ""
+	case err != nil && ctx.Err() != nil:
+		return protocol.OutcomeTimedOut, "runtime_timeout", ""
+	case err != nil, status < 100, status > 599:
+		return fail("runtime_error")
+	}
+	return protocol.OutcomeFailed, "runtime_status", strconv.Itoa(status)
+}
+
+// inspectedForDeploy is decoded with pointers so a field the Engine did not report is refused
+// rather than read as its zero value.
+type inspectedForDeploy struct {
+	ID      string `json:"Id"`
+	Image   string
+	Name    string
+	Created time.Time
+	Mounts  *mountList
+	Config  *struct {
+		imageDefaults
+		User string
+	}
+	HostConfig *struct {
+		NetworkMode                                                     string
+		Privileged, AutoRemove, ReadonlyRootfs                          *bool
+		Tmpfs, Sysctls                                                  map[string]string
+		CapAdd, CapDrop, SecurityOpt, GroupAdd, ExtraHosts, Links       []string
+		Dns, DnsOptions, DnsSearch                                      []string
+		Devices, Ulimits, DeviceRequests                                []json.RawMessage
+		PidMode, IpcMode, Runtime, UsernsMode, CgroupParent, CpusetCpus string
+		Memory, MemorySwap, MemoryReservation, NanoCpus                 int64
+		CpuShares, CpuQuota                                             int64
+		PidsLimit                                                       *int64
+		Init                                                            *bool
+		VolumesFrom                                                     []string
+		VolumeDriver                                                    string
+		Mounts                                                          []struct {
+			BindOptions *struct {
+				Propagation                                                string
+				NonRecursive, ReadOnlyNonRecursive, ReadOnlyForceRecursive bool
+			}
+			VolumeOptions *struct {
+				NoCopy       bool
+				Subpath      string
+				DriverConfig *struct{ Name string }
+			}
+		}
+	}
+	NetworkSettings *struct {
+		Networks map[string]json.RawMessage
+	}
+}
+
+type inspectedMount struct {
+	Type, Name, Source, Destination, Mode, Propagation string
+	RW                                                 bool
+}
+
+// mountList decodes sorted: the Engine builds Mounts from a map, so two reads of one
+// container may list them in different orders.
+type mountList []inspectedMount
+
+func (l *mountList) UnmarshalJSON(b []byte) error {
+	var m []inspectedMount
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	slices.SortFunc(m, func(a, b inspectedMount) int {
+		return cmp.Or(strings.Compare(a.Destination, b.Destination), strings.Compare(a.Source, b.Source))
+	})
+	*l = m
+	return nil
+}
+
+// anonymousVolume is the name Docker generates for a volume nobody named.
+var anonymousVolume = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// mountOptions reports an option on the old container's mounts the recreate would drop: a
+// propagation other than the default, nocopy, a volume subpath or driver, recursion settings.
+func mountOptions(in inspectedForDeploy) bool {
+	for _, m := range *in.Mounts {
+		if (m.Propagation != "" && m.Propagation != "rprivate") || slices.Contains(strings.Split(m.Mode, ","), "nocopy") {
+			return true
+		}
+	}
+	for _, m := range in.HostConfig.Mounts {
+		if b := m.BindOptions; b != nil && ((b.Propagation != "" && b.Propagation != "rprivate") || b.NonRecursive || b.ReadOnlyNonRecursive || b.ReadOnlyForceRecursive) {
+			return true
+		}
+		if v := m.VolumeOptions; v != nil && (v.NoCopy || v.Subpath != "" || (v.DriverConfig != nil && v.DriverConfig.Name != "" && v.DriverConfig.Name != "local")) {
+			return true
+		}
+	}
+	return false
+}
+
+// imageDefaults are the Config fields a container inherits from its image. A container whose
+// values differ was given them at run time, and recreation from the image would drop them.
+type imageDefaults struct {
+	Cmd, Entrypoint        []string
+	Healthcheck            *healthcheck
+	WorkingDir, StopSignal string
+}
+
+type healthcheck struct {
+	Test                           []string
+	Interval, Timeout, StartPeriod int64
+	Retries                        int
+}
+
+// none reports no healthcheck: absent, no test, or the image's explicit ["NONE"].
+func (h *healthcheck) none() bool {
+	return h == nil || len(h.Test) == 0 || (len(h.Test) == 1 && h.Test[0] == "NONE")
+}
+
+// differs reports a Cmd, Entrypoint, Healthcheck, WorkingDir or StopSignal the container was
+// given at run time: recreation from the image would drop it (code image_config).
+func (a imageDefaults) differs(b imageDefaults) bool {
+	return !slices.Equal(a.Cmd, b.Cmd) || !slices.Equal(a.Entrypoint, b.Entrypoint) ||
+		a.Healthcheck.none() != b.Healthcheck.none() || (!a.Healthcheck.none() && !reflect.DeepEqual(a.Healthcheck, b.Healthcheck)) ||
+		a.WorkingDir != b.WorkingDir || a.StopSignal != b.StopSignal
+}
+
+// reported says the Engine returned every field undescribed reads through a pointer; an absent
+// one is refused rather than read as its zero value.
+func reported(in inspectedForDeploy) bool {
+	h := in.HostConfig
+	return h != nil && in.Config != nil && in.NetworkSettings != nil && in.Mounts != nil && h.Privileged != nil && h.AutoRemove != nil && h.ReadonlyRootfs != nil
+}
+
+// sameConfiguration compares what recreation depends on: Config, HostConfig and Mounts. State
+// and NetworkSettings change on their own (a restart) and are not compared.
+func sameConfiguration(a, b inspectedForDeploy) bool {
+	return reflect.DeepEqual(a.Config, b.Config) && reflect.DeepEqual(a.HostConfig, b.HostConfig) && reflect.DeepEqual(a.Mounts, b.Mounts)
+}
+
+// undescribed lists, as codes of protocol.UnsupportedCodes in its order, the configuration
+// recreation would drop. The definition expresses image, env, ports, restart, the project
+// network and volume and bind mounts only; log configuration and settings outside this list
+// are not compared, and image_config is the caller's, compared against the image. in must be
+// reported.
+func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) []string {
+	h, n, mounts := in.HostConfig, in.NetworkSettings, *in.Mounts
+	network := projectNetwork
+	if h.NetworkMode == "default" || h.NetworkMode == "bridge" {
+		network = "bridge"
+	}
+	_, onNetwork := n.Networks[network]
+	checks := []struct {
+		code  string
+		found bool
+	}{
+		{"mount_type", slices.ContainsFunc(mounts, func(m inspectedMount) bool { return m.Type != "volume" && m.Type != "bind" })},
+		{"anonymous_volume", slices.ContainsFunc(mounts, func(m inspectedMount) bool { return m.Type == "volume" && anonymousVolume.MatchString(m.Name) })},
+		{"volumes_from", len(h.VolumesFrom) > 0},
+		{"volume_driver", h.VolumeDriver != "" && h.VolumeDriver != "local"},
+		{"mount_options", mountOptions(in)},
+		{"tmpfs", len(h.Tmpfs) > 0},
+		{"auto_remove", *h.AutoRemove},
+		{"read_only_rootfs", *h.ReadonlyRootfs},
+		{"privileged", *h.Privileged},
+		{"capabilities", len(h.CapAdd) > 0 || len(h.CapDrop) > 0},
+		{"security_opt", len(h.SecurityOpt) > 0},
+		{"devices", len(h.Devices) > 0},
+		{"pid_mode", h.PidMode != "" && h.PidMode != "private"},
+		{"ipc_mode", h.IpcMode != "" && h.IpcMode != "private" && h.IpcMode != "shareable"}, // daemon defaults recreation reproduces
+		{"user", in.Config.User != ""},
+		{"runtime", h.Runtime != "" && h.Runtime != defaultRuntime},
+		{"resource_limits", h.Memory > 0 || h.MemorySwap > 0 || h.MemoryReservation > 0 || h.NanoCpus > 0 || h.CpuShares > 0 || h.CpuQuota > 0 || h.CpusetCpus != "" || (h.PidsLimit != nil && *h.PidsLimit != 0)},
+		{"ulimits", len(h.Ulimits) > 0},
+		{"sysctls", len(h.Sysctls) > 0},
+		{"device_requests", len(h.DeviceRequests) > 0},
+		{"init", h.Init != nil && *h.Init},
+		{"userns_mode", h.UsernsMode != ""},
+		{"cgroup_parent", h.CgroupParent != ""},
+		{"group_add", len(h.GroupAdd) > 0},
+		{"extra_hosts", len(h.ExtraHosts) > 0},
+		{"dns", len(h.Dns) > 0 || len(h.DnsOptions) > 0 || len(h.DnsSearch) > 0},
+		{"links", len(h.Links) > 0},
+		{"network", (h.NetworkMode != "default" && h.NetworkMode != "bridge" && h.NetworkMode != projectNetwork) || len(n.Networks) != 1 || !onNetwork},
+	}
+	codes := []string{}
+	for _, c := range checks {
+		if c.found {
+			codes = append(codes, c.code)
+		}
+	}
+	return codes
+}
+
+// unsupported is the precondition's refusal for configuration a recreate would drop: the codes
+// joined by ",", as many whole ones as the step bound holds. The plan's live inspection already
+// listed every one.
+func unsupported(codes []string) (string, string, string) {
+	detail := codes[0]
+	for _, c := range codes[1:] {
+		if len(detail)+1+len(c) > protocol.MaxDeploymentStepDetailBytes {
+			break
+		}
+		detail += "," + c
+	}
+	return protocol.OutcomeDenied, "unsupported", detail
+}
+
+// prepared is what a service's precondition and image (or pull) steps settled for its replacement.
+type prepared struct {
+	s           protocol.DeploymentService // ImageID is the pulled ID for a pulled service
+	name        string                     // the old container's name, without the leading slash
+	networkMode string
+	before      inspectedForDeploy // the precondition's read; recheck compares against it
+}
+
+func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) prepared {
+	old := url.PathEscape(s.Replaces.ContainerID)
+	var before inspectedForDeploy
+	var networkMode string
+	var oldMounts []inspectedMount
+	r.step(s.Name, protocol.StepPrecondition, func() (string, string, string) {
+		if r.defaultRuntime == "" {
+			return fail("runtime_unreadable")
+		}
+		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		defer cancel()
+		if err := r.c.get(cctx, "/containers/"+old+"/json", &before); err != nil {
+			if statusOf(err) == http.StatusNotFound {
+				return deny("container_missing")
+			}
+			return r.outcomeFor(cctx, err, statusOf(err))
+		}
+		if before.ID != s.Replaces.ContainerID || before.Image != s.Replaces.ImageID || before.Created.Unix() != s.Replaces.CreatedUnix {
+			return deny("identity_mismatch")
+		}
+		if !reported(before) {
+			return deny("configuration_unreported")
+		}
+		if codes := undescribed(before, r.req.Project+"_default", r.defaultRuntime); len(codes) > 0 {
+			return unsupported(codes)
+		}
+		// Binds are preserve-only: a deploy never introduces a host path.
+		for _, m := range s.Mounts {
+			if m.Kind == protocol.MountBind && !slices.ContainsFunc(*before.Mounts, func(o inspectedMount) bool {
+				return o.Type == "bind" && o.Source == m.Source && o.Destination == m.Target && o.RW == !m.ReadOnly
+			}) {
+				return deny("bind_missing")
+			}
+			if m.Kind == protocol.MountVolume && r.keepOnly[m.Source] && !keeps(*before.Mounts, m) {
+				return deny("volume_mount_missing")
+			}
+		}
+		ictx, icancel := context.WithTimeout(ctx, callBudget)
+		defer icancel()
+		var im struct{ Config imageDefaults }
+		if err := r.c.get(ictx, "/images/"+url.PathEscape(s.Replaces.ImageID)+"/json", &im); err != nil {
+			if statusOf(err) == http.StatusNotFound {
+				return deny("image_missing")
+			}
+			return r.outcomeFor(ictx, err, statusOf(err))
+		}
+		if before.Config.differs(im.Config) {
+			return unsupported([]string{"image_config"})
+		}
+		networkMode, oldMounts = before.HostConfig.NetworkMode, *before.Mounts
+		return succeeded()
+	})
+	r.ensureVolumes(ctx, s, oldMounts)
+	if s.Pull != nil {
+		r.step(s.Name, protocol.StepPull, func() (string, string, string) {
+			outcome, code, detail, id := r.pull(ctx, s)
+			s.ImageID = id // the replacement is created from, and verified against, the pulled ID
+			return outcome, code, detail
+		})
+	} else {
+		r.step(s.Name, protocol.StepImage, func() (string, string, string) {
+			cctx, cancel := context.WithTimeout(ctx, callBudget)
+			defer cancel()
+			var im struct {
+				ID string `json:"Id"`
+			}
+			if err := r.c.get(cctx, "/images/"+url.PathEscape(s.ImageID)+"/json", &im); err != nil {
+				if statusOf(err) == http.StatusNotFound {
+					return fail("pinned_image_missing")
+				}
+				return r.outcomeFor(cctx, err, statusOf(err))
+			}
+			if im.ID != s.ImageID {
+				return fail("image_identity_mismatch")
+			}
+			return succeeded()
+		})
+	}
+	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode, before: before}
+}
+
+func (r *deployRun) replace(ctx context.Context, p prepared) {
+	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
+	// The pull window can be minutes: re-read the container right before touching it.
+	r.step(s.Name, protocol.StepRecheck, func() (string, string, string) {
+		if time.Until(r.req.Deadline) < replaceBudget {
+			return protocol.OutcomeTimedOut, "deadline", ""
+		}
+		r.begin()
+		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		defer cancel()
+		var now inspectedForDeploy
+		if err := r.c.get(cctx, "/containers/"+old+"/json", &now); err != nil {
+			if statusOf(err) == http.StatusNotFound {
+				return deny("container_missing")
+			}
+			return r.outcomeFor(cctx, err, statusOf(err))
+		}
+		if now.ID != s.Replaces.ContainerID || now.Image != s.Replaces.ImageID || now.Created.Unix() != s.Replaces.CreatedUnix || !sameConfiguration(p.before, now) {
+			return deny("configuration_drift")
+		}
+		return succeeded()
+	})
+	r.step(s.Name, protocol.StepRename, func() (string, string, string) {
+		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		defer cancel()
+		name := p.name + ".kyyard-prev-" + r.req.Deployment[:8]
+		status, err := r.c.post(cctx, "/containers/"+old+"/rename?name="+url.QueryEscape(name))
+		if err != nil || status >= 400 {
+			if status == http.StatusConflict {
+				return fail("name_reserved")
+			}
+			return r.outcomeFor(cctx, err, status)
+		}
+		return succeeded()
+	})
+	var created string
+	r.step(s.Name, protocol.StepCreate, func() (string, string, string) {
+		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		defer cancel()
+		var out struct {
+			ID string `json:"Id"`
+		}
+		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s, p.networkMode), &out)
+		if err != nil || status != http.StatusCreated {
+			if status == http.StatusConflict {
+				return fail("name_taken")
+			}
+			return r.outcomeFor(cctx, err, status)
+		}
+		if !protocol.ValidExecID(out.ID) {
+			return fail("identity_unusable")
+		}
+		created = out.ID
+		return succeeded()
+	})
+	r.step(s.Name, protocol.StepStop, func() (string, string, string) {
+		cctx, cancel := context.WithTimeout(ctx, operationBudget)
+		defer cancel()
+		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
+		if err != nil || (status >= 400 && status != http.StatusNotModified) {
+			return r.outcomeFor(cctx, err, status)
+		}
+		return succeeded()
+	})
+	r.step(s.Name, protocol.StepStart, func() (string, string, string) {
+		cctx, cancel := context.WithTimeout(ctx, operationBudget)
+		defer cancel()
+		status, err := r.c.post(cctx, "/containers/"+url.PathEscape(created)+"/start")
+		if err != nil || (status >= 400 && status != http.StatusNotModified) {
+			return r.outcomeFor(cctx, err, status)
+		}
+		ictx, icancel := context.WithTimeout(ctx, callBudget)
+		defer icancel()
+		var after inspectedForDeploy
+		if err := r.c.get(ictx, "/containers/"+url.PathEscape(created)+"/json", &after); err != nil {
+			outcome, _, _ := r.outcomeFor(ictx, err, statusOf(err))
+			return outcome, "identity_unreadable", created
+		}
+		id := protocol.DeploymentIdentity{Service: s.Name, ContainerID: after.ID, ImageID: after.Image, CreatedUnix: after.Created.Unix()}
+		if s.Pull != nil {
+			id.ImageDigest = s.Pull.Digest
+		}
+		if after.ID != created || after.Image != s.ImageID || (protocol.InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}).Validate() != nil {
+			return protocol.OutcomeFailed, "identity_unverified", created
+		}
+		r.res.Services = append(r.res.Services, id)
+		return succeeded()
+	})
+	r.step(s.Name, protocol.StepRemove, func() (string, string, string) {
+		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		defer cancel()
+		status, err := r.c.del(cctx, "/containers/"+old)
+		if err != nil || status >= 400 {
+			return r.outcomeFor(cctx, err, status)
+		}
+		return succeeded()
+	})
+}
+
+type portBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+type endpointSettings struct {
+	Aliases []string `json:"Aliases"`
+}
+type networkingConfig struct {
+	EndpointsConfig map[string]endpointSettings `json:"EndpointsConfig"`
+}
+type mountSpec struct {
+	Type     string `json:"Type"`
+	Source   string `json:"Source"`
+	Target   string `json:"Target"`
+	ReadOnly bool   `json:"ReadOnly"`
+}
+type containerCreate struct {
+	Image        string              `json:"Image"`
+	Env          []string            `json:"Env"`
+	Labels       map[string]string   `json:"Labels"`
+	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
+	HostConfig   struct {
+		NetworkMode   string                   `json:"NetworkMode,omitempty"`
+		PortBindings  map[string][]portBinding `json:"PortBindings,omitempty"`
+		Mounts        []mountSpec              `json:"Mounts,omitempty"`
+		RestartPolicy struct {
+			Name              string `json:"Name"`
+			MaximumRetryCount int    `json:"MaximumRetryCount"`
+		} `json:"RestartPolicy"`
+	} `json:"HostConfig"`
+	NetworkingConfig *networkingConfig `json:"NetworkingConfig,omitempty"`
+}
+
+// createBody is the whole configuration of the new container: the definition's subset and
+// the Compose labels discovery already groups by. Nothing is copied from the old container
+// except the network mode the precondition already accepted: a Compose project's containers
+// run on "<project>_default", and dropping that would strand the new one off the project
+// network and its service-name DNS.
+func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, networkMode string) containerCreate {
+	body := containerCreate{Image: s.ImageID, Env: []string{}, Labels: map[string]string{
+		"com.docker.compose.project": req.Project, "com.docker.compose.service": s.Name, "com.docker.compose.container-number": "1", "com.docker.compose.oneoff": "False",
+		"kyyard.deployment": req.Deployment, "kyyard.revision": strconv.Itoa(req.Revision),
+	}}
+	keys := make([]string, 0, len(s.Env))
+	for k := range s.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		body.Env = append(body.Env, k+"="+s.Env[k])
+	}
+	if len(s.Ports) > 0 {
+		body.ExposedPorts = map[string]struct{}{}
+		body.HostConfig.PortBindings = map[string][]portBinding{}
+	}
+	for _, p := range s.Ports {
+		key := strconv.Itoa(p.Container) + "/" + p.Protocol
+		body.ExposedPorts[key] = struct{}{}
+		body.HostConfig.PortBindings[key] = append(body.HostConfig.PortBindings[key], portBinding{HostIP: p.HostIP, HostPort: strconv.Itoa(p.Host)})
+	}
+	for _, m := range s.Mounts {
+		body.HostConfig.Mounts = append(body.HostConfig.Mounts, mountSpec{Type: m.Kind, Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
+	}
+	body.HostConfig.RestartPolicy.Name = s.Restart
+	if body.HostConfig.RestartPolicy.Name == "" {
+		body.HostConfig.RestartPolicy.Name = "no"
+	}
+	if projectNetwork := req.Project + "_default"; networkMode == projectNetwork {
+		body.HostConfig.NetworkMode = projectNetwork
+		body.NetworkingConfig = &networkingConfig{EndpointsConfig: map[string]endpointSettings{projectNetwork: {Aliases: []string{s.Name}}}}
+	}
+	return body
+}
+
+// postJSON sends a JSON body and decodes a JSON answer. The Engine's error body is read and
+// discarded: its text can echo configuration, so only the status reaches a result.
+func (c *Client) postJSON(ctx context.Context, path string, body, out any) (int, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(raw))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return resp.StatusCode, err
+	}
+	if resp.StatusCode >= 400 {
+		return resp.StatusCode, nil
+	}
+	return resp.StatusCode, json.Unmarshal(answer, out)
+}

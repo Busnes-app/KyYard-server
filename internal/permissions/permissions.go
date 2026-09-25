@@ -1,0 +1,92 @@
+package permissions
+
+// Action names are stable audit identifiers, not caller-supplied role checks.
+type Action string
+
+const (
+	ApplicationAdopt   Action = "application.adopt"
+	ApplicationRelease Action = "application.release"
+	SecretReveal       Action = "secret.reveal"
+	ApplicationRead    Action = "application.read"
+	ApplicationImport  Action = "application.import"
+	ApplicationEdit    Action = "application.edit"
+	ApplicationDestroy Action = "application.destroy"
+	PlatformAdmin      Action = "platform.admin"
+	OrganizationRead   Action = "organization.read"
+	MembersManage      Action = "organization.members.manage"
+	EnvironmentRead    Action = "environment.read"
+	EnvironmentCreate  Action = "environment.create"
+	EnvironmentUpdate  Action = "environment.update"
+	EnvironmentDelete  Action = "environment.delete"
+	AuditRead          Action = "organization.audit.read"
+	EndpointRead       Action = "endpoint.read"
+	EndpointEnroll     Action = "endpoint.enroll"
+	EndpointUpdate     Action = "endpoint.update"
+	EndpointRevoke     Action = "endpoint.revoke"
+	// ContainerOperate is start, stop and restart: reversible lifecycle actions on a
+	// container that already exists. Destroying one is a separate action, because undoing it
+	// is not a matter of running the opposite command.
+	ContainerOperate Action = "container.operate"
+	// ContainerDestroy removes a container. It is separate from operating one because the
+	// opposite command does not undo it, and the matrix gives it to administrators only.
+	ContainerDestroy Action = "container.destroy"
+	// ImagePull fetches an image onto an endpoint. It is not destructive, but it spends the
+	// host's disk and bandwidth and will later spend a registry credential, so the matrix
+	// stops at the operator.
+	ImagePull Action = "image.pull"
+	// ImageDestroy removes an image from an endpoint.
+	ImageDestroy Action = "image.destroy"
+	// ContainerLogs reads what a container has written. It is separate from reading a
+	// container because a log is the application's own output: it carries whatever the
+	// workload prints, which is where credentials and customer data turn up, so the matrix
+	// stops it at the developer and audits every session.
+	ContainerLogs Action = "container.logs"
+	ContainerExec Action = "container.exec"
+	// ApplicationDeploy mints and, in a later slice, applies a deployment plan. The matrix gives
+	// it to developers because a plan is desired state made concrete, not host authority.
+	ApplicationDeploy Action = "application.deploy"
+	// RegistryRead lists registries and the anonymous-pull policy; rows never carry a secret.
+	RegistryRead Action = "registry.read"
+	// RegistryManage writes registries, their credentials and the anonymous-pull opt-in.
+	RegistryManage Action = "registry.manage"
+	// ApplicationPolicy creates, edits, deletes and resumes an application's update policy. A
+	// policy deploys unattended as whoever saved it last, so the matrix stops at the organization
+	// administrator.
+	ApplicationPolicy Action = "application.policy"
+)
+
+func PlatformAllows(role string, action Action) bool {
+	return role == "admin" && action == PlatformAdmin
+}
+
+func Allows(role string, action Action) bool {
+	switch role {
+	case "organization_admin":
+		switch action {
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage:
+			return true
+		}
+	case "environment_admin":
+		switch action {
+		case ApplicationAdopt, ApplicationRelease, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead:
+			return true
+		}
+	case "operator":
+		// Day-to-day operations, per docs/authorization-matrix.md: an operator restarts a
+		// container but does not destroy one.
+		switch action {
+		case ApplicationRead, OrganizationRead, EnvironmentRead, EndpointRead, ContainerOperate, ImagePull, ContainerLogs, RegistryRead:
+			return true
+		}
+	case "developer":
+		// A developer reads logs and edits saved desired state, but has no runtime
+		// operation, destruction or exec authority.
+		switch action {
+		case ApplicationRead, ApplicationEdit, ApplicationDeploy, OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, RegistryRead:
+			return true
+		}
+	case "read_only":
+		return action == ApplicationRead || action == OrganizationRead || action == EnvironmentRead || action == EndpointRead || action == RegistryRead
+	}
+	return false
+}

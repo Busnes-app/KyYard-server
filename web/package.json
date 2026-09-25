@@ -10,17 +10,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@xterm/xterm": "6.0.0",
     "lucide-react": "^1.16.0",
-    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.0",
     "@types/node": "^22.13.4",
-    "@types/qrcode": "^1.5.5",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
-    "@testing-library/react": "^16.3.0",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^26.1.0",
     "typescript": "~5.7.2",

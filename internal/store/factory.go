@@ -9,25 +9,36 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Busness-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
+
+// limits are the storage bounds a store enforces, settled once when it opens so nothing has
+// to mutate a shared value later (docs/retention-policy.md).
+type limits struct {
+	budget  int64 // bytes the database may occupy; zero disables the check
+	ceiling int   // stored sample rows per endpoint
+}
+
+func storageLimits(cfg config.DatabaseConfig) limits {
+	return limits{budget: cfg.DiskBudget, ceiling: cfg.SampleCeiling}
+}
 
 // Open initializes and returns the configured database store backend.
 func Open(ctx context.Context, cfg config.DatabaseConfig) (Store, error) {
 	driver := strings.ToLower(cfg.Driver)
 	switch driver {
 	case "sqlite", "sqlite3", "":
-		return openSQLite(ctx, cfg.DSN)
+		return openSQLite(ctx, cfg.DSN, storageLimits(cfg))
 	case "postgres", "postgresql", "pgx":
-		return openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime)
+		return openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime, storageLimits(cfg))
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %q (supported: sqlite, postgres)", cfg.Driver)
 	}
 }
 
-func openSQLite(ctx context.Context, dsn string) (Store, error) {
+func openSQLite(ctx context.Context, dsn string, lim limits) (Store, error) {
 	filePath := dsn
 	if idx := strings.Index(dsn, "?"); idx != -1 {
 		filePath = dsn[:idx]
@@ -45,8 +56,15 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 		if strings.Contains(dsn, "?") {
 			delim = "&"
 		}
-		dsn = fmt.Sprintf("%s%s_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)", dsn, delim)
+		dsn = fmt.Sprintf("%s%s_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", dsn, delim)
 	}
+
+	// Each physical connection must enable constraints, even with custom tuning pragmas.
+	delim := "?"
+	if strings.Contains(dsn, "?") {
+		delim = "&"
+	}
+	dsn += delim + "_pragma=foreign_keys(ON)"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -61,10 +79,20 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
 
-	return newSQLStore(ctx, db, "sqlite")
+	var foreignKeys int
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to verify SQLite foreign keys: %w", err)
+	}
+	if foreignKeys != 1 {
+		_ = db.Close()
+		return nil, fmt.Errorf("SQLite foreign keys must be enabled; remove conflicting KY_DB_DSN pragmas or options")
+	}
+
+	return newSQLStore(ctx, db, "sqlite", lim)
 }
 
-func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration) (Store, error) {
+func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration, lim limits) (Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open postgres database: %w", err)
@@ -89,5 +117,5 @@ func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLife
 		return nil, fmt.Errorf("failed to ping postgres database: %w", err)
 	}
 
-	return newSQLStore(ctx, db, "postgres")
+	return newSQLStore(ctx, db, "postgres", lim)
 }

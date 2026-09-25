@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
 import { Key, AlertCircle, LogIn } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget';
-import { ThemeSwitcher } from '../components/ThemeSwitcher';
+import { SetupGuide } from '../components/SetupGuide';
 
 interface LoginProps {
   onSuccess: (user: any) => void;
   appName: string;
+  appURL?: string;
+  providers?: { id: string; name: string; login_url: string }[];
 }
 
 interface MFAChallenge {
   mfa_token: string;
 }
 
-export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
+export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', providers = [] }) => {
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [captchaToken, setCaptchaToken] = useState<string>('');
@@ -102,10 +104,6 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
         background: 'var(--bg)',
       }}
     >
-      <div style={{ position: 'absolute', top: 20, right: 20 }}>
-        <ThemeSwitcher />
-      </div>
-
       <div style={{ width: '100%', maxWidth: '420px' }}>
         <div style={{ textAlign: 'center', marginBottom: '24px' }}>
           <div
@@ -157,6 +155,8 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
                   {isRecoveryCode ? 'Recovery Code' : 'Authenticator Code'}
                 </label>
                 <input
+                  id="username"
+                  autoComplete="username"
                   type="text"
                   autoFocus
                   value={mfaCode}
@@ -185,8 +185,10 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
           ) : (
             <form onSubmit={handleLogin}>
               <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }}>Username</label>
+                <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }} htmlFor="username">Username</label>
                 <input
+                  id="username"
+                  autoComplete="username"
                   type="text"
                   autoFocus
                   value={username}
@@ -197,8 +199,10 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
               </div>
 
               <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }}>Password</label>
+                <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }} htmlFor="password">Password</label>
                 <input
+                  id="password"
+                  autoComplete="current-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -214,22 +218,24 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
                 <span>{loading ? 'Signing in...' : 'Sign In'}</span>
               </button>
 
-              <div style={{ marginTop: '20px', borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
+              {providers.length > 0 && <div style={{ marginTop: '20px', borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
                 <div style={{ fontSize: '12px', color: 'var(--ink)', textAlign: 'center', marginBottom: '12px' }}>
                   Or continue with Single Sign-On
                 </div>
-                <a
-                  href="/api/sso/kysignon/login"
+                {providers.map((provider) => <a
+                  key={provider.id}
+                  href={provider.login_url}
                   className="btn btn-secondary"
                   style={{ width: '100%', justifyContent: 'center', textDecoration: 'none' }}
                 >
                   <Key size={16} style={{ color: 'var(--accent)' }} />
-                  <span>KySignOn Identity</span>
-                </a>
-              </div>
+                  <span>Continue with {provider.name}</span>
+                </a>)}
+              </div>}
             </form>
           )}
         </div>
+        <SetupGuide appURL={appURL} />
       </div>
     </div>
   );
