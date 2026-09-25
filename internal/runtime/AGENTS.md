@@ -43,4 +43,4 @@ Owns the Engine API client (`docker.New` over the Unix socket, `docker.NewHTTP` 
 - `go test ./internal/runtime/...` runs against a fake Engine (mapping, truncation) and, when `/var/run/docker.sock` is reachable, against the real daemon.
 
 ## Child DOX Index
-- [kubernetes/AGENTS.md](kubernetes/AGENTS.md): client-go adapter for a cluster agent: inventory, pod logs and the identity Secret.
+- [kubernetes/AGENTS.md](kubernetes/AGENTS.md): client-go adapter for a cluster agent: inventory, pod logs, the identity Secret and the install manifest.

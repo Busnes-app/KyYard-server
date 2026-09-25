@@ -27,6 +27,9 @@ var factKeys = map[string]bool{"hostname": true, "os": true, "runtime_version": 
 
 func validRuntime(r string) bool { return r == "docker" || r == "kubernetes" }
 
+// ValidEndpointName is the rule Enroll and RenameEndpoint apply to an endpoint's name.
+func ValidEndpointName(name string) bool { return validTenantName(name) }
+
 // CheckEnrollmentAccess authorizes runtime discovery before minting a token.
 // Minting still repeats authorization atomically with its write and audit.
 func (t *tenancyStore) CheckEnrollmentAccess(ctx context.Context, a TenantAccess) error {
