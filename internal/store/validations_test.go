@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -423,6 +424,37 @@ func TestPendingValidations(t *testing.T) {
 	}
 	if pending, err := ts.PendingValidations(ctx); err != nil || len(pending) != 0 {
 		t.Fatalf("after the decision: %+v %v", pending, err)
+	}
+}
+
+// A tenant's backlog above MaxPendingValidations, all older, still leaves every other
+// organization its rows: the per-organization cut comes before the global bound.
+func TestPendingValidationsIsFairPerOrganization(t *testing.T) {
+	st, a, _, _, _, _, _, updated := validationFixture(t)
+	ctx := context.Background()
+	older := updated.SettledAt.Add(-time.Hour)
+	var flood []string
+	for i := range MaxPendingValidations + 10 {
+		id := uuid.NewString()
+		flood = append(flood, id)
+		if _, err := st.db.ExecContext(ctx, st.rebind(`INSERT INTO deployments (id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline,settled_at,detail,result,kind,correlation_id) SELECT ?,organization_id,environment_id,application_id,instance_id,endpoint_id,project,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline,settled_at,detail,result,kind,correlation_id FROM deployments WHERE id=?`), id, updated.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.db.ExecContext(ctx, st.rebind(`INSERT INTO deployment_validations (deployment_id,organization_id,environment_id,application_id,instance_id,endpoint_id,automated,phase,started_at,observe_until,correlation_id) SELECT ?,'flood',environment_id,application_id,instance_id,endpoint_id,0,phase,?,?,correlation_id FROM deployment_validations WHERE deployment_id=?`), id, older.Add(time.Duration(i)*time.Millisecond), older.Add(ValidationGrace+ValidationWindow), updated.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending, err := st.Tenancy().PendingValidations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range pending {
+		got = append(got, p.OrganizationID+"/"+p.DeploymentID)
+	}
+	mine, theirs := a.OrganizationID+"/"+updated.ID, []string{"flood/" + flood[0], "flood/" + flood[1]}
+	if !slices.Equal(got, append([]string{mine}, theirs...)) && !slices.Equal(got, append(theirs, mine)) {
+		t.Fatalf("pending: %v, want %s and %v by organization", got, mine, theirs)
 	}
 }
 

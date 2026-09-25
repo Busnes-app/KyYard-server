@@ -15,6 +15,7 @@ import (
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -29,11 +30,12 @@ type planHost struct {
 	planBody    string
 	targets     []protocol.InspectionTarget // per service, in the order given
 	snapshot    protocol.Snapshot           // the inventory the host was adopted from
+	db          config.DatabaseConfig       // for fixtures the API cannot create
 }
 
 func newPlanHost(t *testing.T, capabilities []string, services ...string) planHost {
 	t.Helper()
-	s, st, _ := setupTestServer(t)
+	s, st, cfg := setupTestServer(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
 	must := func(err error) {
@@ -44,7 +46,7 @@ func newPlanHost(t *testing.T, capabilities []string, services ...string) planHo
 	}
 	must(ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"}))
 	must(ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"}))
-	h := planHost{s: s, st: st, admin: loginAs(t, s, st, "planner", "user")}
+	h := planHost{s: s, st: st, admin: loginAs(t, s, st, "planner", "user"), db: cfg.Database}
 	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_planner", Role: store.RoleOrganizationAdmin, Status: "active"}))
 	h.ag = enrollAgent(t, s, st, h.admin, "plan-host")
 	h.do(t, "POST", "/api/organizations/a/endpoints/"+h.ag.id+"/approve", `{"fingerprint":"`+h.ag.fp+`"}`, 204)

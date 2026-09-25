@@ -24,14 +24,10 @@ type validationLoop struct {
 	now      func() time.Time
 }
 
-const (
-	// validationWorkers bounds the rows one tick advances at once. A tick runs at most one row per
-	// organization at a time, so an organization whose agent stalls holds one worker, never all.
-	validationWorkers = 4
-	// validationRowsPerOrgPerTick bounds an organization's share of a tick, so a stalled agent
-	// lengthens a tick by at most this many inspection budgets; its other rows wait for the next.
-	validationRowsPerOrgPerTick = 2
-)
+// validationWorkers bounds the rows one tick advances at once. A tick runs at most one row per
+// organization at a time, so an organization whose agent stalls holds one worker, never all, and
+// with store.PendingValidationsPerOrg lengthens a tick by at most that many inspection budgets.
+const validationWorkers = 4
 
 // RunValidations watches every settled apply until ctx ends (docs/application-schema.md, Health
 // validation). A tick runs to its end, a rollback included, so done closes only between ticks and
@@ -62,8 +58,7 @@ func (s *Server) RunValidations(ctx context.Context, done chan<- struct{}) {
 }
 
 // validationTick advances the pending validations on validationWorkers workers, taking the
-// organizations in turn and each organization's oldest validationRowsPerOrgPerTick rows, one at a
-// time. Each row reads
+// organizations in turn and each organization's rows oldest first, one at a time. Each row reads
 // the clock when its work starts. Shutdown stops new rows; the tick returns once the rows in flight
 // finish, and the rest resume on the next start.
 func (s *Server) validationTick(ctx context.Context, clock func() time.Time) {
@@ -84,13 +79,10 @@ func (s *Server) validationTick(ctx context.Context, clock func() time.Time) {
 	var orgs []string
 	queues := map[string][]store.PendingValidation{}
 	for _, p := range pending {
-		q := queues[p.OrganizationID]
-		if q == nil {
+		if queues[p.OrganizationID] == nil {
 			orgs = append(orgs, p.OrganizationID)
 		}
-		if len(q) < validationRowsPerOrgPerTick {
-			queues[p.OrganizationID] = append(q, p)
-		}
+		queues[p.OrganizationID] = append(queues[p.OrganizationID], p)
 	}
 	finished := make(chan string)
 	busy := map[string]bool{}

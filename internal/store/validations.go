@@ -19,7 +19,11 @@ const (
 	ValidationGrace  = 30 * time.Second
 	ValidationWindow = 2 * time.Minute
 	ValidationPoll   = 20 * time.Second
-	// MaxPendingValidations bounds one tick's work; the rest wait for the next tick.
+	// PendingValidationsPerOrg is an organization's share of one tick: its oldest rows; the rest
+	// wait for the next tick, so one tenant's backlog never crowds out another's.
+	PendingValidationsPerOrg = 2
+	// MaxPendingValidations bounds one tick's work after the per-organization cut, so it bounds
+	// organizations (MaxPendingValidations / PendingValidationsPerOrg), not one tenant's backlog.
 	MaxPendingValidations = 256
 	// AuditValidation is the loop's audit action, written as "system".
 	AuditValidation = "application.validation"
@@ -341,11 +345,11 @@ func (t *tenancyStore) latestInventory(ctx context.Context, endpoint string) (*i
 	return &v, nil
 }
 
-// PendingValidations lists, oldest first, every validation not done and every automated one whose
-// rollback decision is owed, each with its settled services placed against the instance's
-// resources and the endpoint's latest inventory.
+// PendingValidations lists each organization's PendingValidationsPerOrg oldest validations that are
+// not done or owe a rollback decision, by organization then age, each with its settled services
+// placed against the instance's resources and the endpoint's latest inventory.
 func (t *tenancyStore) PendingValidations(ctx context.Context) ([]PendingValidation, error) {
-	rows, err := t.store.db.QueryContext(ctx, t.store.rebind(`SELECT `+validationColumns+`,v.organization_id,v.environment_id,v.application_id,v.instance_id,v.endpoint_id,v.baseline,d.result,COALESCE(p.id,''),COALESCE(p.created_by,''),(SELECT COUNT(*) FROM application_instances i WHERE i.id=v.instance_id),(SELECT COUNT(*) FROM endpoint_capabilities c WHERE c.endpoint_id=v.endpoint_id AND c.capability=?) FROM deployment_validations v JOIN deployments d ON d.id=v.deployment_id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id LEFT JOIN policy_runs r ON r.id=v.policy_run_id LEFT JOIN update_policies p ON p.id=r.policy_id WHERE v.phase<>'done' OR `+awaitingRollback+` ORDER BY v.started_at,v.deployment_id LIMIT ?`), protocol.CapabilityContainerInspectHealth, MaxPendingValidations)
+	rows, err := t.store.db.QueryContext(ctx, t.store.rebind(`SELECT `+validationColumns+`,v.organization_id,v.environment_id,v.application_id,v.instance_id,v.endpoint_id,v.baseline,d.result,COALESCE(p.id,''),COALESCE(p.created_by,''),(SELECT COUNT(*) FROM application_instances i WHERE i.id=v.instance_id),(SELECT COUNT(*) FROM endpoint_capabilities c WHERE c.endpoint_id=v.endpoint_id AND c.capability=?) FROM (SELECT v.deployment_id AS id,ROW_NUMBER() OVER (PARTITION BY v.organization_id ORDER BY v.started_at,v.deployment_id) AS n FROM deployment_validations v WHERE v.phase<>'done' OR `+awaitingRollback+`) k JOIN deployment_validations v ON v.deployment_id=k.id JOIN deployments d ON d.id=v.deployment_id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id LEFT JOIN policy_runs r ON r.id=v.policy_run_id LEFT JOIN update_policies p ON p.id=r.policy_id WHERE k.n<=? ORDER BY v.organization_id,v.started_at,v.deployment_id LIMIT ?`), protocol.CapabilityContainerInspectHealth, PendingValidationsPerOrg, MaxPendingValidations)
 	if err != nil {
 		return nil, err
 	}
