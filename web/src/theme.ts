@@ -1,7 +1,9 @@
+import { readChoice, saveChoice } from './ky-ui/theme';
+import { busnesPalettes } from './ky-ui/palettes';
 // Shared KyPost/KyDNS palette tokens; mail-only tokens are omitted.
 export const themes = {
-  "Busnes Light": {"bg": "#f8f6f0", "panel": "#ffffff", "ink": "#566461", "inkStrong": "#182326", "accent": "#bf3f18", "accentSoft": "#fbf0ec", "line": "rgba(24, 35, 38, 0.22)", "glow": "transparent", "sidebarStart": "#f2efe7", "sidebarEnd": "#f2efe7", "buttonText": "#ffffff"},
-  "Busnes Dark": {"bg": "#182326", "panel": "#1f2b2e", "ink": "#b3bcb8", "inkStrong": "#f2efe8", "accent": "#f5865f", "accentSoft": "#2b2622", "line": "rgba(242, 239, 232, 0.24)", "glow": "transparent", "sidebarStart": "#1f2b2e", "sidebarEnd": "#1f2b2e", "buttonText": "#182326"},
+  "Busnes Light": busnesPalettes["Busnes Light"],
+  "Busnes Dark": busnesPalettes["Busnes Dark"],
 
     "Dark Matter": { bg: "#1a1a1e", panel: "#252530", ink: "#d4c5e2", inkStrong: "#e8ddf5", accent: "#c29a72", accentSoft: "#5a3f31", line: "#404050", glow: "rgba(107, 74, 66, 0.25)", sidebarStart: "#1f1f24", sidebarEnd: "#2a2530", buttonText: "#24170f" },
     "Light Matter": { bg: "#f5efe5", panel: "#fff8ee", ink: "#4c3d32", inkStrong: "#2d1f15", accent: "#c29a72", accentSoft: "#e6d2be", line: "#c5b29d", glow: "rgba(175, 126, 92, 0.2)", sidebarStart: "#ede2d2", sidebarEnd: "#e4d6c3", buttonText: "#24170f" },
@@ -26,7 +28,7 @@ const key = 'kyyard-theme';
 const systemTheme = (): ThemeName => window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'Busnes Dark' : 'Busnes Light';
 export function getStoredTheme(): ThemeName {
   try {
-    const saved = localStorage.getItem(key) ?? '';
+    const saved = readChoice(key) ?? '';
     return isThemeName(saved) ? saved : systemTheme();
   } catch { return systemTheme(); }
 }
@@ -37,18 +39,21 @@ export function applyTheme(name: ThemeName, persist = true) {
   const n = Number.parseInt(t.bg.slice(1), 16);
   const light = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255 > 0.55;
   root.style.colorScheme = light ? 'light' : 'dark';
-  root.style.setProperty('--panel-hover', 'color-mix(in srgb, ' + t.panel + ' 92%, ' + t.inkStrong + ')');
-  root.style.setProperty('--line-strong', t.ink);
-  root.style.setProperty('--danger', light ? '#b91c1c' : '#f87171');
-  root.style.setProperty('--success', light ? '#166534' : '#34d399');
+  const shared = name === 'Busnes Light' || name === 'Busnes Dark';
+  if (shared) root.dataset.kyTheme = light ? 'busnes-light' : 'busnes-dark';
+  else delete root.dataset.kyTheme;
+  root.style.setProperty('--panel-hover', shared ? 'var(--ky-panel-hover)' : 'color-mix(in srgb, ' + t.panel + ' 92%, ' + t.inkStrong + ')');
+  root.style.setProperty('--line-strong', shared ? 'var(--ky-line-strong)' : t.ink);
+  root.style.setProperty('--danger', shared ? 'var(--ky-danger)' : light ? '#b91c1c' : '#f87171');
+  root.style.setProperty('--success', shared ? 'var(--ky-success)' : light ? '#166534' : '#34d399');
   root.dataset.theme = name;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', t.bg);
-  if (persist) { try { localStorage.setItem(key, name); } catch { /* Applies without storage. */ } }
+  if (persist) { try { saveChoice(key, name); } catch { /* Applies without storage. */ } }
   window.dispatchEvent(new Event('ky:theme'));
 }
 window.addEventListener('storage', (e) => { if (e.key === key) applyTheme(getStoredTheme(), false); });
 
 window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
-  try { if (isThemeName(localStorage.getItem(key) ?? '')) return; } catch { /* Follow the OS when storage is unavailable. */ }
+  try { if (isThemeName(readChoice(key) ?? '')) return; } catch { /* Follow the OS when storage is unavailable. */ }
   applyTheme(systemTheme(), false);
 });
