@@ -77,6 +77,14 @@ func UnmarshalSnapshotBounded(data []byte, s *Snapshot) error {
 			s.Truncated = append(s.Truncated, "volumes")
 		}
 	}
+	if raw, ok := fields["kubernetes"]; ok && string(bytes.TrimSpace(raw)) != "null" {
+		k, cut, err := decodeKubernetes(raw)
+		if err != nil {
+			return err
+		}
+		s.Kubernetes = k
+		s.Truncated = append(s.Truncated, cut...)
+	}
 	return nil
 }
 
@@ -135,6 +143,8 @@ type Snapshot struct {
 	Images     []Image     `json:"images"`
 	Networks   []Network   `json:"networks"`
 	Volumes    []Volume    `json:"volumes"`
+	// Kubernetes is a cluster agent's inventory; nil from a Docker agent (CheckRuntimeShape).
+	Kubernetes *KubernetesInventory `json:"kubernetes,omitempty"`
 	// Truncated names the lists that hit their cap; the UI shows the gap.
 	Truncated []string `json:"truncated,omitempty"`
 }
@@ -339,13 +349,19 @@ func Clamp(s *Snapshot) {
 	if s.Volumes == nil {
 		s.Volumes = []Volume{}
 	}
+	if s.Kubernetes != nil {
+		clampKubernetes(s.Kubernetes, truncated)
+	}
 	s.Truncated = nil
-	for _, name := range []string{"containers", "images", "networks", "volumes", "labels"} {
+	for _, name := range truncatable {
 		if truncated[name] {
 			s.Truncated = append(s.Truncated, name)
 		}
 	}
 }
+
+// truncatable is every name Truncated may carry, in the order it is reported.
+var truncatable = []string{"containers", "images", "networks", "volumes", "labels", "nodes", "namespaces", "workloads", "pods", "services", "claims"}
 
 func cleanLabels(in map[string]string) map[string]string {
 	out := map[string]string{}
@@ -412,12 +428,14 @@ func Shrink(s *Snapshot) []byte {
 			s.Volumes, truncated["volumes"] = s.Volumes[:len(s.Volumes)*3/4], true
 		case len(s.Networks) > 0:
 			s.Networks, truncated["networks"] = s.Networks[:len(s.Networks)*3/4], true
+		// A cluster snapshot has no Docker lists; its own longest list is cut instead.
+		case s.Kubernetes != nil && shrinkKubernetes(s.Kubernetes, truncated):
 		default:
 			raw, _ := json.Marshal(s)
 			return raw
 		}
 		s.Truncated = nil
-		for _, name := range []string{"containers", "images", "networks", "volumes", "labels"} {
+		for _, name := range truncatable {
 			if truncated[name] {
 				s.Truncated = append(s.Truncated, name)
 			}
