@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -76,12 +77,16 @@ func TestDeployNamespacesFromTokenToEndpoint(t *testing.T) {
 	if _, err := ts.CreateEnrollmentToken(ctx, a, protocol.RuntimeDocker, "", "shop"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("docker token with namespaces: %v", err)
 	}
+	tooMany := make([]string, MaxDeployNamespaces+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("ns-%d", i)
+	}
 	for name, list := range map[string][]string{
 		"repeated":         {"shop", "shop"},
 		"not a label":      {"Shop"},
 		"agent namespace":  {"kyyard-agent"},
 		"system namespace": {"kube-system"},
-		"too many":         strings.Split(strings.Repeat("n,", MaxDeployNamespaces)+"x", ","),
+		"too many":         tooMany,
 	} {
 		if _, err := ts.CreateEnrollmentToken(ctx, a, protocol.RuntimeKubernetes, "", list...); !errors.Is(err, ErrInvalid) {
 			t.Errorf("token %s: %v", name, err)

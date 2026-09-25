@@ -222,7 +222,7 @@ func (t *tenancyStore) mapKubernetes(ctx context.Context, tx *sql.Tx, a TenantAc
 		return ErrApplicationAdopted
 	default:
 		var applying int
-		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments WHERE instance_id=? AND state='applying'`), instance).Scan(&applying); err != nil {
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments WHERE organization_id=? AND environment_id=? AND instance_id=? AND state='applying'`), a.OrganizationID, a.EnvironmentID, instance).Scan(&applying); err != nil {
 			return err
 		}
 		if applying > 0 {
