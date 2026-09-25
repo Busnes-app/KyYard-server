@@ -31,8 +31,9 @@ func Facts(runtimeVersion string) map[string]string {
 }
 
 // Enroll redeems a token for an identity and pins the server's instance fingerprint. The token
-// is used once and dropped; only the resulting identity is persisted.
-func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tokenB64 string, runtimeVersion string) (*Identity, error) {
+// is used once and dropped; only the resulting identity is persisted, to store. Facts are the
+// bounded report the approver reads beside the fingerprint (Facts for a Docker host).
+func Enroll(ctx context.Context, httpClient *http.Client, server string, store IdentityStore, name, tokenB64 string, facts map[string]string) (*Identity, error) {
 	if _, err := checkServerOrigin(server); err != nil {
 		return nil, err
 	}
@@ -47,7 +48,7 @@ func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tok
 	body, _ := json.Marshal(map[string]any{
 		"token": strings.TrimSpace(tokenB64), "public_key": base64.RawURLEncoding.EncodeToString(pub),
 		"proof": base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, token))),
-		"name":  name, "facts": Facts(runtimeVersion),
+		"name":  name, "facts": facts,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server, "/")+"/api/agent/v1/enroll", bytes.NewReader(body))
 	if err != nil {
@@ -75,7 +76,7 @@ func Enroll(ctx context.Context, httpClient *http.Client, server, dir, name, tok
 		return nil, errors.New("server echoed a fingerprint that is not ours")
 	}
 	id := &Identity{EndpointID: reply.EndpointID, PrivateKey: priv, InstanceFingerprint: reply.InstanceFingerprint, Server: strings.TrimRight(server, "/"), EnrollmentHash: enrollmentHash(tokenB64), RotatedAt: time.Now().UTC()}
-	if err := SaveIdentity(dir, id); err != nil {
+	if err := store.Save(id); err != nil {
 		return nil, err
 	}
 	return id, nil

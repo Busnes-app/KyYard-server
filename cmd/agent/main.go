@@ -101,7 +101,7 @@ func main() {
 		if *name == "" {
 			*name, _ = os.Hostname()
 		}
-		id, err = client.Enroll(ctx, httpClient, *server, *dir, *name, token, runtimeVersion)
+		id, err = client.Enroll(ctx, httpClient, *server, client.DirStore(*dir), *name, token, client.Facts(runtimeVersion))
 		if err != nil {
 			log.Fatalf("enrollment: %v", err)
 		}

@@ -22,7 +22,8 @@ const (
 	maxFactsBytes       = 4096
 )
 
-var factKeys = map[string]bool{"hostname": true, "os": true, "runtime_version": true, "cpus": true, "memory_bytes": true}
+// factKeys are the enrollment facts kept: a Docker host's, then a cluster's.
+var factKeys = map[string]bool{"hostname": true, "os": true, "runtime_version": true, "cpus": true, "memory_bytes": true, "runtime": true, "server_version": true, "node_count": true, "platform": true}
 
 func validRuntime(r string) bool { return r == "docker" || r == "kubernetes" }
 
