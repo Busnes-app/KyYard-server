@@ -125,7 +125,7 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 - [internal/applications/AGENTS.md](internal/applications/AGENTS.md): Bounded Compose import and transient secret separation.
 
 - [internal/agent/AGENTS.md](internal/agent/AGENTS.md): Agent identity, enrollment, connection lifecycle and shared protocol.
-- [internal/runtime/AGENTS.md](internal/runtime/AGENTS.md): Docker runtime adapters, bounded streams and exec session primitives.
+- [internal/runtime/AGENTS.md](internal/runtime/AGENTS.md): Docker and Kubernetes runtime adapters, bounded streams and exec session primitives.
 - [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
 - [internal/permissions/AGENTS.md](internal/permissions/AGENTS.md): Named actions and fixed platform/tenant permission mappings.
 - [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
