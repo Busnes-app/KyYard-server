@@ -16,8 +16,6 @@ import (
 const (
 	deploymentLedgerLife = 24 * time.Hour
 	deploymentLedgerMax  = 20
-	// restartedDetail settles a run that began changing the host and never recorded a result.
-	restartedDetail = "the agent restarted after replacement began; inspect the host"
 )
 
 type deploymentEntry struct {
@@ -25,6 +23,8 @@ type deploymentEntry struct {
 	Finished time.Time                 `json:"finished"`
 	// Started is set, with no result yet, while a run may be changing the host.
 	Started time.Time `json:"started,omitzero"`
+	// RequestID is the started run's request_id, echoed if a restart settles it.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // pending is a run that began changing the host and has no result yet.
@@ -56,8 +56,8 @@ func newDeployer(root context.Context, dir string, opts *Options) *deployer {
 		if json.Unmarshal(raw, &saved) == nil {
 			d.done = saved
 			if d.settleStarted() {
-				if err := d.save(); err != nil && d.opts.Log != nil {
-					d.opts.Log.Printf("deployment ledger: interrupted runs not recorded: %v", err)
+				if err := d.save(); err != nil {
+					d.logf("deployment ledger: interrupted runs not recorded: %v", err)
 				}
 			}
 			d.prune()
@@ -67,12 +67,12 @@ func newDeployer(root context.Context, dir string, opts *Options) *deployer {
 }
 
 // settleStarted turns every run a restart interrupted after it began changing the host into an
-// unknown result, re-sent like any other. It reports whether it found one.
+// unknown result coded restarted, re-sent like any other. It reports whether it found one.
 func (d *deployer) settleStarted() bool {
 	now, found := time.Now().UTC(), false
 	for id, e := range d.done {
 		if e.pending() {
-			d.done[id] = deploymentEntry{Result: protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeUnknown, Detail: restartedDetail, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: now}
+			d.done[id] = deploymentEntry{Result: protocol.DeploymentResult{Deployment: id, RequestID: e.RequestID, Outcome: protocol.OutcomeUnknown, Code: protocol.ResultRestarted, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: now}
 			found = true
 		}
 	}
@@ -89,13 +89,22 @@ func (d *deployer) save() error {
 }
 
 // begin records durably, before it returns, that run id is about to change the host.
-func (d *deployer) begin(id string) {
+func (d *deployer) begin(id, requestID string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.done[id] = deploymentEntry{Started: time.Now().UTC()}
-	if err := d.save(); err != nil && d.opts.Log != nil {
+	d.done[id] = deploymentEntry{Started: time.Now().UTC(), RequestID: requestID}
+	d.logf("deployment %s (request %s): started", id, requestID)
+	if err := d.save(); err != nil {
 		// A restart before the result would then run the frame again; the recheck still guards it.
-		d.opts.Log.Printf("deployment %s: start not recorded: %v", id, err)
+		d.logf("deployment %s: start not recorded: %v", id, err)
+	}
+}
+
+// logf writes one line to the agent's log when it has one. Only validated IDs and closed
+// outcomes are passed: the frame itself is never logged.
+func (d *deployer) logf(format string, args ...any) {
+	if d.opts.Log != nil {
+		d.opts.Log.Printf(format, args...)
 	}
 }
 
@@ -143,10 +152,11 @@ func (d *deployer) finish(res protocol.DeploymentResult) *sessionLink {
 	defer d.mu.Unlock()
 	d.done[res.Deployment] = deploymentEntry{Result: res, Finished: time.Now().UTC()}
 	d.prune()
-	if err := d.save(); err != nil && d.opts.Log != nil {
+	if err := d.save(); err != nil {
 		// Still delivered and re-sent from memory; only a restart loses it.
-		d.opts.Log.Printf("deployment %s: result not recorded: %v", res.Deployment, err)
+		d.logf("deployment %s: result not recorded: %v", res.Deployment, err)
 	}
+	d.logf("deployment %s (request %s): finished %s", res.Deployment, res.RequestID, res.Outcome)
 	d.running = ""
 	return d.current
 }
@@ -158,21 +168,21 @@ func resultFrame(res protocol.DeploymentResult) outFrame {
 	return outFrame{Type: protocol.TypeDeploymentResult, Payload: res}
 }
 
-func denied(id, detail string) protocol.DeploymentResult {
-	return protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeDenied, Detail: detail, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+func denied(id, requestID, code string) protocol.DeploymentResult {
+	return protocol.DeploymentResult{Deployment: id, RequestID: requestID, Outcome: protocol.OutcomeDenied, Code: code, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 }
 
 // handleApply answers one deployment.apply payload; see run.
 func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
 	var req protocol.DeploymentRequest
 	if json.Unmarshal(payload, &req) != nil {
-		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "invalid deployment request")))
+		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "", protocol.ResultInvalidRequest)))
 		return
 	}
 	var exec func(context.Context) protocol.DeploymentResult
 	if deploy := d.opts.Deploy; deploy != nil {
 		exec = func(ctx context.Context) protocol.DeploymentResult {
-			res := deploy(ctx, req, func() { d.begin(req.Deployment) })
+			res := deploy(ctx, req, func() { d.begin(req.Deployment, req.RequestID) })
 			for i := range req.Services {
 				clear(req.Services[i].Env)
 			}
@@ -180,29 +190,30 @@ func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, pa
 			return res
 		}
 	}
-	d.run(sessionCtx, out, req.Deployment, req.Endpoint, endpointID, req.Validate, exec, "this agent has no runtime to deploy")
+	d.run(sessionCtx, out, req.Deployment, req.RequestID, req.Endpoint, endpointID, req.Validate, exec)
 }
 
 // handleRemoval answers one deployment.remove payload; see run.
 func (d *deployer) handleRemoval(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
 	var req protocol.RemovalRequest
 	if json.Unmarshal(payload, &req) != nil {
-		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "invalid deployment request")))
+		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "", protocol.ResultInvalidRequest)))
 		return
 	}
 	var exec func(context.Context) protocol.DeploymentResult
 	if remove := d.opts.Remove; remove != nil {
 		exec = func(ctx context.Context) protocol.DeploymentResult {
-			return remove(ctx, req, func() { d.begin(req.Deployment) })
+			return remove(ctx, req, func() { d.begin(req.Deployment, req.RequestID) })
 		}
 	}
-	d.run(sessionCtx, out, req.Deployment, req.Endpoint, endpointID, req.Validate, exec, "this agent has no runtime to remove")
+	d.run(sessionCtx, out, req.Deployment, req.RequestID, req.Endpoint, endpointID, req.Validate, exec)
 }
 
 // run gates and runs one decoded request in the agent's single deployment slot. Refusals are
 // sent and not remembered; a run's result is remembered and then sent to the current session.
-// run is called on the session loop, which is out's only reader, so every send happens off it.
-func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, endpoint, endpointID string, validate func(time.Time) error, exec func(context.Context) protocol.DeploymentResult, noRuntime string) {
+// Every answer carries requestID when it is valid. run is called on the session loop, which is
+// out's only reader, so every send happens off it.
+func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, requestID, endpoint, endpointID string, validate func(time.Time) error, exec func(context.Context) protocol.DeploymentResult) {
 	// A re-sent frame for the live run: a refusal would settle the row it is still applying,
 	// so say nothing and let the real result answer. A remembered result is replayed. Both
 	// hold whatever the frame carries, even once its deadline has passed.
@@ -218,15 +229,20 @@ func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, endp
 		return
 	}
 	if err := validate(time.Now()); err != nil {
-		res := denied(id, "invalid deployment request")
+		echoed := requestID
+		if !protocol.ValidRequestID(echoed) {
+			echoed = ""
+		}
+		res := denied(id, echoed, protocol.ResultInvalidRequest)
 		if errors.Is(err, protocol.ErrClockSkew) {
-			res.Outcome, res.Detail = protocol.OutcomeFailed, err.Error()
+			res.Outcome, res.Code = protocol.OutcomeFailed, protocol.ResultClockSkew
 		}
 		go send(sessionCtx, out, resultFrame(res))
 		return
 	}
+	// Validate accepted requestID: from here it is echoed and safe to log.
 	if endpoint != endpointID {
-		go send(sessionCtx, out, resultFrame(denied(id, "this deployment is addressed to another endpoint")))
+		go send(sessionCtx, out, resultFrame(denied(id, requestID, protocol.ResultWrongEndpoint)))
 		return
 	}
 	d.mu.Lock()
@@ -241,23 +257,26 @@ func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, endp
 		go send(sessionCtx, out, resultFrame(prior.Result))
 		return
 	case exec == nil:
-		go send(sessionCtx, out, resultFrame(denied(id, noRuntime)))
+		// The server sends no frame this agent did not advertise a runtime for.
+		go send(sessionCtx, out, resultFrame(denied(id, requestID, protocol.ResultInvalidRequest)))
 		return
 	case running == id:
 		return
 	case running != "":
-		go send(sessionCtx, out, resultFrame(denied(id, "this agent is already applying a deployment")))
+		go send(sessionCtx, out, resultFrame(denied(id, requestID, protocol.ResultBusy)))
 		return
 	}
+	d.logf("deployment %s (request %s): received", id, requestID)
 	d.runs.Add(1)
 	go func() {
 		res := exec(d.root)
 		if res.Deployment == "" {
 			res.Deployment = id
 		}
+		res.RequestID = requestID
 		// Never record or send what the server would refuse to read: the host may have acted.
 		if res.Deployment != id || res.Validate() != nil {
-			res = protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeUnknown, Detail: "the runtime returned an unreadable result", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+			res = protocol.DeploymentResult{Deployment: id, RequestID: requestID, Outcome: protocol.OutcomeUnknown, Code: protocol.ResultUnreadable, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 		}
 		link := d.finish(res)
 		d.runs.Done()

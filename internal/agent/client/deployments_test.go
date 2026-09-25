@@ -35,11 +35,11 @@ func decodeResult(f outFrame, res *protocol.DeploymentResult) error {
 }
 
 func testRequest(endpoint string) protocol.DeploymentRequest {
-	return protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: endpoint, Project: "shop", Revision: 1, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64), Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}, Env: map[string]string{"TOKEN": "agent-secret-canary"}}}}
+	return protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: endpoint, Project: "shop", Revision: 1, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Services: []protocol.DeploymentService{{Name: "web", ContainerName: "shop-web-1", ImageID: "sha256:" + strings.Repeat("a", 64), Replaces: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}, Env: map[string]string{"TOKEN": "agent-secret-canary"}, Mounts: []protocol.Mount{}}}}
 }
 
 func testRemoval(endpoint string) protocol.RemovalRequest {
-	return protocol.RemovalRequest{Deployment: "6c5e4f3a-1b0d-4e9f-8a7b-4f5a6b7c8d9e", Endpoint: endpoint, Project: "shop", IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}}}}
+	return protocol.RemovalRequest{Deployment: "6c5e4f3a-1b0d-4e9f-8a7b-4f5a6b7c8d9e", RequestID: "fedcba9876543210fedcba9876543210", Endpoint: endpoint, Project: "shop", IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute), Containers: []protocol.RemovalTarget{{Service: "web", Target: protocol.InspectionTarget{ContainerID: strings.Repeat("b", 64), ImageID: "sha256:" + strings.Repeat("c", 64), CreatedUnix: 1700000000}}}}
 }
 
 func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
@@ -167,7 +167,7 @@ func TestDeployerWaitsForTheRunToRecord(t *testing.T) {
 		close(started)
 		<-ctx.Done()
 		time.Sleep(50 * time.Millisecond) // a runtime winding down after the cancel
-		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeTimedOut, Detail: "cancelled", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeTimedOut, Code: protocol.ResultStepFailed, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	}})
 	req := testRequest("ep_1")
 	raw, _ := json.Marshal(req)
@@ -201,12 +201,12 @@ func TestDeployerReplacesAnUnreadableResult(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no result")
 	}
-	if res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Detail != "the runtime returned an unreadable result" || res.Validate() != nil {
+	if res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Code != protocol.ResultUnreadable || res.RequestID != req.RequestID || res.Validate() != nil {
 		t.Fatalf("result: %+v", res)
 	}
 	d.wait()
 	stored, err := os.ReadFile(filepath.Join(dir, "deployments.json"))
-	if err != nil || strings.Contains(string(stored), "exploded") || !strings.Contains(string(stored), "unreadable result") {
+	if err != nil || strings.Contains(string(stored), "exploded") || !strings.Contains(string(stored), "\"code\":\"unreadable\"") {
 		t.Fatalf("ledger: %v %s", err, stored)
 	}
 }
@@ -231,7 +231,7 @@ func TestDeployerRefusals(t *testing.T) {
 	// Foreign endpoint.
 	raw, _ := json.Marshal(testRequest("someone-else"))
 	d.handleApply(context.Background(), "ep_1", raw, out)
-	if res := read(); res.Outcome != protocol.OutcomeDenied || calls != 0 {
+	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultWrongEndpoint || res.RequestID != "0123456789abcdef0123456789abcdef" || calls != 0 {
 		t.Fatalf("foreign: %+v", res)
 	}
 	// Invalid request.
@@ -239,7 +239,7 @@ func TestDeployerRefusals(t *testing.T) {
 	bad.Services = nil
 	raw, _ = json.Marshal(bad)
 	d.handleApply(context.Background(), "ep_1", raw, out)
-	if res := read(); res.Outcome != protocol.OutcomeDenied || calls != 0 {
+	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || calls != 0 {
 		t.Fatalf("invalid: %+v", res)
 	}
 	// Busy: a second request while one runs is denied.
@@ -251,8 +251,12 @@ func TestDeployerRefusals(t *testing.T) {
 	raw2, _ := json.Marshal(second)
 	d.handleApply(context.Background(), "ep_1", raw2, out)
 	first, next := read(), read()
-	if first.Outcome != protocol.OutcomeDenied && next.Outcome != protocol.OutcomeDenied {
-		t.Fatalf("one of two concurrent applies must be denied: %+v %+v", first, next)
+	busy := first
+	if next.Outcome == protocol.OutcomeDenied {
+		busy = next
+	}
+	if busy.Outcome != protocol.OutcomeDenied || busy.Code != protocol.ResultBusy {
+		t.Fatalf("one of two concurrent applies must be denied busy: %+v %+v", first, next)
 	}
 	if calls != 1 {
 		t.Fatalf("deploy ran %d times", calls)
@@ -260,14 +264,14 @@ func TestDeployerRefusals(t *testing.T) {
 	// No runtime.
 	d2 := newDeployer(context.Background(), t.TempDir(), &Options{})
 	d2.handleApply(context.Background(), "ep_1", raw, out)
-	if res := read(); res.Outcome != protocol.OutcomeDenied {
+	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest {
 		t.Fatalf("no runtime: %+v", res)
 	}
 }
 
 func TestDeployerResendsPersistedResults(t *testing.T) {
 	dir := t.TempDir()
-	ledger := map[string]deploymentEntry{"3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b": {Result: protocol.DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: protocol.OutcomeFailed, Detail: "x", Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}, "old": {Result: protocol.DeploymentResult{Deployment: "old"}, Finished: time.Now().Add(-25 * time.Hour)}}
+	ledger := map[string]deploymentEntry{"3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b": {Result: protocol.DeploymentResult{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Outcome: protocol.OutcomeFailed, Code: protocol.ResultStepFailed, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}, "old": {Result: protocol.DeploymentResult{Deployment: "old"}, Finished: time.Now().Add(-25 * time.Hour)}}
 	raw, _ := json.Marshal(ledger)
 	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), raw, 0o600); err != nil {
 		t.Fatal(err)
@@ -305,7 +309,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 	defer cancel()
 	dir := t.TempDir()
 	const saved = "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c"
-	ledger, _ := json.Marshal(map[string]deploymentEntry{saved: {Result: protocol.DeploymentResult{Deployment: saved, Outcome: protocol.OutcomeFailed, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}})
+	ledger, _ := json.Marshal(map[string]deploymentEntry{saved: {Result: protocol.DeploymentResult{Deployment: saved, Outcome: protocol.OutcomeFailed, Code: protocol.ResultStepFailed, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}})
 	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), ledger, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +572,7 @@ func TestDeployerSharesTheSlotWithRemoval(t *testing.T) {
 	d.handleApply(ctx, "ep_1", rawApply, out)
 	<-applyStarted
 	d.handleRemoval(ctx, "ep_1", rawRemoval, out)
-	if res := readResult(t, out); res.Deployment != removal.Deployment || res.Outcome != protocol.OutcomeDenied || res.Detail != "this agent is already applying a deployment" {
+	if res := readResult(t, out); res.Deployment != removal.Deployment || res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultBusy || res.RequestID != removal.RequestID {
 		t.Fatalf("removal during apply: %+v", res)
 	}
 	close(applyFinish)
@@ -607,7 +611,7 @@ func TestDeployerRemovalRefusals(t *testing.T) {
 	raw, _ := json.Marshal(testRemoval("ep_1"))
 	d := newDeployer(context.Background(), t.TempDir(), &Options{})
 	d.handleRemoval(context.Background(), "ep_1", raw, out)
-	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Detail != "this agent has no runtime to remove" {
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest {
 		t.Fatalf("no runtime: %+v", res)
 	}
 	d = newDeployer(context.Background(), t.TempDir(), &Options{Remove: func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult {
@@ -616,18 +620,18 @@ func TestDeployerRemovalRefusals(t *testing.T) {
 	}})
 	foreign, _ := json.Marshal(testRemoval("someone-else"))
 	d.handleRemoval(context.Background(), "ep_1", foreign, out)
-	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Detail != "this deployment is addressed to another endpoint" {
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultWrongEndpoint {
 		t.Fatalf("foreign: %+v", res)
 	}
 	bad := testRemoval("ep_1")
 	bad.Containers = nil
 	rawBad, _ := json.Marshal(bad)
 	d.handleRemoval(context.Background(), "ep_1", rawBad, out)
-	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Detail != "invalid deployment request" {
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest {
 		t.Fatalf("invalid: %+v", res)
 	}
 	d.handleRemoval(context.Background(), "ep_1", []byte("{"), out)
-	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied {
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || res.RequestID != "" {
 		t.Fatalf("unreadable: %+v", res)
 	}
 }
@@ -703,7 +707,7 @@ func TestDeployerReportsClockSkewAsFailed(t *testing.T) {
 	raw, _ := json.Marshal(req)
 	d.handleApply(context.Background(), "ep_1", raw, out)
 	var res protocol.DeploymentResult
-	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeFailed || res.Detail != "clock skew exceeds 5 minutes" || res.Validate() != nil {
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeFailed || res.Code != protocol.ResultClockSkew || res.RequestID != req.RequestID || res.Validate() != nil {
 		t.Fatalf("skewed frame: %+v", res)
 	}
 	d.mu.Lock()
@@ -731,7 +735,7 @@ func TestDeployerStartedMarkerSurvivesARestart(t *testing.T) {
 	first.handleApply(context.Background(), "ep_1", raw, make(chan outFrame, 1))
 	<-marked
 	stored, err := os.ReadFile(filepath.Join(dir, "deployments.json"))
-	if err != nil || !strings.Contains(string(stored), req.Deployment) || !strings.Contains(string(stored), `"started"`) || strings.Contains(string(stored), "agent-secret-canary") {
+	if err != nil || !strings.Contains(string(stored), req.Deployment) || !strings.Contains(string(stored), `"started"`) || !strings.Contains(string(stored), "\"request_id\":\"0123456789abcdef0123456789abcdef\"") || strings.Contains(string(stored), "agent-secret-canary") {
 		t.Fatalf("started entry: %v %s", err, stored)
 	}
 	// The agent restarts here: a new deployer reads the ledger the first one left.
@@ -743,7 +747,7 @@ func TestDeployerStartedMarkerSurvivesARestart(t *testing.T) {
 	out := make(chan outFrame, 4)
 	second.resend(context.Background(), out)
 	var res protocol.DeploymentResult
-	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Detail != "the agent restarted after replacement began; inspect the host" || res.Validate() != nil {
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Code != protocol.ResultRestarted || res.RequestID != req.RequestID || res.Validate() != nil {
 		t.Fatalf("re-sent: %+v", res)
 	}
 	second.handleApply(context.Background(), "ep_1", raw, out)
@@ -766,7 +770,7 @@ func TestDeployerPruneKeepsAStartedRun(t *testing.T) {
 		d.done[id] = deploymentEntry{Result: protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}
 	}
 	running := "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b"
-	d.begin(running)
+	d.begin(running, "")
 	e := d.done[running]
 	e.Started = time.Now().UTC().Add(-2 * deploymentLedgerLife)
 	d.done[running] = e
@@ -795,7 +799,7 @@ func TestDeployerPruneKeepsAStartedRun(t *testing.T) {
 func TestDeployerReplaysTheLedgerPastTheDeadline(t *testing.T) {
 	dir := t.TempDir()
 	req := testRequest("ep_1")
-	newDeployer(context.Background(), dir, &Options{}).begin(req.Deployment)
+	newDeployer(context.Background(), dir, &Options{}).begin(req.Deployment, req.RequestID)
 	var ran atomic.Bool
 	d := newDeployer(context.Background(), dir, &Options{Deploy: func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
 		ran.Store(true)
@@ -809,10 +813,45 @@ func TestDeployerReplaysTheLedgerPastTheDeadline(t *testing.T) {
 	out := make(chan outFrame, 1)
 	d.handleApply(context.Background(), "ep_1", raw, out)
 	var res protocol.DeploymentResult
-	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Detail != "the agent restarted after replacement began; inspect the host" {
+	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Code != protocol.ResultRestarted || res.RequestID != req.RequestID {
 		t.Fatalf("expired re-sent frame: %+v", res)
 	}
 	if ran.Load() {
 		t.Fatal("a remembered deployment ran again")
+	}
+}
+
+// The request ID is echoed on every answer the deployer sends, run or refused, and logged beside
+// the deployment ID at receipt, start and finish; a malformed one is neither echoed nor logged.
+func TestDeployerEchoesAndLogsTheRequestID(t *testing.T) {
+	var logs strings.Builder
+	d := newDeployer(context.Background(), t.TempDir(), &Options{Log: log.New(&logs, "", 0), Deploy: func(_ context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
+		started()
+		// The runtime's result need not carry it: the deployer echoes the frame's.
+		return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
+	}})
+	out := make(chan outFrame, 4)
+	defer d.attach(context.Background(), out)()
+	req := testRequest("ep_1")
+	raw, _ := json.Marshal(req)
+	d.handleApply(context.Background(), "ep_1", raw, out)
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeSucceeded || res.RequestID != req.RequestID || res.Validate() != nil {
+		t.Fatalf("result: %+v", res)
+	}
+	d.wait()
+	for _, event := range []string{"received", "started", "finished succeeded"} {
+		if want := "deployment " + req.Deployment + " (request " + req.RequestID + "): " + event; !strings.Contains(logs.String(), want) {
+			t.Fatalf("log lacks %q:\n%s", want, logs.String())
+		}
+	}
+	bad := testRequest("ep_1")
+	bad.Deployment, bad.RequestID = "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c", "a b\ninjected"
+	raw, _ = json.Marshal(bad)
+	d.handleApply(context.Background(), "ep_1", raw, out)
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || res.RequestID != "" {
+		t.Fatalf("malformed request id: %+v", res)
+	}
+	if strings.Contains(logs.String(), "injected") || strings.Contains(logs.String(), bad.Deployment) {
+		t.Fatalf("a refused frame was logged:\n%s", logs.String())
 	}
 }
