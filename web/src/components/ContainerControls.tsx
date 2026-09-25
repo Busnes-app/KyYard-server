@@ -82,7 +82,8 @@ export function ContainerControls({ base, container, active, scope, onRefresh, c
   </>;
 }
 
-export function ContainerLogs({ url, name }: { url: string; name: string }) {
+// query carries route-specific parameters, such as a pod log's container.
+export function ContainerLogs({ url, name, query }: { url: string; name: string; query?: Record<string, string> }) {
   const [text, setText] = useState('');
   const [notice, setNotice] = useState('');
   const [search, setSearch] = useState('');
@@ -91,7 +92,7 @@ export function ContainerLogs({ url, name }: { url: string; name: string }) {
   const [busy, setBusy] = useState(false);
   const source = useRef<EventSource | null>(null);
   const request = useRef<AbortController | null>(null);
-  const params = new URLSearchParams({ tail: '200', timestamps: timestamps ? '1' : '0', search });
+  const params = new URLSearchParams({ ...query, tail: '200', timestamps: timestamps ? '1' : '0', search });
   const stop = () => { source.current?.close(); source.current = null; request.current?.abort(); request.current = null; setFollowing(false); setBusy(false); };
   useEffect(() => () => { source.current?.close(); request.current?.abort(); }, []);
   const load = async () => {

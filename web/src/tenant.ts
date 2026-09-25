@@ -5,8 +5,8 @@ export interface MemberOrganization { id: string; name: string; role: string }
 export interface Environment { id: string; organization_id: string; name: string }
 export interface Member { user_id: string; username: string; role: string; status: string }
 export interface EndpointAlert { id: number; kind: string; details: string; created_at: string }
-export interface Endpoint { id: string; environment_id: string; name: string; runtime: string; state: string; facts: Record<string, string>; fingerprint: string; pending_fingerprint?: string; capabilities: string[]; alerts: EndpointAlert[]; created_at: string; approved_by?: string }
-export interface EnrollmentToken { id: string; runtime: string; expires_at: string; token: string; command?: string; image?: string; note?: string; disclosure: string }
+export interface Endpoint { id: string; environment_id: string; name: string; runtime: string; state: string; facts: Record<string, string>; fingerprint: string; pending_fingerprint?: string; capabilities: string[]; alerts: EndpointAlert[]; created_at: string; approved_by?: string; cluster_health?: 'healthy' | 'degraded' | 'unknown' }
+export interface EnrollmentToken { id: string; runtime: string; expires_at: string; token: string; command?: string; image?: string; note?: string; disclosure: string; manifest?: string; manifest_file?: string }
 export interface Port { host_ip?: string; host?: number; container: number; protocol: string }
 export interface Container { id: string; name: string; image: string; image_id: string; state: string; status: string; created_at: string; ports: Port[]; labels: Record<string, string>; networks: string[]; compose_project?: string }
 export interface Snapshot {
@@ -15,7 +15,16 @@ export interface Snapshot {
   containers: Container[]; images: { id: string; tags: string[]; digests: string[]; size_bytes: number; created_at: string }[];
   networks: { id: string; name: string; driver: string; scope: string }[]; volumes: { name: string; driver: string; mountpoint: string; created_at: string }[];
   truncated?: string[];
+  kubernetes?: KubernetesInventory;
 }
+// A cluster agent's inventory (protocol.KubernetesInventory); started_at is year 1 when unknown.
+export interface KubeNode { name: string; kubelet_version: string; os: string; arch: string; ready: boolean; roles: string[]; unschedulable: boolean }
+export interface Workload { kind: string; namespace: string; name: string; desired: number; ready: number; updated: number; images: string[]; paused: boolean }
+export interface PodContainer { name: string; image: string; image_id: string; state: string; reason: string; ready: boolean; restart_count: number }
+export interface Pod { namespace: string; name: string; phase: string; node: string; owner_kind: string; owner_name: string; started_at: string; containers: PodContainer[] }
+export interface KubeService { namespace: string; name: string; type: string; cluster_ip: string; ports: string[] }
+export interface Claim { namespace: string; name: string; phase: string; storage_class: string; capacity: string }
+export interface KubernetesInventory { nodes: KubeNode[]; namespaces: string[]; workloads: Workload[]; pods: Pod[]; services: KubeService[]; claims: Claim[] }
 export interface Sample { container_id: string; observed_at: string; cpu_percent: number; memory_bytes: number; memory_limit: number; rx_bytes: number; tx_bytes: number; pids: number; restart_count?: number }
 export interface Inventory { endpoint_id: string; state: string; generation: number; observed_at: string; received_at: string; snapshot: Snapshot }
 export interface AuditRecord { id: number; user_id: string; action: string; resource: string; environment_id: string; correlation_id: string; result: string; created_at: string }

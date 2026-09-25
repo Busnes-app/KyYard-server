@@ -103,3 +103,62 @@ it('refreshes hosts after the operator starts the agent', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Refresh hosts' }));
   expect(await screen.findByRole('button', { name: 'Approve' })).toBeTruthy();
 });
+
+it('enrolls a named Kubernetes cluster with the manifest, its command and the RBAC disclosure', async () => {
+  const manifest = 'apiVersion: v1\nkind: Namespace\n';
+  let posted = '';
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      posted = String(init.body);
+      return json({ id: 't1', runtime: 'kubernetes', expires_at: '2026-09-16T00:15:00Z', token: 'tok', command: 'kubectl apply -f kyyard-agent-prod.yaml', manifest, manifest_file: 'kyyard-agent-prod.yaml', note: 'delete secret kyyard-agent-enrollment', disclosure: 'It cannot read Secrets or ConfigMaps. Applying the manifest needs cluster-admin.' }, 201);
+    }
+    return json([]);
+  }));
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const clicked: string[] = [];
+  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:manifest'), revokeObjectURL: vi.fn() }));
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { clicked.push(this.download); });
+  document.cookie = 'ky_csrf=csrf-test';
+  render(<Endpoints org="a" env="env-a" />);
+  await screen.findByText(/No endpoints yet/);
+  fireEvent.change(screen.getByRole('combobox', { name: 'Runtime' }), { target: { value: 'kubernetes' } });
+  const enroll = screen.getByRole('button', { name: 'Enroll a cluster' }) as HTMLButtonElement;
+  expect(enroll.disabled).toBe(true);
+  fireEvent.change(screen.getByRole('textbox', { name: 'Cluster name' }), { target: { value: ' prod ' } });
+  fireEvent.click(enroll);
+  const region = await screen.findByRole('region', { name: 'Enrollment manifest' });
+  expect(JSON.parse(posted)).toEqual({ runtime: 'kubernetes', name: 'prod' });
+  expect(region.textContent).toContain('kubectl apply -f kyyard-agent-prod.yaml');
+  expect(region.textContent).toContain('cannot read Secrets');
+  expect(region.textContent).toContain('cluster-admin');
+  expect(region.textContent).not.toContain('docker');
+  fireEvent.click(screen.getByRole('button', { name: 'Copy manifest' }));
+  expect(writeText).toHaveBeenCalledWith(manifest);
+  fireEvent.click(screen.getByRole('button', { name: 'Download manifest' }));
+  expect(clicked).toEqual(['kyyard-agent-prod.yaml']);
+  click.mockRestore();
+});
+
+it('explains a cluster enrollment the server cannot render', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST'
+    ? json({ error: 'x', code: 'agent_image_unpinned' }, 409)
+    : json([])));
+  document.cookie = 'ky_csrf=csrf-test';
+  render(<Endpoints org="a" env="env-a" />);
+  await screen.findByText(/No endpoints yet/);
+  fireEvent.change(screen.getByRole('combobox', { name: 'Runtime' }), { target: { value: 'kubernetes' } });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Cluster name' }), { target: { value: 'prod' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Enroll a cluster' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('Set KY_AGENT_IMAGE to a digest-pinned image before enrolling a cluster.');
+  expect(screen.queryByRole('region', { name: 'Enrollment manifest' })).toBeNull();
+});
+
+it('shows a cluster endpoint with its health and node count', async () => {
+  const cluster = { ...pending, id: 'ep_2', name: 'prod', runtime: 'kubernetes', state: 'active', facts: { runtime: 'kubernetes', server_version: 'v1.36.0', node_count: '3' }, cluster_health: 'degraded' };
+  vi.stubGlobal('fetch', vi.fn(async () => json([cluster])));
+  render(<Endpoints org="a" env="env-a" />);
+  expect(await screen.findByText('degraded')).toBeTruthy();
+  expect(screen.getByText('3 nodes')).toBeTruthy();
+  expect(screen.getByText('v1.36.0')).toBeTruthy();
+});

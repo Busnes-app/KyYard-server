@@ -128,3 +128,53 @@ it.each([
   const fetcher = stubHost(organizations);
   expect(await terminalOffered('a', fetcher)).toBe(false);
 });
+
+it('renders a Kubernetes cluster read-only, filters by namespace and opens pod logs on the pod route', async () => {
+  const now = new Date().toISOString();
+  const cluster = { ...endpoint, runtime: 'kubernetes', capabilities: ['kubernetes.inventory', 'pod.logs'], cluster_health: 'degraded' };
+  const kubernetes = {
+    nodes: [{ name: 'control-1', kubelet_version: 'v1.36.0', os: 'linux', arch: 'amd64', ready: true, roles: ['control-plane'], unschedulable: false }, { name: 'worker-1', kubelet_version: 'v1.36.0', os: 'linux', arch: 'arm64', ready: false, roles: [], unschedulable: true }],
+    namespaces: ['kube-system', 'shop'],
+    workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web', desired: 3, ready: 2, updated: 3, images: ['nginx:1.29'], paused: false }, { kind: 'DaemonSet', namespace: 'kube-system', name: 'proxy', desired: 2, ready: 2, updated: 2, images: ['kube-proxy:1'], paused: false }],
+    pods: [{ namespace: 'shop', name: 'web-7c9', phase: 'Running', node: 'worker-1', owner_kind: 'Deployment', owner_name: 'web', started_at: now, containers: [{ name: 'web', image: 'nginx:1.29', image_id: '', state: 'running', reason: '', ready: true, restart_count: 2 }, { name: 'log', image: 'busybox:1', image_id: '', state: 'waiting', reason: 'CrashLoopBackOff', ready: false, restart_count: 5 }] },
+      { namespace: 'kube-system', name: 'proxy-x', phase: 'Running', node: 'control-1', owner_kind: 'DaemonSet', owner_name: 'proxy', started_at: now, containers: [{ name: 'proxy', image: 'kube-proxy:1', image_id: '', state: 'running', reason: '', ready: true, restart_count: 0 }] }],
+    services: [{ namespace: 'shop', name: 'web', type: 'ClusterIP', cluster_ip: '10.96.0.10', ports: ['80/TCP'] }],
+    claims: [{ namespace: 'shop', name: 'data', phase: 'Bound', storage_class: 'fast', capacity: '10Gi' }],
+  };
+  const snapshot = { generation: 3, observed_at: now, engine: { runtime: 'kubernetes', version: 'v1.36.0', api_version: '1.36', os: 'linux', arch: 'amd64', kernel: '', cpus: 0, memory_bytes: 0, hostname: '' }, containers: [], images: [], networks: [], volumes: [], kubernetes, truncated: ['pods'] };
+  const requests: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.includes('/pods/')) return new Response('ready\n', { status: 200 });
+    if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 3, observed_at: now, received_at: now, snapshot });
+    if (url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications') || url === '/api/organizations') return json([]);
+    return json(cluster);
+  }));
+  const show = vi.fn(function (this: HTMLDialogElement) { this.open = true; });
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show });
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  const health = await screen.findByRole('region', { name: 'Cluster health' });
+  expect(health.textContent).toContain('degraded');
+  expect(health.textContent).toContain('1 of 2 nodes ready');
+  expect(screen.getByText('cordoned')).toBeTruthy();
+  expect(screen.getByRole('status').textContent).toContain('truncated: pods');
+  // No Docker resource or control is rendered for a cluster.
+  for (const name of ['Containers', 'Images', 'Networks', 'Volumes', 'Projects', 'Activity']) expect(screen.queryByRole('button', { name })).toBeNull();
+  expect(screen.queryByText('Actions')).toBeNull();
+  expect(screen.queryByText(/Pull an image/)).toBeNull();
+  expect(screen.getByRole('region', { name: 'Applications' }).textContent).toContain('Kubernetes deployment arrives in a later release');
+  expect(screen.getByText('2/3')).toBeTruthy();
+  expect(screen.getByText('proxy-x', { exact: false })).toBeTruthy();
+  fireEvent.change(screen.getByRole('combobox', { name: 'Namespace' }), { target: { value: 'shop' } });
+  expect(screen.queryByText('kube-system/proxy-x')).toBeNull();
+  expect(screen.getByText('7')).toBeTruthy(); // restarts summed across the pod's containers
+  fireEvent.click(screen.getByRole('button', { name: 'Logs for shop/web-7c9/web' }));
+  const dialog = screen.getByRole('dialog', { name: 'Logs for shop/web-7c9/web' });
+  expect(show).toHaveBeenCalledTimes(1);
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Load logs' }));
+  await waitFor(() => expect(within(dialog).getByText('ready')).toBeTruthy());
+  const logURL = requests.find((u) => u.includes('/pods/'));
+  expect(logURL?.startsWith('/api/organizations/a/endpoints/ep_1/pods/shop/web-7c9/logs?container=web&tail=200')).toBe(true);
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+});
