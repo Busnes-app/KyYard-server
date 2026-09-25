@@ -35,6 +35,11 @@ export const unsupportedNames: Record<string, string> = {
   links: 'uses container links',
   network: 'is on a network other than its project network',
   image_config: "overrides its image's command, entrypoint, healthcheck, working directory or stop signal",
+  k8s_volume: 'mounts a volume; Kubernetes deployment of stateful services arrives with the migration analyzer',
+  k8s_host_ip: 'publishes a port on a host address; a Kubernetes Service has none, so drop the address',
+  k8s_restart: 'sets a restart policy other than always or unless-stopped; a Deployment always restarts',
+  k8s_name: 'has a name Kubernetes cannot use as a label; end it with a letter or digit',
+  k8s_namespace: "is mapped to a namespace the cluster's manifest no longer grants",
 };
 type Inspection = {
   observed_at: string; state: string; image_platform: { os: string; architecture: string; variant?: string };

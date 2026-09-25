@@ -43,8 +43,12 @@ const SERVICE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const DEPLOYMENT = /^[0-9a-f-]{36}$/;
 const fixed = (table: Record<string, string>, key: string) => Object.hasOwn(table, key) ? table[key] : '';
 
+// KUBERNETES_UNVERIFIED replaces the upgrade advice for a cluster: no agent can report health yet.
+export const KUBERNETES_UNVERIFIED = 'Not validated: KyYard does not read health from a Kubernetes Deployment yet, so the rollout wait was this apply\'s health check.';
+
 // verdictText is the verdict and why, through the fixed tables and the service-name shape only.
-export function verdictText(v: Validation): string {
+export function verdictText(v: Validation, kubernetes = false): string {
+  if (kubernetes && v.verdict === 'unverifiable') return KUBERNETES_UNVERIFIED;
   const head = fixed(VALIDATION_VERDICTS, v.verdict) || 'Unrecognised verdict.';
   const why = fixed(VALIDATION_DETAILS, v.detail) || (SERVICE.test(v.detail) ? `Service ${v.detail}.` : '');
   return why ? `${head} ${why}` : head;
@@ -76,7 +80,7 @@ export function pauseText(reason: string): string {
   return '';
 }
 // ValidationLine is one validation: verdict, rollback and the rollback deployment's ID prefix.
-export function ValidationLine({ v }: { v: Validation }) {
+export function ValidationLine({ v, kubernetes = false }: { v: Validation; kubernetes?: boolean }) {
   const id = v.rollback?.outcome === 'applied' ? v.rollback.deployment_id : '';
-  return <span>{verdictText(v)}{v.rollback && <> {rollbackText(v)}</>}{DEPLOYMENT.test(id) && <> Deployment <code title={id}>{id.slice(0, 8)}</code>.</>}</span>;
+  return <span>{verdictText(v, kubernetes)}{v.rollback && <> {rollbackText(v)}</>}{DEPLOYMENT.test(id) && <> Deployment <code title={id}>{id.slice(0, 8)}</code>.</>}</span>;
 }

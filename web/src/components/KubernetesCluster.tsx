@@ -2,14 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import { ContainerLogs } from './ContainerControls';
 import { displayName } from './Endpoints';
 import { ResourceTable } from './ResourceTable';
+import { ManifestRegeneration } from './KubernetesManifest';
+import type { ApplicationInstance } from './ApplicationAdoption';
 import type { Endpoint, KubernetesInventory, Pod, PodContainer } from '../tenant';
 
 const healthBadge: Record<string, string> = { healthy: 'badge-success', degraded: 'badge-danger' };
 const stateBadge: Record<string, string> = { running: 'badge-success', terminated: 'badge-danger' };
 
-// A Kubernetes endpoint is read-only in this release: health, nodes, workloads, pods with their
-// logs, services and claims. No Docker control is rendered, and none would be accepted.
-export function KubernetesCluster({ base, endpoint, inventory }: { base: string; endpoint: Endpoint; inventory: KubernetesInventory }) {
+// A Kubernetes endpoint shows health, nodes, workloads, pods with their logs, services, claims
+// and the applications mapped to it. No Docker control is rendered, and none would be accepted.
+// instances is null while the applications cannot be read.
+export function KubernetesCluster({ org, base, endpoint, inventory, instances, admin, onChanged }: { org: string; base: string; endpoint: Endpoint; inventory: KubernetesInventory; instances: ApplicationInstance[] | null; admin: boolean; onChanged: () => void }) {
   const [namespace, setNamespace] = useState('');
   const [logs, setLogs] = useState<{ pod: Pod; container: PodContainer } | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -55,7 +58,13 @@ export function KubernetesCluster({ base, endpoint, inventory }: { base: string;
       qualified(c), displayName(c.phase), displayName(c.storage_class) || '—', displayName(c.capacity) || '—',
     ]} />
     <section className="panel" aria-label="Applications"><h2 style={{ fontSize: 16 }}>Applications</h2>
-      <p>Kubernetes deployment arrives in a later release. KyYard reads this cluster; it does not change it.</p>
+      <p>{(endpoint.deploy_namespaces ?? []).length ? `KyYard deploys only to ${(endpoint.deploy_namespaces ?? []).join(', ')}, as the applied manifest grants.` : 'The manifest grants no namespace, so nothing deploys to this cluster.'}</p>
+      {instances === null ? <p>Applications could not be read.</p> : instances.length === 0 ? <p>No application is mapped to this cluster.</p> : <ul className="ky-list">{instances.map((i) => {
+        const deployments = inventory.workloads.filter((w) => w.kind === 'Deployment' && w.instance === i.id);
+        const ready = deployments.filter((w) => w.desired > 0 && w.ready === w.desired).length;
+        return <li key={i.id}><strong>{displayName(i.project)}</strong> · {displayName(i.namespace ?? '')} · {deployments.length ? `${ready} of ${deployments.length} Deployments ready` : 'not deployed'}</li>;
+      })}</ul>}
+      {admin && <ManifestRegeneration org={org} endpoint={endpoint} onSaved={onChanged} />}
     </section>
     {logs && <dialog ref={dialog} className="modal-window ky-log-dialog" aria-label={`Logs for ${logs.pod.namespace}/${logs.pod.name}/${logs.container.name}`} onCancel={(event) => { event.preventDefault(); setLogs(null); }} onClose={() => setLogs(null)}>
       <button className="btn-secondary" onClick={() => setLogs(null)}>Close logs</button>

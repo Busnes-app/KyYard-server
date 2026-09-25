@@ -4,8 +4,10 @@ import { useTenantResource, type Endpoint, type Inventory } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 import { knownBlockers } from './ApplicationPreflight';
+import { KubernetesMapping } from './KubernetesMapping';
 
-export type ApplicationInstance = { id: string; application_id: string; endpoint_id: string; endpoint_name: string; project: string; revision: number; current_revision: number; previous_revision: number; mapping_version: number; container_count: number; containers: AdoptedContainer[] };
+// namespace is set exactly for an instance mapped to a Kubernetes cluster.
+export type ApplicationInstance = { id: string; application_id: string; endpoint_id: string; endpoint_name: string; project: string; revision: number; current_revision: number; previous_revision: number; mapping_version: number; container_count: number; containers: AdoptedContainer[]; namespace?: string };
 type AdoptedContainer = { id: string; name: string; image_id: string; created_at: string };
 const REMOVAL_CODES: Record<string, string> = {
   endpoint_offline: 'The host is not connected.',
@@ -24,7 +26,7 @@ const REMOVAL_REFUSED = 'Removal refused. Refresh applications and check your ac
 const OUTCOME_UNKNOWN = 'Outcome unknown. Refresh applications before continuing.';
 type Preview = { application_name: string; endpoint_name: string; endpoint_id: string; project: string; revision: number; digest: string; containers: AdoptedContainer[] };
 
-export function ApplicationAdoption({ base, org, env, applicationName, instance, onChanged }: { base: string; org: string; env: string; applicationName: string; instance?: ApplicationInstance; onChanged: (status?: string) => void }) {
+export function ApplicationAdoption({ base, org, env, applicationName, instance, admin = false, onChanged }: { base: string; org: string; env: string; applicationName: string; instance?: ApplicationInstance; admin?: boolean; onChanged: (status?: string) => void }) {
   const [endpoint, setEndpoint] = useState('');
   const [offset, setOffset] = useState(0);
   const hosts = useTenantResource<Endpoint[]>(`/api/organizations/${encodeURIComponent(org)}/environments/${encodeURIComponent(env)}/endpoints?offset=${offset}&limit=20`);
@@ -48,6 +50,11 @@ export function ApplicationAdoption({ base, org, env, applicationName, instance,
     } catch { setUncertain(true); setMessage('Outcome unknown. Refresh applications before continuing.'); }
     finally { setBusy(false); }
   };
+  if (instance?.namespace) return <div>
+    <p>Mapped project <bdi>{instance.project}</bdi> · namespace {instance.namespace} on cluster {instance.endpoint_name}.</p>
+    <KubernetesMapping base={base} org={org} env={env} instance={instance} admin={admin} onChanged={onChanged} />
+    <RemoveApplication base={base} instance={instance} onChanged={onChanged} />
+  </div>;
   if (instance) return <div>
     <p>Adopted project <bdi>{instance.project}</bdi> · host {instance.endpoint_name} · {instance.container_count} recorded containers. Adoption does not mean the running configuration matches revision {instance.revision}.</p>
     <button className="btn-secondary" disabled={busy || uncertain} onClick={() => void release()}>Release adoption</button>
@@ -58,9 +65,10 @@ export function ApplicationAdoption({ base, org, env, applicationName, instance,
     <h3>Adopt an existing Compose project</h3>
     <p>Associate this application with an exact container snapshot. No restart, relabeling or deployment. Networks and volumes remain unowned.</p>
     <StateNotice state={hosts.state} onRetry={hosts.reload} />
-    {hosts.state === 'ready' && <label>Docker host<select value={endpoint} onChange={(e) => setEndpoint(e.target.value)}><option value="">Choose a host</option>{hosts.data?.map((h) => <option key={h.id} value={h.id}>{h.name} · {h.state}</option>)}</select></label>}
+    {hosts.state === 'ready' && <label>Docker host<select value={endpoint} onChange={(e) => setEndpoint(e.target.value)}><option value="">Choose a host</option>{hosts.data?.filter((h) => h.runtime !== 'kubernetes').map((h) => <option key={h.id} value={h.id}>{h.name} · {h.state}</option>)}</select></label>}
     {(offset > 0 || (hosts.data?.length ?? 0) === 20) && <div className="ky-pagination"><button className="btn-secondary" disabled={offset === 0} onClick={() => { setEndpoint(''); setOffset(offset - 20); }}>Previous hosts</button><button className="btn-secondary" disabled={hosts.state !== 'ready' || (hosts.data?.length ?? 0) < 20} onClick={() => { setEndpoint(''); setOffset(offset + 20); }}>Next hosts</button></div>}
     {endpoint && <ProjectChoice key={endpoint} base={base} org={org} endpoint={endpoint} onChanged={onChanged} />}
+    <KubernetesMapping base={base} org={org} env={env} admin={admin} onChanged={onChanged} />
   </div>;
 }
 function ProjectChoice({ base, org, endpoint, onChanged }: { base: string; org: string; endpoint: string; onChanged: () => void }) {
@@ -132,7 +140,9 @@ function RemoveApplication({ base, instance, onChanged }: { base: string; instan
   };
   return <form className="dr-stack" onSubmit={(e) => { e.preventDefault(); void remove(); }}>
     <h3>Remove application</h3>
-    <p>Stops and removes the {instance.container_count} adopted containers of <bdi>{instance.project}</bdi> on {instance.endpoint_name}. Named volumes, images and the saved revisions are kept; the application is marked removed and can be discarded later. Nothing rolls back.</p>
+    {instance.namespace
+      ? <p>Deletes the Deployments, Services, ConfigMaps and Secrets labelled as <bdi>{instance.project}</bdi> in namespace {instance.namespace} on {instance.endpoint_name}; objects KyYard did not label are left alone. The saved revisions are kept; the application is marked removed and can be discarded later. Nothing rolls back.</p>
+      : <p>Stops and removes the {instance.container_count} adopted containers of <bdi>{instance.project}</bdi> on {instance.endpoint_name}. Named volumes, images and the saved revisions are kept; the application is marked removed and can be discarded later. Nothing rolls back.</p>}
     <label>Confirm removal project<input value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={busy || uncertain} autoComplete="off" /></label>
     <button className="btn-danger" disabled={busy || uncertain || confirm !== instance.project}>Remove application</button>
     {message && <p role="alert">{message}</p>}

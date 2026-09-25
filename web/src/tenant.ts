@@ -5,8 +5,8 @@ export interface MemberOrganization { id: string; name: string; role: string }
 export interface Environment { id: string; organization_id: string; name: string }
 export interface Member { user_id: string; username: string; role: string; status: string }
 export interface EndpointAlert { id: number; kind: string; details: string; created_at: string }
-export interface Endpoint { id: string; environment_id: string; name: string; runtime: string; state: string; facts: Record<string, string>; fingerprint: string; pending_fingerprint?: string; capabilities: string[]; alerts: EndpointAlert[]; created_at: string; approved_by?: string; cluster_health?: 'healthy' | 'degraded' | 'unknown' }
-export interface EnrollmentToken { id: string; runtime: string; expires_at: string; token: string; command?: string; image?: string; note?: string; disclosure: string; manifest?: string; manifest_file?: string }
+export interface Endpoint { id: string; environment_id: string; name: string; runtime: string; state: string; facts: Record<string, string>; fingerprint: string; pending_fingerprint?: string; capabilities: string[]; alerts: EndpointAlert[]; created_at: string; approved_by?: string; cluster_health?: 'healthy' | 'degraded' | 'unknown'; deploy_namespaces?: string[] }
+export interface EnrollmentToken { id: string; runtime: string; expires_at: string; token: string; command?: string; image?: string; note?: string; disclosure: string; manifest?: string; manifest_file?: string; namespaces?: string[] }
 export interface Port { host_ip?: string; host?: number; container: number; protocol: string }
 export interface Container { id: string; name: string; image: string; image_id: string; state: string; status: string; created_at: string; ports: Port[]; labels: Record<string, string>; networks: string[]; compose_project?: string }
 export interface Snapshot {
@@ -19,7 +19,8 @@ export interface Snapshot {
 }
 // A cluster agent's inventory (protocol.KubernetesInventory); started_at is year 1 when unknown.
 export interface KubeNode { name: string; kubelet_version: string; os: string; arch: string; ready: boolean; roles: string[]; unschedulable: boolean }
-export interface Workload { kind: string; namespace: string; name: string; desired: number; ready: number; updated: number; images: string[]; paused: boolean }
+// application and instance are KyYard's labels on a Deployment it applied.
+export interface Workload { kind: string; namespace: string; name: string; desired: number; ready: number; updated: number; images: string[]; paused: boolean; application?: string; instance?: string }
 export interface PodContainer { name: string; image: string; image_id: string; state: string; reason: string; ready: boolean; restart_count: number }
 export interface Pod { namespace: string; name: string; phase: string; node: string; owner_kind: string; owner_name: string; started_at: string; containers: PodContainer[] }
 export interface KubeService { namespace: string; name: string; type: string; cluster_ip: string; ports: string[] }
@@ -45,6 +46,14 @@ export interface UpdatePolicy { id: string; application_id: string; created_by: 
 export const privateDisabled = 'Private-address registries are disabled by the operator (KY_REGISTRY_ALLOW_PRIVATE).';
 
 export const tenantRoles = ['organization_admin', 'environment_admin', 'operator', 'developer', 'read_only'] as const;
+// Mirrors permissions.Allows(role, EndpointEnroll): organization and environment admins enroll
+// endpoints and regenerate a cluster's manifest.
+export const canEnroll = (role: string | undefined) => role === 'organization_admin' || role === 'environment_admin';
+
+// parseNamespaces reads a typed namespace list: names split on commas and whitespace, empties
+// dropped. The server sorts, deduplicates and validates.
+export const parseNamespaces = (text: string) => text.split(/[\s,]+/).filter(Boolean);
+
 // Mirrors permissions.Allows(role, ContainerExec): only organization admins may exec.
 export const canExec = (role: string | undefined) => role === 'organization_admin';
 

@@ -129,13 +129,14 @@ it.each([
   expect(await terminalOffered('a', fetcher)).toBe(false);
 });
 
-it('renders a Kubernetes cluster read-only, filters by namespace and opens pod logs on the pod route', async () => {
+it('renders a Kubernetes cluster, its mapped applications, filters by namespace and opens pod logs on the pod route', async () => {
   const now = new Date().toISOString();
-  const cluster = { ...endpoint, runtime: 'kubernetes', capabilities: ['kubernetes.inventory', 'pod.logs'], cluster_health: 'degraded' };
+  const cluster = { ...endpoint, runtime: 'kubernetes', capabilities: ['kubernetes.inventory', 'pod.logs', 'kubernetes.deploy'], cluster_health: 'degraded', deploy_namespaces: ['shop'] };
+  const mapped = { id: 'i1', application_id: 'app', endpoint_id: 'ep_1', endpoint_name: 'host-1', project: 'storefront', namespace: 'shop', revision: 1, current_revision: 1, previous_revision: 0, mapping_version: 1, container_count: 0, containers: [] };
   const kubernetes = {
     nodes: [{ name: 'control-1', kubelet_version: 'v1.36.0', os: 'linux', arch: 'amd64', ready: true, roles: ['control-plane'], unschedulable: false }, { name: 'worker-1', kubelet_version: 'v1.36.0', os: 'linux', arch: 'arm64', ready: false, roles: [], unschedulable: true }],
     namespaces: ['kube-system', 'shop'],
-    workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web', desired: 3, ready: 2, updated: 3, images: ['nginx:1.29'], paused: false }, { kind: 'DaemonSet', namespace: 'kube-system', name: 'proxy', desired: 2, ready: 2, updated: 2, images: ['kube-proxy:1'], paused: false }],
+    workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web', desired: 3, ready: 2, updated: 3, images: ['nginx:1.29'], paused: false, application: 'app', instance: 'i1' }, { kind: 'DaemonSet', namespace: 'kube-system', name: 'proxy', desired: 2, ready: 2, updated: 2, images: ['kube-proxy:1'], paused: false }],
     pods: [{ namespace: 'shop', name: 'web-7c9', phase: 'Running', node: 'worker-1', owner_kind: 'Deployment', owner_name: 'web', started_at: now, containers: [{ name: 'web', image: 'nginx:1.29', image_id: '', state: 'running', reason: '', ready: true, restart_count: 2 }, { name: 'log', image: 'busybox:1', image_id: '', state: 'waiting', reason: 'CrashLoopBackOff', ready: false, restart_count: 5 }] },
       { namespace: 'kube-system', name: 'proxy-x', phase: 'Running', node: 'control-1', owner_kind: 'DaemonSet', owner_name: 'proxy', started_at: now, containers: [{ name: 'proxy', image: 'kube-proxy:1', image_id: '', state: 'running', reason: '', ready: true, restart_count: 0 }] }],
     services: [{ namespace: 'shop', name: 'web', type: 'ClusterIP', cluster_ip: '10.96.0.10', ports: ['80/TCP'] }],
@@ -148,7 +149,8 @@ it('renders a Kubernetes cluster read-only, filters by namespace and opens pod l
     requests.push(url);
     if (url.includes('/pods/')) return new Response('ready\n', { status: 200 });
     if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 3, observed_at: now, received_at: now, snapshot });
-    if (url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications') || url === '/api/organizations') return json([]);
+    if (url.endsWith('/applications')) return json([mapped]);
+    if (url.endsWith('/samples') || url.includes('/commands') || url === '/api/organizations') return json([]);
     return json(cluster);
   }));
   const show = vi.fn(function (this: HTMLDialogElement) { this.open = true; });
@@ -163,7 +165,11 @@ it('renders a Kubernetes cluster read-only, filters by namespace and opens pod l
   for (const name of ['Containers', 'Images', 'Networks', 'Volumes', 'Projects', 'Activity']) expect(screen.queryByRole('button', { name })).toBeNull();
   expect(screen.queryByText('Actions')).toBeNull();
   expect(screen.queryByText(/Pull an image/)).toBeNull();
-  expect(screen.getByRole('region', { name: 'Applications' }).textContent).toContain('Kubernetes deployment arrives in a later release');
+  const applications = screen.getByRole('region', { name: 'Applications' }).textContent;
+  expect(applications).toContain('KyYard deploys only to shop');
+  expect(applications).toContain('storefront · shop · 0 of 1 Deployments ready');
+  // Only an administrator is offered the manifest.
+  expect(screen.queryByRole('button', { name: 'Regenerate manifest' })).toBeNull();
   expect(screen.getByText('2/3')).toBeTruthy();
   expect(screen.getByText('proxy-x', { exact: false })).toBeTruthy();
   fireEvent.change(screen.getByRole('combobox', { name: 'Namespace' }), { target: { value: 'shop' } });

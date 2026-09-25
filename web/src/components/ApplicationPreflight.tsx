@@ -5,7 +5,7 @@ import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
 type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'mounts_unreported' | 'mount_unsupported' | 'volume_missing'
-  | 'clock_skew' | 'inspection_unavailable' | 'replacement_identity_changed' | 'configuration_unsupported' | 'frame_too_large' | 'too_many_registry_hosts' | 'frame_invalid' | 'agent_deploy_unsupported' | 'agent_pull_unsupported' | 'agent_inspect_unsupported';
+  | 'clock_skew' | 'inspection_unavailable' | 'replacement_identity_changed' | 'configuration_unsupported' | 'frame_too_large' | 'too_many_registry_hosts' | 'frame_invalid' | 'agent_deploy_unsupported' | 'agent_pull_unsupported' | 'agent_inspect_unsupported' | 'kubernetes_unsupported' | 'k8s_namespace';
 export const messages: Record<Blocker, string> = {
   mapping_requires_review: 'Review and save service mapping for the latest definition.',
   unassigned_adopted_containers: 'Some adopted containers are unassigned. Review service mapping before planning replacement.',
@@ -33,6 +33,8 @@ export const messages: Record<Blocker, string> = {
   agent_deploy_unsupported: 'Upgrade the host agent to enable deployments.',
   agent_pull_unsupported: 'Upgrade the host agent to enable deployments that pull images.',
   agent_inspect_unsupported: 'Upgrade the host agent to enable live inspection, which planning requires.',
+  kubernetes_unsupported: 'Some services cannot run as a Kubernetes Deployment yet; each is named below with the reason.',
+  k8s_namespace: "The cluster's manifest no longer grants this namespace. Regenerate the manifest and apply it, or map the application to a granted namespace.",
 };
 // Definition volumes (named|bind) and runtime mounts (volume|bind); kinds render from this table only.
 export type Mount = { kind: string; source: string; target: string; read_only?: boolean };
