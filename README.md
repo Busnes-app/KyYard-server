@@ -66,6 +66,25 @@ what a recreate drops, so an agent upgraded ahead of it refuses every container 
 Until an agent is upgraded it reports no container mounts, and every deployment plan on its host
 is blocked (`mounts_unreported`).
 
+Deployment frames now carry a `request_id`. An agent upgraded ahead of its server refuses every
+deployment (`invalid_request`) until the server is upgraded; an older agent still deploys, and
+its results show "The agent did not classify this outcome; upgrade the agent."
+
+Usernames are unique ignoring case from this release (migration 30). If two accounts differ only
+by case the server refuses to start and names them, for example
+`usernames differ only by case: "erin", "Erin"; rename or delete one of each pair before upgrading`;
+nothing is changed. Stop the server (`docker compose stop kyyard`), copy the database, then
+rename or delete one account of each pair in it and start again. For the default SQLite
+volume (find its name with `docker volume ls | grep kyyard-data`):
+
+    docker run --rm -it -v <volume>:/data alpine:3.24 sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 /data/ky_server.db'
+    sqlite> SELECT id, username, sso_provider, created_at FROM users ORDER BY LOWER(username);
+    sqlite> UPDATE users SET username = 'erin-old' WHERE id = '<id of the account to rename>';
+
+On PostgreSQL run the same statements with `psql`. A single sign-on login whose username
+matches an existing account ignoring case is refused with "The username … is taken by another
+account": KyYard never links a provider's claimed name to an account it did not create.
+
 `AGENTS.md` is the contract for working in this repository.
 
 ## First sign-in
