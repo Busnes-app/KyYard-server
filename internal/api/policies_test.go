@@ -196,6 +196,7 @@ func TestPolicyRunBlocked(t *testing.T) {
 		return in, nil
 	})
 	h.updatable(t)
+	h.online(t, policyCaps)
 	h.policy(t, store.PolicyModeApply)
 	h.tick(tomorrow().Add(10*time.Hour + 30*time.Minute))
 	runs := h.runs(t, "usr_planner")
@@ -454,5 +455,112 @@ func TestPolicyRemembersABusyWindowAcrossAGap(t *testing.T) {
 	want := map[time.Time]string{day.Add(10 * time.Hour): store.RunSkippedBusy, day.Add(34 * time.Hour): store.RunSkippedMissed}
 	if len(got) != len(want) || got[day.Add(10*time.Hour)] != want[day.Add(10*time.Hour)] || got[day.Add(34*time.Hour)] != want[day.Add(34*time.Hour)] {
 		t.Fatalf("runs: %v", got)
+	}
+}
+
+// expectNoApplyFrame reads the agent's socket briefly and fails on a deployment.apply frame.
+func expectNoApplyFrame(t *testing.T, sock *agentSocket) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	for {
+		_, raw, err := sock.conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		var e protocol.Envelope
+		if json.Unmarshal(raw, &e) == nil && e.Type == protocol.TypeDeploymentApply {
+			t.Fatal("a deployment.apply frame was sent")
+		}
+	}
+}
+
+// A policy deleted or switched to plan_only while its run is in flight does not apply: the plan
+// stays for a click and expires like any other; an edited policy's run is planned with
+// policy_changed, a deleted one's run row went with it.
+func TestPolicyChangedMidRunDoesNotApply(t *testing.T) {
+	for name, change := range map[string]func(*testing.T, planHost){
+		"deleted": func(t *testing.T, h planHost) {
+			if err := h.st.Tenancy().DeleteUpdatePolicy(context.Background(), h.as("usr_planner"), h.appID()); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"plan_only": func(t *testing.T, h planHost) { h.policy(t, store.PolicyModePlanOnly) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newPlanHost(t, policyCaps, "web")
+			api.SetPlanInspectorForTest(h.s, verifiedInspector)
+			fake := h.updatable(t)
+			fake.gate, fake.entered = make(chan struct{}), make(chan struct{}, 4)
+			sock, _ := h.online(t, policyCaps)
+			h.policy(t, store.PolicyModeApply)
+			api.PolicyTickForTest(h.s, tomorrow().Add(10*time.Hour+30*time.Minute))
+			select {
+			case <-fake.entered:
+			case <-time.After(10 * time.Second):
+				t.Fatal("no run reached the registry")
+			}
+			change(t, h)
+			close(fake.gate)
+			api.WaitPolicyRunsForTest(h.s)
+			expectNoApplyFrame(t, sock)
+
+			runs := h.runs(t, "usr_planner")
+			if name == "deleted" && len(runs) != 0 {
+				t.Fatalf("runs of a deleted policy: %+v", runs)
+			}
+			if name == "plan_only" && (len(runs) != 1 || runs[0].Outcome != store.RunPlanned || runs[0].Detail != "policy_changed" || runs[0].DeploymentID == "") {
+				t.Fatalf("runs: %+v", runs)
+			}
+			var list []store.Deployment
+			if err := json.Unmarshal([]byte(h.do(t, "GET", h.deployments, "", 200)), &list); err != nil || len(list) != 1 {
+				t.Fatalf("deployments: %+v %v", list, err)
+			}
+			if d := list[0]; d.State != "planned" || d.ExpiresAt.After(time.Now().Add(store.DeploymentPlanTTL)) {
+				t.Fatalf("deployment: %+v", d)
+			}
+		})
+	}
+}
+
+// An apply run whose endpoint is offline fails before planning and leaves no plan to occupy it.
+func TestPolicyApplyWithTheEndpointOfflinePlansNothing(t *testing.T) {
+	h := newPlanHost(t, policyCaps, "web")
+	api.SetPlanInspectorForTest(h.s, verifiedInspector)
+	h.updatable(t)
+	h.policy(t, store.PolicyModeApply)
+	h.tick(tomorrow().Add(10*time.Hour + 30*time.Minute))
+	runs := h.runs(t, "usr_planner")
+	if len(runs) != 1 || runs[0].Outcome != store.RunFailed || runs[0].Detail != "endpoint_offline" || runs[0].DeploymentID != "" {
+		t.Fatalf("runs: %+v", runs)
+	}
+	if body := h.do(t, "GET", h.deployments, "", 200); !strings.HasPrefix(body, "[]") {
+		t.Fatalf("deployments: %s", body)
+	}
+}
+
+// An agent without live inspection verdicts makes every window blocked, and they count: the
+// third pauses the policy.
+func TestPolicyOnAnAgentWithoutInspectionVerdictsIsBlocked(t *testing.T) {
+	caps := []string{protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityContainerInspect}
+	h := newPlanHost(t, caps, "web")
+	h.updatable(t)
+	h.online(t, caps)
+	h.policy(t, store.PolicyModeApply)
+	day := tomorrow()
+	for i := range 3 {
+		h.tick(day.AddDate(0, 0, i).Add(10*time.Hour + 30*time.Minute))
+	}
+	runs := h.runs(t, "usr_planner")
+	if len(runs) != 3 {
+		t.Fatalf("runs: %+v", runs)
+	}
+	for _, r := range runs {
+		if r.Outcome != store.RunBlocked || r.Detail != "agent_inspect_unsupported" {
+			t.Fatalf("run: %+v", r)
+		}
+	}
+	if got, _, err := h.st.Tenancy().ReadUpdatePolicy(context.Background(), h.as("usr_planner"), h.appID()); err != nil || got.Status != store.PolicyPaused || got.PausedReason != store.PolicyReasonFailures {
+		t.Fatalf("policy: %+v %v", got, err)
 	}
 }

@@ -57,6 +57,9 @@ var (
 	ErrInvalidWeekdays = errors.New("invalid update policy weekdays")
 	ErrInvalidMode     = errors.New("invalid update policy mode")
 	ErrPolicyNotPaused = errors.New("update policy is not paused")
+	// ErrPolicyChanged: a policy run's policy was deleted, paused, switched to plan_only or
+	// saved by someone else before its apply.
+	ErrPolicyChanged = errors.New("update policy changed during its run")
 )
 
 // PolicyInput is what an administrator saves: a mode and a weekly window in an IANA zone.

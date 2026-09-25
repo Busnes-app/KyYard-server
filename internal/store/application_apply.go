@@ -18,6 +18,29 @@ import (
 // executes. The values it resolves exist only in the returned request. maxFrameBytes is the
 // largest frame the endpoint's agent accepts. See docs/application-schema.md, Deploy.
 func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error) {
+	return t.applyDeployment(ctx, a, app, id, confirm, key, maxFrameBytes, nil)
+}
+
+// ApplyPolicyDeployment is ApplyDeployment for a policy run: inside the same transaction, after
+// the application lock, policy must still exist, be active, in apply mode and act as a.ActorID,
+// or the row stays planned and the call is ErrPolicyChanged.
+func (t *tenancyStore) ApplyPolicyDeployment(ctx context.Context, a TenantAccess, policy, app, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error) {
+	return t.applyDeployment(ctx, a, app, id, confirm, key, maxFrameBytes, func(tx *sql.Tx) error {
+		lock := ""
+		if t.store.driver == "postgres" {
+			lock = " FOR UPDATE"
+		}
+		var status, mode, createdBy string
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT status,mode,created_by FROM update_policies WHERE id=? AND organization_id=? AND environment_id=? AND application_id=?`+lock), policy, a.OrganizationID, a.EnvironmentID, app).Scan(&status, &mode, &createdBy)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (status != PolicyActive || mode != PolicyModeApply || createdBy != a.ActorID)) {
+			return ErrPolicyChanged
+		}
+		return err
+	})
+}
+
+// applyDeployment is ApplyDeployment with guard, when non-nil, run after the application lock.
+func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app, id, confirm string, key []byte, maxFrameBytes int, guard func(*sql.Tx) error) (*Deployment, *protocol.DeploymentRequest, error) {
 	appID, err := uuid.Parse(app)
 	if err != nil || a.EnvironmentID == "" || len(key) != 32 {
 		return nil, nil, ErrInvalid
@@ -46,6 +69,11 @@ func (t *tenancyStore) ApplyDeployment(ctx context.Context, a TenantAccess, app,
 				return ErrNotFound
 			}
 			return err
+		}
+		if guard != nil {
+			if err := guard(tx); err != nil {
+				return err
+			}
 		}
 		d, err := scanDeployment(tx.QueryRowContext(ctx, t.store.rebind(selectDeployments+`WHERE d.organization_id=? AND d.environment_id=? AND d.application_id=? AND d.id=?`), a.OrganizationID, a.EnvironmentID, appID.String(), planID.String()))
 		if errors.Is(err, sql.ErrNoRows) {

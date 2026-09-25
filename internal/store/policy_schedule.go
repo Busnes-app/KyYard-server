@@ -271,8 +271,16 @@ func (t *tenancyStore) finishPolicyRun(ctx context.Context, tx *sql.Tx, run, out
 	if deployment != "" {
 		dep = deployment
 	}
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE policy_runs SET outcome=?,deployment_id=?,detail=?,finished_at=? WHERE id=?`), outcome, dep, protocol.CleanText(detail, 255), now, run); err != nil {
+	res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE policy_runs SET outcome=?,deployment_id=?,detail=?,finished_at=? WHERE id=? AND outcome=''`), outcome, dep, protocol.CleanText(detail, 255), now, run)
+	if err != nil {
 		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	pause := ""
 	switch outcome {
@@ -301,12 +309,15 @@ func (t *tenancyStore) finishPolicyRun(ctx context.Context, tx *sql.Tx, run, out
 	if pause == "" {
 		return nil
 	}
-	res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE update_policies SET status=?,paused_reason=?,updated_at=? WHERE id=? AND status=?`), PolicyPaused, pause, now, policy, PolicyActive)
+	res, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE update_policies SET status=?,paused_reason=?,updated_at=? WHERE id=? AND status=?`), PolicyPaused, pause, now, policy, PolicyActive)
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil || n != 1 {
+	if n, err = res.RowsAffected(); err != nil {
 		return err
+	}
+	if n == 0 {
+		return nil // already paused
 	}
 	result := "failure"
 	if outcome == RunPaused {

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	_ "time/tzdata" // zone tests must not depend on the host's zoneinfo
 
 	"github.com/google/uuid"
 )

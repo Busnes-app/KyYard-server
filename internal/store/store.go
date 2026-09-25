@@ -208,6 +208,9 @@ type TenancyStore interface {
 	SchedulePolicies(ctx context.Context, now time.Time) ([]ScheduledPolicy, error)
 	BeginPolicyRun(ctx context.Context, policyID string, occurrence time.Time, correlation string) (string, error)
 	FinishPolicyRun(ctx context.Context, runID, outcome, deploymentID, detail string) error
+	// ApplyPolicyDeployment is ApplyDeployment that also requires, in its transaction, the policy
+	// still active, in apply mode and acting as access.ActorID (ErrPolicyChanged otherwise).
+	ApplyPolicyDeployment(ctx context.Context, access TenantAccess, policyID, applicationID, id, confirm string, key []byte, maxFrameBytes int) (*Deployment, *protocol.DeploymentRequest, error)
 	SkipPolicyWindow(ctx context.Context, policyID string, occurrence time.Time, outcome, detail string) error
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)

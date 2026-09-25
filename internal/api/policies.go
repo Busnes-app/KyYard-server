@@ -207,7 +207,12 @@ func (s *Server) runPolicy(ctx context.Context, sp store.ScheduledPolicy, opened
 		hook()
 	}
 	outcome, deployment, detail := s.performPolicyRun(ctx, a, pol)
-	if err := ts.FinishPolicyRun(ctx, run, outcome, deployment, detail); err != nil {
+	err = ts.FinishPolicyRun(ctx, run, outcome, deployment, detail)
+	if errors.Is(err, store.ErrNotFound) {
+		log.Printf("[POLICY] policy %s run %s: the policy was deleted during the run", pol.ID, run)
+		return
+	}
+	if err != nil {
 		log.Printf("[POLICY] policy %s run %s: recording %s: %v", pol.ID, run, outcome, err)
 		return
 	}
@@ -258,6 +263,10 @@ func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol
 	if err != nil {
 		return policyFailure(err)
 	}
+	// An apply run that cannot send leaves no plan behind to occupy the endpoint.
+	if pol.Mode == store.PolicyModeApply && !s.Connected(pre.EndpointID) {
+		return store.RunFailed, "", "endpoint_offline"
+	}
 	ep, err := ts.ReadEndpoint(ctx, a, pre.EndpointID)
 	if err != nil {
 		return policyFailure(err)
@@ -285,7 +294,12 @@ func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol
 	if !s.Connected(d.EndpointID) {
 		return store.RunFailed, d.ID, "endpoint_offline"
 	}
-	applied, frame, err := ts.ApplyDeployment(ctx, a, app, d.ID, d.Plan.Project, key, maxFrame)
+	// The policy is re-read inside the apply's transaction: one deleted, paused, switched to
+	// plan_only or saved by someone else since the tick leaves its plan for a click.
+	applied, frame, err := ts.ApplyPolicyDeployment(ctx, a, pol.ID, app, d.ID, d.Plan.Project, key, maxFrame)
+	if errors.Is(err, store.ErrPolicyChanged) {
+		return store.RunPlanned, d.ID, "policy_changed"
+	}
 	if err != nil {
 		failed, _, why := policyFailure(err)
 		return failed, d.ID, why

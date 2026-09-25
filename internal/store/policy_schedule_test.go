@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
 var everyDay = []int{0, 1, 2, 3, 4, 5, 6}
@@ -382,5 +384,59 @@ func TestBeginPolicyRunRefusesAGonePolicy(t *testing.T) {
 	var n int
 	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM policy_runs`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("runs: %d %v", n, err)
+	}
+}
+
+// A policy run's apply re-reads its policy in the apply transaction: deleted, paused, plan_only
+// or saved by someone else refuses with ErrPolicyChanged and leaves the plan planned.
+func TestApplyPolicyDeploymentRequiresThePolicyUnchanged(t *testing.T) {
+	for name, change := range map[string]func(*testing.T, *SQLStore, TenantAccess, string, string){
+		"deleted": func(t *testing.T, st *SQLStore, a TenantAccess, app, _ string) {
+			if err := st.Tenancy().DeleteUpdatePolicy(context.Background(), a, app); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"paused": func(t *testing.T, st *SQLStore, _ TenantAccess, _, policy string) {
+			if _, err := st.db.Exec(st.rebind(`UPDATE update_policies SET status=? WHERE id=?`), PolicyPaused, policy); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"plan_only": func(t *testing.T, st *SQLStore, a TenantAccess, app, _ string) {
+			in := dailyPolicy()
+			in.Mode = PolicyModePlanOnly
+			if _, _, err := st.Tenancy().PutUpdatePolicy(context.Background(), a, app, in); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"another editor": func(t *testing.T, st *SQLStore, a TenantAccess, app, _ string) {
+			if _, _, err := st.Tenancy().PutUpdatePolicy(context.Background(), policyMember(t, st, a, "other", RoleOrganizationAdmin), app, dailyPolicy()); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st, a, app, _, _, _, d, key := applyFixture(t)
+			ctx := context.Background()
+			ts := st.Tenancy()
+			p, _, err := ts.PutUpdatePolicy(ctx, a, app.ID, dailyPolicy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			change(t, st, a, app.ID, p.ID)
+			if _, _, err := ts.ApplyPolicyDeployment(ctx, a, p.ID, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); !errors.Is(err, ErrPolicyChanged) {
+				t.Fatalf("apply: %v", err)
+			}
+			if got, err := ts.ReadDeployment(ctx, a, app.ID, d.ID); err != nil || got.State != "planned" {
+				t.Fatalf("deployment: %+v %v", got, err)
+			}
+		})
+	}
+	st, a, app, _, _, _, d, key := applyFixture(t)
+	p, _, err := st.Tenancy().PutUpdatePolicy(context.Background(), a, app.ID, dailyPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied, _, err := st.Tenancy().ApplyPolicyDeployment(context.Background(), a, p.ID, app.ID, d.ID, "shop", key, protocol.MaxDeploymentRequestBytes); err != nil || applied.State != "applying" {
+		t.Fatalf("unchanged policy: %+v %v", applied, err)
 	}
 }
