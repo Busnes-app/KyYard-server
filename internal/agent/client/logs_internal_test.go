@@ -105,7 +105,7 @@ func TestACancelledStreamStopsReading(t *testing.T) {
 func TestAnAgentWithoutARuntimeClosesTheStream(t *testing.T) {
 	out := make(chan outFrame, 2)
 	readLog(context.Background(), protocol.LogRequest{Stream: "s1"}, &Options{}, out)
-	f := <-out
+	f := nextFrame(t, out)
 	closed, ok := f.Payload.(protocol.LogClose)
 	if f.Type != protocol.TypeLogClose || !ok || !closed.Failed {
 		t.Fatalf("an agent with no runtime answered %s %+v", f.Type, f.Payload)
