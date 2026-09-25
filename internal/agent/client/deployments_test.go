@@ -231,7 +231,7 @@ func TestDeployerRefusals(t *testing.T) {
 	// Foreign endpoint.
 	raw, _ := json.Marshal(testRequest("someone-else"))
 	d.handleApply(context.Background(), "ep_1", raw, out)
-	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultWrongEndpoint || res.RequestID != "0123456789abcdef0123456789abcdef" || calls != 0 {
+	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultWrongEndpoint || res.RequestID != "0123456789abcdef0123456789abcdef" || calls != 0 || res.Validate() != nil {
 		t.Fatalf("foreign: %+v", res)
 	}
 	// Invalid request.
@@ -239,7 +239,7 @@ func TestDeployerRefusals(t *testing.T) {
 	bad.Services = nil
 	raw, _ = json.Marshal(bad)
 	d.handleApply(context.Background(), "ep_1", raw, out)
-	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || calls != 0 {
+	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || calls != 0 || res.Validate() != nil {
 		t.Fatalf("invalid: %+v", res)
 	}
 	// Busy: a second request while one runs is denied.
@@ -255,7 +255,7 @@ func TestDeployerRefusals(t *testing.T) {
 	if next.Outcome == protocol.OutcomeDenied {
 		busy = next
 	}
-	if busy.Outcome != protocol.OutcomeDenied || busy.Code != protocol.ResultBusy {
+	if busy.Outcome != protocol.OutcomeDenied || busy.Code != protocol.ResultBusy || busy.Validate() != nil {
 		t.Fatalf("one of two concurrent applies must be denied busy: %+v %+v", first, next)
 	}
 	if calls != 1 {
@@ -264,7 +264,7 @@ func TestDeployerRefusals(t *testing.T) {
 	// No runtime.
 	d2 := newDeployer(context.Background(), t.TempDir(), &Options{})
 	d2.handleApply(context.Background(), "ep_1", raw, out)
-	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest {
+	if res := read(); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || res.Validate() != nil {
 		t.Fatalf("no runtime: %+v", res)
 	}
 }
@@ -382,8 +382,13 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 			if withRemove {
 				oversized = protocol.TypeDeploymentRemove
 			}
-			// A payload of exactly the cap is read and answered; one byte more closes the session.
+			// A payload of exactly the cap is read past the size check; being undecodable, it is
+			// unattributable and gets no answer, but the session keeps running (proved by the
+			// replayed apply below). One byte more closes the session for size instead.
 			if err := write(ctx, conn, oversized, strings.Repeat("a", protocol.MaxDeploymentRequestBytes-2)); err != nil {
+				return err
+			}
+			if err := write(ctx, conn, protocol.TypeDeploymentApply, req); err != nil {
 				return err
 			}
 			for {
@@ -392,7 +397,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 					return err
 				}
 				var res protocol.DeploymentResult
-				if f.Type == protocol.TypeDeploymentResult && json.Unmarshal(f.Payload, &res) == nil && res.Outcome == protocol.OutcomeDenied {
+				if f.Type == protocol.TypeDeploymentResult && json.Unmarshal(f.Payload, &res) == nil && res.Deployment == req.Deployment && res.Outcome == protocol.OutcomeSucceeded {
 					break
 				}
 			}
@@ -611,7 +616,7 @@ func TestDeployerRemovalRefusals(t *testing.T) {
 	raw, _ := json.Marshal(testRemoval("ep_1"))
 	d := newDeployer(context.Background(), t.TempDir(), &Options{})
 	d.handleRemoval(context.Background(), "ep_1", raw, out)
-	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest {
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || res.Validate() != nil {
 		t.Fatalf("no runtime: %+v", res)
 	}
 	d = newDeployer(context.Background(), t.TempDir(), &Options{Remove: func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult {
@@ -620,19 +625,23 @@ func TestDeployerRemovalRefusals(t *testing.T) {
 	}})
 	foreign, _ := json.Marshal(testRemoval("someone-else"))
 	d.handleRemoval(context.Background(), "ep_1", foreign, out)
-	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultWrongEndpoint {
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultWrongEndpoint || res.Validate() != nil {
 		t.Fatalf("foreign: %+v", res)
 	}
 	bad := testRemoval("ep_1")
 	bad.Containers = nil
 	rawBad, _ := json.Marshal(bad)
 	d.handleRemoval(context.Background(), "ep_1", rawBad, out)
-	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest {
+	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || res.Validate() != nil {
 		t.Fatalf("invalid: %+v", res)
 	}
+	// An undecodable payload is unattributable to any deployment: no answer at all. See
+	// TestDeployerIgnoresAnUnattributableFrame.
 	d.handleRemoval(context.Background(), "ep_1", []byte("{"), out)
-	if res := readResult(t, out); res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || res.RequestID != "" {
-		t.Fatalf("unreadable: %+v", res)
+	select {
+	case f := <-out:
+		t.Fatalf("undecodable removal answered: %+v", f)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -853,5 +862,55 @@ func TestDeployerEchoesAndLogsTheRequestID(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "injected") || strings.Contains(logs.String(), bad.Deployment) {
 		t.Fatalf("a refused frame was logged:\n%s", logs.String())
+	}
+}
+
+// A frame this agent cannot attribute to any deployment — undecodable JSON, or a Deployment that
+// is not a UUID — gets no answer at all, runs nothing and is never recorded: DeploymentResult.
+// Validate requires a UUID, so there is no valid result the deployer could send.
+func TestDeployerIgnoresAnUnattributableFrame(t *testing.T) {
+	dir := t.TempDir()
+	var calls atomic.Int32
+	d := newDeployer(context.Background(), dir, &Options{
+		Deploy: func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
+			calls.Add(1)
+			return protocol.DeploymentResult{}
+		},
+		Remove: func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult {
+			calls.Add(1)
+			return protocol.DeploymentResult{}
+		},
+	})
+	out := make(chan outFrame, 4)
+	defer d.attach(context.Background(), out)()
+
+	malformedApply := testRequest("ep_1")
+	malformedApply.Deployment = "not-a-uuid"
+	rawMalformedApply, _ := json.Marshal(malformedApply)
+	malformedRemoval := testRemoval("ep_1")
+	malformedRemoval.Deployment = "not-a-uuid"
+	rawMalformedRemoval, _ := json.Marshal(malformedRemoval)
+
+	d.handleApply(context.Background(), "ep_1", []byte("{"), out)
+	d.handleApply(context.Background(), "ep_1", rawMalformedApply, out)
+	d.handleRemoval(context.Background(), "ep_1", []byte("{"), out)
+	d.handleRemoval(context.Background(), "ep_1", rawMalformedRemoval, out)
+
+	select {
+	case f := <-out:
+		t.Fatalf("unattributable frame answered: %+v", f)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("runtime ran %d times for an unattributable frame", calls.Load())
+	}
+	d.mu.Lock()
+	entries := len(d.done)
+	d.mu.Unlock()
+	if entries != 0 {
+		t.Fatalf("ledger holds %d entries for an unattributable frame", entries)
+	}
+	if stored, err := os.ReadFile(filepath.Join(dir, "deployments.json")); err == nil && strings.TrimSpace(string(stored)) != "" && strings.TrimSpace(string(stored)) != "{}" {
+		t.Fatalf("ledger file written for an unattributable frame: %s", stored)
 	}
 }

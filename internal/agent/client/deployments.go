@@ -172,11 +172,13 @@ func denied(id, requestID, code string) protocol.DeploymentResult {
 	return protocol.DeploymentResult{Deployment: id, RequestID: requestID, Outcome: protocol.OutcomeDenied, Code: code, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 }
 
-// handleApply answers one deployment.apply payload; see run.
+// handleApply answers one deployment.apply payload; see run. A payload this agent cannot
+// attribute to a valid deployment UUID (undecodable, or Deployment not a UUID) gets no answer at
+// all: DeploymentResult.Validate requires a UUID, so there is no valid frame to send.
 func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
 	var req protocol.DeploymentRequest
-	if json.Unmarshal(payload, &req) != nil {
-		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "", protocol.ResultInvalidRequest)))
+	if json.Unmarshal(payload, &req) != nil || !protocol.ValidDeploymentID(req.Deployment) {
+		d.logf("deployment frame ignored: no valid deployment id")
 		return
 	}
 	var exec func(context.Context) protocol.DeploymentResult
@@ -193,11 +195,12 @@ func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, pa
 	d.run(sessionCtx, out, req.Deployment, req.RequestID, req.Endpoint, endpointID, req.Validate, exec)
 }
 
-// handleRemoval answers one deployment.remove payload; see run.
+// handleRemoval answers one deployment.remove payload; see run. See handleApply for the
+// unattributable-frame rule.
 func (d *deployer) handleRemoval(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
 	var req protocol.RemovalRequest
-	if json.Unmarshal(payload, &req) != nil {
-		go send(sessionCtx, out, resultFrame(denied(req.Deployment, "", protocol.ResultInvalidRequest)))
+	if json.Unmarshal(payload, &req) != nil || !protocol.ValidDeploymentID(req.Deployment) {
+		d.logf("deployment frame ignored: no valid deployment id")
 		return
 	}
 	var exec func(context.Context) protocol.DeploymentResult
