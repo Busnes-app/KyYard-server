@@ -177,7 +177,9 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	// read only picks the path: both paths re-read the instance under authorization and refuse
 	// one whose runtime changed since.
 	var namespace string
-	_ = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT namespace FROM application_instances WHERE organization_id=? AND environment_id=? AND application_id=?`), a.OrganizationID, a.EnvironmentID, id.String()).Scan(&namespace)
+	if err := t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT namespace FROM application_instances WHERE organization_id=? AND environment_id=? AND application_id=?`), a.OrganizationID, a.EnvironmentID, id.String()).Scan(&namespace); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	kube := namespace != ""
 	if kube && (len(r.PinImages) > 0 || resolver == nil) {
 		return nil, ErrInvalid

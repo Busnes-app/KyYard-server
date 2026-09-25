@@ -94,6 +94,47 @@ func TestKubernetesPlanAndFrame(t *testing.T) {
 	_ = cluster
 }
 
+// A namespace the manifest revokes between plan and apply must not reach the agent: apply
+// re-reads the endpoint's granted list and refuses, producing no frame.
+func TestKubernetesApplyRefusesARevokedNamespace(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("b")}}}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.SetEndpointDeployNamespaces(ctx, a, cluster, []string{"other"}); err != nil {
+		t.Fatal(err)
+	}
+	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop-front", imageCheckKey, protocol.MaxDeploymentRequestBytes)
+	if !errors.Is(err, ErrAdoptionChanged) || applied != nil || req != nil {
+		t.Fatalf("revoked namespace: %+v %+v %v", applied, req, err)
+	}
+}
+
+// Turning anonymous pulls off between plan and apply stops a cluster apply the same way it stops
+// a Docker one: the kubelet still needs a registry row or anonymous pull to resolve the tag.
+func TestKubernetesApplyRefusesAnonymousPullTurnedOff(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("b")}}}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SetAnonymousPull(ctx, a, false); err != nil {
+		t.Fatal(err)
+	}
+	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop-front", imageCheckKey, protocol.MaxDeploymentRequestBytes)
+	if !errors.Is(err, ErrAdoptionChanged) || applied != nil || req != nil {
+		t.Fatalf("anonymous pull off: %+v %+v %v", applied, req, err)
+	}
+	_ = cluster
+}
+
 // Every definition a Deployment cannot express stops at the plan with its code, all at once,
 // and so does a namespace the manifest no longer grants.
 func TestKubernetesPlanBlockers(t *testing.T) {

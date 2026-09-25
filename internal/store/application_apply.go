@@ -160,7 +160,7 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 		return protocol.DeploymentRequest{}, ErrAdoptionChanged
 	}
 	if d.Plan.Namespace != "" {
-		return t.kubernetesFrame(ctx, tx, d, spec, values, now)
+		return t.kubernetesFrame(ctx, tx, a, d, spec, values, key, now)
 	}
 	names := map[string]string{}
 	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name FROM application_resources WHERE instance_id=? AND endpoint_id=?`), d.InstanceID, d.EndpointID)
@@ -238,12 +238,15 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 }
 
 // kubernetesFrame is buildDeploymentFrame for a Kubernetes plan: the instance's namespace, which
-// must still be the plan's, and per service the pinned pull, the environment values and the keys
-// among them that are secret-backed. The kubelet pulls, so no credential travels.
-func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, d *Deployment, spec ApplicationSpec, values map[string]string, now time.Time) (protocol.DeploymentRequest, error) {
-	var namespace string
-	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT namespace FROM application_instances WHERE id=? AND endpoint_id=?`), d.InstanceID, d.EndpointID).Scan(&namespace)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && namespace != d.Plan.Namespace) {
+// must still be the plan's and still granted by the endpoint's manifest, and per service the
+// pinned pull, the environment values and the keys among them that are secret-backed. The
+// kubelet pulls the image itself, but a pull by tag still needs a registry row or anonymous pull,
+// exactly as the Docker frame checks, because the reference the kubelet is handed may no longer
+// resolve anonymously by apply time.
+func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a TenantAccess, d *Deployment, spec ApplicationSpec, values map[string]string, key []byte, now time.Time) (protocol.DeploymentRequest, error) {
+	var namespace, deployNamespaces string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.namespace,e.deploy_namespaces FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND i.environment_id=? AND i.id=? AND i.endpoint_id=?`), a.OrganizationID, a.EnvironmentID, d.InstanceID, d.EndpointID).Scan(&namespace, &deployNamespaces)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (namespace != d.Plan.Namespace || !slices.Contains(decodeNamespaces(deployNamespaces), namespace))) {
 		return protocol.DeploymentRequest{}, ErrAdoptionChanged
 	}
 	if err != nil {
@@ -251,6 +254,7 @@ func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, d *Deplo
 	}
 	req := protocol.DeploymentRequest{Deployment: d.ID, RequestID: d.CorrelationID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{},
 		Kubernetes: &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: d.ApplicationID, InstanceID: d.InstanceID, SpecDigest: d.SpecDigest}}
+	hosts := map[string]bool{}
 	for i, ps := range d.Plan.Services {
 		if spec.Services[i].Name != ps.Name || ps.PullDigest == "" || ps.Object == nil {
 			return protocol.DeploymentRequest{}, ErrAdoptionChanged
@@ -265,6 +269,25 @@ func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, d *Deplo
 		}
 		svc.SecretKeys = slices.Sorted(maps.Keys(spec.Services[i].Environment))
 		req.Services = append(req.Services, svc)
+		hosts[svc.Pull.Host()] = true
+	}
+	// No credential travels: the kubelet pulls. But a host whose row is gone must still be
+	// allowed to pull anonymously, exactly as the Docker frame requires.
+	for host := range hosts {
+		_, _, err := t.registryFor(ctx, tx, a.OrganizationID, host, key)
+		if !errors.Is(err, ErrNotFound) {
+			if err != nil {
+				return protocol.DeploymentRequest{}, err
+			}
+			continue
+		}
+		anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
+		if err != nil {
+			return protocol.DeploymentRequest{}, err
+		}
+		if !anonymous {
+			return protocol.DeploymentRequest{}, ErrAdoptionChanged
+		}
 	}
 	return req, nil
 }
