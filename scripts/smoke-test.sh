@@ -232,6 +232,12 @@ if [ -x "$AGENT" ]; then
   contains "refusal identifies the existing endpoint" "$(cat "$WORK/reenroll.log")" "$EP_ID"
   ENDPOINT_COUNT="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints" | grep -o '"id":"ep_' | wc -l | tr -d ' ')"
   check "refused enrollment creates no second endpoint" "$ENDPOINT_COUNT" "1"
+  KUBE_EXIT=0
+  "$AGENT" --kubernetes --server "$BASE" >"$WORK/kube.log" 2>&1 || KUBE_EXIT=$?
+  check "cluster agent refuses a Docker socket" "$(test "$KUBE_EXIT" -ne 0 && echo refused || echo accepted)" "refused"
+  contains "refusal names the exclusive runtimes" "$(cat "$WORK/kube.log")" "kubernetes and docker are exclusive"
+  check "cluster enrollment needs HTTPS" \
+    "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"runtime":"kubernetes","name":"smoke-cluster"}' "$BASE/api/organizations/org_initial/environments/$ENV_ID/enrollment-tokens")" "409"
   check "approval binds the enrolled fingerprint" \
     "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"fingerprint":"'"$EP_FP"'"}' -X POST "$BASE/api/organizations/org_initial/endpoints/$EP_ID/approve")" "204"
   wait_state active || true

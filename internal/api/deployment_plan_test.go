@@ -24,6 +24,7 @@ import (
 type planHost struct {
 	s           *api.Server
 	st          store.Store
+	cfg         *config.Config
 	admin       *http.Cookie
 	ag          enrolledAgent
 	deployments string
@@ -46,7 +47,7 @@ func newPlanHost(t *testing.T, capabilities []string, services ...string) planHo
 	}
 	must(ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"}))
 	must(ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"}))
-	h := planHost{s: s, st: st, admin: loginAs(t, s, st, "planner", "user"), db: cfg.Database}
+	h := planHost{s: s, st: st, cfg: cfg, admin: loginAs(t, s, st, "planner", "user"), db: cfg.Database}
 	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_planner", Role: store.RoleOrganizationAdmin, Status: "active"}))
 	h.ag = enrollAgent(t, s, st, h.admin, "plan-host")
 	h.do(t, "POST", "/api/organizations/a/endpoints/"+h.ag.id+"/approve", `{"fingerprint":"`+h.ag.fp+`"}`, 204)

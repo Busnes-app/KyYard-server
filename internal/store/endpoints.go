@@ -22,9 +22,13 @@ const (
 	maxFactsBytes       = 4096
 )
 
-var factKeys = map[string]bool{"hostname": true, "os": true, "runtime_version": true, "cpus": true, "memory_bytes": true}
+// factKeys are the enrollment facts kept: a Docker host's, then a cluster's.
+var factKeys = map[string]bool{"hostname": true, "os": true, "runtime_version": true, "cpus": true, "memory_bytes": true, "runtime": true, "server_version": true, "node_count": true, "platform": true}
 
 func validRuntime(r string) bool { return r == "docker" || r == "kubernetes" }
+
+// ValidEndpointName is the rule Enroll and RenameEndpoint apply to an endpoint's name.
+func ValidEndpointName(name string) bool { return validTenantName(name) }
 
 // CheckEnrollmentAccess authorizes runtime discovery before minting a token.
 // Minting still repeats authorization atomically with its write and audit.
@@ -157,6 +161,21 @@ func (t *tenancyStore) decorate(ctx context.Context, tx *sql.Tx, e *Endpoint) er
 		e.Capabilities = append(e.Capabilities, c)
 	}
 	rows.Close()
+	if e.Runtime == protocol.RuntimeKubernetes {
+		var raw string
+		var snap *protocol.Snapshot
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), e.ID).Scan(&raw)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			var s protocol.Snapshot
+			if json.Unmarshal([]byte(raw), &s) == nil {
+				snap = &s
+			}
+		}
+		e.ClusterHealth = protocol.ClusterHealth(e.State == "active", snap)
+	}
 	rows, err = tx.QueryContext(ctx, t.store.rebind(`SELECT id,severity,kind,details,created_at FROM endpoint_events WHERE endpoint_id=? AND severity='high' AND acknowledged_at IS NULL ORDER BY created_at DESC LIMIT 10`), e.ID)
 	if err != nil {
 		return err

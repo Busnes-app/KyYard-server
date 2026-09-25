@@ -42,14 +42,15 @@ const (
 
 // LogRequest opens one stream. Container is the ID the control plane resolved, never a name:
 // a name is a label the runtime reassigns, and a stream must not follow it to another
-// container mid-read.
+// container mid-read. A Kubernetes endpoint is asked for a Pod instead (ValidateFor).
 type LogRequest struct {
-	Stream     string    `json:"stream"`
-	Container  string    `json:"container"`
-	Tail       int       `json:"tail"`
-	Since      time.Time `json:"since,omitempty"`
-	Timestamps bool      `json:"timestamps"`
-	Follow     bool      `json:"follow"`
+	Stream     string     `json:"stream"`
+	Container  string     `json:"container"`
+	Pod        *PodTarget `json:"pod,omitempty"`
+	Tail       int        `json:"tail"`
+	Since      time.Time  `json:"since,omitempty"`
+	Timestamps bool       `json:"timestamps"`
+	Follow     bool       `json:"follow"`
 }
 
 // LogChunk is log text as the container wrote it, with the count of bytes the agent had to

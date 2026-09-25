@@ -341,6 +341,46 @@ records commit together. Audit failures prevent mutations. Historical platform e
 their original meaning and are excluded from tenant history. Existing recovery and instance
 settings retain platform authorization; tenant settings and credentials are not exposed yet.
 
+### Kubernetes endpoints
+
+A Kubernetes cluster enrolls as an endpoint the way a Docker host does, read-only in this
+release: inventory, cluster health and pod logs. Prerequisites: `KY_APP_URL` on HTTPS, a
+digest-pinned agent image (discovered from the installed server image, or `KY_AGENT_IMAGE`),
+and a cluster-admin kubeconfig for the one `kubectl apply`.
+
+1. On the environment screen choose **Kubernetes cluster**, name the cluster and select
+   **Enroll a cluster**. The manifest is shown once: download it (or copy it) and run the
+   `kubectl apply -f kyyard-agent-<name>.yaml` command shown beside it.
+2. Read the key fingerprint with `kubectl -n kyyard-agent logs deploy/kyyard-agent` and
+   approve the matching endpoint.
+3. Delete the spent enrollment Secret: `kubectl -n kyyard-agent delete secret kyyard-agent-enrollment`.
+   The link inside it is single use, and the agent restarts from its identity Secret.
+
+What the manifest creates, all labelled `app.kubernetes.io/name: kyyard-agent`,
+`app.kubernetes.io/managed-by: kyyard`: the namespace `kyyard-agent`; the ServiceAccount
+`kyyard-agent`; the ClusterRole and ClusterRoleBinding `kyyard-agent-read` (only `get` and
+`list` on namespaces, nodes, pods, pod logs, events, services, persistentvolumeclaims,
+deployments, statefulsets and daemonsets: no Secrets, no ConfigMaps, no `watch`, no
+wildcard); the Role and RoleBinding `kyyard-agent-identity` (`get`/`create` Secrets in
+`kyyard-agent` and `update` only on `kyyard-agent-identity`, where the agent keeps its
+identity); the Secret `kyyard-agent-enrollment`; and a one-replica `Recreate` Deployment
+running `/app/kyyard-agent --kubernetes` as UID 65532 with a read-only root filesystem, no
+privilege escalation, every capability dropped, seccomp `RuntimeDefault`, and 50m/64Mi
+requested, 500m/256Mi limited. Applying it needs cluster-admin because it creates cluster
+RBAC; the agent itself holds only the read role above.
+
+Container, image, network, volume, terminal, inspection and deployment actions are refused
+for a cluster (`409 runtime_unsupported`) and not shown. Uninstall with
+`kubectl delete -f kyyard-agent-<name>.yaml`, then revoke the endpoint. To enroll the same
+cluster again after a revocation, delete the Secret `kyyard-agent-identity` (or uninstall)
+before applying a new manifest: an identity from an old enrollment refuses a new link.
+
+Upgrade a cluster agent in place with
+`kubectl -n kyyard-agent set image deploy/kyyard-agent agent=ghcr.io/busnes-app/kyyard@sha256:<digest>`.
+The identity Secret survives the new pod, so no re-enrollment is needed. Regenerating the
+manifest instead mints a new enrollment link, which an already-enrolled identity refuses: the
+agent stops until the original link is restored or the identity Secret is deleted.
+
 ## Persistent keys
 
 First boot creates `KY_DATA_DIR` (default `./data`) privately and creates `encryption.key`,

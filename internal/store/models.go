@@ -161,11 +161,13 @@ type Endpoint struct {
 	PendingFingerprint string          `json:"pending_fingerprint,omitempty"`
 	Capabilities       []string        `json:"capabilities"`
 	Alerts             []EndpointEvent `json:"alerts"` // unacknowledged high-severity events
-	CreatedAt          time.Time       `json:"created_at"`
-	ApprovedAt         *time.Time      `json:"approved_at,omitempty"`
-	ApprovedBy         string          `json:"approved_by,omitempty"`
-	RevokedAt          *time.Time      `json:"revoked_at,omitempty"`
-	LastSeenAt         *time.Time      `json:"last_seen_at,omitempty"`
+	// ClusterHealth is derived on read from the stored inventory; Kubernetes endpoints only.
+	ClusterHealth string     `json:"cluster_health,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ApprovedAt    *time.Time `json:"approved_at,omitempty"`
+	ApprovedBy    string     `json:"approved_by,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
+	LastSeenAt    *time.Time `json:"last_seen_at,omitempty"`
 }
 
 // EndpointEvent is a bounded, operator-facing record; high-severity ones surface until acknowledged.

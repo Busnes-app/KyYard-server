@@ -6,6 +6,13 @@ import { Link } from './Link';
 import { endpointPath } from '../router';
 
 const terminal = (s: string) => s === 'revoked' || s === 'expired';
+const healthBadge: Record<string, string> = { healthy: 'badge-success', degraded: 'badge-danger' };
+
+// Fixed texts for the refusals a cluster enrollment can meet.
+const mintRefusals: Record<string, string> = {
+  agent_image_unpinned: 'Set KY_AGENT_IMAGE to a digest-pinned image before enrolling a cluster.',
+  https_required: 'Kubernetes enrollment needs KY_APP_URL on HTTPS.',
+};
 
 // Names come from whoever redeemed the token. The server refuses control characters and line
 // separators; the dialog strips the same classes again (C0, DEL, C1 and Unicode line and
@@ -21,6 +28,8 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
   const envBase = `${base}/environments/${encodeURIComponent(env)}`;
   const endpoints = useTenantResource<Endpoint[]>(`${envBase}/endpoints`);
   const [token, setToken] = useState<EnrollmentToken | null>(null);
+  const [runtime, setRuntime] = useState<'docker' | 'kubernetes'>('docker');
+  const [clusterName, setClusterName] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -28,14 +37,27 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
     setBusy(true);
     setMessage('');
     try {
-      const resp = await secureFetch(`${envBase}/enrollment-tokens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runtime: 'docker' }) });
-      if (!resp.ok) { setMessage(resp.status === 403 ? 'You do not have permission to enroll hosts here.' : `Could not create an enrollment token (${resp.status}).`); return; }
+      const body = runtime === 'kubernetes' ? { runtime, name: clusterName.trim() } : { runtime };
+      const resp = await secureFetch(`${envBase}/enrollment-tokens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!resp.ok) {
+        const code = resp.status === 409 ? ((await resp.json().catch(() => ({}))) as { code?: string }).code ?? '' : '';
+        setMessage(resp.status === 403 ? 'You do not have permission to enroll hosts here.' : mintRefusals[code] ?? (resp.status === 400 && runtime === 'kubernetes' ? 'Name the cluster in printable text, at most 255 bytes.' : `Could not create an enrollment token (${resp.status}).`));
+        return;
+      }
       setToken((await resp.json()) as EnrollmentToken);
     } catch {
       setMessage('Offline: the server could not be reached.');
     } finally {
       setBusy(false);
     }
+  };
+  const download = (t: EnrollmentToken) => {
+    const url = URL.createObjectURL(new Blob([t.manifest ?? ''], { type: 'application/yaml' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = t.manifest_file ?? 'kyyard-agent.yaml';
+    link.click();
+    URL.revokeObjectURL(url);
   };
   const acknowledgeKey = async (e: Endpoint) => {
     if (!e.pending_fingerprint) return;
@@ -73,9 +95,26 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
       <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <h2 id="endpoints-heading" style={{ fontSize: 16 }}>Endpoints</h2>
         <button className="btn-secondary" onClick={endpoints.reload}>Refresh hosts</button>
-        <button disabled={busy} onClick={() => void mint()}>Enroll a host</button>
+        <label>Runtime <select aria-label="Runtime" value={runtime} onChange={(e) => setRuntime(e.target.value === 'kubernetes' ? 'kubernetes' : 'docker')}>
+          <option value="docker">Docker host</option>
+          <option value="kubernetes">Kubernetes cluster</option>
+        </select></label>
+        {runtime === 'kubernetes' && <input aria-label="Cluster name" placeholder="Cluster name" required maxLength={255} value={clusterName} onChange={(e) => setClusterName(e.target.value)} />}
+        <button disabled={busy || (runtime === 'kubernetes' && clusterName.trim() === '')} onClick={() => void mint()}>{runtime === 'kubernetes' ? 'Enroll a cluster' : 'Enroll a host'}</button>
       </div>
-      {token && (
+      {token?.manifest && (
+        <div className="dr-alert dr-alert-warn ky-enrollment" role="region" aria-label="Enrollment manifest">
+          <p><strong>Shown once.</strong> Apply this manifest as cluster-admin before {new Date(token.expires_at).toLocaleTimeString()}:</p>
+          <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{token.command}</pre>
+          <details><summary>Manifest</summary><pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{token.manifest}</pre></details>
+          {token.note && <p>{token.note}</p>}
+          <p>{token.disclosure}</p>
+          <button onClick={() => download(token)}>Download manifest</button>{' '}
+          <button className="btn-secondary" onClick={() => { void navigator.clipboard?.writeText(token.manifest ?? ''); }}>Copy manifest</button>{' '}
+          <button className="btn-secondary" onClick={() => setToken(null)}>Dismiss</button>
+        </div>
+      )}
+      {token && !token.manifest && (
         <div className="dr-alert dr-alert-warn ky-enrollment" role="region" aria-label="Enrollment command">
           <p><strong>Shown once.</strong> {token.command ? 'Run this on the remote host before' : 'Source enrollment token expires at'} {new Date(token.expires_at).toLocaleTimeString()}:</p>
           <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{token.command ?? token.token}</pre>
@@ -98,9 +137,9 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
             <tbody>
               {endpoints.data.map((e) => (
                 <tr key={e.id}>
-                  <td data-label="Name"><Link to={endpointPath(org, e.id)}>{displayName(e.name)}</Link> <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span></td>
+                  <td data-label="Name"><Link to={endpointPath(org, e.id)}>{displayName(e.name)}</Link> <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span>{e.cluster_health && <> <span className={`badge ${healthBadge[e.cluster_health] ?? 'badge-secondary'}`}>{e.cluster_health}</span></>}</td>
                   <td data-label="State"><span className={`badge ${e.state === 'pending' ? 'badge-accent' : e.state === 'active' ? 'badge-success' : 'badge-danger'}`}>{e.state}</span></td>
-                  <td data-label="Host">{e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? ''}</span></td>
+                  <td data-label="Host">{e.runtime === 'kubernetes' ? `${e.facts.node_count ?? '?'} nodes` : e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? e.facts.server_version ?? ''}</span></td>
                   <td data-label="Fingerprint" className="font-mono" style={{ fontSize: 11 }}>
                     <span title={e.fingerprint}>{e.fingerprint ? e.fingerprint.slice(0, 16) + '…' : '—'}</span>
                     {e.pending_fingerprint && <div><span className="badge badge-accent">rotation pending</span> <span title={e.pending_fingerprint}>{e.pending_fingerprint.slice(0, 16)}…</span></div>}

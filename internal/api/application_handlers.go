@@ -76,6 +76,9 @@ func (s *Server) handleDiscardApplication(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleAdoptionPreview(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	if endpoint := r.URL.Query().Get("endpoint"); endpoint != "" && !s.dockerOnly(w, r, a, endpoint) {
+		return
+	}
 	p, err := s.store.Tenancy().PreviewApplicationAdoption(r.Context(), a, r.PathValue("application"), r.URL.Query().Get("endpoint"), r.URL.Query().Get("project"))
 	if err != nil {
 		s.tenantError(w, err)
@@ -87,6 +90,9 @@ func (s *Server) handleAdoption(w http.ResponseWriter, r *http.Request, a store.
 	var input store.AdoptionRequest
 	if strictJSON(r, &input) != nil {
 		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	if input.EndpointID != "" && !s.dockerOnly(w, r, a, input.EndpointID) {
 		return
 	}
 	instance, err := s.store.Tenancy().AdoptApplication(r.Context(), a, r.PathValue("application"), input)
@@ -191,6 +197,10 @@ func (s *Server) handleSetApplicationMapping(w http.ResponseWriter, r *http.Requ
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
+	// An instance that cannot be read is the store's to refuse, with its own answer.
+	if instance, err := s.store.Tenancy().ReadApplicationInstance(r.Context(), a, r.PathValue("application"), input.InstanceID); err == nil && !s.dockerOnly(w, r, a, instance.EndpointID) {
+		return
+	}
 	if err := s.store.Tenancy().SetApplicationMapping(r.Context(), a, r.PathValue("application"), input); err != nil {
 		s.tenantError(w, err)
 		return
@@ -239,6 +249,10 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 			return
 		}
 		defer done()
+	}
+	// Before the preflight, which refuses a non-Docker inventory as a changed adoption.
+	if instance, err := s.store.Tenancy().ReadApplicationInstance(r.Context(), a, r.PathValue("application"), input.InstanceID); err == nil && !s.dockerOnly(w, r, a, instance.EndpointID) {
+		return
 	}
 	// The plan measures its frame against what this endpoint's agent accepts.
 	pre, err := s.store.Tenancy().PreflightApplication(r.Context(), a, r.PathValue("application"))
@@ -307,6 +321,10 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, err)
 		return
 	}
+	if ep.Runtime != protocol.RuntimeDocker {
+		s.tenantError(w, store.ErrRuntimeUnsupported)
+		return
+	}
 	if !slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentApply) {
 		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable deployments")
 		return
@@ -353,6 +371,10 @@ func (s *Server) handleRemoveApplication(w http.ResponseWriter, r *http.Request,
 	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, instance.EndpointID)
 	if err != nil {
 		s.tenantError(w, err)
+		return
+	}
+	if ep.Runtime != protocol.RuntimeDocker {
+		s.tenantError(w, store.ErrRuntimeUnsupported)
 		return
 	}
 	if !slices.Contains(ep.Capabilities, protocol.CapabilityDeploymentRemove) {

@@ -36,6 +36,7 @@ type agentConn struct {
 	organizationID string
 	environmentID  string
 	fingerprint    string // the key that authenticated this session
+	runtime        string // docker or kubernetes, fixed at enrollment
 	ip             string
 	conn           *websocket.Conn
 	send           chan protocol.Envelope
@@ -197,7 +198,7 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 		return
 	}
 	conn.SetReadLimit(agentFrameLimit)
-	c := &agentConn{nonce: nonce, endpointID: identity.Endpoint.ID, organizationID: identity.Endpoint.OrganizationID, environmentID: identity.Endpoint.EnvironmentID, fingerprint: identity.Fingerprint, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	c := &agentConn{nonce: nonce, endpointID: identity.Endpoint.ID, organizationID: identity.Endpoint.OrganizationID, environmentID: identity.Endpoint.EnvironmentID, fingerprint: identity.Fingerprint, runtime: identity.Endpoint.Runtime, ip: s.requestIP(r), conn: conn, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
 	if incumbent := s.agents.add(c); incumbent != nil {
 		// The incumbent may be a socket the network dropped without a FIN: the agent gives up
 		// after two heartbeats and redials before the server's three-heartbeat timeout. Probe
@@ -435,7 +436,17 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		}
 		*helloSeen = true
 		var hello protocol.Hello
-		if protocol.UnmarshalHelloBounded(f.Payload, &hello) == nil && !pending {
+		if protocol.UnmarshalHelloBounded(f.Payload, &hello) != nil {
+			return false
+		}
+		// Stored capabilities gate every handler, so an agent claiming another runtime's
+		// capabilities is refused outright rather than recorded.
+		if !protocol.CapabilitiesFit(c.runtime, hello.Capabilities) {
+			_ = s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]string{"code": "capability_mismatch", "runtime": c.runtime}))
+			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+			return true
+		}
+		if !pending {
 			if err := ts.SetEndpointCapabilities(fctx, c.endpointID, hello.Capabilities); err != nil {
 				log.Printf("agent %s: capabilities: %v", c.endpointID, err)
 			}
@@ -624,6 +635,14 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		if err := protocol.UnmarshalSnapshotBounded(f.Payload, &inv); err != nil {
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
+		}
+		// A snapshot of the wrong shape is a data problem like snapshot_too_large: say so and
+		// keep the session.
+		if err := protocol.CheckRuntimeShape(c.runtime, &inv); err != nil {
+			if err := s.writeFrame(ctx, c.conn, envelope(protocol.TypeError, map[string]string{"code": "snapshot_rejected", "runtime": c.runtime})); err != nil {
+				return true
+			}
+			return false
 		}
 		if inv.ObservedAt.IsZero() {
 			inv.ObservedAt = time.Now().UTC()

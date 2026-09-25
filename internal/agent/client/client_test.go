@@ -104,11 +104,11 @@ func TestAgentEnrollsConnectsAndStopsOnRevocation(t *testing.T) {
 
 	dir := filepath.Join(t.TempDir(), "id")
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	id, err := client.Enroll(ctx, httpClient, httpSrv.URL, dir, "host-x", tok.Token, "")
+	id, err := client.Enroll(ctx, httpClient, httpSrv.URL, client.DirStore(dir), "host-x", tok.Token, client.Facts(""))
 	if err != nil {
 		t.Fatalf("enroll: %v", err)
 	}
-	if _, err := client.Enroll(ctx, httpClient, httpSrv.URL, filepath.Join(t.TempDir(), "again"), "host-y", tok.Token, ""); err == nil {
+	if _, err := client.Enroll(ctx, httpClient, httpSrv.URL, client.DirStore(filepath.Join(t.TempDir(), "again")), "host-y", tok.Token, client.Facts("")); err == nil {
 		t.Fatal("token reused")
 	}
 	states := make(chan string, 16)
@@ -234,14 +234,14 @@ func TestEnrollRefusesPlaintextOffLoopback(t *testing.T) {
 	defer stub.Close()
 	ctx := context.Background()
 	for _, bad := range []string{"http://ky.example", "http://10.0.0.5:8080", "ftp://127.0.0.1", "http://user:pw@127.0.0.1"} {
-		if _, err := client.Enroll(ctx, stub.Client(), bad, t.TempDir(), "h", strings.Repeat("A", 43), ""); err == nil {
+		if _, err := client.Enroll(ctx, stub.Client(), bad, client.DirStore(t.TempDir()), "h", strings.Repeat("A", 43), client.Facts("")); err == nil {
 			t.Fatalf("%s accepted", bad)
 		}
 	}
 	if requests != 0 {
 		t.Fatalf("%d requests left the agent for refused origins", requests)
 	}
-	if _, err := client.Enroll(ctx, stub.Client(), stub.URL, t.TempDir(), "h", strings.Repeat("A", 43), ""); err == nil || requests != 1 {
+	if _, err := client.Enroll(ctx, stub.Client(), stub.URL, client.DirStore(t.TempDir()), "h", strings.Repeat("A", 43), client.Facts("")); err == nil || requests != 1 {
 		t.Fatalf("loopback enrollment did not reach the server: %v %d", err, requests)
 	}
 }
@@ -322,7 +322,7 @@ func TestAgentRotatesKeyOnlyAfterAcknowledgement(t *testing.T) {
 	_ = json.Unmarshal(minted, &tok)
 	dir := filepath.Join(t.TempDir(), "id")
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	id, err := client.Enroll(ctx, httpClient, httpSrv.URL, dir, "host-r", tok.Token, "")
+	id, err := client.Enroll(ctx, httpClient, httpSrv.URL, client.DirStore(dir), "host-r", tok.Token, client.Facts(""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func approvedAgent(t *testing.T) (*httptest.Server, store.Store, cookies, *clien
 	var tok struct{ Token string }
 	_ = json.Unmarshal(minted, &tok)
 	dir := filepath.Join(t.TempDir(), "id")
-	id, err := client.Enroll(ctx, &http.Client{Timeout: 10 * time.Second}, httpSrv.URL, dir, "host-h", tok.Token, "")
+	id, err := client.Enroll(ctx, &http.Client{Timeout: 10 * time.Second}, httpSrv.URL, client.DirStore(dir), "host-h", tok.Token, client.Facts(""))
 	if err != nil {
 		t.Fatal(err)
 	}

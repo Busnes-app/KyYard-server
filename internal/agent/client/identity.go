@@ -158,6 +158,20 @@ func (id *Identity) fingerprint() string {
 
 func identityPath(dir string) string { return filepath.Join(dir, "identity.json") }
 
+// IdentityStore keeps the identity between runs: a directory on a Docker host, a Secret in a
+// cluster (internal/runtime/kubernetes).
+type IdentityStore interface {
+	// Load returns nil, nil when the agent has never enrolled.
+	Load() (*Identity, error)
+	Save(*Identity) error
+}
+
+// DirStore is the identity file in a directory, owner-only.
+type DirStore string
+
+func (d DirStore) Load() (*Identity, error) { return LoadIdentity(string(d)) }
+func (d DirStore) Save(id *Identity) error  { return SaveIdentity(string(d), id) }
+
 // LoadIdentity returns nil, nil when the agent has never enrolled.
 func LoadIdentity(dir string) (*Identity, error) {
 	raw, err := os.ReadFile(identityPath(dir))
@@ -167,6 +181,11 @@ func LoadIdentity(dir string) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+	return DecodeIdentity(raw)
+}
+
+// DecodeIdentity is the one reading of a stored identity, whichever store held it.
+func DecodeIdentity(raw []byte) (*Identity, error) {
 	var id Identity
 	if err := json.Unmarshal(raw, &id); err != nil {
 		return nil, fmt.Errorf("identity file: %w", err)

@@ -55,7 +55,7 @@ Today `environment.delete` is unconditional. From M3 it refuses (*planned*, 409)
 | Action | OA | EA | Op | Dev | RO | Secret | Audit |
 |---|---|---|---|---|---|---|---|
 | `endpoint.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – (reads of inventory are not audited; list reads are bounded) |
-| `endpoint.enroll` (token request, approval, rejection) | ✓ | ✓ | – | – | – | one-time enrollment command | success/failure, target = endpoint |
+| `endpoint.enroll` (token request, approval, rejection) | ✓ | ✓ | – | – | – | one-time enrollment command, or for a Kubernetes cluster the one-time manifest (the token only inside its enrollment Secret, returned only in this authenticated response) | success/failure, target = endpoint |
 | `endpoint.update` (rename, notes) | ✓ | ✓ | – | – | – | no | success |
 | `endpoint.revoke` | ✓ | ✓ | – | – | – | no | success, closes streams |
 | `endpoint.rotate` | agent only, authenticated by its current key | | | | | no | success/failure, both fingerprints |
@@ -67,7 +67,7 @@ Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.e
 | Action | OA | EA | Op | Dev | RO | Secret | Audit |
 |---|---|---|---|---|---|---|---|
 | `container.read` (inspect, stats) | ✓ | ✓ | ✓ | ✓ | ✓ | redacted env/labels | – |
-| `container.logs` (implemented) | ✓ | ✓ | ✓ | ✓ | – | log bodies not stored | session metadata: one row per session naming the endpoint and the container asked for |
+| `container.logs` (implemented) | ✓ | ✓ | ✓ | ✓ | – | log bodies not stored; also covers pod logs on a Kubernetes endpoint (read workload logs) | session metadata: one row per session naming the endpoint and the container, or the pod and container, asked for |
 | `container.operate` (start, stop, restart, pause) | ✓ | ✓ | ✓ | – | – | no | success/failure/unknown |
 | `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |
 | `container.exec` (implemented) | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |

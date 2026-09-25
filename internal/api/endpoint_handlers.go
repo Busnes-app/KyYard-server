@@ -18,12 +18,18 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
+	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/manifest"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 // Docker-socket access is host-equivalent; every enrollment command says so, in the same
 // response as the one-time token, so it cannot be missed.
 const socketDisclosure = "Mounting /var/run/docker.sock gives the KyYard agent, and therefore this control plane, root-equivalent access to that host. Enroll only hosts whose operators accept that."
+
+// clusterDisclosure says what the manifest grants, in the same response as the token.
+const clusterDisclosure = "The KyYard agent's ServiceAccount can get and list namespaces, nodes, pods, pod logs, events, services, persistent volume claims, deployments, statefulsets and daemonsets in every namespace. It cannot read Secrets or ConfigMaps; in its own namespace kyyard-agent it reads and writes only its identity Secret. Applying the manifest needs cluster-admin, because it creates a ClusterRole and a ClusterRoleBinding."
+
+const clusterNote = "Save the manifest and apply it with a cluster-admin kubeconfig. Run kubectl -n kyyard-agent logs deploy/kyyard-agent and compare the agent key fingerprint before approving. Once approved, delete the spent enrollment Secret: kubectl -n kyyard-agent delete secret kyyard-agent-enrollment. Uninstall with kubectl delete -f on the same file."
 
 func (s *Server) instanceFingerprint() string {
 	if len(s.config.Security.InstanceKey) != ed25519.SeedSize {
@@ -35,17 +41,29 @@ func (s *Server) instanceFingerprint() string {
 func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	var input struct {
 		Runtime string `json:"runtime"`
+		Name    string `json:"name"`
 	}
 	if err := strictJSON(r, &input); err != nil {
 		s.tenantError(w, err)
 		return
 	}
+	// A pod has no useful hostname, so a cluster is named here; a Docker host names itself.
+	kube := input.Runtime == protocol.RuntimeKubernetes
+	if kube != (input.Name != "") || (kube && !store.ValidEndpointName(input.Name)) {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	https := strings.HasPrefix(s.config.Server.AppURL, "https://")
 	image := s.config.Server.AgentImage
-	if image == "" && strings.HasPrefix(s.config.Server.AppURL, "https://") && s.config.Server.DockerSocket != "" {
+	discover := image == "" && https && s.config.Server.DockerSocket != ""
+	// Authorize before touching Docker or saying anything about this server's configuration.
+	if kube || discover {
 		if err := s.store.Tenancy().CheckEnrollmentAccess(r.Context(), a); err != nil {
 			s.tenantError(w, err)
 			return
 		}
+	}
+	if discover {
 		// Use bytes already installed by the operator, not a registry tag that can move.
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		host, _ := os.Hostname()
@@ -58,6 +76,16 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 			}
 		}
 	}
+	// A manifest is the only thing a cluster enrollment hands out, so one that cannot be
+	// rendered is refused before a token is minted.
+	if kube && !https {
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Kubernetes enrollment needs KY_APP_URL on HTTPS", "code": "https_required"})
+		return
+	}
+	if kube && image == "" {
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Set KY_AGENT_IMAGE to a digest-pinned ghcr.io/busnes-app/kyyard@sha256:<digest> reference", "code": "agent_image_unpinned"})
+		return
+	}
 	tok, err := s.store.Tenancy().CreateEnrollmentToken(r.Context(), a, input.Runtime, image)
 	if err != nil {
 		s.tenantError(w, err)
@@ -69,11 +97,23 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		"token": secret, "disclosure": socketDisclosure,
 	}
 	out["image"] = image
-	if image != "" && strings.HasPrefix(s.config.Server.AppURL, "https://") {
+	if kube {
+		doc, err := manifest.Render(manifest.Input{Image: image, Link: strings.TrimRight(s.config.Server.AppURL, "/") + "/#kyyard=" + secret, Name: input.Name})
+		if err != nil {
+			s.tenantError(w, err)
+			return
+		}
+		file := manifest.FileName(input.Name)
+		out["manifest"], out["manifest_file"], out["command"] = doc, file, "kubectl apply -f "+file
+		out["disclosure"], out["note"] = clusterDisclosure, clusterNote
+		s.writeJSON(w, http.StatusCreated, out)
+		return
+	}
+	if image != "" && https {
 		link := strings.TrimRight(s.config.Server.AppURL, "/") + "/#kyyard=" + secret
 		out["command"] = fmt.Sprintf("sudo docker run -d --name kyyard-agent --restart unless-stopped --pull always --no-healthcheck --entrypoint /app/kyyard-agent -v /var/run/docker.sock:/var/run/docker.sock -v kyyard-agent-identity:/var/lib/kyyard-agent %s --link %s --name \"$(hostname)\"", shellQuote(image), shellQuote(link))
 		out["note"] = "Run on the remote Docker host. This pulls the image, enrolls and keeps the agent running. Omit sudo if your account already has Docker access. Run sudo docker logs kyyard-agent and compare the agent key fingerprint before approving. Keep the identity volume for restarts."
-	} else if strings.HasPrefix(s.config.Server.AppURL, "https://") {
+	} else if https {
 		out["note"] = "Could not identify a published digest for this server image. Set KY_AGENT_IMAGE to a verified ghcr.io/busnes-app/kyyard@sha256:<digest> reference, then generate a new command. Source builds and custom container hostnames need this explicit image setting."
 	} else {
 		out["note"] = "Remote setup needs a reachable HTTPS address. Configure KY_APP_URL and your trusted reverse proxy, then generate a new command. Local Docker connects automatically; no local enrollment command is needed."
@@ -340,6 +380,9 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, err)
 		return
 	}
+	if !s.dockerOnly(w, r, a, id) {
+		return
+	}
 	var body struct {
 		Action string `json:"action"`
 		// A command names a container or an image, never both; the action says which field
@@ -431,6 +474,9 @@ func (s *Server) handleRemovalPreview(w http.ResponseWriter, r *http.Request, a 
 	id, err := endpointID(r)
 	if err != nil {
 		s.tenantError(w, err)
+		return
+	}
+	if !s.dockerOnly(w, r, a, id) {
 		return
 	}
 	container := r.PathValue("container")

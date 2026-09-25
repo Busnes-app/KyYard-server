@@ -202,6 +202,10 @@ func (s *Server) handleContainerInspection(w http.ResponseWriter, r *http.Reques
 		s.writeError(w, 429, "Too many inspection requests")
 		return
 	}
+	// Inspection's permission is endpoint.read, which dockerOnly's endpoint read checks.
+	if !s.dockerOnly(w, r, a, endpoint) {
+		return
+	}
 	target, err := s.store.Tenancy().ReadInspectionTarget(r.Context(), a, endpoint, r.PathValue("container"))
 	if err != nil {
 		s.tenantError(w, err)

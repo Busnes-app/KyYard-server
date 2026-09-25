@@ -39,6 +39,9 @@ var (
 	// KY_REGISTRY_ALLOW_PRIVATE.
 	ErrPrivateRegistriesDisabled = errors.New("private registries are disabled by the operator")
 	ErrMappingRequired           = errors.New("application has no adopted mapping")
+	// ErrRuntimeUnsupported is an action the endpoint's runtime cannot take: a Docker action on
+	// a Kubernetes endpoint, a pod log on a Docker one.
+	ErrRuntimeUnsupported = errors.New("the endpoint's runtime does not support this action")
 	// ErrUnreadableResult is a deployment result that fails validation even read as an older
 	// agent's: nothing is stored, and the row waits for another answer or the sweep.
 	ErrUnreadableResult = errors.New("unreadable deployment result")
@@ -292,6 +295,7 @@ type TenancyStore interface {
 	CheckExecAccess(ctx context.Context, access TenantAccess, endpointID string) error
 	OpenExecTarget(ctx context.Context, access TenantAccess, endpointID, streamID, confirm string, spec protocol.ExecSpec) (string, error)
 	OpenLogTarget(ctx context.Context, access TenantAccess, endpointID, identifier string) (*LogTarget, error)
+	OpenPodLogTarget(ctx context.Context, access TenantAccess, endpointID string, pod protocol.PodTarget) error
 	StillAllowed(ctx context.Context, access TenantAccess, action permissions.Action, endpointID string) error
 	MarkCommandDispatched(ctx context.Context, id string) error
 	SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error

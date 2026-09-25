@@ -33,8 +33,15 @@ type Options struct {
 	HTTPClient      *http.Client
 	Version         string
 	Log             *log.Logger
-	// IdentityDir is where the rising inventory generation and rotation state are written back.
+	// Identities is where the rising inventory generation and rotation state are written back.
+	// Nil falls back to IdentityDir.
+	Identities IdentityStore
+	// IdentityDir is the identity directory when Identities is nil, and the default CommandDir.
 	IdentityDir string
+	// Kubernetes marks a cluster agent: it advertises kubernetes.inventory, and pod.logs when
+	// Logs is set, in place of every Docker capability, and its facts-only snapshot carries an
+	// empty cluster inventory so it still has the shape a Kubernetes endpoint requires.
+	Kubernetes bool
 	// CommandDir overrides the durable command ledger directory for embedded agents
 	// whose identity and inventory generation are maintained by their control plane.
 	CommandDir string
@@ -262,6 +269,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 		heartbeat = 30 * time.Second
 	}
 	capabilities := []string{}
+	if opts.Kubernetes {
+		capabilities = append(capabilities, protocol.CapabilityKubernetesInventory)
+		if opts.Logs != nil {
+			capabilities = append(capabilities, protocol.CapabilityPodLogs)
+		}
+	}
 	if opts.Inspect != nil {
 		capabilities = append(capabilities, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityContainerInspectHealth)
 	}
@@ -546,10 +559,14 @@ func read(ctx context.Context, conn *websocket.Conn) (protocol.Envelope, error) 
 }
 
 func (o *Options) save(id *Identity) error {
-	if o.IdentityDir == "" {
-		return nil
+	store := o.Identities
+	if store == nil {
+		if o.IdentityDir == "" {
+			return nil
+		}
+		store = DirStore(o.IdentityDir)
 	}
-	if err := SaveIdentity(o.IdentityDir, id); err != nil {
+	if err := store.Save(id); err != nil {
 		o.Log.Printf("could not persist identity: %v", err)
 		return err
 	}
@@ -602,6 +619,9 @@ func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 	}
 	if snap == nil {
 		snap = &protocol.Snapshot{ObservedAt: time.Now().UTC(), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
+		if opts.Kubernetes {
+			snap.Kubernetes = &protocol.KubernetesInventory{}
+		}
 	}
 	snap.Generation = gen
 	if err := write(ctx, conn, protocol.TypeInventory, snap); err != nil {
