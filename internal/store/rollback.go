@@ -46,7 +46,8 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 	err = t.readTenant(ctx, a, permissions.ApplicationDeploy, func(tx *sql.Tx) error {
 		out, reason = nil, ""
 		var instance, endpoint, planRaw, resultRaw, rolledBack string
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.instance_id,d.endpoint_id,d.plan,COALESCE(d.result,''),COALESCE(v.rollback_deployment_id,'') FROM deployments d JOIN deployment_validations v ON v.deployment_id=d.id WHERE d.organization_id=? AND d.environment_id=? AND d.application_id=? AND d.id=? AND v.is_rollback=0`), a.OrganizationID, a.EnvironmentID, appID.String(), depID.String()).Scan(&instance, &endpoint, &planRaw, &resultRaw, &rolledBack)
+		var applied int
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT d.instance_id,d.endpoint_id,d.revision,d.plan,COALESCE(d.result,''),COALESCE(v.rollback_deployment_id,'') FROM deployments d JOIN deployment_validations v ON v.deployment_id=d.id WHERE d.organization_id=? AND d.environment_id=? AND d.application_id=? AND d.id=? AND v.is_rollback=0`), a.OrganizationID, a.EnvironmentID, appID.String(), depID.String()).Scan(&instance, &endpoint, &applied, &planRaw, &resultRaw, &rolledBack)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -66,6 +67,9 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 			reason = RollbackAlreadyRolledBack
 			return nil
 		}
+		// An expired planned row needs no filter: idx_deployments_live holds one planned or applying
+		// row per instance and every later plan replaces it, so a named rollback plan still present
+		// is newer than any deployment it could be confused with.
 		var inFlight int
 		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployment_validations v WHERE v.instance_id=? AND v.deployment_id<>? AND ((v.is_rollback=1 AND v.phase<>'done') OR EXISTS (SELECT 1 FROM deployments r WHERE r.id=v.rollback_deployment_id AND r.state IN ('planned','applying')))`), instance, depID.String()).Scan(&inFlight); err != nil {
 			return err
@@ -79,19 +83,27 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 		if json.Unmarshal([]byte(planRaw), &plan) != nil || json.Unmarshal([]byte(resultRaw), &result) != nil {
 			return ErrRevisionCorrupt
 		}
-		// previous_revision 0: the replaced containers were adopted, never applied from a revision.
+		if len(plan.Services) == 0 {
+			reason = RollbackNoPriorIdentity
+			return nil
+		}
+		// The revision the deployment replaced. previous_revision 0 is the first update after
+		// adoption: the definition is unchanged, only the images differ, so it is the deployment's own.
+		revision := previous
+		if revision == 0 {
+			revision = applied
+		}
+		if revision < 1 {
+			return ErrInvalid // the planner reads 0 as the latest revision
+		}
 		images := map[string]string{}
-		missing := previous == 0 || len(plan.Services) == 0
+		missing := false
 		for _, ps := range plan.Services {
 			images[ps.Name] = ps.Replaces.ImageID
 			missing = missing || ps.Replaces.ImageID == ""
 		}
-		if missing {
-			reason = RollbackNoPriorIdentity
-			return nil
-		}
 		var specRaw, digest string
-		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, appID.String(), previous).Scan(&specRaw, &digest)
+		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, appID.String(), revision).Scan(&specRaw, &digest)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -119,6 +131,10 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 			reason = RollbackServiceSetChanged
 			return nil
 		}
+		if missing {
+			reason = RollbackNoPriorIdentity
+			return nil
+		}
 		var raw string
 		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpoint).Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -132,7 +148,7 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 				return nil
 			}
 		}
-		out = &Rollback{InstanceID: instance, MappingVersion: version, Project: project, Revision: previous, Images: images}
+		out = &Rollback{InstanceID: instance, MappingVersion: version, Project: project, Revision: revision, Images: images}
 		return nil
 	})
 	if err != nil {

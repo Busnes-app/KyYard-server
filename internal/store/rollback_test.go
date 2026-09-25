@@ -56,7 +56,7 @@ func TestRollbackTargetReturnsTheReplacedImages(t *testing.T) {
 	want := func(label string) {
 		t.Helper()
 		rb, reason, err := ts.RollbackTarget(ctx, a, app.ID, updated.ID)
-		if err != nil || reason != "" || rb == nil || rb.Revision != 1 || len(rb.Images) != 1 || rb.Images["web"] != imageD || rb.Project != "shop" || rb.InstanceID != updated.InstanceID || rb.MappingVersion != updated.MappingVersion {
+		if err != nil || reason != "" || rb == nil || rb.Revision < 1 || rb.Revision != 1 || len(rb.Images) != 1 || rb.Images["web"] != imageD || rb.Project != "shop" || rb.InstanceID != updated.InstanceID || rb.MappingVersion != updated.MappingVersion {
 			t.Fatalf("%s: %+v %q %v", label, rb, reason, err)
 		}
 	}
@@ -103,6 +103,9 @@ func TestRollbackTargetIneligibility(t *testing.T) {
 		{"the plan names no service", func(t *testing.T, st *SQLStore, _ TenantAccess, _ *Application, _ string, _, updated *Deployment) {
 			setPlan(t, st, updated, func(p *DeploymentPlan) { p.Services = []PlannedService{} })
 		}, RollbackNoPriorIdentity},
+		{"the revision added a service", func(t *testing.T, st *SQLStore, _ TenantAccess, _ *Application, _ string, _, updated *Deployment) {
+			setPlan(t, st, updated, func(p *DeploymentPlan) { p.Services = append(p.Services, PlannedService{Name: "db"}) })
+		}, RollbackServiceSetChanged},
 		{"prior definition tampered", func(t *testing.T, st *SQLStore, _ TenantAccess, app *Application, _ string, _, _ *Deployment) {
 			mustExec(t, st, `UPDATE application_revisions SET spec=? WHERE application_id=? AND number=1`, `{"kind":"compose.v1","services":[{"name":"web","image":"nginx:tampered"}]}`, app.ID)
 		}, RollbackPriorDefinitionInvalid},
@@ -128,11 +131,14 @@ func TestRollbackTargetIneligibility(t *testing.T) {
 			}
 		})
 	}
-	// The adopted containers ran under no applied revision: previous_revision is 0.
-	t.Run("first apply after adoption", func(t *testing.T) {
-		st, a, app, endpoint, _, _ := planFixture(t)
-		d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(imageD, "nginx:1")}, nil)
-		if rb, reason, err := st.Tenancy().RollbackTarget(ctx, a, app.ID, d.ID); err != nil || rb != nil || reason != RollbackNoPriorIdentity {
+	// previous_revision is 0 after the first update of an adopted instance: the definition is
+	// unchanged, so the rollback re-plans the deployment's own revision on the adopted images.
+	t.Run("first update after adoption", func(t *testing.T) {
+		st, a, app, endpoint, _, m := planFixture(t)
+		adopted := m.Preview.Containers[0].ImageID
+		d := deployFixture(t, st, a, app, endpoint, priorID, []protocol.Image{tagged(adopted), tagged(imageD, "nginx:1")}, nil)
+		rb, reason, err := st.Tenancy().RollbackTarget(ctx, a, app.ID, d.ID)
+		if err != nil || reason != "" || rb == nil || rb.Revision < 1 || rb.Revision != d.Revision || rb.Images["web"] != adopted || adopted == "" {
 			t.Fatalf("%+v %q %v", rb, reason, err)
 		}
 	})
