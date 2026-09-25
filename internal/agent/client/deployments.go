@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,7 +29,7 @@ type deploymentEntry struct {
 }
 
 // pending is a run that began changing the host and has no result yet.
-func (e deploymentEntry) pending() bool { return e.Result.Deployment == "" }
+func (e deploymentEntry) pending() bool { return e.Result.Deployment == "" && !e.Started.IsZero() }
 
 // deployer runs one deployment at a time on the agent's root context, remembers every result
 // before sending it, delivers it to whichever session is current, and re-sends what no session
@@ -54,6 +55,8 @@ func newDeployer(root context.Context, dir string, opts *Options) *deployer {
 	if raw, err := os.ReadFile(d.path); err == nil {
 		var saved map[string]deploymentEntry
 		if json.Unmarshal(raw, &saved) == nil {
+			// An entry with neither a start nor a result is not ours to settle or send.
+			maps.DeleteFunc(saved, func(_ string, e deploymentEntry) bool { return e.Result.Deployment == "" && e.Started.IsZero() })
 			d.done = saved
 			if d.settleStarted() {
 				if err := d.save(); err != nil {

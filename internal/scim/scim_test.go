@@ -136,3 +136,43 @@ func TestSCIMAuthEnforcement(t *testing.T) {
 		t.Errorf("expected 401 Unauthorized for missing token, got %d", w.Code)
 	}
 }
+
+// Replace or Patch onto a username another account holds, ignoring case, is SCIM uniqueness
+// (409): UpdateUser's ErrAlreadyExists goes through scimStoreError.
+func TestSCIMRenameOntoATakenUsernameIsUniqueness(t *testing.T) {
+	srv, mux, token := setupSCIMServer(t)
+	handler := srv.AuthMiddleware(mux)
+	send := func(method, path string, payload map[string]any) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(method, path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/scim+json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
+	var bob struct {
+		ID string `json:"id"`
+	}
+	for _, name := range []string{"scim_alice", "scim_bob"} {
+		w := send("POST", "/scim/v2/Users", map[string]any{"schemas": []string{scim.SchemaUser}, "userName": name, "active": true})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", name, w.Code, w.Body.String())
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &bob)
+	}
+	for name, w := range map[string]*httptest.ResponseRecorder{
+		"replace": send("PUT", "/scim/v2/Users/"+bob.ID, map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "SCIM_ALICE", "active": true}),
+		"patch": send("PATCH", "/scim/v2/Users/"+bob.ID, map[string]any{"schemas": []string{scim.SchemaPatchOp}, "Operations": []map[string]any{
+			{"op": "replace", "path": "userName", "value": "scim_alice"},
+		}}),
+	} {
+		var scimErr struct {
+			ScimType string `json:"scimType"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &scimErr)
+		if w.Code != http.StatusConflict || scimErr.ScimType != "uniqueness" {
+			t.Fatalf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+}

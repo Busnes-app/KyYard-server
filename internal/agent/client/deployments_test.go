@@ -109,7 +109,7 @@ func TestDeployerRunsOffTheSessionAndDeliversToTheCurrentOne(t *testing.T) {
 		return protocol.DeploymentResult{}
 	}
 	d.handleApply(session2, "ep_1", raw, out2)
-	f = <-out2
+	f = nextFrame(t, out2)
 	if ran || f.Type != protocol.TypeDeploymentResult {
 		t.Fatal("replay ran the deployment again")
 	}
@@ -144,11 +144,11 @@ func TestDeployerStaysSilentForTheRunningDeployment(t *testing.T) {
 	raw2, _ := json.Marshal(other)
 	d.handleApply(ctx, "ep_1", raw2, out)
 	var res protocol.DeploymentResult
-	if decodeResult(<-out, &res) != nil || res.Deployment != other.Deployment || res.Outcome != protocol.OutcomeDenied {
+	if decodeResult(nextFrame(t, out), &res) != nil || res.Deployment != other.Deployment || res.Outcome != protocol.OutcomeDenied {
 		t.Fatalf("different deployment: %+v", res)
 	}
 	close(finish)
-	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeSucceeded {
+	if decodeResult(nextFrame(t, out), &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("running deployment answered with %+v", res)
 	}
 	select {
@@ -223,7 +223,7 @@ func TestDeployerRefusals(t *testing.T) {
 	out := make(chan outFrame, 8)
 	defer d.attach(context.Background(), out)()
 	read := func() protocol.DeploymentResult {
-		f := <-out
+		f := nextFrame(t, out)
 		var res protocol.DeploymentResult
 		_ = decodeResult(f, &res)
 		return res
@@ -454,7 +454,7 @@ func TestDeployerNeverBlocksTheSessionLoop(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handle blocked on a full outbound queue")
 	}
-	if f := <-full; f.Type != protocol.TypeDeploymentResult {
+	if f := nextFrame(t, full); f.Type != protocol.TypeDeploymentResult {
 		t.Fatalf("answer: %+v", f)
 	}
 }
@@ -463,19 +463,26 @@ func removed(req protocol.RemovalRequest) protocol.DeploymentResult {
 	return protocol.DeploymentResult{Deployment: req.Deployment, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 }
 
-func readResult(t *testing.T, out <-chan outFrame) protocol.DeploymentResult {
+// nextFrame fails the test rather than hanging when no frame arrives within 5 s.
+func nextFrame(t *testing.T, out <-chan outFrame) outFrame {
 	t.Helper()
 	select {
 	case f := <-out:
-		var res protocol.DeploymentResult
-		if f.Type != protocol.TypeDeploymentResult || decodeResult(f, &res) != nil {
-			t.Fatalf("frame: %+v", f)
-		}
-		return res
+		return f
 	case <-time.After(5 * time.Second):
-		t.Fatal("no result")
+		t.Fatal("no frame within 5s")
+		return outFrame{}
 	}
-	return protocol.DeploymentResult{}
+}
+
+func readResult(t *testing.T, out <-chan outFrame) protocol.DeploymentResult {
+	t.Helper()
+	f := nextFrame(t, out)
+	var res protocol.DeploymentResult
+	if f.Type != protocol.TypeDeploymentResult || decodeResult(f, &res) != nil {
+		t.Fatalf("frame: %+v", f)
+	}
+	return res
 }
 
 // A removal runs Options.Remove on the root context, is recorded before it is delivered to the
@@ -716,7 +723,7 @@ func TestDeployerReportsClockSkewAsFailed(t *testing.T) {
 	raw, _ := json.Marshal(req)
 	d.handleApply(context.Background(), "ep_1", raw, out)
 	var res protocol.DeploymentResult
-	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeFailed || res.Code != protocol.ResultClockSkew || res.RequestID != req.RequestID || res.Validate() != nil {
+	if decodeResult(nextFrame(t, out), &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeFailed || res.Code != protocol.ResultClockSkew || res.RequestID != req.RequestID || res.Validate() != nil {
 		t.Fatalf("skewed frame: %+v", res)
 	}
 	d.mu.Lock()
@@ -756,11 +763,11 @@ func TestDeployerStartedMarkerSurvivesARestart(t *testing.T) {
 	out := make(chan outFrame, 4)
 	second.resend(context.Background(), out)
 	var res protocol.DeploymentResult
-	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Code != protocol.ResultRestarted || res.RequestID != req.RequestID || res.Validate() != nil {
+	if decodeResult(nextFrame(t, out), &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Code != protocol.ResultRestarted || res.RequestID != req.RequestID || res.Validate() != nil {
 		t.Fatalf("re-sent: %+v", res)
 	}
 	second.handleApply(context.Background(), "ep_1", raw, out)
-	if decodeResult(<-out, &res) != nil || res.Outcome != protocol.OutcomeUnknown {
+	if decodeResult(nextFrame(t, out), &res) != nil || res.Outcome != protocol.OutcomeUnknown {
 		t.Fatalf("replayed: %+v", res)
 	}
 	if ran.Load() {
@@ -768,6 +775,36 @@ func TestDeployerStartedMarkerSurvivesARestart(t *testing.T) {
 	}
 	close(release)
 	first.wait()
+}
+
+// A ledger entry with neither a start nor a result is not pending: loading drops it rather than
+// settling it as restarted, and it is never re-sent.
+func TestDeployerDropsAnEntryThatNeitherStartedNorFinished(t *testing.T) {
+	if (deploymentEntry{}).pending() {
+		t.Fatal("an empty entry is pending")
+	}
+	dir := t.TempDir()
+	started := "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b"
+	garbage := "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b7c"
+	raw, _ := json.Marshal(map[string]deploymentEntry{
+		started: {Started: time.Now().UTC(), RequestID: "0123456789abcdef0123456789abcdef"},
+		garbage: {Finished: time.Now().UTC(), RequestID: "fedcba9876543210fedcba9876543210"}, // recent, so pruning keeps it
+	})
+	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := newDeployer(context.Background(), dir, &Options{})
+	if _, ok := d.done[garbage]; ok || len(d.done) != 1 {
+		t.Fatalf("ledger after load: %+v", d.done)
+	}
+	out := make(chan outFrame, 4)
+	d.resend(context.Background(), out)
+	if res := readResult(t, out); res.Deployment != started || res.Code != protocol.ResultRestarted {
+		t.Fatalf("re-sent: %+v", res)
+	}
+	if len(out) != 0 {
+		t.Fatalf("re-sent %d extra results", len(out))
+	}
 }
 
 // Pruning never drops a run that began and has no result, however old or full the ledger, and
@@ -797,7 +834,7 @@ func TestDeployerPruneKeepsAStartedRun(t *testing.T) {
 	}
 	for range deploymentLedgerMax {
 		var res protocol.DeploymentResult
-		if decodeResult(<-out, &res) != nil || res.Deployment == running {
+		if decodeResult(nextFrame(t, out), &res) != nil || res.Deployment == running {
 			t.Fatalf("re-sent the started run: %+v", res)
 		}
 	}
@@ -822,7 +859,7 @@ func TestDeployerReplaysTheLedgerPastTheDeadline(t *testing.T) {
 	out := make(chan outFrame, 1)
 	d.handleApply(context.Background(), "ep_1", raw, out)
 	var res protocol.DeploymentResult
-	if decodeResult(<-out, &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Code != protocol.ResultRestarted || res.RequestID != req.RequestID {
+	if decodeResult(nextFrame(t, out), &res) != nil || res.Deployment != req.Deployment || res.Outcome != protocol.OutcomeUnknown || res.Code != protocol.ResultRestarted || res.RequestID != req.RequestID {
 		t.Fatalf("expired re-sent frame: %+v", res)
 	}
 	if ran.Load() {

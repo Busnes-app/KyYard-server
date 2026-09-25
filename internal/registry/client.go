@@ -139,7 +139,17 @@ func (c *Client) Head(ctx context.Context, ref Reference, cred *Credential) (Res
 	return c.manifest(ctx, http.MethodHead, ref, cred)
 }
 
+// manifest reports the caller's context error whenever it is done and the call failed: a
+// registry answering as the deadline passes must not turn a cancellation into ErrUnavailable.
 func (c *Client) manifest(ctx context.Context, method string, ref Reference, cred *Credential) (Resolved, error) {
+	r, err := c.fetch(ctx, method, ref, cred)
+	if err != nil && ctx.Err() != nil {
+		return Resolved{}, fmt.Errorf("registry %s: %w", ref.Host, ctx.Err())
+	}
+	return r, err
+}
+
+func (c *Client) fetch(ctx context.Context, method string, ref Reference, cred *Credential) (Resolved, error) {
 	if ref.Host == "" || ref.Repository == "" || (ref.Tag == "" && ref.Digest == "") {
 		return Resolved{}, ErrInvalidReference
 	}

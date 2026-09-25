@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -44,6 +46,14 @@ func (k *KySignOnClient) ExchangeCode(ctx context.Context, code, verifier, redir
 	}
 	claims.Provider = "kysignon"
 	return claims, nil
+}
+
+// refuse audits a directory user refused for a taken username and returns ErrUsernameTaken.
+func (k *KySignOnClient) refuse(ctx context.Context, username string) error {
+	if err := k.store.Audit().LogAudit(ctx, &store.AuditRecord{Action: "auth.sso.refused", Result: "denied", Resource: "kysignon", Details: "username=" + protocol.CleanText(username, 64)}); err != nil {
+		log.Printf("[SSO] audit auth.sso.refused not recorded: %v", err)
+	}
+	return fmt.Errorf("%w: %s", ErrUsernameTaken, username)
 }
 
 // KySignOnSyncPayload defines the schema received during automatic directory replication webhooks.
@@ -100,7 +110,7 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			existing.Role = role
 			existing.Status = status
 			if err := k.store.Users().UpdateUser(ctx, existing); errors.Is(err, store.ErrAlreadyExists) {
-				return fmt.Errorf("%w: %s", ErrUsernameTaken, payload.Username)
+				return k.refuse(ctx, payload.Username)
 			} else if err != nil {
 				return err
 			}
@@ -111,7 +121,7 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 		}
 
 		if _, err := k.store.Users().GetUserByUsername(ctx, payload.Username); err == nil {
-			return fmt.Errorf("%w: %s", ErrUsernameTaken, payload.Username)
+			return k.refuse(ctx, payload.Username)
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
@@ -127,7 +137,7 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 		}
 		err = k.store.Users().CreateUser(ctx, newUser)
 		if errors.Is(err, store.ErrAlreadyExists) {
-			return fmt.Errorf("%w: %s", ErrUsernameTaken, payload.Username)
+			return k.refuse(ctx, payload.Username)
 		}
 		return err
 

@@ -641,8 +641,16 @@ func TestFrameBlocker(t *testing.T) {
 	if b := frameBlocker(good, now, protocol.MaxDeploymentRequestBytesLegacy); b != "frame_too_large" {
 		t.Fatalf("a 240 KiB frame at 192 KiB: %s", b)
 	}
-	if b := frameBlocker(good, now, 1<<30); b != "" {
-		t.Fatalf("a cap above the wire bound: %s", b)
+	// A cap above the wire bound is clamped to it: a frame between the two is still too large.
+	big := good
+	second := good.Services[0]
+	second.Name, second.ContainerName, second.Replaces.ContainerID = "api", "shop-api", strings.Repeat("d", 64)
+	big.Services = []protocol.DeploymentService{good.Services[0], second}
+	if raw, _ := json.Marshal(big); len(raw) <= protocol.MaxDeploymentRequestBytes {
+		t.Fatalf("fixture is %d bytes, not above the wire bound", len(raw))
+	}
+	if b := frameBlocker(big, now, 1<<30); b != "frame_too_large" {
+		t.Fatalf("a 480 KiB frame under a cap above the wire bound: %q", b)
 	}
 	invalid := good
 	invalid.Deadline = now.Add(-time.Second)
