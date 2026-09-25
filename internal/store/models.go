@@ -168,6 +168,9 @@ type Endpoint struct {
 	ApprovedBy    string     `json:"approved_by,omitempty"`
 	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
 	LastSeenAt    *time.Time `json:"last_seen_at,omitempty"`
+	// DeployNamespaces are the namespaces the cluster's last manifest grants writes in, sorted;
+	// empty for a Docker endpoint.
+	DeployNamespaces []string `json:"deploy_namespaces"`
 }
 
 // EndpointEvent is a bounded, operator-facing record; high-severity ones surface until acknowledged.

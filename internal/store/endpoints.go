@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +28,25 @@ var factKeys = map[string]bool{"hostname": true, "os": true, "runtime_version": 
 
 func validRuntime(r string) bool { return r == "docker" || r == "kubernetes" }
 
+// MaxDeployNamespaces bounds the namespaces one cluster manifest grants writes in.
+const MaxDeployNamespaces = 32
+
+// NormalizeNamespaces sorts a namespace list and refuses one with more than MaxDeployNamespaces
+// entries, a repeat, a name that is not a DNS-1123 label, the agent's own namespace (its Secrets
+// are its identity) or a kube- system namespace.
+func NormalizeNamespaces(in []string) ([]string, error) {
+	out := slices.Sorted(slices.Values(in))
+	if len(out) > MaxDeployNamespaces {
+		return nil, ErrInvalid
+	}
+	for i, ns := range out {
+		if !protocol.ValidDNSLabel(ns) || ns == "kyyard-agent" || strings.HasPrefix(ns, "kube-") || (i > 0 && out[i-1] == ns) {
+			return nil, ErrInvalid
+		}
+	}
+	return out, nil
+}
+
 // ValidEndpointName is the rule Enroll and RenameEndpoint apply to an endpoint's name.
 func ValidEndpointName(name string) bool { return validTenantName(name) }
 
@@ -41,21 +61,26 @@ func (t *tenancyStore) CheckEnrollmentAccess(ctx context.Context, a TenantAccess
 
 // CreateEnrollmentToken records the image reference the operator is handed with the token, so
 // the audit trail names the bytes that were authorized to run as root on the host.
-func (t *tenancyStore) CreateEnrollmentToken(ctx context.Context, a TenantAccess, runtime, agentImage string) (*EnrollmentToken, error) {
-	if a.EnvironmentID == "" {
+func (t *tenancyStore) CreateEnrollmentToken(ctx context.Context, a TenantAccess, runtime, agentImage string, namespaces ...string) (*EnrollmentToken, error) {
+	if a.EnvironmentID == "" || (runtime != protocol.RuntimeKubernetes && len(namespaces) > 0) {
 		return nil, ErrInvalid
 	}
+	namespaces, err := NormalizeNamespaces(namespaces)
+	if err != nil {
+		return nil, err
+	}
+	encoded, _ := json.Marshal(namespaces)
 	secret := make([]byte, protocol.TokenSize)
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
 	tok := &EnrollmentToken{ID: uuid.NewString(), EnvironmentID: a.EnvironmentID, Runtime: runtime, ExpiresAt: now.Add(enrollmentTokenLife), Secret: secret, AgentImage: agentImage}
-	err := t.withTenantTarget(ctx, a, permissions.EndpointEnroll, tok.ID, func(tx *sql.Tx) error {
+	err = t.withTenantTarget(ctx, a, permissions.EndpointEnroll, tok.ID, func(tx *sql.Tx) error {
 		if !validRuntime(runtime) {
 			return ErrInvalid
 		}
-		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO agent_enrollment_tokens (id,organization_id,environment_id,runtime,token_hash,created_by,created_at,expires_at,agent_image) VALUES (?,?,?,?,?,?,?,?,?)`), tok.ID, a.OrganizationID, a.EnvironmentID, runtime, crypto.SHA256Hex(secret), a.ActorID, now, tok.ExpiresAt, agentImage)
+		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO agent_enrollment_tokens (id,organization_id,environment_id,runtime,token_hash,created_by,created_at,expires_at,agent_image,deploy_namespaces) VALUES (?,?,?,?,?,?,?,?,?,?)`), tok.ID, a.OrganizationID, a.EnvironmentID, runtime, crypto.SHA256Hex(secret), a.ActorID, now, tok.ExpiresAt, agentImage, string(encoded))
 		return err
 	})
 	if err != nil {
@@ -99,11 +124,12 @@ func (t *tenancyStore) Enroll(ctx context.Context, req EnrollmentRequest) (*Endp
 		return nil, ErrForbidden
 	}
 	e := &Endpoint{ID: "ep_" + crypto.RandomHex(12), Name: strings.TrimSpace(req.Name), State: "pending", Facts: facts, Fingerprint: protocol.Fingerprint(req.PublicKey), CreatedAt: now}
-	var tokenID string
-	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,organization_id,environment_id,runtime FROM agent_enrollment_tokens WHERE token_hash=?`), crypto.SHA256Hex(req.Token)).Scan(&tokenID, &e.OrganizationID, &e.EnvironmentID, &e.Runtime); err != nil {
+	var tokenID, namespaces string
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,organization_id,environment_id,runtime,deploy_namespaces FROM agent_enrollment_tokens WHERE token_hash=?`), crypto.SHA256Hex(req.Token)).Scan(&tokenID, &e.OrganizationID, &e.EnvironmentID, &e.Runtime, &namespaces); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoints (id,organization_id,environment_id,name,runtime,state,facts,created_at) VALUES (?,?,?,?,?,?,?,?)`), e.ID, e.OrganizationID, e.EnvironmentID, e.Name, e.Runtime, e.State, string(factsJSON), now); err != nil {
+	e.DeployNamespaces = decodeNamespaces(namespaces)
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoints (id,organization_id,environment_id,name,runtime,state,facts,created_at,deploy_namespaces) VALUES (?,?,?,?,?,?,?,?,?)`), e.ID, e.OrganizationID, e.EnvironmentID, e.Name, e.Runtime, e.State, string(factsJSON), now, namespaces); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key") {
 			return nil, ErrAlreadyExists
 		}
@@ -124,17 +150,18 @@ func (t *tenancyStore) Enroll(ctx context.Context, req EnrollmentRequest) (*Endp
 	return e, nil
 }
 
-const endpointColumns = `e.id,e.organization_id,e.environment_id,e.name,e.runtime,e.state,e.facts,e.created_at,e.approved_at,e.approved_by,e.revoked_at,e.last_seen_at,COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state IN ('approved','pending_review') ORDER BY k.state LIMIT 1),''),COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state='pending_review' AND e.state<>'pending' AND k.created_at>? ORDER BY k.created_at DESC LIMIT 1),'')`
+const endpointColumns = `e.id,e.organization_id,e.environment_id,e.name,e.runtime,e.state,e.facts,e.created_at,e.approved_at,e.approved_by,e.revoked_at,e.last_seen_at,e.deploy_namespaces,COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state IN ('approved','pending_review') ORDER BY k.state LIMIT 1),''),COALESCE((SELECT k.fingerprint FROM endpoint_keys k WHERE k.endpoint_id=e.id AND k.state='pending_review' AND e.state<>'pending' AND k.created_at>? ORDER BY k.created_at DESC LIMIT 1),'')`
 
 // pendingCutoff is the oldest creation time a key may have and still count as pending.
 func pendingCutoff() time.Time { return time.Now().UTC().Add(-pendingKeyLife) }
 
 func scanEndpoint(row interface{ Scan(...any) error }) (*Endpoint, error) {
 	var e Endpoint
-	var facts string
-	if err := row.Scan(&e.ID, &e.OrganizationID, &e.EnvironmentID, &e.Name, &e.Runtime, &e.State, &facts, &e.CreatedAt, &e.ApprovedAt, &e.ApprovedBy, &e.RevokedAt, &e.LastSeenAt, &e.Fingerprint, &e.PendingFingerprint); err != nil {
+	var facts, namespaces string
+	if err := row.Scan(&e.ID, &e.OrganizationID, &e.EnvironmentID, &e.Name, &e.Runtime, &e.State, &facts, &e.CreatedAt, &e.ApprovedAt, &e.ApprovedBy, &e.RevokedAt, &e.LastSeenAt, &namespaces, &e.Fingerprint, &e.PendingFingerprint); err != nil {
 		return nil, err
 	}
+	e.DeployNamespaces = decodeNamespaces(namespaces)
 	e.Capabilities = []string{}
 	e.Alerts = []EndpointEvent{}
 	e.Facts = map[string]string{}
@@ -238,6 +265,53 @@ func (t *tenancyStore) ReadEndpoint(ctx context.Context, a TenantAccess, id stri
 			return err
 		}
 		return t.decorate(ctx, tx, e)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// decodeNamespaces reads a stored namespace list; an unreadable one is empty, which grants nothing.
+func decodeNamespaces(raw string) []string {
+	out := []string{}
+	if json.Unmarshal([]byte(raw), &out) != nil || out == nil {
+		return []string{}
+	}
+	return out
+}
+
+// SetEndpointDeployNamespaces replaces a Kubernetes endpoint's namespace list with the one the
+// administrator is about to apply a regenerated manifest for. It is the list plans and mappings
+// check; the agent checks its real grant itself before every apply.
+func (t *tenancyStore) SetEndpointDeployNamespaces(ctx context.Context, a TenantAccess, id string, namespaces []string) (*Endpoint, error) {
+	namespaces, err := NormalizeNamespaces(namespaces)
+	if err != nil {
+		return nil, err
+	}
+	encoded, _ := json.Marshal(namespaces)
+	details := "namespaces=" + strings.Join(namespaces, ",")
+	var e *Endpoint
+	err = t.withTenantTargetDetails(ctx, a, permissions.EndpointEnroll, id+"/manifest", &details, func(tx *sql.Tx) error {
+		var err error
+		e, err = scanEndpoint(tx.QueryRowContext(ctx, t.store.rebind(`SELECT `+endpointColumns+` FROM endpoints e WHERE e.organization_id=? AND e.id=?`), pendingCutoff(), a.OrganizationID, id))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if a.EnvironmentID != "" && e.EnvironmentID != a.EnvironmentID {
+			return ErrNotFound
+		}
+		if e.Runtime != protocol.RuntimeKubernetes {
+			return ErrRuntimeUnsupported
+		}
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoints SET deploy_namespaces=? WHERE id=?`), string(encoded), id); err != nil {
+			return err
+		}
+		e.DeployNamespaces = namespaces
+		return nil
 	})
 	if err != nil {
 		return nil, err

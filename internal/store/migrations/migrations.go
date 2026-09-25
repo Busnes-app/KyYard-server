@@ -1016,7 +1016,16 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// The policy run that applied a deployment, written only by ApplyPolicyDeployment: automation
 	// is a fact of the apply, so a run's plan applied by hand stays manual.
 	{Version: 33, Name: "deployment_policy_run", SQLite: `ALTER TABLE deployments ADD COLUMN policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL;`, Postgres: `ALTER TABLE deployments ADD COLUMN policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL;`},
+	{Version: 34, Name: "kubernetes_namespaces", SQLite: kubernetesNamespaces, Postgres: kubernetesNamespaces},
 }
+
+// kubernetesNamespaces stores the namespaces a cluster's manifest grants writes in (a JSON list,
+// on the token until enrollment copies it to the endpoint) and the namespace an instance maps to,
+// empty for a Docker instance.
+const kubernetesNamespaces = `ALTER TABLE agent_enrollment_tokens ADD COLUMN deploy_namespaces TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE endpoints ADD COLUMN deploy_namespaces TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE application_instances ADD COLUMN namespace TEXT NOT NULL DEFAULT '';
+`
 
 // Latest returns the highest registered migration version: the schema this binary runs.
 func Latest() int {
