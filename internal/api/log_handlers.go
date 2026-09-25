@@ -51,6 +51,9 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
+	if !s.dockerOnly(w, r, a, id) {
+		return
+	}
 	q := r.URL.Query()
 	search := q.Get("search")
 	if len(search) > maxLogSearchBytes {

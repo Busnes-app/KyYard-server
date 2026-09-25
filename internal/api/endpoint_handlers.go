@@ -380,6 +380,9 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, err)
 		return
 	}
+	if !s.dockerOnly(w, r, a, id) {
+		return
+	}
 	var body struct {
 		Action string `json:"action"`
 		// A command names a container or an image, never both; the action says which field
@@ -471,6 +474,9 @@ func (s *Server) handleRemovalPreview(w http.ResponseWriter, r *http.Request, a 
 	id, err := endpointID(r)
 	if err != nil {
 		s.tenantError(w, err)
+		return
+	}
+	if !s.dockerOnly(w, r, a, id) {
 		return
 	}
 	container := r.PathValue("container")

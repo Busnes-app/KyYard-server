@@ -161,6 +161,21 @@ func (t *tenancyStore) decorate(ctx context.Context, tx *sql.Tx, e *Endpoint) er
 		e.Capabilities = append(e.Capabilities, c)
 	}
 	rows.Close()
+	if e.Runtime == protocol.RuntimeKubernetes {
+		var raw string
+		var snap *protocol.Snapshot
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), e.ID).Scan(&raw)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			var s protocol.Snapshot
+			if json.Unmarshal([]byte(raw), &s) == nil {
+				snap = &s
+			}
+		}
+		e.ClusterHealth = protocol.ClusterHealth(e.State == "active", snap)
+	}
 	rows, err = tx.QueryContext(ctx, t.store.rebind(`SELECT id,severity,kind,details,created_at FROM endpoint_events WHERE endpoint_id=? AND severity='high' AND acknowledged_at IS NULL ORDER BY created_at DESC LIMIT 10`), e.ID)
 	if err != nil {
 		return err

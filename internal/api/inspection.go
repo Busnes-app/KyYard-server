@@ -198,6 +198,9 @@ func (s *Server) handleContainerInspection(w http.ResponseWriter, r *http.Reques
 		s.tenantError(w, err)
 		return
 	}
+	if !s.dockerOnly(w, r, a, endpoint) {
+		return
+	}
 	if !s.allowAttempt("inspection:"+a.ActorID, 30, time.Minute) {
 		s.writeError(w, 429, "Too many inspection requests")
 		return

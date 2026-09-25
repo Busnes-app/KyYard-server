@@ -36,9 +36,27 @@ func enrollAgent(t *testing.T, s *api.Server, st store.Store, admin *http.Cookie
 	}
 	var minted struct{ Token string }
 	_ = json.Unmarshal(w.Body.Bytes(), &minted)
-	token, _ := base64.RawURLEncoding.DecodeString(minted.Token)
+	return redeemToken(t, s, minted.Token, name)
+}
+
+// enrollClusterAgent mints a Kubernetes token in the store as actor (the route renders a
+// manifest, which needs an HTTPS address and a pinned image the test server lacks) and redeems
+// it through the real route.
+func enrollClusterAgent(t *testing.T, s *api.Server, st store.Store, actor, name string) enrolledAgent {
+	t.Helper()
+	tok, err := st.Tenancy().CreateEnrollmentToken(context.Background(), store.TenantAccess{ActorID: actor, OrganizationID: "a", EnvironmentID: "env-a"}, protocol.RuntimeKubernetes, "")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	return redeemToken(t, s, base64.RawURLEncoding.EncodeToString(tok.Secret), name)
+}
+
+// redeemToken enrolls a fresh key with a minted token through the real route.
+func redeemToken(t *testing.T, s *api.Server, secret, name string) enrolledAgent {
+	t.Helper()
+	token, _ := base64.RawURLEncoding.DecodeString(secret)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	body, _ := json.Marshal(map[string]any{"token": minted.Token, "public_key": base64.RawURLEncoding.EncodeToString(pub), "proof": base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, token))), "name": name, "facts": map[string]string{"hostname": name}})
+	body, _ := json.Marshal(map[string]any{"token": secret, "public_key": base64.RawURLEncoding.EncodeToString(pub), "proof": base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, token))), "name": name, "facts": map[string]string{"hostname": name}})
 	r := httptest.NewRequest("POST", "/api/agent/v1/enroll", strings.NewReader(string(body)))
 	r.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

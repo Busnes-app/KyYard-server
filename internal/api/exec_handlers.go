@@ -58,6 +58,9 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
+	if !s.dockerOnly(w, r, a, endpoint) {
+		return
+	}
 	if !s.allowAttempt("exec:"+a.ActorID, 10, time.Minute) {
 		s.writeError(w, 429, "Too many terminal attempts")
 		return
