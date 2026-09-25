@@ -1,8 +1,11 @@
 package api
 
 import (
+	"errors"
 	"io"
 	"net/http"
+
+	"github.com/Busnes-app/kyyard-server/internal/sso"
 )
 
 func (s *Server) handleKySignOnSyncWebhook(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +25,10 @@ func (s *Server) handleKySignOnSyncWebhook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := s.kysignon.HandleSyncWebhook(r.Context(), body, sig); err != nil {
+	if err := s.kysignon.HandleSyncWebhook(r.Context(), body, sig); errors.Is(err, sso.ErrUsernameTaken) {
+		s.writeError(w, http.StatusConflict, "username taken")
+		return
+	} else if err != nil {
 		s.writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}

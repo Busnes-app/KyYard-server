@@ -18,9 +18,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -317,5 +319,32 @@ func TestSSOAutoProvisionRefusesACaseVariantUsername(t *testing.T) {
 	rows := auditRows(t, st, "auth.sso.refused")
 	if len(rows) != 1 || rows[0].Result != "denied" || rows[0].Resource != "idp_test" || rows[0].Details != "username=Erin" || rows[0].UserID != "" {
 		t.Fatalf("refusal audit rows: %+v", rows)
+	}
+}
+
+// A directory user refused for a taken username is 409 with a fixed message: the claimed name and
+// the store's text never reach the directory. A bad signature stays 401.
+func TestKySignOnWebhookNameConflictIs409(t *testing.T) {
+	srv, st, _ := setupTestServerWith(t, func(c *config.Config) {
+		c.SSO.Enabled = true
+		c.SSO.KySignOnHMACSecret = "webhook-secret-999"
+	})
+	ctx := context.Background()
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_erin", Username: "erin", Role: "admin", Status: "active", SSOProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: "user.created", ID: "ext-erin", Username: "Erin", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
+	send := func(sig string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/sso/kysignon/sync", bytes.NewReader(body))
+		r.Header.Set("X-KySignOn-Signature", sig)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		return w
+	}
+	if w := send(crypto.ComputeHMACSHA256(body, "webhook-secret-999")); w.Code != 409 || !strings.Contains(w.Body.String(), "username taken") || strings.Contains(w.Body.String(), "Erin") {
+		t.Fatalf("name conflict: %d %s", w.Code, w.Body.String())
+	}
+	if w := send("bad"); w.Code != 401 {
+		t.Fatalf("bad signature: %d %s", w.Code, w.Body.String())
 	}
 }
