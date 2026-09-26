@@ -45,3 +45,11 @@ it('copies the manifest beside Download', async () => {
   expect(writeText).toHaveBeenCalledWith('kind: Role');
   expect((await screen.findByRole('status')).textContent).toBe('Copied.');
 });
+
+it('says whether the namespace form is open', () => {
+  render(<ManifestRegeneration org="a" endpoint={endpoint} onSaved={vi.fn()} />);
+  const toggle = screen.getByRole('button', { name: 'Regenerate manifest' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+});

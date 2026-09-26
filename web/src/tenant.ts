@@ -56,6 +56,12 @@ export const canEnroll = (role: string | undefined) => role === 'organization_ad
 // dropped. The server sorts, deduplicates and validates.
 export const parseNamespaces = (text: string) => text.split(/[\s,]+/).filter(Boolean);
 
+// validNamespaces is the server's rule for a deploy namespace list (store.NormalizeNamespaces):
+// at most 32 distinct DNS-1123 labels, none kyyard-agent or kube-*. The server stays the authority.
+export const validNamespaces = (names: string[]) => names.length <= 32 && new Set(names).size === names.length
+  && names.every((n) => /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/.test(n) && n !== 'kyyard-agent' && !n.startsWith('kube-'));
+export const NAMESPACE_RULE = 'List at most 32 namespaces by name: lower-case letters, digits and hyphens; not kyyard-agent or a kube- namespace.';
+
 // Mirrors permissions.Allows(role, ContainerExec): only organization admins may exec.
 export const canExec = (role: string | undefined) => role === 'organization_admin';
 

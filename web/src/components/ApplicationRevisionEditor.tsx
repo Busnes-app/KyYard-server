@@ -5,7 +5,7 @@ export function ApplicationRevisionEditor({ base, name, expected, onSaved }: { b
   const [open, setOpen] = useState(false);
   const [blocked, setBlocked] = useState(false);
   return <section className="dr-stack">
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Cancel revision edit' : 'Save new revision'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Cancel revision edit' : 'Save new revision'}</button>
     {open && <RevisionForm base={base} name={name} expected={expected} onSaved={onSaved} blocked={blocked} onBlocked={() => setBlocked(true)} />}
   </section>;
 }

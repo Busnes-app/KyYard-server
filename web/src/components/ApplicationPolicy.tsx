@@ -86,7 +86,7 @@ type Props = { base: string; admin: boolean; org?: string; endpointID?: string }
 export function ApplicationPolicy(props: Props) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close update policy' : 'Update policy'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Close update policy' : 'Update policy'}</button>
     {open && <PolicyView key={props.base} {...props} />}
   </section>;
 }

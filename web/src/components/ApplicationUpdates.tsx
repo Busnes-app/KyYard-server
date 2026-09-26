@@ -46,7 +46,7 @@ export function ApplicationUpdates(props: Props) {
   const [open, setOpen] = useState(false);
   if (props.mappingVersion < 1) return null;
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close updates' : 'Updates'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Close updates' : 'Updates'}</button>
     {open && <UpdatesView key={`${props.base}/${props.instanceID}`} {...props} />}
   </section>;
 }

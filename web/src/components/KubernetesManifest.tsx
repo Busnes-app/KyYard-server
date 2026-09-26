@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { secureFetch } from '../api';
-import { offlineWrite, parseNamespaces, refusal, type Endpoint } from '../tenant';
+import { NAMESPACE_RULE, offlineWrite, parseNamespaces, refusal, type Endpoint } from '../tenant';
 
 type Manifest = { manifest: string; manifest_file: string; command: string; namespaces: string[]; note: string };
 
@@ -31,11 +31,11 @@ export function ManifestRegeneration({ org, endpoint, onSaved }: { org: string; 
     try {
       const r = await secureFetch(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint.id)}/manifest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ namespaces: parseNamespaces(text) }) });
       if (r.ok) { setResult(await r.json() as Manifest); onSaved(); return; }
-      setError(await refusal(r, { forbidden: 'Only an administrator can change the namespaces a cluster deploys to.', invalid: 'List at most 32 namespaces by name: lower-case letters, digits and hyphens; not kyyard-agent or a kube- namespace.' }));
+      setError(await refusal(r, { forbidden: 'Only an administrator can change the namespaces a cluster deploys to.', invalid: NAMESPACE_RULE }));
     } catch { setError(offlineWrite); } finally { setBusy(false); }
   };
   return <section className="dr-stack" aria-label="Deploy namespaces">
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close manifest' : 'Regenerate manifest'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Close manifest' : 'Regenerate manifest'}</button>
     {open && <form className="dr-stack" onSubmit={(e) => { e.preventDefault(); void save(); }}>
       <label>Namespaces to deploy to<input value={text} onChange={(e) => setText(e.target.value)} disabled={busy} autoComplete="off" placeholder="shop billing" /></label>
       <p>Saving replaces the list. KyYard maps applications only to listed namespaces, and the agent checks its own access in the cluster before every apply, so nothing is deployed until the manifest is applied.</p>
