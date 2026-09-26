@@ -1,8 +1,13 @@
 package kubernetes
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,9 +16,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -34,6 +41,13 @@ func ownedClaim(class *string, size string) *corev1.PersistentVolumeClaim {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// removalRequest removes the named services of the instance in namespace shop.
+func removalRequest(services ...string) protocol.RemovalRequest {
+	now := time.Now()
+	return protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: "shop", IssuedAt: now, Deadline: now.Add(time.Minute),
+		Kubernetes: &protocol.KubernetesTarget{Namespace: "shop", ApplicationID: testApp, InstanceID: testInstance, SpecDigest: testSpec}, Services: services}
+}
 
 // A first apply creates the claim before the service's other objects and mounts it; a second
 // apply finds it owned and unchanged and writes nothing to it.
@@ -209,5 +223,121 @@ func TestSnapshotReadsStorageClasses(t *testing.T) {
 	want := []protocol.StorageClass{{Name: "fast"}, {Name: "legacy", Default: true}, {Name: "standard", Default: true}}
 	if !slices.Equal(snap.Kubernetes.StorageClasses, want) || len(snap.Truncated) != 0 {
 		t.Fatalf("classes %+v truncated %v", snap.Kubernetes.StorageClasses, snap.Truncated)
+	}
+}
+
+// A rollout that times out names each planned claim the cluster has not bound, by its phase: a
+// Pending claim (no provisioner, no default class) is why the pod never scheduled. A Bound claim
+// adds nothing.
+func TestDeployRolloutTimeoutNamesAnUnboundClaim(t *testing.T) {
+	for phase, want := range map[corev1.PersistentVolumeClaimPhase]string{
+		corev1.ClaimPending: "progressing=ReplicaSetUpdated,available=MinimumReplicasUnavailable,claim=Pending",
+		corev1.ClaimLost:    "progressing=ReplicaSetUpdated,available=MinimumReplicasUnavailable,claim=Lost",
+		corev1.ClaimBound:   "progressing=ReplicaSetUpdated,available=MinimumReplicasUnavailable",
+	} {
+		t.Run(string(phase), func(t *testing.T) {
+			c, cs := deployCluster(t, false, false)
+			cs.PrependReactor("create", "persistentvolumeclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				action.(k8stesting.CreateAction).GetObject().(*corev1.PersistentVolumeClaim).Status.Phase = phase
+				return false, nil, nil
+			})
+			res := c.Deploy(context.Background(), deployClaimRequest(300*time.Millisecond), func() {})
+			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+			if res.Outcome != protocol.OutcomeTimedOut || i < 0 || res.Validate() != nil {
+				t.Fatalf("result %+v %v", res, res.Validate())
+			}
+			if s := res.Steps[i]; s.Service != "web" || s.Step != protocol.StepStart || s.Code != "rollout_timeout" || s.Detail != want {
+				t.Fatalf("step %+v", s)
+			}
+		})
+	}
+}
+
+// A claim read the API server answers with an error other than NotFound fails the precondition
+// with that status; it is never mistaken for another owner's claim, and nothing is written.
+func TestDeployClaimReadErrorIsNotNameTaken(t *testing.T) {
+	c, cs := deployCluster(t, true, false)
+	cs.PrependReactor("get", "persistentvolumeclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("etcd leader changed"))
+	})
+	res := c.Deploy(context.Background(), deployClaimRequest(time.Minute), func() {})
+	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+	if res.Outcome != protocol.OutcomeFailed || i < 0 || res.Validate() != nil {
+		t.Fatalf("result %+v %v", res, res.Validate())
+	}
+	if s := res.Steps[i]; s.Service != "web" || s.Step != protocol.StepPrecondition || s.Code != "runtime_status" || s.Detail != "500" {
+		t.Fatalf("step %+v", s)
+	}
+	if len(writes(cs)) != 0 {
+		t.Fatalf("wrote %v", writes(cs))
+	}
+}
+
+// Past MaxDeploymentVolumes labelled claims a removal reports exactly the cap, logs that the rest
+// were left off, and still succeeds: every claim is still in the cluster.
+func TestRemoveReportsAtMostTheClaimCap(t *testing.T) {
+	objects := []runtime.Object{}
+	for i := range protocol.MaxDeploymentVolumes + 1 {
+		m := owned("web")
+		m.Name = fmt.Sprintf("shop-data-%02d", i)
+		objects = append(objects, &corev1.PersistentVolumeClaim{ObjectMeta: m})
+	}
+	c, _ := deployCluster(t, true, false, objects...)
+	var logged bytes.Buffer
+	c.log = log.New(&logged, "", 0)
+	res := c.Remove(context.Background(), removalRequest("web"), func() {})
+	kept := 0
+	for _, s := range res.Steps {
+		if s.Step == protocol.StepVolume && s.Detail == protocol.DetailRetained {
+			kept++
+		}
+	}
+	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil || kept != protocol.MaxDeploymentVolumes {
+		t.Fatalf("result %+v kept %d %v", res.Outcome, kept, res.Validate())
+	}
+	if !strings.Contains(logged.String(), "the rest are not reported") {
+		t.Fatalf("log %q", logged.String())
+	}
+}
+
+// A claim list the API server refuses fails the removal's precondition with its status, before
+// anything is deleted.
+func TestRemoveClaimListFailureDeletesNothing(t *testing.T) {
+	web := &appsv1.Deployment{ObjectMeta: owned("web")}
+	web.Name = "shop-web"
+	c, cs := deployCluster(t, true, false, web)
+	cs.PrependReactor("list", "persistentvolumeclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("etcd leader changed"))
+	})
+	res := c.Remove(context.Background(), removalRequest("web"), func() {})
+	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+	if res.Outcome != protocol.OutcomeFailed || i < 0 || res.Validate() != nil {
+		t.Fatalf("result %+v %v", res, res.Validate())
+	}
+	if s := res.Steps[i]; s.Step != protocol.StepPrecondition || s.Code != "runtime_status" || s.Detail != "500" {
+		t.Fatalf("step %+v", s)
+	}
+	if len(writes(cs)) != 0 {
+		t.Fatalf("deleted %v", writes(cs))
+	}
+}
+
+// A StorageClass list the ServiceAccount may not read (a manifest older than migrations) is
+// reported empty and named storage_classes in Truncated; the rest of the snapshot is whole.
+func TestSnapshotSurvivesAForbiddenStorageClassList(t *testing.T) {
+	c, cs := cluster(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shop"}})
+	cs.PrependReactor("list", "storageclasses", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "storage.k8s.io", Resource: "storageclasses"}, "", nil)
+	})
+	snap, err := c.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := snap.Kubernetes
+	if k.StorageClasses == nil || len(k.StorageClasses) != 0 || !slices.Equal(snap.Truncated, []string{"storage_classes"}) {
+		t.Fatalf("classes %v truncated %v", k.StorageClasses, snap.Truncated)
+	}
+	if !slices.Equal(k.Namespaces, []string{"shop"}) || snap.Engine.Version != "v1.36.0" {
+		t.Fatalf("the rest of the snapshot went with the forbidden list: %v %+v", k.Namespaces, snap.Engine)
 	}
 }

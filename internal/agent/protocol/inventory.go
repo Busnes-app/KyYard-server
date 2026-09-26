@@ -366,7 +366,7 @@ func Clamp(s *Snapshot) {
 }
 
 // truncatable is every name Truncated may carry, in the order it is reported.
-var truncatable = []string{"containers", "images", "networks", "volumes", "labels", "nodes", "namespaces", "workloads", "pods", "services", "claims"}
+var truncatable = []string{"containers", "images", "networks", "volumes", "labels", "nodes", "namespaces", "workloads", "pods", "services", "claims", "storage_classes"}
 
 func cleanLabels(in map[string]string) map[string]string {
 	out := map[string]string{}

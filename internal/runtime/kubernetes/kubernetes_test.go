@@ -307,7 +307,7 @@ func TestLogsStopAtTheLineCeiling(t *testing.T) {
 // list inside a 5 s budget, which reading them one after another would overrun. The fake
 // clientset runs reactors under one lock, so this test serves a real clientset over HTTP.
 func TestSnapshotListsConcurrently(t *testing.T) {
-	kinds := map[string]string{"nodes": "NodeList", "namespaces": "NamespaceList", "deployments": "DeploymentList", "statefulsets": "StatefulSetList", "daemonsets": "DaemonSetList", "pods": "PodList", "services": "ServiceList", "persistentvolumeclaims": "PersistentVolumeClaimList"}
+	kinds := map[string]string{"nodes": "NodeList", "namespaces": "NamespaceList", "deployments": "DeploymentList", "statefulsets": "StatefulSetList", "daemonsets": "DaemonSetList", "pods": "PodList", "services": "ServiceList", "persistentvolumeclaims": "PersistentVolumeClaimList", "storageclasses": "StorageClassList"}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/version" {
@@ -320,8 +320,11 @@ func TestSnapshotListsConcurrently(t *testing.T) {
 			return
 		}
 		group, resource := "v1", path.Base(r.URL.Path)
-		if strings.HasPrefix(r.URL.Path, "/apis/apps/") {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/apis/apps/"):
 			group = "apps/v1"
+		case strings.HasPrefix(r.URL.Path, "/apis/storage.k8s.io/"):
+			group = "storage.k8s.io/v1"
 		}
 		fmt.Fprintf(w, `{"kind":%q,"apiVersion":%q,"metadata":{},"items":[{"metadata":{"namespace":"shop","name":"web"}}]}`, kinds[resource], group)
 	}))
