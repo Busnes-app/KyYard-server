@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,11 +108,12 @@ func TestWorkloadAnswerValidation(t *testing.T) {
 		"missing with a uid": func(r *ContainerInspection) { r.Workload.Missing = true },
 		"uid not a uuid":     func(r *ContainerInspection) { r.Workload.UID = "secret-canary" },
 		"generation zero":    func(r *ContainerInspection) { r.Workload.Generation = 0 },
+		"observed ahead":     func(r *ContainerInspection) { r.Workload.ObservedGeneration = r.Workload.Generation + 1 },
 		"negative count":     func(r *ContainerInspection) { r.Workload.Available = -1 },
 		"condition status":   func(r *ContainerInspection) { r.Workload.Conditions[0].Status = "Maybe" },
 		"condition reason":   func(r *ContainerInspection) { r.Workload.Conditions[0].Reason = "secret canary" },
 		"too many conditions": func(r *ContainerInspection) {
-			r.Workload.Conditions = make([]WorkloadCondition, MaxWorkloadConditions+1)
+			r.Workload.Conditions = slices.Repeat([]WorkloadCondition{{Type: "Progressing", Status: "Unknown"}}, MaxWorkloadConditions+1)
 		},
 		"too many pods":           func(r *ContainerInspection) { r.Workload.Pods = pods(MaxWorkloadPods+1, 1) },
 		"too many containers":     func(r *ContainerInspection) { r.Workload.Pods = pods(1, MaxPodContainers+1) },

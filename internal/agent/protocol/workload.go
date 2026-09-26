@@ -76,7 +76,7 @@ func (s WorkloadStatus) validate() error {
 		}
 		return nil
 	}
-	if !deploymentUUID.MatchString(s.UID) || s.Generation < 1 || s.ObservedGeneration < 0 || s.Desired < 0 || s.Updated < 0 || s.Ready < 0 || s.Available < 0 || len(s.Conditions) > MaxWorkloadConditions || len(s.Pods) > MaxWorkloadPods {
+	if !deploymentUUID.MatchString(s.UID) || s.Generation < 1 || s.ObservedGeneration < 0 || s.ObservedGeneration > s.Generation || s.Desired < 0 || s.Updated < 0 || s.Ready < 0 || s.Available < 0 || len(s.Conditions) > MaxWorkloadConditions || len(s.Pods) > MaxWorkloadPods {
 		return invalid
 	}
 	for _, c := range s.Conditions {
