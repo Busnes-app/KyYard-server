@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { secureFetch } from './api';
 
 export interface MemberOrganization { id: string; name: string; role: string }
@@ -85,10 +85,18 @@ export function useTenantResource<T>(url: string, refreshKey = ''): { state: Loa
   const [state, setState] = useState<LoadState>('loading');
   const [data, setData] = useState<T | null>(null);
   const [tick, setTick] = useState(0);
+  // Only a url/refreshKey change means "new resource": reset to loading and drop stale data.
+  // A tick (reload() or a poll) refetches in place, keeping the current data and status on
+  // screen until the new response lands, so a mounted table does not flicker or unmount.
+  const identity = `${url}\u0000${refreshKey}`;
+  const lastIdentity = useRef<string | null>(null);
   useEffect(() => {
     let live = true;
-    setState('loading');
-    setData(null);
+    if (lastIdentity.current !== identity) {
+      lastIdentity.current = identity;
+      setState('loading');
+      setData(null);
+    }
     fetch(url).then(async (resp) => {
       if (!live) return;
       if (!resp.ok) { setState(stateFor(resp.status)); return; }

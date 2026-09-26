@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EndpointPage } from './EndpointPage';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -80,6 +80,27 @@ it('discovers unmanaged projects, filters existing controls, and resets scope on
   expect(screen.queryByRole('button', { name: 'Show all containers' })).toBeNull();
   expect(document.getElementById('endpoint-containers')?.textContent).toContain('mail-web');
   expect(fetcher.mock.calls.every((call) => call.length === 1)).toBe(true); // discovery only reads inventory
+});
+
+it('polls inventory every 30s, keeping the containers table mounted', async () => {
+  vi.useFakeTimers();
+  try {
+    const now = new Date().toISOString();
+    const container = { id: 'c1', name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: [] };
+    let generation = 2;
+    const snapshot = () => ({ generation, observed_at: now, engine: { runtime: 'docker', version: '1', api_version: '1', os: 'linux', arch: 'x', kernel: 'k', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers: [container], images: [], networks: [], volumes: [] });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation, observed_at: now, received_at: now, snapshot: snapshot() }) : String(input).endsWith('/samples') ? json([]) : json(endpoint)));
+    render(<EndpointPage org="a" endpoint="ep_1" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole('status').textContent).toContain('generation 2');
+    const table = screen.getByRole('table');
+    generation = 6;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.getByRole('status').textContent).toContain('generation 6');
+    expect(screen.getByRole('table')).toBe(table); // same element: the poll refetched in place, it did not unmount
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it('pages host containers and resets pagination when searching', async () => {

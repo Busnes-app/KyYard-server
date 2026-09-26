@@ -1,6 +1,6 @@
 import { ContainerPorts } from '../components/ContainerPorts';
 import type { ApplicationInstance } from '../components/ApplicationAdoption';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ResourceTable } from '../components/ResourceTable';
 import { ComposeProjects } from '../components/ComposeProjects';
 import { ImageControls } from '../components/ImageControls';
@@ -29,6 +29,12 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const ownership = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
   const samples = useTenantResource<Sample[]>(`${base}/samples`);
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  // The agent reports on its own schedule; poll while the page is mounted so the status line
+  // and usage column reflect newer generations without an operator clicking Refresh.
+  useEffect(() => {
+    const t = window.setInterval(() => { inventory.reload(); samples.reload(); }, 30_000);
+    return () => window.clearInterval(t);
+  }, [inventory.reload, samples.reload]);
   const role = (Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role;
   const exec = canExec(role);
   const latest = new Map((Array.isArray(samples.data) ? samples.data : []).map((s) => [s.container_id, s]));

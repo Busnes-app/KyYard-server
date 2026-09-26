@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useTenantResource, type Validation } from '../tenant';
 import { ValidationLine } from './ApplicationValidation';
 import { secureFetch } from '../api';
@@ -17,7 +17,9 @@ type DeployedService = { service: string; container_id: string; image_id: string
 type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
 type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[]; namespace?: string; claims?: Claim[] }; validation?: Validation; migration_id?: string; retained_claims?: string[] };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
-type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance; refreshKey?: number };
+// onChanged refetches the instance (current/previous revision) after a deployment settles and on
+// "Refresh plan"; the panel itself only holds the plan/deployment rows, not the instance.
+type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance; refreshKey?: number; onChanged?: () => void };
 
 const APPLY_CODES: Record<string, string> = {
   deployment_in_progress: 'A deployment is already in progress for this instance.',
@@ -296,7 +298,7 @@ function History({ rows }: { rows: Deployment[] }) {
     </>}
   </>;
 }
-function PlanView({ base, instanceID, latestRevision, instance }: Props) {
+function PlanView({ base, instanceID, latestRevision, instance, onChanged }: Props) {
   const mapping = useTenantResource<Mapping>(`${base}/mapping`);
   const deployments = useTenantResource<Deployment[]>(`${base}/deployments`);
   const [confirm, setConfirm] = useState('');
@@ -319,6 +321,10 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
   const [applyError, setApplyError] = useState('');
   const [pollPaused, setPollPaused] = useState(false);
   useEffect(() => { setApplyConfirm(''); setApplyBusy(false); setApplyBlocked(false); setApplyError(''); }, [current?.id]);
+  // A ref, not a poll dependency: an inline onChanged from the parent must not restart the
+  // interval (and its deadline math) on every unrelated parent render.
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => { onChangedRef.current = onChanged; });
   // Polls the row directly (never through deployments.reload(), which resets that resource to
   // 'loading'/null and would unmount this whole section every tick). A held row keeps the panel
   // mounted; only the explicit "Refresh" buttons touch the shared deployments resource.
@@ -345,6 +351,7 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
           failures = 0;
           setPollPaused(false);
           setPlanned(row);
+          if (row.state === 'succeeded') onChangedRef.current?.();
           if (row.state !== 'applying') window.clearInterval(id);
         })
         .catch(() => {
@@ -435,7 +442,7 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
       <p>Planning replaces any earlier plan for this instance. Type the project name <bdi>{mapping.data.preview.project}</bdi> to confirm planning revision {revision}. Nothing runs.</p>
       <label>Confirm plan project<input value={confirm} onChange={e => setConfirm(e.target.value)} disabled={busy || blocked} autoComplete="off" /></label>
       <button disabled={busy || blocked || confirm !== mapping.data.preview.project}>Plan deployment</button>
-      <button type="button" className="btn-secondary" disabled={busy} onClick={() => { setBlocked(false); setError([]); setPlanned(null); reload(); }}>Refresh plan</button>
+      <button type="button" className="btn-secondary" disabled={busy} onClick={() => { setBlocked(false); setError([]); setPlanned(null); reload(); onChanged?.(); }}>Refresh plan</button>
       {error.length > 0 && <ul role="alert">{error.map(e => <li key={e}>{e}</li>)}</ul>}
     </form>}
     {mapping.state !== 'ready' && <StateNotice state={mapping.state} onRetry={mapping.reload} />}
