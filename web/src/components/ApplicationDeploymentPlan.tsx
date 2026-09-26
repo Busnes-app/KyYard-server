@@ -131,7 +131,7 @@ const POD_SECURITY: Record<string, string> = {
 };
 // A rollout_timeout's claim reasons: a planned claim the cluster has not bound.
 const CLAIM_PHASES: Record<string, string> = {
-  'claim=Pending': 'a volume claim is still Pending: no StorageClass provisioned it',
+  'claim=Pending': 'a volume claim is still Pending: no StorageClass has provisioned it, or (with a WaitForFirstConsumer class) its pod has not been scheduled',
   'claim=Lost': 'a volume claim is Lost: the volume behind it is gone',
 };
 // The closed detail shapes of the Kubernetes codes: Kind/name, and condition=Reason words.

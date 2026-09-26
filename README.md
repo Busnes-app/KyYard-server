@@ -408,7 +408,8 @@ for each rollout until the pod has been available for 10 seconds; one the cluste
 failed (a pod it refused to create, or the Deployment's own 9-minute progress deadline), or that
 does not finish before the apply's ten-minute deadline, stops with the reason the cluster gives
 (`FailedCreate`, `ImagePullBackOff`, `CrashLoopBackOff`, ..., or a volume claim still `Pending`
-because no StorageClass provisioned it) and leaves the objects as applied.
+because no StorageClass has provisioned it, or, with a `WaitForFirstConsumer` class, its pod has
+not been scheduled) and leaves the objects as applied.
 A write the cluster refuses after the agent's grant allowed it (a quota, an admission policy) stops
 with `admission_denied` and the object's name; a write the agent's Role does not grant (a manifest
 older than the agent) stops with `forbidden`: apply the regenerated manifest. The rendered pod has no resource requests or
@@ -464,8 +465,9 @@ several services, each one is reached on the cluster only by its destination nam
 acknowledge that you will update the references, and that a service publishing no port is
 unreachable from the others, before the report is ready. The destination keeps its storage
 choices when you edit its definition later; a volume it newly declares has none, so remove it or
-migrate again. Analysis and choices read the cluster's inventory only while it is fresh (reported
-in the last three minutes); otherwise they answer `inventory_stale`.
+migrate again. Analysis and choices read the cluster's inventory only while the destination is
+connected and its inventory is fresh (received in the last three minutes, observed in the last
+five); otherwise they answer `inventory_stale`.
 
 When the report is ready, **Create destination** makes a new application, `<name> on <cluster>`,
 mapped to the namespace, with a copy of the source's environment values. Then follow the

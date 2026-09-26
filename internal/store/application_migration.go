@@ -242,13 +242,18 @@ func (t *tenancyStore) migrationDestination(ctx context.Context, tx *sql.Tx, a T
 func (t *tenancyStore) destinationName(ctx context.Context, tx *sql.Tx, a TenantAccess, base, endpoint string) (string, string, error) {
 	for n := 1; n <= MaxDestinationSuffix; n++ {
 		name := base
+		project := KubernetesProject(base)
 		if n > 1 {
 			name = fmt.Sprintf("%s (%d)", base, n)
+			// KubernetesProject(name) would cut the whole "-n" suffix off a base already at
+			// the 63-byte limit, making every n derive the same project. Cut the base first
+			// to leave room for the suffix, so the suffix always survives.
+			suffix := fmt.Sprintf("-%d", n)
+			project = strings.TrimRight(project[:min(len(project), protocol.MaxKubeObjectName-len(suffix))], "-") + suffix
 		}
 		if len(name) > 255 {
 			return "", "", ErrDestinationNameTooLong
 		}
-		project := KubernetesProject(name)
 		var taken int
 		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT (SELECT COUNT(*) FROM applications WHERE organization_id=? AND environment_id=? AND name=?)+(SELECT COUNT(*) FROM application_instances WHERE organization_id=? AND environment_id=? AND endpoint_id=? AND project=?)`), a.OrganizationID, a.EnvironmentID, name, a.OrganizationID, a.EnvironmentID, endpoint, project).Scan(&taken); err != nil {
 			return "", "", err

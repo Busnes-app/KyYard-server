@@ -532,7 +532,7 @@ it('names an immutable claim, shows the claims a plan creates, and says a remova
 it('names an unbound claim in a rollout timeout and drops anything else', () => {
   const text = STEP_CODES.rollout_timeout;
   expect(stepText({ code: 'rollout_timeout', detail: 'progressing=ReplicaSetUpdated,available=MinimumReplicasUnavailable,claim=Pending' }))
-    .toBe(`${text} (progressing ReplicaSetUpdated, available MinimumReplicasUnavailable); a volume claim is still Pending: no StorageClass provisioned it.`);
+    .toBe(`${text} (progressing ReplicaSetUpdated, available MinimumReplicasUnavailable); a volume claim is still Pending: no StorageClass has provisioned it, or (with a WaitForFirstConsumer class) its pod has not been scheduled.`);
   expect(stepText({ code: 'rollout_timeout', detail: 'claim=Lost' })).toBe(`${text}; a volume claim is Lost: the volume behind it is gone.`);
   expect(stepText({ code: 'rollout_timeout', detail: 'claim=Bound,claim=<b>x</b>' })).toBe(`${text}.`);
 });

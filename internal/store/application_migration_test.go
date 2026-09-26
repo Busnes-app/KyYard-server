@@ -25,10 +25,17 @@ func migrationSpec() ApplicationSpec {
 // StorageClasses standard (the default) and fast.
 func migrationFixture(t *testing.T, spec ApplicationSpec, values map[string]string) (*SQLStore, TenantAccess, *Application, string) {
 	t.Helper()
+	return migrationFixtureNamed(t, "shop", spec, values)
+}
+
+// migrationFixtureNamed is migrationFixture with the source application's name given explicitly,
+// so a test can control the length that feeds destinationName's project derivation.
+func migrationFixtureNamed(t *testing.T, sourceName string, spec ApplicationSpec, values map[string]string) (*SQLStore, TenantAccess, *Application, string) {
+	t.Helper()
 	st, a := tenantAtomicStore(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	app, err := ts.ImportApplication(ctx, a, "shop", spec, values, imageCheckKey)
+	app, err := ts.ImportApplication(ctx, a, sourceName, spec, values, imageCheckKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,6 +363,46 @@ func TestMigrationDestinationNaming(t *testing.T) {
 	kept, err := ts.ReadApplicationMapping(ctx, a, first.DestinationApplicationID)
 	if err != nil || kept.Preview.ApplicationName != base || kept.Preview.Project != KubernetesProject(base) {
 		t.Fatalf("the abandoned destination changed %+v %v", kept, err)
+	}
+}
+
+// A long source name pushes "<source> on <cluster>"'s project past the 63-byte cut, so the naive
+// KubernetesProject(base+" (2)") would drop the "-2" suffix entirely and collide with the first
+// destination's project. The second destination must still get a distinct project and succeed.
+func TestMigrationDestinationNamingLongName(t *testing.T) {
+	source := "checkout-service-frontend-handler-production" // 45 bytes
+	st, a, app, cluster := migrationFixtureNamed(t, source, migrationSpec(), map[string]string{"db.PASSWORD": "p"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	readyMigration(t, ts, a, app.ID, cluster)
+	first, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AbandonMigration(ctx, a, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	readyMigration(t, ts, a, app.ID, cluster)
+	second, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey)
+	if err != nil {
+		t.Fatalf("second destination on a long name: %v", err)
+	}
+	if second.DestinationApplicationID == first.DestinationApplicationID {
+		t.Fatalf("second destination reused the first's application")
+	}
+	firstMapped, err := ts.ReadApplicationMapping(ctx, a, first.DestinationApplicationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondMapped, err := ts.ReadApplicationMapping(ctx, a, second.DestinationApplicationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstMapped.Preview.Project == secondMapped.Preview.Project {
+		t.Fatalf("the second destination's project did not change from the first's: %q", secondMapped.Preview.Project)
+	}
+	if !strings.HasSuffix(secondMapped.Preview.Project, "-2") {
+		t.Fatalf("the second destination's project lost its suffix: %q", secondMapped.Preview.Project)
 	}
 }
 
