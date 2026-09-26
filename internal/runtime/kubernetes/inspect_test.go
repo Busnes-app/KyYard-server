@@ -7,10 +7,15 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/render"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const testPodUID = "22222222-3333-4444-8555-666666666666"
@@ -24,7 +29,7 @@ func inspectTarget() protocol.InspectionTarget {
 func rolledOut() *appsv1.Deployment {
 	m := owned("web")
 	m.Name, m.UID, m.Generation = "shop-web", types.UID(testUID), 2
-	return &appsv1.Deployment{ObjectMeta: m, Status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1,
+	return &appsv1.Deployment{ObjectMeta: m, Spec: appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: render.Selector(testInstance, "web")}}, Status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1,
 		Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue, Reason: "MinimumReplicasAvailable", Message: "secret-canary"}}}}
 }
 
@@ -103,5 +108,51 @@ func TestInspectKeepsOnlyReasonWords(t *testing.T) {
 	}
 	if reasons["shop-web-a"] != "terminated/Error" || reasons["shop-web-b"] != "waiting/" {
 		t.Fatalf("reasons %v", reasons)
+	}
+}
+
+// Pods are selected by the Deployment's own selector, which Kubernetes keeps immutable, not by its
+// editable labels: a pod of another instance under the same service label is not the target's.
+func TestInspectSelectsByTheDeploymentSelector(t *testing.T) {
+	foreign := webPod("shop-web-x", testUID, running(), 7)
+	foreign.Labels[render.LabelInstance] = "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+	for name, edit := range map[string]func(*appsv1.Deployment){
+		"as rendered":    func(*appsv1.Deployment) {},
+		"labels edited":  func(d *appsv1.Deployment) { d.Labels = map[string]string{"app": "edited"} },
+		"labels removed": func(d *appsv1.Deployment) { d.Labels = nil },
+	} {
+		d := rolledOut()
+		edit(d)
+		c, _ := cluster(t, d, webPod("shop-web-a", testPodUID, running(), 0), foreign)
+		in, err := c.Inspect(context.Background(), inspectTarget())
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if pods := in.Workload.Pods; len(pods) != 1 || pods[0].UID != testPodUID {
+			t.Fatalf("%s: pods %+v", name, pods)
+		}
+	}
+	unselected := rolledOut()
+	unselected.Spec.Selector = nil
+	c, _ := cluster(t, unselected, webPod("shop-web-a", testPodUID, running(), 0))
+	if _, err := c.Inspect(context.Background(), inspectTarget()); err == nil {
+		t.Fatal("a Deployment without a selector was answered")
+	}
+}
+
+// A refused or failed read is an error the agent sends as unavailable, never Missing.
+func TestInspectReadErrors(t *testing.T) {
+	forbidden := apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "shop-web", nil)
+	for name, fail := range map[string]struct{ verb, resource string }{
+		"deployment get forbidden": {"get", "deployments"},
+		"pod list failed":          {"list", "pods"},
+	} {
+		c, cs := cluster(t, rolledOut(), webPod("shop-web-a", testPodUID, running(), 0))
+		cs.PrependReactor(fail.verb, fail.resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, forbidden
+		})
+		if in, err := c.Inspect(context.Background(), inspectTarget()); err == nil {
+			t.Fatalf("%s: answered %+v", name, in)
+		}
 	}
 }

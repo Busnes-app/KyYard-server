@@ -6,18 +6,16 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
-	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/render"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 )
 
-// Inspect reads the Deployment a validation watches and the pods its instance and service labels
-// select, within callBudget: a Get and one List, both verbs the manifest already grants. A
-// Deployment that is gone answers Missing; one recreated under the name answers with its own UID.
-// More than MaxWorkloadPods pods is an error (unavailable), never a cut list: a judge summing
-// restarts over part of the pods would read a drop as a recreate.
+// Inspect reads the Deployment a validation watches and the pods its selector (immutable, unlike
+// its labels) selects, within callBudget: a Get and one List, both verbs the manifest already
+// grants. A Deployment that is gone answers Missing; one recreated under the name answers with its
+// own UID. More than MaxWorkloadPods pods is an error (unavailable), never a cut list: one leaving
+// out every baseline pod would read as a recreate, and a restarted pod left out would hide it.
 func (c *Client) Inspect(ctx context.Context, target protocol.InspectionTarget) (*protocol.ContainerInspection, error) {
 	if err := target.ValidateFor(protocol.RuntimeKubernetes); err != nil {
 		return nil, err
@@ -35,8 +33,14 @@ func (c *Client) Inspect(ctx context.Context, target protocol.InspectionTarget) 
 		return nil, err
 	}
 	status := workloadStatus(d)
-	selector := labels.SelectorFromSet(render.Selector(d.Labels[render.LabelInstance], d.Labels[render.LabelService])).String()
-	pods, err := c.cs.CoreV1().Pods(ref.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector, Limit: protocol.MaxWorkloadPods + 1})
+	if d.Spec.Selector == nil {
+		return nil, errors.New("the Deployment has no pod selector")
+	}
+	selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
+	if err != nil || selector.Empty() {
+		return nil, errors.New("the Deployment has no usable pod selector")
+	}
+	pods, err := c.cs.CoreV1().Pods(ref.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String(), Limit: protocol.MaxWorkloadPods + 1})
 	if err != nil {
 		return nil, err
 	}
