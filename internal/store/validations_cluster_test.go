@@ -89,6 +89,8 @@ func TestJudgeCluster(t *testing.T) {
 		{"unavailable at the end", web(workload(0, pod(podA, "running", "", 2))), true, VerdictUnhealthy, "web"},
 		{"not ready at the end", web(with(up(), func(w *protocol.WorkloadStatus) { w.Ready = 0 })), true, VerdictUnhealthy, "web"},
 		{"generation not observed at the end", web(with(up(), func(w *protocol.WorkloadStatus) { w.ObservedGeneration = 0 })), true, VerdictUnhealthy, "web"},
+		{"an evicted pod beside a replacement not yet available goes on", web(workload(0, evicted, pod(podB, "running", "", 0))), false, "", ""},
+		{"an evicted pod beside a replacement still short at the end", web(workload(0, evicted, pod(podB, "running", "", 0))), true, VerdictUnhealthy, "web"},
 		{"an evicted pod beside its available replacement", web(workload(1, evicted, pod(podB, "running", "", 0))), true, VerdictHealthy, ""},
 		{"unobserved holds the end open", []Observation{{Service: "web", Presence: PresenceUnknown, Generation: 1}}, true, "", ""},
 	} {

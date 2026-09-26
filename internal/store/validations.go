@@ -228,8 +228,9 @@ var failingWaits = map[string]bool{"CrashLoopBackOff": true, "ImagePullBackOff":
 
 // judgeWorkload judges a cluster service from its Deployment's status: changed when the
 // Deployment is gone, recreated, edited past the settled generation, or its pods were all
-// replaced without a restart; then exited, restarting and unhealthy as for a container, where a
-// failing waiting reason is unhealthy at once and any shortfall only at the window's end.
+// replaced without a restart; then exited (a terminated container in a pod not Failed or
+// Succeeded), restarting and unhealthy as for a container, where a failing waiting reason is
+// unhealthy at once and any shortfall only at the window's end.
 func judgeWorkload(o Observation, b ServiceBaseline, final bool) (string, string) {
 	w := o.Inspection.Workload
 	if w.Missing || w.UID != o.Inspection.Target.Workload.UID || w.Generation > o.Generation {
@@ -250,7 +251,8 @@ func judgeWorkload(o Observation, b ServiceBaseline, final bool) (string, string
 					reason = c.Reason
 				}
 			case "terminated":
-				terminated = true
+				// A Failed or Succeeded pod is given up and being replaced: its exit is not the service's.
+				terminated = terminated || (p.Phase != "Failed" && p.Phase != "Succeeded")
 			}
 		}
 	}
