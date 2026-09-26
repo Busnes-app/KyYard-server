@@ -300,6 +300,9 @@ func (s *Server) performPolicyRun(ctx context.Context, a store.TenantAccess, pol
 	if errors.Is(err, store.ErrPolicyChanged) {
 		return store.RunPlanned, d.ID, "policy_changed"
 	}
+	if errors.As(err, &blocked) {
+		return store.RunBlocked, d.ID, joinCodes(blocked.Blockers, 255)
+	}
 	if err != nil {
 		failed, _, why := policyFailure(err)
 		return failed, d.ID, why

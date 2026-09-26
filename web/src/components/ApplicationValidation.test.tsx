@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { ROLLBACK_REASONS, VALIDATION_VERDICTS, ValidationLine, pauseText, reasonText } from './ApplicationValidation';
+import { KUBERNETES_UNVERIFIED, ROLLBACK_REASONS, VALIDATION_VERDICTS, ValidationLine, pauseText, reasonText } from './ApplicationValidation';
 import type { Validation } from '../tenant';
 afterEach(cleanup);
 
@@ -51,4 +51,12 @@ it('has a fixed text for every rollback code the server can emit', () => {
     'deployment_in_progress', 'invalid', 'error',
   ];
   for (const code of emitted) expect(Object.hasOwn(ROLLBACK_REASONS, code)).toBe(true);
+});
+
+it('gives a Kubernetes apply the one unverifiable sentence instead of the upgrade advice', () => {
+  cleanup();
+  const text = render(<ValidationLine v={validation({ verdict: 'unverifiable', detail: 'the agent cannot report container health' })} kubernetes />).container.textContent ?? '';
+  expect(text).toBe(KUBERNETES_UNVERIFIED);
+  expect(text).not.toContain('upgrade');
+  expect(line({ verdict: 'unverifiable', detail: 'the agent cannot report container health' })).toContain('upgrade it');
 });

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { secureFetch } from '../api';
-import { tenantWrite, useTenantResource, type Endpoint, type EnrollmentToken } from '../tenant';
+import { parseNamespaces, tenantWrite, useTenantResource, type Endpoint, type EnrollmentToken } from '../tenant';
 import { EmptyNotice, StateNotice } from './StateNotice';
 import { Link } from './Link';
 import { endpointPath } from '../router';
@@ -30,6 +30,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
   const [token, setToken] = useState<EnrollmentToken | null>(null);
   const [runtime, setRuntime] = useState<'docker' | 'kubernetes'>('docker');
   const [clusterName, setClusterName] = useState('');
+  const [namespaces, setNamespaces] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -37,7 +38,8 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
     setBusy(true);
     setMessage('');
     try {
-      const body = runtime === 'kubernetes' ? { runtime, name: clusterName.trim() } : { runtime };
+      const listed = parseNamespaces(namespaces);
+      const body = runtime === 'kubernetes' ? { runtime, name: clusterName.trim(), ...(listed.length ? { namespaces: listed } : {}) } : { runtime };
       const resp = await secureFetch(`${envBase}/enrollment-tokens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!resp.ok) {
         const code = resp.status === 409 ? ((await resp.json().catch(() => ({}))) as { code?: string }).code ?? '' : '';
@@ -100,6 +102,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
           <option value="kubernetes">Kubernetes cluster</option>
         </select></label>
         {runtime === 'kubernetes' && <input aria-label="Cluster name" placeholder="Cluster name" required maxLength={255} value={clusterName} onChange={(e) => setClusterName(e.target.value)} />}
+        {runtime === 'kubernetes' && <input aria-label="Namespaces to deploy to" placeholder="Namespaces to deploy to (optional)" value={namespaces} onChange={(e) => setNamespaces(e.target.value)} />}
         <button disabled={busy || (runtime === 'kubernetes' && clusterName.trim() === '')} onClick={() => void mint()}>{runtime === 'kubernetes' ? 'Enroll a cluster' : 'Enroll a host'}</button>
       </div>
       {token?.manifest && (

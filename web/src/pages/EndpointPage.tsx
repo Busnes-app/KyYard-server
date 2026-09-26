@@ -9,7 +9,7 @@ import { Server } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { envPath } from '../router';
-import { canExec, useTenantResource, type Endpoint, type Inventory, type MemberOrganization, type Sample } from '../tenant';
+import { canEnroll, canExec, useTenantResource, type Endpoint, type Inventory, type MemberOrganization, type Sample } from '../tenant';
 import { displayName } from '../components/Endpoints';
 import { KubernetesCluster } from '../components/KubernetesCluster';
 
@@ -29,7 +29,8 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const ownership = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
   const samples = useTenantResource<Sample[]>(`${base}/samples`);
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
-  const exec = canExec((Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role);
+  const role = (Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role;
+  const exec = canExec(role);
   const latest = new Map((Array.isArray(samples.data) ? samples.data : []).map((s) => [s.container_id, s]));
   // -1 is "no interval yet" and a missing row is "no data"; neither is zero usage.
   const usage = (c: { id: string; state: string }) => {
@@ -89,7 +90,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
-          {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
+          {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
           {shown === 'projects' && <><StateNotice state={ownership.state} onRetry={ownership.reload} /><ComposeProjects ownership={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
             setProjectFilter({ base, name }); setView('containers');
             requestAnimationFrame(() => document.getElementById('endpoint-containers')?.focus());

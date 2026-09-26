@@ -69,6 +69,9 @@ type Workload struct {
 	Updated   int32    `json:"updated"`
 	Images    []string `json:"images"`
 	Paused    bool     `json:"paused"`
+	// Application and Instance are the KyYard labels of a workload KyYard deployed, else empty.
+	Application string `json:"application,omitempty"`
+	Instance    string `json:"instance,omitempty"`
 }
 
 // Pod carries its Kubernetes phase and its controller: a Deployment's pod names the
@@ -196,6 +199,7 @@ func clampKubernetes(k *KubernetesInventory, truncated map[string]bool) {
 	for i := range k.Workloads {
 		w := &k.Workloads[i]
 		w.Kind, w.Namespace, w.Name = short(w.Kind), name(w.Namespace), name(w.Name)
+		w.Application, w.Instance = short(w.Application), short(w.Instance)
 		w.Images = cleanList(w.Images, MaxWorkloadImages, MaxKubeImageBytes)
 	}
 	if len(k.Pods) > MaxPods {
@@ -297,7 +301,7 @@ func CheckRuntimeShape(runtime string, s *Snapshot) error {
 }
 
 // kubernetesCapabilities is everything a cluster agent may advertise.
-var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true}
+var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesRemove: true}
 
 // CapabilitiesFit reports whether a hello's capabilities belong to the endpoint's runtime:
 // a cluster agent names only cluster capabilities, a Docker agent names none of them.

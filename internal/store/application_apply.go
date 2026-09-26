@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -157,6 +159,9 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 	if d.CorrelationID == "" {
 		return protocol.DeploymentRequest{}, ErrAdoptionChanged
 	}
+	if d.Plan.Namespace != "" {
+		return t.kubernetesFrame(ctx, tx, a, d, spec, values, key, now)
+	}
 	names := map[string]string{}
 	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name FROM application_resources WHERE instance_id=? AND endpoint_id=?`), d.InstanceID, d.EndpointID)
 	if err != nil {
@@ -227,6 +232,65 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 				req.Registries = map[string]protocol.RegistryAuth{}
 			}
 			req.Registries[host] = protocol.RegistryAuth{Username: cred.Username, Secret: cred.Secret}
+		}
+	}
+	return req, nil
+}
+
+// kubernetesFrame is buildDeploymentFrame for a Kubernetes plan: the instance's namespace, which
+// must still be the plan's and still granted by the endpoint's manifest, and per service the
+// pinned pull, the environment values and the keys among them that are secret-backed. The
+// kubelet pulls the image itself, but a pull by tag still needs a registry row or anonymous pull,
+// exactly as the Docker frame checks, because the reference the kubelet is handed may no longer
+// resolve anonymously by apply time.
+func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a TenantAccess, d *Deployment, spec ApplicationSpec, values map[string]string, key []byte, now time.Time) (protocol.DeploymentRequest, error) {
+	var namespace, deployNamespaces string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.namespace,e.deploy_namespaces FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND i.environment_id=? AND i.id=? AND i.endpoint_id=?`), a.OrganizationID, a.EnvironmentID, d.InstanceID, d.EndpointID).Scan(&namespace, &deployNamespaces)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && namespace != d.Plan.Namespace) {
+		return protocol.DeploymentRequest{}, ErrAdoptionChanged
+	}
+	if err != nil {
+		return protocol.DeploymentRequest{}, err
+	}
+	if !slices.Contains(decodeNamespaces(deployNamespaces), namespace) {
+		// The plan's blocker, so the refusal reads the same at apply as at plan.
+		return protocol.DeploymentRequest{}, &PreflightBlockedError{Blockers: []string{"k8s_namespace"}}
+	}
+	req := protocol.DeploymentRequest{Deployment: d.ID, RequestID: d.CorrelationID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{},
+		Kubernetes: &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: d.ApplicationID, InstanceID: d.InstanceID, SpecDigest: d.SpecDigest}}
+	hosts := map[string]bool{}
+	for i, ps := range d.Plan.Services {
+		if spec.Services[i].Name != ps.Name || ps.PullDigest == "" || ps.Object == nil {
+			return protocol.DeploymentRequest{}, ErrAdoptionChanged
+		}
+		svc := protocol.DeploymentService{Name: ps.Name, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: []protocol.Mount{}, Pull: &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}}
+		for _, p := range ps.Ports {
+			svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol})
+		}
+		// Every value is secret-backed today: the definition holds references only.
+		for envName, ref := range spec.Services[i].Environment {
+			svc.Env[envName] = values[ref.SecretRef]
+		}
+		svc.SecretKeys = slices.Sorted(maps.Keys(spec.Services[i].Environment))
+		req.Services = append(req.Services, svc)
+		hosts[svc.Pull.Host()] = true
+	}
+	// No credential travels: the kubelet pulls. But a host whose row is gone must still be
+	// allowed to pull anonymously, exactly as the Docker frame requires.
+	for host := range hosts {
+		_, _, err := t.registryFor(ctx, tx, a.OrganizationID, host, key)
+		if !errors.Is(err, ErrNotFound) {
+			if err != nil {
+				return protocol.DeploymentRequest{}, err
+			}
+			continue
+		}
+		anonymous, err := t.anonymousPull(ctx, tx, a.OrganizationID)
+		if err != nil {
+			return protocol.DeploymentRequest{}, err
+		}
+		if !anonymous {
+			return protocol.DeploymentRequest{}, ErrAdoptionChanged
 		}
 	}
 	return req, nil
@@ -440,6 +504,9 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 // image ID pulled at the planned digest; a success accounts for every planned service. Checked
 // in full before any write.
 func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, instance string, plan DeploymentPlan, res protocol.DeploymentResult) error {
+	if plan.Namespace != "" {
+		return t.settleKubernetesApply(ctx, tx, instance, plan, res)
+	}
 	replaced := map[string]PlannedService{}
 	for _, ps := range plan.Services {
 		replaced[ps.Name] = ps
@@ -447,7 +514,7 @@ func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, 
 	seen := map[string]bool{}
 	for _, idn := range res.Services {
 		ps, ok := replaced[idn.Service]
-		if !ok || seen[idn.Service] {
+		if !ok || seen[idn.Service] || idn.Kind != "" {
 			return ErrInvalid
 		}
 		if ps.PullDigest != "" {
@@ -486,6 +553,31 @@ func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, 
 	return nil
 }
 
+// settleKubernetesApply checks each identity names a distinct planned service's Deployment, in
+// the planned namespace and name, running the planned digest; a success accounts for every
+// service. The result row keeps the identities; nothing else is rebound.
+func (t *tenancyStore) settleKubernetesApply(ctx context.Context, tx *sql.Tx, instance string, plan DeploymentPlan, res protocol.DeploymentResult) error {
+	planned := map[string]PlannedService{}
+	for _, ps := range plan.Services {
+		planned[ps.Name] = ps
+	}
+	seen := map[string]bool{}
+	for _, idn := range res.Services {
+		ps, ok := planned[idn.Service]
+		if !ok || seen[idn.Service] || ps.Object == nil || idn.Kind != protocol.KindDeployment || idn.Namespace != ps.Object.Namespace || idn.Name != ps.Object.Name || idn.ImageDigest != ps.PullDigest {
+			return ErrInvalid
+		}
+		seen[idn.Service] = true
+	}
+	if res.Outcome != protocol.OutcomeSucceeded {
+		return nil
+	}
+	if len(seen) != len(plan.Services) {
+		return ErrInvalid
+	}
+	return t.clearImageChecks(ctx, tx, instance)
+}
+
 // settleRemoval forgets each target the steps show is off the host: its precondition matched
 // the pinned identity (or found it gone) and then its remove step succeeded, or stop and remove
 // were skipped because it was already gone. Only a
@@ -494,6 +586,19 @@ func (t *tenancyStore) settleApply(ctx context.Context, tx *sql.Tx, endpointID, 
 func (t *tenancyStore) settleRemoval(ctx context.Context, tx *sql.Tx, endpointID, appID, instance string, plan DeploymentPlan, res protocol.DeploymentResult) error {
 	if len(res.Services) > 0 {
 		return ErrInvalid
+	}
+	// A cluster removal reports precondition and remove steps per service it found labelled;
+	// only a success releases the instance.
+	if plan.Namespace != "" {
+		for _, s := range res.Steps {
+			if s.Step != protocol.StepPrecondition && s.Step != protocol.StepRemove {
+				return ErrInvalid
+			}
+		}
+		if res.Outcome != protocol.OutcomeSucceeded {
+			return nil
+		}
+		return t.releaseRemoved(ctx, tx, appID, instance)
 	}
 	targets := map[string]string{}
 	for _, c := range plan.Containers {
@@ -531,6 +636,11 @@ func (t *tenancyStore) settleRemoval(ctx context.Context, tx *sql.Tx, endpointID
 	if res.Outcome != protocol.OutcomeSucceeded {
 		return nil
 	}
+	return t.releaseRemoved(ctx, tx, appID, instance)
+}
+
+// releaseRemoved forgets a removed instance and marks its application removed.
+func (t *tenancyStore) releaseRemoved(ctx context.Context, tx *sql.Tx, appID, instance string) error {
 	if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM application_resources WHERE instance_id=?`), instance); err != nil {
 		return err
 	}
@@ -643,14 +753,17 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 			}
 			return err
 		}
-		var project, endpoint, endpointName, endpointState string
-		var mappingVersion int
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.project,i.endpoint_id,i.mapping_version,e.name,e.state FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND i.environment_id=? AND i.application_id=? AND i.id=?`), a.OrganizationID, a.EnvironmentID, appID.String(), instanceID.String()).Scan(&project, &endpoint, &mappingVersion, &endpointName, &endpointState)
+		var project, endpoint, endpointName, endpointState, namespace, runtime string
+		var mappingVersion, current int
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.project,i.endpoint_id,i.mapping_version,i.namespace,i.current_revision,e.name,e.state,e.runtime FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND i.environment_id=? AND i.application_id=? AND i.id=?`), a.OrganizationID, a.EnvironmentID, appID.String(), instanceID.String()).Scan(&project, &endpoint, &mappingVersion, &namespace, &current, &endpointName, &endpointState, &runtime)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrAdoptionChanged
 		}
 		if err != nil {
 			return err
+		}
+		if (runtime == protocol.RuntimeKubernetes) != (namespace != "") {
+			return ErrRuntimeUnsupported
 		}
 		if r.Confirm != project {
 			return ErrInvalid
@@ -678,37 +791,48 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 			return err
 		}
 		now := time.Now().UTC()
-		plan := DeploymentPlan{Project: project, Services: []PlannedService{}, Containers: []RemovalPlanTarget{}}
+		plan := DeploymentPlan{Project: project, Services: []PlannedService{}, Containers: []RemovalPlanTarget{}, Namespace: namespace}
 		req = &protocol.RemovalRequest{Deployment: id, RequestID: a.CorrelationID, Endpoint: endpoint, Project: project, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name,image_id,created_at,service_name FROM application_resources WHERE instance_id=? AND endpoint_id=? ORDER BY container_id`), instanceID.String(), endpoint)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var c RemovalPlanTarget
-			var created time.Time
-			if err := rows.Scan(&c.ContainerID, &c.Name, &c.ImageID, &created, &c.Service); err != nil {
-				rows.Close()
+		count, unit := 0, "containers"
+		if namespace != "" {
+			services, err := t.removalServices(ctx, tx, a, appID.String(), head, current)
+			if err != nil {
 				return err
 			}
-			// Whole seconds: the precision the runtime reports, as InspectionTarget uses.
-			c.CreatedUnix = created.Unix()
-			if c.Service == "" {
-				c.Service = "unmapped-" + c.ContainerID[:min(12, len(c.ContainerID))]
+			req.Kubernetes = &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: appID.String(), InstanceID: instanceID.String(), SpecDigest: digest}
+			req.Services, count, unit = services, len(services), "services"
+		} else {
+			rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT container_id,name,image_id,created_at,service_name FROM application_resources WHERE instance_id=? AND endpoint_id=? ORDER BY container_id`), instanceID.String(), endpoint)
+			if err != nil {
+				return err
 			}
-			plan.Containers = append(plan.Containers, c)
-			req.Containers = append(req.Containers, protocol.RemovalTarget{Service: c.Service, Target: protocol.InspectionTarget{ContainerID: c.ContainerID, ImageID: c.ImageID, CreatedUnix: c.CreatedUnix}})
+			for rows.Next() {
+				var c RemovalPlanTarget
+				var created time.Time
+				if err := rows.Scan(&c.ContainerID, &c.Name, &c.ImageID, &created, &c.Service); err != nil {
+					rows.Close()
+					return err
+				}
+				// Whole seconds: the precision the runtime reports, as InspectionTarget uses.
+				c.CreatedUnix = created.Unix()
+				if c.Service == "" {
+					c.Service = "unmapped-" + c.ContainerID[:min(12, len(c.ContainerID))]
+				}
+				plan.Containers = append(plan.Containers, c)
+				req.Containers = append(req.Containers, protocol.RemovalTarget{Service: c.Service, Target: protocol.InspectionTarget{ContainerID: c.ContainerID, ImageID: c.ImageID, CreatedUnix: c.CreatedUnix}})
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			if len(plan.Containers) == 0 {
+				return ErrAdoptionChanged
+			}
+			count = len(plan.Containers)
 		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		if len(plan.Containers) == 0 {
-			return ErrAdoptionChanged
-		}
-		if len(plan.Containers) > protocol.MaxRemovalTargets {
+		if count > protocol.MaxRemovalTargets {
 			return ErrRemovalTooLarge
 		}
 		if err := t.removalBlockers(ctx, tx, endpoint, instanceID.String(), project, plan.Containers); err != nil {
@@ -726,13 +850,37 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		}
 		out = &Deployment{ID: id, ApplicationID: appID.String(), InstanceID: instanceID.String(), EndpointID: endpoint, EndpointName: endpointName, Kind: "remove", State: "applying", Revision: head, SpecDigest: digest, MappingVersion: mappingVersion, Plan: plan, CreatedBy: a.ActorID, CreatedAt: now, ExpiresAt: req.Deadline, AppliedBy: a.ActorID, AppliedAt: &now, Deadline: &req.Deadline, CorrelationID: a.CorrelationID}
 		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO deployments(id,organization_id,environment_id,application_id,instance_id,endpoint_id,project,kind,state,revision,spec_digest,mapping_version,plan,created_by,created_at,expires_at,applied_by,applied_at,deadline,correlation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), out.ID, a.OrganizationID, a.EnvironmentID, out.ApplicationID, out.InstanceID, out.EndpointID, project, out.Kind, out.State, out.Revision, out.SpecDigest, out.MappingVersion, string(raw), out.CreatedBy, now, out.ExpiresAt, out.AppliedBy, now, req.Deadline, out.CorrelationID)
-		details = fmt.Sprintf("project=%s endpoint=%s containers=%d", project, endpoint, len(plan.Containers))
+		details = fmt.Sprintf("project=%s endpoint=%s %s=%d", project, endpoint, unit, count)
 		return err
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	return out, req, nil
+}
+
+// removalServices names what a cluster removal deletes: the services of the latest revision and
+// of the one last applied (current, 0 when none). The agent finds each service's Deployment,
+// Service and ConfigMap by the instance label, and its Secret by the name the service gives it.
+func (t *tenancyStore) removalServices(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, head, current int) ([]string, error) {
+	services := map[string]bool{}
+	for _, number := range []int{head, current} {
+		if number == 0 {
+			continue
+		}
+		var raw, digest string
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, app, number).Scan(&raw, &digest); err != nil {
+			return nil, err
+		}
+		var spec ApplicationSpec
+		if applicationSpecDigest([]byte(raw)) != digest || json.Unmarshal([]byte(raw), &spec) != nil {
+			return nil, ErrRevisionCorrupt
+		}
+		for _, s := range spec.Services {
+			services[s.Name] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(services)), nil
 }
 
 // removalBlockers refuses a removal the host may not survive: a fresh inventory must show no

@@ -79,6 +79,39 @@ type Options struct {
 	OnState func(state string)
 }
 
+// helloCapabilities is what the agent advertises for its runtime. A cluster agent names only
+// cluster capabilities: kubernetes.deploy and kubernetes.remove in place of deployment.apply and
+// deployment.remove, and never deployment.pull, because the kubelet pulls.
+func helloCapabilities(opts *Options) []string {
+	capabilities := []string{}
+	if opts.Kubernetes {
+		capabilities = append(capabilities, protocol.CapabilityKubernetesInventory)
+		if opts.Logs != nil {
+			capabilities = append(capabilities, protocol.CapabilityPodLogs)
+		}
+		if opts.Deploy != nil {
+			capabilities = append(capabilities, protocol.CapabilityKubernetesDeploy)
+		}
+		if opts.Remove != nil {
+			capabilities = append(capabilities, protocol.CapabilityKubernetesRemove)
+		}
+		return capabilities
+	}
+	if opts.Inspect != nil {
+		capabilities = append(capabilities, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityContainerInspectHealth)
+	}
+	if opts.Exec != nil {
+		capabilities = append(capabilities, "container.exec")
+	}
+	if opts.Deploy != nil {
+		capabilities = append(capabilities, protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull)
+	}
+	if opts.Remove != nil {
+		capabilities = append(capabilities, protocol.CapabilityDeploymentRemove)
+	}
+	return capabilities
+}
+
 // checkServerOrigin admits https anywhere and http only to loopback: enrollment carries the
 // single-use token and every connection carries the identity, so neither may cross a network
 // in the clear.
@@ -268,26 +301,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	if heartbeat <= 0 || heartbeat > 55*time.Second {
 		heartbeat = 30 * time.Second
 	}
-	capabilities := []string{}
-	if opts.Kubernetes {
-		capabilities = append(capabilities, protocol.CapabilityKubernetesInventory)
-		if opts.Logs != nil {
-			capabilities = append(capabilities, protocol.CapabilityPodLogs)
-		}
-	}
-	if opts.Inspect != nil {
-		capabilities = append(capabilities, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityContainerInspectHealth)
-	}
-	if opts.Exec != nil {
-		capabilities = append(capabilities, "container.exec")
-	}
-	if opts.Deploy != nil {
-		capabilities = append(capabilities, protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull)
-	}
-	if opts.Remove != nil {
-		capabilities = append(capabilities, protocol.CapabilityDeploymentRemove)
-	}
-	if err := write(ctx, conn, protocol.TypeHello, protocol.Hello{Capabilities: capabilities, AgentVersion: opts.Version}); err != nil {
+	if err := write(ctx, conn, protocol.TypeHello, protocol.Hello{Capabilities: helloCapabilities(opts), AgentVersion: opts.Version}); err != nil {
 		return err
 	}
 	metricsOut := make(chan protocol.Metrics, 1)

@@ -102,17 +102,24 @@ func TestClusterAgentEnrollsAndReportsTheCluster(t *testing.T) {
 			Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "kind-control-plane", Ready: true}}}}, nil
 	}
 	logs := func(context.Context, protocol.LogRequest, func([]byte) error) error { return nil }
+	deploy := func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
+		return protocol.DeploymentResult{}
+	}
+	remove := func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult {
+		return protocol.DeploymentResult{}
+	}
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	done := make(chan error, 1)
 	go func() {
-		done <- client.Run(runCtx, id, client.Options{HTTPClient: httpClient, Identities: identities, Kubernetes: true, Snapshot: snapshot, Logs: logs, InventoryEvery: time.Second})
+		done <- client.Run(runCtx, id, client.Options{HTTPClient: httpClient, Identities: identities, Kubernetes: true, Snapshot: snapshot, Logs: logs, Deploy: deploy, Remove: remove, InventoryEvery: time.Second})
 	}()
 	waitState(t, ctx, ts, id.EndpointID, "active")
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		ep, err := ts.ReadEndpoint(ctx, access, id.EndpointID)
-		if err == nil && slices.Equal(ep.Capabilities, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs}) {
+		// The server stores them sorted; a hello it refused would store none.
+		if err == nil && slices.Equal(ep.Capabilities, []string{protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesRemove, protocol.CapabilityPodLogs}) {
 			break
 		}
 		if time.Now().After(deadline) {

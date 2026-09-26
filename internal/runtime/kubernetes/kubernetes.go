@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/render"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +38,8 @@ const (
 
 type Client struct {
 	cs k8s.Interface
+	// poll is how often a rollout is read; tests shorten it.
+	poll time.Duration
 	// openLog streams one container's log. Tests replace it: the fake clientset answers every
 	// log request with the same text and ignores its options.
 	openLog func(ctx context.Context, namespace, pod string, opts *corev1.PodLogOptions) (io.ReadCloser, error)
@@ -63,7 +66,7 @@ func InCluster() (*Client, error) {
 
 // NewFromClientset is for tests: cs is usually k8s.io/client-go/kubernetes/fake.
 func NewFromClientset(cs k8s.Interface) *Client {
-	return &Client{cs: cs, log: log.Default(), openLog: func(ctx context.Context, namespace, pod string, opts *corev1.PodLogOptions) (io.ReadCloser, error) {
+	return &Client{cs: cs, log: log.Default(), poll: rolloutPoll, openLog: func(ctx context.Context, namespace, pod string, opts *corev1.PodLogOptions) (io.ReadCloser, error) {
 		return cs.CoreV1().Pods(namespace).GetLogs(pod, opts).Stream(ctx)
 	}}
 }
@@ -279,8 +282,11 @@ func (c *Client) claims(ctx context.Context, o metav1.ListOptions) ([]corev1.Per
 
 func namespace(ns corev1.Namespace) string { return ns.Name }
 
+// deployment carries KyYard's application and instance labels, so the server can tell the
+// Deployments it applied from everything else in the cluster.
 func deployment(d appsv1.Deployment) protocol.Workload {
-	return protocol.Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Desired: replicas(d.Spec.Replicas), Ready: d.Status.ReadyReplicas, Updated: d.Status.UpdatedReplicas, Images: images(d.Spec.Template.Spec), Paused: d.Spec.Paused}
+	return protocol.Workload{Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, Desired: replicas(d.Spec.Replicas), Ready: d.Status.ReadyReplicas, Updated: d.Status.UpdatedReplicas, Images: images(d.Spec.Template.Spec), Paused: d.Spec.Paused,
+		Application: d.Labels[render.LabelApplication], Instance: d.Labels[render.LabelInstance]}
 }
 
 func statefulSet(s appsv1.StatefulSet) protocol.Workload {

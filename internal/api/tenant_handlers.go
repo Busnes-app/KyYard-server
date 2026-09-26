@@ -75,6 +75,8 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A live deployment plan exists; let it expire before releasing", "code": "deployment_planned"})
 	case errors.Is(err, store.ErrRuntimeUnsupported):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "This endpoint's runtime does not support this action", "code": "runtime_unsupported"})
+	case errors.Is(err, store.ErrNamespaceUnknown):
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "The cluster's manifest does not grant that namespace", "code": "namespace_unknown"})
 	case errors.Is(err, store.ErrMappingRequired):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Map the application's services to adopted containers first", "code": "mapping_required"})
 	case errors.Is(err, errCheckInProgress):

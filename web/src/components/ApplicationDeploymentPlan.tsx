@@ -8,11 +8,12 @@ import { knownBlockers, messages, serviceFindings, MountList, type Mount } from 
 import { unsupportedNames } from './ApplicationInspection';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
-type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[] };
+type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[]; object?: { namespace: string; name: string } };
 type DeployStep = { service: string; step: string; outcome: string; code?: string; detail: string };
-type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number };
+// A Kubernetes identity names a Deployment (kind, namespace, name, uid) in place of a container.
+type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number; kind?: string; namespace?: string; name?: string; uid?: string };
 type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
-type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[] }; validation?: Validation };
+type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[]; namespace?: string }; validation?: Validation };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
 type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance; refreshKey?: number };
 
@@ -41,7 +42,7 @@ export const STEP_CODES: Record<string, string> = {
   pinned_image_missing: 'The pinned image is not present on the host.',
   configuration_drift: 'The container changed after the precondition.',
   name_reserved: 'A container already holds the name reserved for the previous one.',
-  name_taken: 'A container with that name already exists.',
+  name_taken: 'Something else already holds that name',
   identity_unusable: 'The runtime returned an unusable container identity.',
   identity_unreadable: 'The container started but its identity could not be read',
   identity_unverified: 'The container started but its identity could not be verified',
@@ -55,6 +56,11 @@ export const STEP_CODES: Record<string, string> = {
   runtime_timeout: 'The runtime did not answer in time.',
   runtime_error: 'The runtime call failed.',
   runtime_status: 'The runtime refused',
+  forbidden: "The agent's access in the namespace does not allow this; apply the cluster's regenerated manifest.",
+  rollout_timeout: 'The Deployment did not become available; it stays as applied',
+  conflict: 'The object kept changing under the agent',
+  pod_security: 'The namespace does not enforce Pod Security baseline; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.',
+  admission_denied: "The cluster refused the object (quota or policy); check the namespace's quotas and admission policies",
   legacy: LEGACY_OUTCOME,
 };
 export const RESULT_CODES: Record<string, string> = {
@@ -94,9 +100,21 @@ export function stepText(s: { code?: string; detail?: string }): string {
       return /^[0-9a-f]{64}$/.test(detail) ? `${text} (container ${detail}).` : `${text}.`;
     case 'runtime_status':
       return /^[1-5][0-9]{2}$/.test(detail) ? `${text} with status ${detail}.` : `${text}.`;
+    case 'admission_denied':
+      return OBJECT.test(detail) ? `${text}. Object: ${detail}.` : `${text}.`;
+    case 'name_taken':
+    case 'conflict':
+      return OBJECT.test(detail) ? `${text}: ${detail}.` : `${text}.`;
+    case 'rollout_timeout': {
+      const reasons = detail.split(',').filter((r) => ROLLOUT.test(r)).map((r) => r.replace('=', ' '));
+      return reasons.length ? `${text} (${reasons.join(', ')}).` : `${text}.`;
+    }
   }
   return text;
 }
+// The closed detail shapes of the Kubernetes codes: Kind/name, and condition=Reason words.
+const OBJECT = /^(Deployment|Service|ConfigMap|Secret)\/[a-z0-9][-a-z0-9.]{0,252}$/;
+const ROLLOUT = /^(progressing|available|replicafailure|pod)=[A-Za-z]{1,64}$/;
 function isDeployment(x: unknown): x is Deployment {
   if (!x || typeof x !== 'object') return false;
   const d = x as Record<string, unknown>;
@@ -158,7 +176,7 @@ function ResultSection({ current }: { current: Deployment }) {
     {detail && <p>{detail}</p>}
     {outcome && <p>{outcome}</p>}
     {explanation && <p role="alert">{explanation}</p>}
-    {current.validation && <p><ValidationLine v={current.validation} /></p>}
+    {current.validation && <p><ValidationLine v={current.validation} kubernetes={Boolean(current.plan.namespace)} /></p>}
     {current.result && <>
       {steps.controls}
       <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Step</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>{steps.rows.map((s, i) => <tr key={`${s.service}-${s.step}-${i}`}>
@@ -167,13 +185,14 @@ function ResultSection({ current }: { current: Deployment }) {
         <td data-label="Outcome">{s.outcome}</td>
         <td data-label="Detail">{stepText(s)}</td>
       </tr>)}</tbody></table>
-      {current.result.services.length > 0 && <ul className="ky-list">{current.result.services.map(s => <li key={s.container_id} style={{ overflowWrap: 'anywhere' }}><strong>{s.service}</strong><br /><span>{s.container_id}</span><br /><span>{s.image_id}</span></li>)}</ul>}
+      {current.result.services.length > 0 && <ul className="ky-list">{current.result.services.map(s => <li key={s.service} style={{ overflowWrap: 'anywhere' }}><strong>{s.service}</strong><br />{s.kind === 'Deployment' ? <><span>Deployment {s.namespace}/{s.name}</span><br /><span>{s.uid}</span></> : <><span>{s.container_id}</span><br /><span>{s.image_id}</span></>}</li>)}</ul>}
     </>}
   </>;
 }
 function PlanDetails({ d }: { d: Deployment }) {
   const services = usePagination(d.plan.services ?? [], `${d.id}-services`);
   const containers = usePagination(d.plan.containers ?? [], `${d.id}-containers`);
+  if (d.kind === 'remove' && d.plan.namespace) return <p>Deletes the objects labelled as this instance's in namespace {d.plan.namespace}.</p>;
   if (d.kind === 'remove') return <>
     {containers.controls}
     <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Name</th><th>Container</th></tr></thead><tbody>{containers.rows.map(c => <tr key={c.container_id}>
@@ -188,7 +207,7 @@ function PlanDetails({ d }: { d: Deployment }) {
     <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Pinned image</th><th>Replaces container</th><th>Mounts</th><th>Secrets</th></tr></thead><tbody>{services.rows.map(s => <tr key={s.name}>
       <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>
       <td data-label="Pinned image"><div className="ky-resource-name">{/^sha256:[0-9a-f]{64}$/.test(s.pull_digest ?? '') ? <span>pulls {s.pull_digest?.slice(7, 19)}</span> : <><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small></>}</div></td>
-      <td data-label="Replaces container"><div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div></td>
+      <td data-label="Replaces container">{s.object ? <div className="ky-resource-name"><span>Deployment {s.object.namespace}/{s.object.name}</span><small>updated in place</small></div> : <div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div>}</td>
       <td data-label="Mounts">{s.mounts?.length ? <MountList mounts={s.mounts} /> : 'None'}{s.dropped_mounts?.length ? <><p>Will be dropped by the recreate:</p><MountList mounts={s.dropped_mounts} /></> : null}</td>
       <td data-label="Secrets">{s.secret_refs.length ? `${s.secret_refs.length} reference(s), values not shown` : 'None'}</td>
     </tr>)}</tbody></table>
@@ -332,6 +351,8 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
       if (r.status === 409) {
         const payload: unknown = await r.json().catch(() => null);
         const code = payload && typeof payload === 'object' && 'code' in payload ? (payload as { code?: unknown }).code : undefined;
+        const blockers = code === 'preflight_blocked' ? knownBlockers(payload, messages).map(b => messages[b]) : [];
+        if (blockers.length) { setApplyError(blockers.join(' ')); return; }
         setApplyError((typeof code === 'string' && APPLY_CODES[code]) || 'The apply was refused or its outcome is unknown. Refresh before trying again.');
         return;
       }
@@ -354,7 +375,9 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
         {current.state === 'planned' && <Correlation id={current.correlation_id} />}
       </> : <p>No plan for this instance.</p>)}
       {!mismatched && current && current.state === 'planned' && !isExpired(current) && <form className="dr-stack" onSubmit={e => { e.preventDefault(); void apply(); }}>
-        <p>Applying replaces the mapped containers on {current.endpoint_id} with revision {current.revision} of {current.plan.project}. Nothing rolls back on failure; a failed run leaves the previous container renamed on the host.</p>
+        {current.plan.namespace
+          ? <p>Applying updates the Deployments, Services, ConfigMaps and Secrets of {current.plan.project} in namespace {current.plan.namespace} to revision {current.revision} and waits for each rollout. Nothing rolls back on failure; a failed run leaves the objects as applied.</p>
+          : <p>Applying replaces the mapped containers on {current.endpoint_id} with revision {current.revision} of {current.plan.project}. Nothing rolls back on failure; a failed run leaves the previous container renamed on the host.</p>}
         <label>Confirm apply project<input value={applyConfirm} onChange={e => setApplyConfirm(e.target.value)} disabled={applyBusy || applyBlocked} autoComplete="off" /></label>
         <button disabled={applyBusy || applyBlocked || applyConfirm !== current.plan.project}>Apply deployment</button>
         {applyError && <p role="alert">{applyError}</p>}

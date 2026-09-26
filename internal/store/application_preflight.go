@@ -115,7 +115,12 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
 		}
 	}
-	out := buildDeploymentPreflight(m, spec, snapshot, number == head, pins)
+	var out *DeploymentPreflight
+	if m.Runtime == protocol.RuntimeKubernetes {
+		out = buildKubernetesPreflight(m, spec)
+	} else {
+		out = buildDeploymentPreflight(m, spec, snapshot, number == head, pins)
+	}
 	out.Revision, out.ReceivedAt = number, received
 	// observed_at is the agent's clock, received_at the server's.
 	if d := observed.Sub(received); d > protocol.MaxClockSkew || d < -protocol.MaxClockSkew {
@@ -312,6 +317,61 @@ func buildDeploymentPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 		}
 		if duplicate {
 			row.Blockers = append(row.Blockers, "desired_port_overlap")
+		}
+		out.Services = append(out.Services, row)
+		blocked = blocked || len(row.Blockers) > 0
+	}
+	out.Executable = !blocked && len(out.Blockers) == 0
+	return out
+}
+
+// kubernetesRestart is what a one-replica Deployment's restartPolicy Always expresses.
+var kubernetesRestart = map[string]bool{"": true, "always": true, "unless-stopped": true}
+
+// buildKubernetesPreflight checks spec against a Kubernetes mapping: the namespace is still one
+// the manifest grants (k8s_namespace), and each service is stateless and expressible, else it
+// carries kubernetes_unsupported with the k8s_ codes that say why. Images need a tag or digest;
+// the plan resolves them at the registry.
+func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec) *DeploymentPreflight {
+	out := &DeploymentPreflight{InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Revision: m.Preview.Revision, MappingVersion: m.Version, Blockers: []string{}, Services: []PreflightService{}}
+	if !slices.Contains(m.DeployNamespaces, m.Namespace) {
+		out.Blockers = append(out.Blockers, "k8s_namespace")
+	}
+	objects := protocol.KubernetesNames(m.Preview.Project, spec.serviceNames())
+	named := map[string]int{}
+	for _, n := range objects {
+		named[n]++
+	}
+	blocked := false
+	for _, s := range spec.Services {
+		row := PreflightService{Name: s.Name, Reference: s.Image, Blockers: []string{}, Mounts: []protocol.Mount{}, DroppedBinds: []protocol.Mount{}, DroppedMounts: []protocol.Mount{}, UnsupportedMounts: []protocol.Mount{}}
+		var codes []string
+		if len(s.Volumes) > 0 {
+			codes = append(codes, "k8s_volume")
+		}
+		if slices.ContainsFunc(s.Ports, func(p ApplicationPort) bool { return p.HostIP != "" }) {
+			codes = append(codes, "k8s_host_ip")
+		}
+		if !kubernetesRestart[s.Restart] {
+			codes = append(codes, "k8s_restart")
+		}
+		if named[objects[s.Name]] > 1 || !protocol.ValidLabelValue(s.Name) || !protocol.ValidLabelValue(m.Preview.Project) {
+			codes = append(codes, "k8s_name")
+		}
+		if len(codes) > 0 {
+			row.Blockers, row.Unsupported = append(row.Blockers, "kubernetes_unsupported"), codes
+		}
+		if _, tag := protocol.SplitImageReference(s.Image); tag == "" {
+			row.Blockers = append(row.Blockers, "explicit_image_reference_required")
+		}
+		ports := map[portKey]bool{}
+		for _, p := range s.Ports {
+			k := portKey{p.Published, p.Protocol}
+			if ports[k] {
+				row.Blockers = append(row.Blockers, "desired_port_overlap")
+				break
+			}
+			ports[k] = true
 		}
 		out.Services = append(out.Services, row)
 		blocked = blocked || len(row.Blockers) > 0

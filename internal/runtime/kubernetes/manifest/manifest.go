@@ -6,18 +6,24 @@ package manifest
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"text/template"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 )
 
+// MaxNamespaces bounds the namespaces one manifest grants writes in.
+const MaxNamespaces = 32
+
 // Input is everything the manifest varies on. Link carries the single-use token; it appears
-// once, in the enrollment Secret.
+// once, in the enrollment Secret. Namespaces, sorted and distinct, each get the deploy Role.
 type Input struct {
-	Image string
-	Link  string
-	Name  string
+	Image      string
+	Link       string
+	Name       string
+	Namespaces []string
 }
 
 // Render returns the multi-document YAML. The image must be digest-pinned: the same rule the
@@ -26,11 +32,30 @@ func Render(in Input) (string, error) {
 	if !config.IsPinnedAgentImage(in.Image) {
 		return "", errors.New("the agent image is not pinned to a digest")
 	}
-	if in.Name == "" || !strings.HasPrefix(in.Link, "https://") {
-		return "", errors.New("a manifest needs an endpoint name and an HTTPS enrollment link")
+	if !strings.HasPrefix(in.Link, "https://") {
+		return "", errors.New("a manifest needs an HTTPS enrollment link")
+	}
+	return execute(in)
+}
+
+// RenderRBAC returns the manifest without the enrollment Secret and the agent Deployment: what
+// an administrator applies to change the namespaces an enrolled agent may write in.
+func RenderRBAC(name string, namespaces []string) (string, error) {
+	return execute(Input{Name: name, Namespaces: namespaces})
+}
+
+func execute(in Input) (string, error) {
+	if in.Name == "" {
+		return "", errors.New("a manifest needs an endpoint name")
+	}
+	if len(in.Namespaces) > MaxNamespaces || !slices.IsSorted(in.Namespaces) || len(slices.Compact(slices.Clone(in.Namespaces))) != len(in.Namespaces) || slices.ContainsFunc(in.Namespaces, func(ns string) bool { return !protocol.ValidDNSLabel(ns) }) {
+		return "", errors.New("namespaces are distinct DNS labels, sorted, at most 32")
 	}
 	var b strings.Builder
-	err := manifestTemplate.Execute(&b, map[string]string{"Image": in.Image, "Link": in.Link, "Name": in.Name, "File": FileName(in.Name)})
+	err := manifestTemplate.Execute(&b, struct {
+		Input
+		File string
+	}{in, FileName(in.Name)})
 	return b.String(), err
 }
 
@@ -65,8 +90,16 @@ var manifestTemplate = template.Must(template.New("manifest").Funcs(template.Fun
 # The agent reads get/list on namespaces, nodes, pods, pod logs, events, services,
 # persistentvolumeclaims, deployments, statefulsets and daemonsets in every namespace. It cannot
 # read Secrets or ConfigMaps; in its own namespace it may read and write its identity Secret.
+{{- if .Namespaces}}
+# In each namespace listed below (Role kyyard-agent-deploy) it may create, update and delete
+# Deployments, Services, ConfigMaps and Secrets; Secrets are read by name, never listed. Create
+# the namespaces first. A namespace dropped from a later manifest keeps its Role until you run
+# kubectl -n <namespace> delete role,rolebinding kyyard-agent-deploy
+{{- end}}
+{{- if .Link}}
 # The Secret kyyard-agent-enrollment holds a single-use enrollment link. Once the endpoint is
 # approved, delete it: kubectl -n kyyard-agent delete secret kyyard-agent-enrollment
+{{- end}}
 # Uninstall: kubectl delete -f {{.File}}
 apiVersion: v1
 kind: Namespace
@@ -99,6 +132,10 @@ rules:
   - apiGroups: [apps]
     resources: [deployments, statefulsets, daemonsets]
     verbs: [get, list]
+  # The agent asks the API server what it may do before every apply.
+  - apiGroups: [authorization.k8s.io]
+    resources: [selfsubjectaccessreviews]
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -150,6 +187,46 @@ subjects:
   - kind: ServiceAccount
     name: kyyard-agent
     namespace: kyyard-agent
+{{- range .Namespaces}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kyyard-agent-deploy
+  namespace: {{q .}}
+  labels:
+    app.kubernetes.io/name: kyyard-agent
+    app.kubernetes.io/managed-by: kyyard
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [services, configmaps]
+    verbs: [get, list, create, update, patch, delete]
+  # No list: the agent reads each Secret it owns by name.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kyyard-agent-deploy
+  namespace: {{q .}}
+  labels:
+    app.kubernetes.io/name: kyyard-agent
+    app.kubernetes.io/managed-by: kyyard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kyyard-agent-deploy
+subjects:
+  - kind: ServiceAccount
+    name: kyyard-agent
+    namespace: kyyard-agent
+{{- end}}
+{{- if .Link}}
 ---
 apiVersion: v1
 kind: Secret
@@ -222,4 +299,5 @@ spec:
             # Optional: the Secret is deleted once spent, and a restart must not wait for it.
             optional: true
             defaultMode: 0440
+{{- end}}
 `))

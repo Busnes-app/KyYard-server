@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ApplicationDeploymentPlan } from './ApplicationDeploymentPlan';
 import { messages } from './ApplicationPreflight';
+import { KUBERNETES_UNVERIFIED } from './ApplicationValidation';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const mapping = { instance_id: 'i', version: 3, mapped_revision: 2, services: [], bindings: {}, preview: { revision: 2, digest: 'd', project: 'shop', endpoint_name: 'Docker', containers: [] } };
 const plan = { id: 'd1', application_id: 'app', instance_id: 'i', endpoint_id: 'host', state: 'planned', revision: 2, spec_digest: 'x', mapping_version: 1, created_by: 'u', created_at: '2026-09-22T12:00:00Z', expires_at: '2999-01-01T00:00:00Z', expired: false, detail: '', result: null, plan: { project: 'shop', services: [{ name: 'web', reference: 'nginx:1', image_id: `sha256:${'a'.repeat(64)}`, image_digest: '', container_id: 'b'.repeat(64), replaces: { container_id: 'b'.repeat(64), image_id: `sha256:${'c'.repeat(64)}`, created_unix: 1 }, restart: 'always', ports: [], secret_refs: ['TOKEN'] }] } };
@@ -438,4 +439,64 @@ it('shows the validation verdict and the rollback of a settled deployment', asyn
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   expect((await screen.findAllByText(/Unhealthy: a healthcheck failed or never passed\./)).length).toBeGreaterThan(0);
   expect(screen.getAllByText(/Rollback sent to revision 1\./).length).toBeGreaterThan(0);
+});
+
+it('renders a Kubernetes plan, its step codes and Deployment identities', async () => {
+  const uid = '0f1e2d3c-4b5a-4968-8776-655443322110';
+  const kube = { ...plan, state: 'timed_out', plan: { project: 'shop', namespace: 'shop', services: [{ ...plan.plan.services[0], image_id: '', container_id: '', pull_digest: `sha256:${'d'.repeat(64)}`, object: { namespace: 'shop', name: 'shop-web' } }] },
+    validation: { deployment_id: 'd1', policy_run_id: '', automated: false, is_rollback: false, phase: 'done', started_at: '', observe_until: '', verdict: 'unverifiable', detail: 'the agent cannot report container health', rollback: null, correlation_id: 'c', finished_at: null },
+    result: { code: 'step_failed', steps: [
+      { service: 'web', step: 'precondition', outcome: 'denied', code: 'name_taken', detail: 'Deployment/shop-web' },
+      { service: 'web', step: 'start', outcome: 'timed_out', code: 'rollout_timeout', detail: 'progressing=ProgressDeadlineExceeded,pod=ImagePullBackOff' },
+      { service: 'api', step: 'start', outcome: 'timed_out', code: 'rollout_timeout', detail: 'pod=back-off <b>secret-canary</b>' },
+      { service: 'api', step: 'create', outcome: 'denied', code: 'forbidden', detail: '' },
+      { service: 'api', step: 'precondition', outcome: 'denied', code: 'pod_security', detail: 'missing' },
+      { service: 'api', step: 'create', outcome: 'denied', code: 'admission_denied', detail: 'ConfigMap/shop-api-env' },
+      { service: 'api', step: 'start', outcome: 'failed', code: 'rollout_timeout', detail: 'progressing=NewReplicaSetCreated,replicafailure=FailedCreate' },
+    ], services: [{ service: 'web', container_id: '', image_id: '', created_unix: 0, kind: 'Deployment', namespace: 'shop', name: 'shop-web', uid }] } };
+  vi.stubGlobal('fetch', stubFetch([kube]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  expect(await screen.findByText('Something else already holds that name: Deployment/shop-web.')).toBeTruthy();
+  expect(screen.getByText('The Deployment did not become available; it stays as applied (progressing ProgressDeadlineExceeded, pod ImagePullBackOff).')).toBeTruthy();
+  expect(screen.getByText('The Deployment did not become available; it stays as applied.')).toBeTruthy();
+  expect(screen.getByText('The Deployment did not become available; it stays as applied (progressing NewReplicaSetCreated, replicafailure FailedCreate).')).toBeTruthy();
+  expect(screen.getByText('The namespace does not enforce Pod Security baseline; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.')).toBeTruthy();
+  expect(screen.getByText("The cluster refused the object (quota or policy); check the namespace's quotas and admission policies. Object: ConfigMap/shop-api-env.")).toBeTruthy();
+  expect(screen.getByText("The agent's access in the namespace does not allow this; apply the cluster's regenerated manifest.")).toBeTruthy();
+  expect(screen.getAllByText('Deployment shop/shop-web').length).toBeGreaterThan(0);
+  expect(screen.getByText(uid)).toBeTruthy();
+  expect(screen.getByText(KUBERNETES_UNVERIFIED)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('secret-canary');
+});
+it('names each service a Kubernetes plan refuses, with the fix', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (init?.method === 'POST') return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['kubernetes_unsupported', 'k8s_namespace'], services: [{ name: 'db', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume'] }, { name: 'web', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_host_ip', 'k8s_restart'] }] }), { status: 409 });
+    return new Response('[]');
+  }));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByText('No plan for this instance.');
+  fireEvent.change(screen.getByLabelText('Confirm plan project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Plan deployment' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain(messages.kubernetes_unsupported);
+  expect(alert.textContent).toContain(messages.k8s_namespace);
+  expect(alert.textContent).toContain('db: mounts a volume; Kubernetes deployment of stateful services arrives with the migration analyzer');
+  expect(alert.textContent).toContain('web: publishes a port on a host address');
+});
+it('names a namespace revoked between plan and apply', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (String(url).endsWith('/apply')) return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['k8s_namespace', 'secret-canary'] }), { status: 409 });
+    return new Response(JSON.stringify([plan]));
+  }));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
+  fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
+  expect(await screen.findByText(messages.k8s_namespace)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('secret-canary');
 });

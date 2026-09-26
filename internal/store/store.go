@@ -45,6 +45,8 @@ var (
 	// ErrUnreadableResult is a deployment result that fails validation even read as an older
 	// agent's: nothing is stored, and the row waits for another answer or the sweep.
 	ErrUnreadableResult = errors.New("unreadable deployment result")
+	// ErrNamespaceUnknown is a mapping to a namespace the cluster's manifest does not list.
+	ErrNamespaceUnknown = errors.New("the namespace is not one the cluster's manifest grants")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
@@ -262,7 +264,11 @@ type TenancyStore interface {
 	ListOrganizations(ctx context.Context) ([]OrganizationSummary, error)
 
 	CheckEnrollmentAccess(ctx context.Context, access TenantAccess) error
-	CreateEnrollmentToken(ctx context.Context, access TenantAccess, runtime, agentImage string) (*EnrollmentToken, error)
+	// CreateEnrollmentToken records namespaces (Kubernetes only) for the endpoint it enrolls.
+	CreateEnrollmentToken(ctx context.Context, access TenantAccess, runtime, agentImage string, namespaces ...string) (*EnrollmentToken, error)
+	// SetEndpointDeployNamespaces replaces a Kubernetes endpoint's namespace list, audited as
+	// <endpoint>/manifest under endpoint.enroll.
+	SetEndpointDeployNamespaces(ctx context.Context, access TenantAccess, endpointID string, namespaces []string) (*Endpoint, error)
 	// Enroll is agent-facing: the token, not a session, selects the tenant.
 	Enroll(ctx context.Context, request EnrollmentRequest) (*Endpoint, error)
 	ListEndpoints(ctx context.Context, access TenantAccess, offset, limit int) ([]Endpoint, error)

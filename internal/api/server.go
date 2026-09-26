@@ -285,6 +285,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/pods/{namespace}/{pod}/logs", s.tenantRoute(s.handlePodLogs))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/exec", s.tracked(s.tenantRoute(s.handleContainerExec)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/approve", s.tenantRoute(s.handleApproveEndpoint))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/manifest", s.tenantRoute(s.handleEndpointManifest))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/reject", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RejectEndpoint)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/revoke", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RevokeEndpoint)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/keys/{fingerprint}/acknowledge", s.tenantRoute(s.handleAcknowledgeKey))

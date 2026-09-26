@@ -27,7 +27,13 @@ import (
 const socketDisclosure = "Mounting /var/run/docker.sock gives the KyYard agent, and therefore this control plane, root-equivalent access to that host. Enroll only hosts whose operators accept that."
 
 // clusterDisclosure says what the manifest grants, in the same response as the token.
-const clusterDisclosure = "The KyYard agent's ServiceAccount can get and list namespaces, nodes, pods, pod logs, events, services, persistent volume claims, deployments, statefulsets and daemonsets in every namespace. It cannot read Secrets or ConfigMaps; in its own namespace kyyard-agent it reads and writes only its identity Secret. Applying the manifest needs cluster-admin, because it creates a ClusterRole and a ClusterRoleBinding."
+const clusterDisclosure = "The KyYard agent's ServiceAccount can get and list namespaces, nodes, pods, pod logs, events, services, persistent volume claims, deployments, statefulsets and daemonsets in every namespace. Cluster-wide it cannot read Secrets or ConfigMaps; in its own namespace kyyard-agent it reads and writes only its identity Secret. Applying the manifest needs cluster-admin, because it creates a ClusterRole and a ClusterRoleBinding."
+
+// namespaceDisclosure is added when the manifest grants writes in namespaces.
+const namespaceDisclosure = " In each namespace you listed it may create, update and delete Deployments, Services, ConfigMaps and Secrets, and get any Secret there by name (it cannot list them). That lets it run any pod in those namespaces, under any of their ServiceAccounts and mounting any of their Secrets, so list only namespaces that enforce Pod Security baseline or stricter (label pod-security.kubernetes.io/enforce=baseline or restricted); KyYard refuses to deploy into any other. Pod logs and the metadata above stay readable in every namespace by design. A namespace you drop from the list keeps its Role until you delete it by hand."
+
+// manifestNote goes with a regenerated manifest.
+const manifestNote = "Apply it with a cluster-admin kubeconfig: kubectl apply -f on the saved file. Create the namespaces first. A namespace you removed keeps its Role until you run kubectl -n <namespace> delete role,rolebinding kyyard-agent-deploy."
 
 const clusterNote = "Save the manifest and apply it with a cluster-admin kubeconfig. Run kubectl -n kyyard-agent logs deploy/kyyard-agent and compare the agent key fingerprint before approving. Once approved, delete the spent enrollment Secret: kubectl -n kyyard-agent delete secret kyyard-agent-enrollment. Uninstall with kubectl delete -f on the same file."
 
@@ -40,8 +46,9 @@ func (s *Server) instanceFingerprint() string {
 
 func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	var input struct {
-		Runtime string `json:"runtime"`
-		Name    string `json:"name"`
+		Runtime    string   `json:"runtime"`
+		Name       string   `json:"name"`
+		Namespaces []string `json:"namespaces"`
 	}
 	if err := strictJSON(r, &input); err != nil {
 		s.tenantError(w, err)
@@ -49,8 +56,13 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 	}
 	// A pod has no useful hostname, so a cluster is named here; a Docker host names itself.
 	kube := input.Runtime == protocol.RuntimeKubernetes
-	if kube != (input.Name != "") || (kube && !store.ValidEndpointName(input.Name)) {
+	if kube != (input.Name != "") || (kube && !store.ValidEndpointName(input.Name)) || (!kube && len(input.Namespaces) > 0) {
 		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	namespaces, err := store.NormalizeNamespaces(input.Namespaces)
+	if err != nil {
+		s.tenantError(w, err)
 		return
 	}
 	https := strings.HasPrefix(s.config.Server.AppURL, "https://")
@@ -86,7 +98,7 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Set KY_AGENT_IMAGE to a digest-pinned ghcr.io/busnes-app/kyyard@sha256:<digest> reference", "code": "agent_image_unpinned"})
 		return
 	}
-	tok, err := s.store.Tenancy().CreateEnrollmentToken(r.Context(), a, input.Runtime, image)
+	tok, err := s.store.Tenancy().CreateEnrollmentToken(r.Context(), a, input.Runtime, image, namespaces...)
 	if err != nil {
 		s.tenantError(w, err)
 		return
@@ -98,14 +110,17 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 	}
 	out["image"] = image
 	if kube {
-		doc, err := manifest.Render(manifest.Input{Image: image, Link: strings.TrimRight(s.config.Server.AppURL, "/") + "/#kyyard=" + secret, Name: input.Name})
+		doc, err := manifest.Render(manifest.Input{Image: image, Link: strings.TrimRight(s.config.Server.AppURL, "/") + "/#kyyard=" + secret, Name: input.Name, Namespaces: namespaces})
 		if err != nil {
 			s.tenantError(w, err)
 			return
 		}
 		file := manifest.FileName(input.Name)
 		out["manifest"], out["manifest_file"], out["command"] = doc, file, "kubectl apply -f "+file
-		out["disclosure"], out["note"] = clusterDisclosure, clusterNote
+		out["disclosure"], out["note"], out["namespaces"] = clusterDisclosure, clusterNote, namespaces
+		if len(namespaces) > 0 {
+			out["disclosure"] = clusterDisclosure + namespaceDisclosure
+		}
 		s.writeJSON(w, http.StatusCreated, out)
 		return
 	}
@@ -120,6 +135,36 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 	}
 
 	s.writeJSON(w, http.StatusCreated, out)
+}
+
+// handleEndpointManifest records the namespaces a cluster's agent may write in and returns the
+// manifest that grants exactly those, RBAC only, for a cluster-admin to apply. The list is what
+// plans and mappings check; the agent asks the API server for its real grant before each apply.
+func (s *Server) handleEndpointManifest(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	var input struct {
+		Namespaces []string `json:"namespaces"`
+	}
+	if err := strictJSON(r, &input); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	e, err := s.store.Tenancy().SetEndpointDeployNamespaces(r.Context(), a, id, input.Namespaces)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	doc, err := manifest.RenderRBAC(e.Name, e.DeployNamespaces)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	file := manifest.FileName(e.Name)
+	s.writeJSON(w, http.StatusOK, map[string]any{"manifest": doc, "manifest_file": file, "command": "kubectl apply -f " + file, "namespaces": e.DeployNamespaces, "note": manifestNote})
 }
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
@@ -380,7 +425,7 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, err)
 		return
 	}
-	if !s.dockerOnly(w, r, a, id) {
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	var body struct {
@@ -476,7 +521,7 @@ func (s *Server) handleRemovalPreview(w http.ResponseWriter, r *http.Request, a 
 		s.tenantError(w, err)
 		return
 	}
-	if !s.dockerOnly(w, r, a, id) {
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	container := r.PathValue("container")

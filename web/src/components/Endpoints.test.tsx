@@ -162,3 +162,18 @@ it('shows a cluster endpoint with its health and node count', async () => {
   expect(screen.getByText('3 nodes')).toBeTruthy();
   expect(screen.getByText('v1.36.0')).toBeTruthy();
 });
+
+it('sends the namespaces a cluster may deploy to with its enrollment', async () => {
+  let posted = '';
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'POST') { posted = String(init.body); return json({ id: 't1', runtime: 'kubernetes', expires_at: '2026-09-16T00:15:00Z', token: 'tok', command: 'kubectl apply -f x.yaml', manifest: 'kind: Role', manifest_file: 'x.yaml', disclosure: 'd', namespaces: ['billing', 'shop'] }, 201); }
+    return json([]);
+  }));
+  render(<Endpoints org="a" env="env-a" />);
+  fireEvent.change(screen.getByRole('combobox', { name: 'Runtime' }), { target: { value: 'kubernetes' } });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Cluster name' }), { target: { value: 'prod' } });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Namespaces to deploy to' }), { target: { value: 'shop billing' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Enroll a cluster' }));
+  await screen.findByRole('region', { name: 'Enrollment manifest' });
+  expect(JSON.parse(posted)).toEqual({ runtime: 'kubernetes', name: 'prod', namespaces: ['shop', 'billing'] });
+});

@@ -195,7 +195,15 @@ func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, pa
 			return res
 		}
 	}
-	d.run(sessionCtx, out, req.Deployment, req.RequestID, req.Endpoint, endpointID, req.Validate, exec)
+	d.run(sessionCtx, out, req.Deployment, req.RequestID, req.Endpoint, endpointID, func(now time.Time) error { return req.ValidateFor(d.runtime(), now) }, exec)
+}
+
+// runtime is the agent's: a frame for the other one is invalid_request, never run.
+func (d *deployer) runtime() string {
+	if d.opts.Kubernetes {
+		return protocol.RuntimeKubernetes
+	}
+	return protocol.RuntimeDocker
 }
 
 // handleRemoval answers one deployment.remove payload; see run. See handleApply for the
@@ -212,7 +220,7 @@ func (d *deployer) handleRemoval(sessionCtx context.Context, endpointID string, 
 			return remove(ctx, req, func() { d.begin(req.Deployment, req.RequestID) })
 		}
 	}
-	d.run(sessionCtx, out, req.Deployment, req.RequestID, req.Endpoint, endpointID, req.Validate, exec)
+	d.run(sessionCtx, out, req.Deployment, req.RequestID, req.Endpoint, endpointID, func(now time.Time) error { return req.ValidateFor(d.runtime(), now) }, exec)
 }
 
 // run gates and runs one decoded request in the agent's single deployment slot. Refusals are
