@@ -434,9 +434,9 @@ func (t *tenancyStore) latestInventory(ctx context.Context, endpoint string) (*i
 
 // PendingValidations lists each organization's PendingValidationsPerOrg oldest validations that are
 // not done or owe a rollback decision, oldest first, each with its settled services
-// placed against the instance's resources and the endpoint's latest inventory; a cluster service is
-// placed unknown, for its status read to decide. Health counts container.inspect.health or
-// kubernetes.inspect: CapabilitiesFit keeps each to its own runtime.
+// placed against the instance's resources and the endpoint's latest inventory; a cluster row's
+// services are placed unknown without either read, for the status read to decide. Health counts
+// container.inspect.health or kubernetes.inspect: CapabilitiesFit keeps each to its own runtime.
 func (t *tenancyStore) PendingValidations(ctx context.Context) ([]PendingValidation, error) {
 	rows, err := t.store.db.QueryContext(ctx, t.store.rebind(`SELECT `+validationColumns+`,v.organization_id,v.environment_id,v.application_id,v.instance_id,v.endpoint_id,v.baseline,d.result,COALESCE(p.id,''),COALESCE(p.created_by,''),(SELECT COUNT(*) FROM application_instances i WHERE i.id=v.instance_id),(SELECT COUNT(*) FROM endpoint_capabilities c WHERE c.endpoint_id=v.endpoint_id AND c.capability IN (?,?)),COALESCE((SELECT e.runtime FROM endpoints e WHERE e.id=v.endpoint_id),'') FROM (SELECT v.deployment_id AS id,ROW_NUMBER() OVER (PARTITION BY v.organization_id ORDER BY v.started_at,v.deployment_id) AS n FROM deployment_validations v WHERE v.phase<>'done' OR `+awaitingRollback+`) k JOIN deployment_validations v ON v.deployment_id=k.id JOIN deployments d ON d.id=v.deployment_id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id LEFT JOIN policy_runs r ON r.id=v.policy_run_id LEFT JOIN update_policies p ON p.id=r.policy_id WHERE k.n<=? ORDER BY v.started_at,v.deployment_id LIMIT ?`), protocol.CapabilityContainerInspectHealth, protocol.CapabilityKubernetesInspect, PendingValidationsPerOrg, MaxPendingValidations)
 	if err != nil {
@@ -473,6 +473,13 @@ func (t *tenancyStore) PendingValidations(ctx context.Context) ([]PendingValidat
 	inventories := map[string]*inventoryView{}
 	for i := range out {
 		p := &out[i]
+		if p.Kubernetes {
+			// A cluster settle binds no resource: the Deployment's status read decides.
+			for j := range p.Services {
+				p.Services[j].Presence = PresenceUnknown
+			}
+			continue
+		}
 		bound, err := t.boundServices(ctx, t.store.db, p.InstanceID)
 		if err != nil {
 			return nil, err
@@ -489,7 +496,7 @@ func (t *tenancyStore) PendingValidations(ctx context.Context) ([]PendingValidat
 			snap = &inv.snapshot
 		}
 		for j := range p.Services {
-			// A cluster settle binds no resource: the Deployment's status read decides.
+			// A cluster identity whose endpoint no longer reads as a cluster: still unknown.
 			if p.Services[j].Kind == protocol.KindDeployment {
 				p.Services[j].Presence = PresenceUnknown
 				continue

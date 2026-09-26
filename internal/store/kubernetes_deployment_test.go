@@ -630,3 +630,23 @@ func TestRetainedClaimsNameOnlyAnExactCount(t *testing.T) {
 		t.Fatalf("a Docker removal: %v", got)
 	}
 }
+
+// A pinned cluster plan (a rollback's) makes no registry call, but still needs the pulled host's
+// registry row or anonymous pull: the kubelet pulls with what the frame carries.
+func TestKubernetesPinnedPlanNeedsARegistryRow(t *testing.T) {
+	st, a, app, _, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{}}
+	pinned := kubePlanRequest(m)
+	pinned.PinImages = map[string]string{"web": "ghcr.io/org/web@" + digestOf("b"), "api": "ghcr.io/org/api@" + digestOf("a")}
+	setAnonymousPull(t, st, a, false)
+	if _, err := ts.PlanDeployment(ctx, a, app.ID, pinned, resolver, imageCheckKey, false); !isBlocked(err, "registry_not_configured") {
+		t.Fatalf("pinned without a registry row: %v", err)
+	}
+	setAnonymousPull(t, st, a, true)
+	d, err := ts.PlanDeployment(ctx, a, app.ID, pinned, resolver, imageCheckKey, false)
+	if err != nil || d.Plan.Services[0].PullDigest == "" || len(resolver.called()) != 0 {
+		t.Fatalf("pinned with anonymous pull: %+v %v calls %+v", d, err, resolver.called())
+	}
+}
