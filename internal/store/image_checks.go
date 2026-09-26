@@ -131,7 +131,8 @@ func (t *tenancyStore) CheckImageUpdates(ctx context.Context, a TenantAccess, ap
 	var instance, state string
 	var version int
 	target := id.String() + "/updates"
-	// A read: no lock and no success row, but a denial or failure audits the check's target.
+	// A read: no lock and no success row, but a denial or failure (except a read's not-found)
+	// audits the check's target.
 	err = t.run(ctx, a, permissions.ApplicationDeploy, &target, nil, false, func(tx *sql.Tx) error {
 		m, err := t.applicationMapping(ctx, tx, a, id.String(), false)
 		if err != nil {

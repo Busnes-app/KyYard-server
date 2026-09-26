@@ -106,6 +106,32 @@ it('applies on typed confirmation and polls until settled', async () => {
   expect(screen.getByText('e'.repeat(64))).toBeTruthy();
   vi.useRealTimers();
 });
+it('refetches the instance when a polled deployment settles, and on Refresh plan', async () => {
+  vi.useFakeTimers();
+  let reads = 0;
+  const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (String(url).endsWith('/apply')) return new Response(JSON.stringify(applying), { status: 202 });
+    reads++;
+    return new Response(JSON.stringify([reads < 3 ? (reads === 1 ? plan : applying) : settled]));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const onChanged = vi.fn();
+  render(<ApplicationDeploymentPlan {...props} onChanged={onChanged} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
+  fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
+  expect(onChanged).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(document.body.textContent).toMatch(/succeeded/i);
+  expect(onChanged).toHaveBeenCalledTimes(1); // reached succeeded: the instance's revision may have moved
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh plan' }));
+  expect(onChanged).toHaveBeenCalledTimes(2);
+  vi.useRealTimers();
+});
 it('explains a refused precondition with fixed text and hides server detail', async () => {
   vi.stubGlobal('fetch', stubFetch([refused]));
   render(<ApplicationDeploymentPlan {...props} />);

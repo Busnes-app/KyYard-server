@@ -1,6 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EndpointPage } from './EndpointPage';
+
+// Counts terminal mounts: a remount would have ended the exec session.
+const terminal = vi.hoisted(() => ({ mounts: 0 }));
+vi.mock('../components/ContainerTerminal', async () => {
+  const { useEffect } = await import('react');
+  return { ContainerTerminal: () => { useEffect(() => { terminal.mounts++; }, []); return <p>terminal stub</p>; } };
+});
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -80,6 +87,110 @@ it('discovers unmanaged projects, filters existing controls, and resets scope on
   expect(screen.queryByRole('button', { name: 'Show all containers' })).toBeNull();
   expect(document.getElementById('endpoint-containers')?.textContent).toContain('mail-web');
   expect(fetcher.mock.calls.every((call) => call.length === 1)).toBe(true); // discovery only reads inventory
+});
+
+it('polls inventory every 30s, keeping the containers table mounted', async () => {
+  vi.useFakeTimers();
+  try {
+    const now = new Date().toISOString();
+    const container = { id: 'c1', name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: [] };
+    let generation = 2;
+    const snapshot = () => ({ generation, observed_at: now, engine: { runtime: 'docker', version: '1', api_version: '1', os: 'linux', arch: 'x', kernel: 'k', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers: [container], images: [], networks: [], volumes: [] });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation, observed_at: now, received_at: now, snapshot: snapshot() }) : String(input).endsWith('/samples') ? json([]) : json(endpoint)));
+    render(<EndpointPage org="a" endpoint="ep_1" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole('status').textContent).toContain('generation 2');
+    const table = screen.getByRole('table');
+    generation = 6;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.getByRole('status').textContent).toContain('generation 6');
+    expect(screen.getByRole('table')).toBe(table); // same element: the poll refetched in place, it did not unmount
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// One running container "web" for an organization admin; poll() sets the next inventory answer.
+function pollingHost() {
+  const now = new Date().toISOString();
+  const web = { id: 'c1', name: 'web', image: 'i', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: [] };
+  let answer = () => json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { ...terminalSnapshot(now), containers: [web] } });
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role: 'organization_admin' }]);
+    if (url.endsWith('/inventory')) return answer();
+    return url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications') ? json([]) : json(endpoint);
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const polled = () => fetcher.mock.calls.filter(([u]) => /\/(inventory|samples)$/.test(String(u))).length;
+  return { now, web, fetcher, polled, poll: (next: () => Response) => { answer = next; } };
+}
+
+it('keeps an open terminal and log viewer through a failed poll and a container added ahead', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: vi.fn() });
+  try {
+    const host = pollingHost();
+    render(<EndpointPage org="a" endpoint="ep_1" />);
+    fireEvent.click(await screen.findByLabelText('Actions for web'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Terminal' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
+    await screen.findByText('terminal stub');
+    const table = screen.getByRole('table');
+    const logs = document.querySelector('dialog[aria-label="Logs for web"]');
+    expect(logs).not.toBeNull();
+    const api = { ...host.web, id: 'c0', name: 'api' };
+    host.poll(() => json({ endpoint_id: 'ep_1', state: 'active', generation: 2, observed_at: host.now, received_at: host.now, snapshot: { ...terminalSnapshot(host.now), generation: 2, containers: [api, host.web] } }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await screen.findByText('api');
+    // Rows keyed by index would remount web's controls here and close its terminal.
+    expect(screen.queryByText('terminal stub')).not.toBeNull();
+    expect(terminal.mounts).toBe(1);
+    host.poll(() => json({ error: 'boom' }, 500));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.queryByRole('table')).toBe(table);
+    expect(document.querySelector('dialog[aria-label="Logs for web"]')).toBe(logs);
+    expect(screen.queryByText('terminal stub')).not.toBeNull();
+    expect(terminal.mounts).toBe(1);
+    await screen.findByText(/Last refresh failed/);
+  } finally {
+    vi.useRealTimers();
+    Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+  }
+});
+
+it('stops polling once a polled resource is denied', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  try {
+    const host = pollingHost();
+    render(<EndpointPage org="a" endpoint="ep_1" />);
+    await screen.findByRole('table');
+    host.poll(() => json({ error: 'forbidden' }, 403));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await screen.findByText(/do not have access/);
+    const after = host.polled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(host.polled()).toBe(after);
+    expect(screen.queryByRole('table')).toBeNull(); // lost access drops the data
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('keeps polling through no inventory yet and shows the first report', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  try {
+    const host = pollingHost();
+    host.poll(() => json({ error: 'not found' }, 404));
+    render(<EndpointPage org="a" endpoint="ep_1" />);
+    await screen.findByText(/No inventory yet/);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    host.poll(() => json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: host.now, received_at: host.now, snapshot: { ...terminalSnapshot(host.now), containers: [host.web] } }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(await screen.findByRole('table')).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it('pages host containers and resets pagination when searching', async () => {

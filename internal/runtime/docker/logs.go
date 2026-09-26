@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -14,8 +15,8 @@ import (
 )
 
 const (
-	// logFetchBudget bounds a request for history. The runtime is reading a file it already
-	// has, so this is generous for a slow disk rather than for a slow network.
+	// logFetchBudget bounds a request for history, including time spent waiting on the session
+	// queue: a large history over a slow uplink can reach it and end as a failed close.
 	logFetchBudget = 60 * time.Second
 	// logFollowBudget is the absolute life of a following stream. A browser tab left open
 	// over a weekend must not hold a reader on the host forever; the operator reopens it.
@@ -103,34 +104,60 @@ func copyRaw(body io.Reader, sink func([]byte) error) error {
 // copyDemuxed forwards the payloads of Docker's multiplexed stream. stdout and stderr are
 // both the container's output as far as an operator reading a log is concerned, so they are
 // interleaved in the order the daemon wrote them rather than separated.
+//
+// The daemon writes a frame per line, so payloads that have already arrived are gathered into
+// one chunk of up to protocol.MaxLogChunkBytes. Whatever is gathered is handed on before any
+// read that would wait, so a followed line is never held back for the next one.
 func copyDemuxed(body io.Reader, sink func([]byte) error) error {
+	r := bufio.NewReaderSize(body, protocol.MaxLogChunkBytes)
 	header := make([]byte, 8)
-	buf := make([]byte, protocol.MaxLogChunkBytes)
+	chunk := make([]byte, 0, protocol.MaxLogChunkBytes)
+	flush := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		err := sink(chunk)
+		chunk = chunk[:0]
+		return err
+	}
 	for {
-		if _, err := io.ReadFull(body, header); err != nil {
-			return endOfStream(err)
-		}
-		remaining := int64(binary.BigEndian.Uint32(header[4:]))
-		if remaining > dockerFrameLimit {
-			return fmt.Errorf("the runtime announced a %d byte log frame", remaining)
-		}
-		for remaining > 0 {
-			take := int64(len(buf))
-			if remaining < take {
-				take = remaining
+		// Flush before any read that would wait on the daemon.
+		if r.Buffered() < len(header) {
+			if err := flush(); err != nil {
+				return err
 			}
-			n, err := io.ReadFull(body, buf[:take])
-			if n > 0 {
-				if sinkErr := sink(buf[:n]); sinkErr != nil {
-					return sinkErr
+		}
+		if _, err := io.ReadFull(r, header); err != nil {
+			return finish(flush, err)
+		}
+		size := binary.BigEndian.Uint32(header[4:])
+		if size > dockerFrameLimit {
+			return fmt.Errorf("the runtime announced a %d byte log frame", size)
+		}
+		for remaining := int(size); remaining > 0; {
+			take := min(remaining, cap(chunk)-len(chunk))
+			if take == 0 || r.Buffered() < take {
+				if err := flush(); err != nil {
+					return err
 				}
-				remaining -= int64(n)
+				take = min(remaining, cap(chunk))
 			}
+			n, err := io.ReadFull(r, chunk[len(chunk):len(chunk)+take])
+			chunk = chunk[:len(chunk)+n]
+			remaining -= n
 			if err != nil {
-				return endOfStream(err)
+				return finish(flush, err)
 			}
 		}
 	}
+}
+
+// finish hands on what was gathered before reporting how the stream ended.
+func finish(flush func() error, err error) error {
+	if ferr := flush(); ferr != nil {
+		return ferr
+	}
+	return endOfStream(err)
 }
 
 // endOfStream turns the end of the body into success: a log that ends is not a failure, and

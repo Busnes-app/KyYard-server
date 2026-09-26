@@ -145,3 +145,22 @@ it('offers the update-policy editor to organization administrators only', async 
     cleanup();
   }
 });
+it('shows the instance revision the plan panel refetched', async () => {
+  let current = 1;
+  const instance = () => ({ id: 'i', application_id: 'app', endpoint_id: 'host', endpoint_name: 'Docker', project: 'shop', revision: 2, current_revision: current, previous_revision: 0, mapping_version: 1, container_count: 1, containers: [] });
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/revisions/')) return json({ digest: 'digest', spec: { services: [] } });
+    if (url.endsWith('/instances')) return json([instance()]);
+    if (url.endsWith('/mapping')) return json({ instance_id: 'i', version: 1, mapped_revision: 2, services: [], bindings: {}, preview: { revision: 2, digest: 'd', project: 'shop', endpoint_name: 'Docker', containers: [] } });
+    if (url.includes('/endpoints') || url.endsWith('/deployments')) return json([]);
+    if (url.endsWith('/applications?limit=100')) return json([{ id: 'app', name: 'shop', latest_revision: 2 }]);
+    return json({});
+  }));
+  render(<Applications org="a" env="env" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'View configuration for shop' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Deployment plan' }));
+  expect(await screen.findByText(/Current revision 1 /)).toBeTruthy();
+  current = 2; // a deployment settled elsewhere
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh plan' }));
+  expect(await screen.findByText(/Current revision 2 /)).toBeTruthy();
+});

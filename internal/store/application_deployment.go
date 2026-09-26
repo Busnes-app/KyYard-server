@@ -249,7 +249,8 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	var state string
 	var capabilities map[string]bool
 	var services []BlockedService
-	// A read: no lock and no success row, but a denial or failure audits the plan's target.
+	// A read: no lock and no success row, but a denial or failure (except a read's not-found)
+	// audits the plan's target.
 	err = t.run(ctx, a, permissions.ApplicationDeploy, &target, nil, false, func(tx *sql.Tx) error {
 		dr, err := t.draftPlan(ctx, tx, a, id.String(), planID, r, false)
 		if err != nil {

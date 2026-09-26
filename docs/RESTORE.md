@@ -238,9 +238,14 @@ ls -A data | wc -l
 With `0` confirmed, copy the restored files in and start:
 
 ```bash
-sudo cp -a restored/data/. data/ && sudo chmod 600 data/*
+sudo cp -a restored/data/. data/ && sudo chown -R root:root data && sudo chmod 600 data/*
 docker compose up -d
 ```
+
+The `chown` matters: Step 1 ran the restore as your own user, so the files it wrote are yours,
+and `cp -a` keeps that. The server runs as root and refuses a key file another user owns
+(`Failed to load configuration: session.key: keyfile: key path is not a regular file owned by
+the current user`), restarting until the ownership is fixed.
 
 Keep `KY_APP_URL` and `KY_APP_NAME` identical to the old deployment, from
 `config/settings.json`: the app name is what every capsule is sealed under and what

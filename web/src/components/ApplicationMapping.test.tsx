@@ -32,6 +32,7 @@ it('blocks stale submissions and refuses a replacement adoption', async () => {
   expect(document.body.textContent).not.toContain('secret-canary');
   replaced = true;
   fireEvent.click(screen.getByRole('button', { name: 'Refresh mapping' }));
-  expect((await screen.findByRole('alert')).textContent).toContain('Adoption changed');
+  // The refetch keeps the form (and its refusal alert) on screen until the answer lands.
+  await screen.findByText(/Adoption changed/);
   expect(screen.queryByRole('button', { name: 'Save service mapping' })).toBeNull();
 });
