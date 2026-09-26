@@ -347,7 +347,8 @@ A Kubernetes cluster enrolls as an endpoint the way a Docker host does. KyYard r
 cluster (inventory, cluster health, pod logs) and deploys stateless applications into the
 namespaces you grant it. Prerequisites: `KY_APP_URL` on HTTPS, a digest-pinned agent image
 (discovered from the installed server image, or `KY_AGENT_IMAGE`), and a cluster-admin
-kubeconfig for `kubectl apply`.
+kubeconfig for `kubectl apply`. Upgrade the KyYard server before any cluster agent, never the
+reverse: an older server refuses a newer agent at hello (the full order closes this section).
 
 1. On the environment screen choose **Kubernetes cluster**, name the cluster, optionally list
    the namespaces KyYard may deploy to, and select **Enroll a cluster**. Create those
@@ -398,13 +399,18 @@ Kubernetes cluster**, then plan and apply as on a Docker host. Each service beco
 Deployment (one replica, `Recreate`), a `ClusterIP` Service for its published ports, a
 ConfigMap and a Secret for its environment, all named `<application>-<service>` and labelled
 with the application and instance; every image is pinned by digest at plan time. KyYard never
-touches an object with those names that it did not label (`name_taken`), and the apply waits
+touches an object with those names that it did not label (`name_taken`); the plan already stops
+when the cluster's inventory shows another application's or tool's Deployment under a planned
+name (`k8s_name_taken`), or when a service's name collides with a running one's once `_` and
+`.` read as `-` (`a-b` beside or in place of `a_b`), which would move its objects
+(`k8s_service_renamed`). The apply waits
 for each rollout until the pod has been available for 10 seconds; one the cluster reports as
 failed (a pod it refused to create, or the Deployment's own 9-minute progress deadline), or that
 does not finish before the apply's ten-minute deadline, stops with the reason the cluster gives
 (`FailedCreate`, `ImagePullBackOff`, `CrashLoopBackOff`, ...) and leaves the objects as applied.
 A write the cluster refuses after the agent's grant allowed it (a quota, an admission policy) stops
-with `admission_denied` and the object's name. The rendered pod has no resource requests or
+with `admission_denied` and the object's name; a write the agent's Role does not grant (a manifest
+older than the agent) stops with `forbidden`: apply the regenerated manifest. The rendered pod has no resource requests or
 limits and no security context: the namespace must admit it, which Pod Security `baseline` does
 and `restricted` does not, and a ResourceQuota or policy that requires limits refuses it.
 A service with a host path, a port bound to a host address, or a restart policy other than
@@ -414,6 +420,14 @@ kubelet pulls the images: for a private registry, give the namespace's `default`
 an imagePullSecret. A Kubernetes apply is not health-validated and never rolls back
 automatically; plan and apply the earlier revision to go back. Removing the application
 deletes the objects labelled as its own and nothing else.
+
+Services of one application reach each other through their Kubernetes Service, by its object
+name (`<application>-<service>`, for example `shop-web`, or `shop-web.shop.svc.cluster.local`
+from another namespace) on the service's published port, which the Service forwards to the
+target port. The Compose service name (`web`) does not resolve on a cluster, and a service with
+no published port gets no Service, so nothing can reach it; publish every port another service
+calls. A name longer than 63 characters, or two services whose names collide, carry a six-hex
+suffix: the plan shows each service's object name.
 
 Container, image, network, volume, terminal, inspection and adoption actions are refused for a
 cluster (`409 runtime_unsupported`) and not shown. Uninstall with

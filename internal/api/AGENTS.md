@@ -86,6 +86,7 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
 
 ## Verification
 - `go test -v ./internal/api/...` (`image_check_handlers_test.go` the update-check routes with a fake resolver; `authz_test.go` pins the per-role exposure of every privileged route; `admin_handlers_test.go` the platform administration routes; `migration_test.go` the whole migration over the API with a Docker source and the fake cluster agent; `backup_test.go` the backup routes, on SQLite only because a run snapshots the database; `policies_test.go` the scheduler against a fake agent socket through `newPlanHost` with the test clock and tick hooks in `export_test.go`; `validations_test.go` the loop against a fake agent socket through `newPlanHost` with `SetPlanInspectorForTest` answering health and `ValidationTickForTest`/`SetValidationClockForTest`)
+- `go test -run TestClusterDisclosureMatchesTheManifestAndThreatModel ./internal/api/` fails when the manifest's ClusterRole reads a resource that `clusterDisclosure` and the `docs/threat-model.md` Kubernetes row do not both name, or when either loses its blast-radius wording: change the three together.
 - `scripts/smoke-test.sh` asserts the same boundaries against a running binary
 
 ## Child DOX Index
