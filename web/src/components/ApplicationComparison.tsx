@@ -18,7 +18,7 @@ const availabilityText = { unavailable: 'Host or inventory unavailable.', stale:
 export function ApplicationComparison({ base, instanceID }: { base: string; instanceID: string }) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close comparison' : 'Compare with host'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Close comparison' : 'Compare with host'}</button>
     {open && <ComparisonView base={base} instanceID={instanceID} />}
   </section>;
 }

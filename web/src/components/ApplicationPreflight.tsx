@@ -71,7 +71,7 @@ type Preflight = { instance_id: string; endpoint_id: string; endpoint_name: stri
 export function ApplicationPreflight({ base, instanceID, org }: { base: string; instanceID: string; org: string }) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close deployment preflight' : 'Deployment preflight'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Close deployment preflight' : 'Deployment preflight'}</button>
     {open && <PreflightView key={`${org}/${base}/${instanceID}`} base={base} instanceID={instanceID} org={org} />}
   </section>;
 }

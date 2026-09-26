@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/version"
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -85,11 +86,17 @@ func OwnNamespace() (string, error) {
 	return ns, nil
 }
 
-// engine is the API server's version, read within ctx.
-func (c *Client) engine(ctx context.Context) (protocol.Engine, error) {
+// serverVersion reads the API server's version within callBudget: the one read Facts and every
+// snapshot's Engine share.
+func (c *Client) serverVersion(ctx context.Context) (*version.Info, error) {
 	ctx, cancel := context.WithTimeout(ctx, callBudget)
 	defer cancel()
-	v, err := c.cs.Discovery().ServerVersionWithContext(ctx)
+	return c.cs.Discovery().ServerVersionWithContext(ctx)
+}
+
+// engine is the API server's version as a snapshot reports it.
+func (c *Client) engine(ctx context.Context) (protocol.Engine, error) {
+	v, err := c.serverVersion(ctx)
 	if err != nil {
 		return protocol.Engine{Runtime: protocol.RuntimeKubernetes}, err
 	}
@@ -103,7 +110,7 @@ func (c *Client) Facts(ctx context.Context) map[string]string {
 	facts := map[string]string{"runtime": protocol.RuntimeKubernetes, "server_version": "unknown", "node_count": "unknown", "platform": "unknown"}
 	ctx, cancel := context.WithTimeout(ctx, callBudget)
 	defer cancel()
-	if v, err := c.cs.Discovery().ServerVersionWithContext(ctx); err == nil {
+	if v, err := c.serverVersion(ctx); err == nil {
 		facts["server_version"], facts["platform"] = v.GitVersion, v.Platform
 	}
 	if nodes, err := listAll(ctx, protocol.MaxNodes, c.nodes); err == nil {

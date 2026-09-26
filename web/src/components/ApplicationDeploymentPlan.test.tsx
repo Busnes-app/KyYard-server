@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { ApplicationDeploymentPlan, CLAIM_RETAINED, STEP_CODES } from './ApplicationDeploymentPlan';
+import { ApplicationDeploymentPlan, CLAIM_RETAINED, CLUSTER_FAILED, CLUSTER_STOPPED, STEP_CODES, stepText } from './ApplicationDeploymentPlan';
 import { messages } from './ApplicationPreflight';
 import { KUBERNETES_UNVERIFIED } from './ApplicationValidation';
 import { K8S_VOLUME_CHOICE, unsupportedNames } from './ApplicationInspection';
@@ -462,7 +462,7 @@ it('renders a Kubernetes plan, its step codes and Deployment identities', async 
   expect(screen.getByText('The Deployment did not become available; it stays as applied (progressing ProgressDeadlineExceeded, pod ImagePullBackOff).')).toBeTruthy();
   expect(screen.getByText('The Deployment did not become available; it stays as applied.')).toBeTruthy();
   expect(screen.getByText('The Deployment did not become available; it stays as applied (progressing NewReplicaSetCreated, replicafailure FailedCreate).')).toBeTruthy();
-  expect(screen.getByText('The namespace does not enforce Pod Security baseline; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.')).toBeTruthy();
+  expect(screen.getByText('The namespace has no Pod Security enforce label; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.')).toBeTruthy();
   expect(screen.getByText("The cluster refused the object (quota or policy); check the namespace's quotas and admission policies. Object: ConfigMap/shop-api-env.")).toBeTruthy();
   expect(screen.getByText("The agent's access in the namespace does not allow this; apply the cluster's regenerated manifest.")).toBeTruthy();
   expect(screen.getAllByText('Deployment shop/shop-web').length).toBeGreaterThan(0);
@@ -473,7 +473,7 @@ it('renders a Kubernetes plan, its step codes and Deployment identities', async 
 it('names each service a Kubernetes plan refuses, with the fix', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
-    if (init?.method === 'POST') return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['kubernetes_unsupported', 'k8s_namespace'], services: [{ name: 'db', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume'], details: { k8s_volume: 'choice_required' } }, { name: 'web', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_host_ip', 'k8s_restart'] }, { name: 'cache', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume', 'k8s_volume_shared'] }] }), { status: 409 });
+    if (init?.method === 'POST') return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['kubernetes_unsupported', 'k8s_namespace'], services: [{ name: 'db', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume'], details: { k8s_volume: 'choice_required' } }, { name: 'web', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_host_ip', 'k8s_restart'] }, { name: 'cache', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume', 'k8s_volume_shared'] }, { name: 'api', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_name_taken'] }, { name: 'a_b', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_service_renamed'] }] }), { status: 409 });
     return new Response('[]');
   }));
   render(<ApplicationDeploymentPlan {...props} />);
@@ -487,6 +487,8 @@ it('names each service a Kubernetes plan refuses, with the fix', async () => {
   expect(alert.textContent).toContain(`db: ${K8S_VOLUME_CHOICE}`);
   expect(alert.textContent).toContain(`cache: ${unsupportedNames.k8s_volume}, ${unsupportedNames.k8s_volume_shared}`);
   expect(alert.textContent).toContain('web: publishes a port on a host address');
+  expect(alert.textContent).toContain('api: plans a Deployment name another application or tool already uses in the namespace');
+  expect(alert.textContent).toContain('a_b: shares its Kubernetes object name, once');
 });
 it('names a namespace revoked between plan and apply', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -522,4 +524,37 @@ it('names an immutable claim, shows the claims a plan creates, and says a remova
   fireEvent.click(rows[rows.length - 1]);
   expect(await screen.findByText(CLAIM_RETAINED)).toBeTruthy();
   expect(screen.getByText(/Its PersistentVolumeClaims and their data are kept/)).toBeTruthy();
+});
+
+it('says whether the plan is open', () => {
+  vi.stubGlobal('fetch', stubFetch([]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  const toggle = screen.getByRole('button', { name: 'Deployment plan' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+});
+it('names which Pod Security case refused a namespace', () => {
+  expect(stepText({ code: 'pod_security', detail: 'missing' })).toContain('has no Pod Security enforce label');
+  expect(stepText({ code: 'pod_security', detail: 'privileged' })).toContain('enforces Pod Security privileged');
+  expect(stepText({ code: 'pod_security', detail: 'invalid' })).toContain('is not a level Kubernetes knows');
+  expect(stepText({ code: 'pod_security', detail: '' })).toBe(STEP_CODES.pod_security);
+  expect(stepText({ code: 'pod_security', detail: 'constructor' })).toBe(STEP_CODES.pod_security);
+});
+it('explains a failed cluster row in cluster terms, never the Docker rename', async () => {
+  const cluster = { ...plan, plan: { project: 'shop', namespace: 'shop', services: [{ ...plan.plan.services[0], object: { namespace: 'shop', name: 'shop-web' } }] } };
+  const rows = [
+    { ...cluster, id: 'd1', state: 'failed', result: { code: 'step_failed', steps: [{ service: 'web', step: 'create', outcome: 'failed', code: 'conflict', detail: 'ConfigMap/shop-web-env' }], services: [] } },
+  ];
+  vi.stubGlobal('fetch', stubFetch(rows));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  expect(await screen.findByText(CLUSTER_FAILED)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('.kyyard-prev');
+  cleanup();
+  vi.stubGlobal('fetch', stubFetch([{ ...cluster, id: 'd2', state: 'failed', result: { code: 'step_failed', steps: [{ service: 'web', step: 'precondition', outcome: 'denied', code: 'pod_security', detail: 'privileged' }], services: [] } }]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  expect(await screen.findByText(CLUSTER_STOPPED)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('mapped container');
 });

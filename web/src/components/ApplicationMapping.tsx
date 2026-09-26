@@ -8,7 +8,7 @@ type Mapping = { instance_id: string; version: number; mapped_revision: number; 
 export function ApplicationMapping({ base, instanceID }: { base: string; instanceID: string }) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close service mapping' : 'Map services to containers'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Close service mapping' : 'Map services to containers'}</button>
     {open && <MappingView base={base} instanceID={instanceID} />}
   </section>;
 }

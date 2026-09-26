@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Endpoints, displayName } from './Endpoints';
+import { NAMESPACE_RULE } from '../tenant';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.cookie = 'ky_csrf=; Max-Age=0'; });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -176,4 +177,26 @@ it('sends the namespaces a cluster may deploy to with its enrollment', async () 
   fireEvent.click(screen.getByRole('button', { name: 'Enroll a cluster' }));
   await screen.findByRole('region', { name: 'Enrollment manifest' });
   expect(JSON.parse(posted)).toEqual({ runtime: 'kubernetes', name: 'prod', namespaces: ['shop', 'billing'] });
+});
+
+it('checks the namespace list before enrolling a cluster, by the rule the server applies', async () => {
+  const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json([]));
+  vi.stubGlobal('fetch', fetcher);
+  render(<Endpoints org="a" env="env-a" />);
+  fireEvent.change(screen.getByRole('combobox', { name: 'Runtime' }), { target: { value: 'kubernetes' } });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Cluster name' }), { target: { value: 'prod' } });
+  const namespaces = screen.getByRole('textbox', { name: 'Namespaces to deploy to' });
+  const enroll = screen.getByRole('button', { name: 'Enroll a cluster' });
+  for (const bad of ['Shop', 'kube-system', 'kyyard-agent', 'shop shop', 'shop_', 'a'.repeat(64), Array.from({ length: 33 }, (_, i) => `ns${i}`).join(' ')]) {
+    fireEvent.change(namespaces, { target: { value: bad } });
+    expect(enroll).toHaveProperty('disabled', true);
+    expect(screen.getByRole('alert').textContent).toBe(NAMESPACE_RULE);
+    expect(namespaces.getAttribute('aria-invalid')).toBe('true');
+  }
+  for (const good of ['', 'shop billing', 'shop, kube', 'a'.repeat(63), Array.from({ length: 32 }, (_, i) => `ns${i}`).join(' ')]) {
+    fireEvent.change(namespaces, { target: { value: good } });
+    expect(enroll).toHaveProperty('disabled', false);
+    expect(screen.queryByRole('alert')).toBeNull();
+  }
+  expect(fetcher.mock.calls.every(([, init]) => init?.method !== 'POST')).toBe(true);
 });

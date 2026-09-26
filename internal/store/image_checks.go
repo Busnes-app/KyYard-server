@@ -87,12 +87,23 @@ func (t *tenancyStore) clearImageChecks(ctx context.Context, tx *sql.Tx, instanc
 // CheckImageUpdateAccess admits a check before the API takes its per-application slot, so a
 // caller without application.deploy can neither see nor hold it. CheckImageUpdates re-authorizes.
 func (t *tenancyStore) CheckImageUpdateAccess(ctx context.Context, a TenantAccess, app string) error {
+	return t.checkApplication(ctx, a, permissions.ApplicationDeploy, app, "/updates")
+}
+
+// CheckApplicationAccess authorizes action on an application in scope, audited on the
+// application only when denied.
+func (t *tenancyStore) CheckApplicationAccess(ctx context.Context, a TenantAccess, action permissions.Action, app string) error {
+	return t.checkApplication(ctx, a, action, app, "")
+}
+
+// checkApplication authorizes action on app, auditing a denial on app+suffix.
+func (t *tenancyStore) checkApplication(ctx context.Context, a TenantAccess, action permissions.Action, app, suffix string) error {
 	id, err := uuid.Parse(app)
 	if err != nil || a.EnvironmentID == "" {
 		return ErrInvalid
 	}
-	target := id.String() + "/updates"
-	return t.run(ctx, a, permissions.ApplicationDeploy, &target, nil, false, func(tx *sql.Tx) error {
+	target := id.String() + suffix
+	return t.run(ctx, a, action, &target, nil, false, func(tx *sql.Tx) error {
 		var one int
 		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM applications WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, id.String()).Scan(&one)
 		if errors.Is(err, sql.ErrNoRows) {

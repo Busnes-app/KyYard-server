@@ -30,7 +30,7 @@ const socketDisclosure = "Mounting /var/run/docker.sock gives the KyYard agent, 
 const clusterDisclosure = "The KyYard agent's ServiceAccount can get and list namespaces, nodes, pods, pod logs, events, services, persistent volume claims, deployments, statefulsets and daemonsets in every namespace, and storage classes. Cluster-wide it cannot read Secrets or ConfigMaps; in its own namespace kyyard-agent it reads and writes only its identity Secret. Applying the manifest needs cluster-admin, because it creates a ClusterRole and a ClusterRoleBinding."
 
 // namespaceDisclosure is added when the manifest grants writes in namespaces.
-const namespaceDisclosure = " In each namespace you listed it may create, update and delete Deployments, Services, ConfigMaps and Secrets, and get any Secret there by name (it cannot list them). That lets it run any pod in those namespaces, under any of their ServiceAccounts and mounting any of their Secrets, so list only namespaces that enforce Pod Security baseline or stricter (label pod-security.kubernetes.io/enforce=baseline or restricted); KyYard refuses to deploy into any other. Pod logs and the metadata above stay readable in every namespace by design. A namespace you drop from the list keeps its Role until you delete it by hand."
+const namespaceDisclosure = " In each namespace you listed it may create, update and delete Deployments, Services, ConfigMaps and Secrets, and get any Secret there by name (it cannot list them). It may also create PersistentVolumeClaims there but never update or delete one. That lets it run any pod in those namespaces, under any of their ServiceAccounts and mounting any of their Secrets, so list only namespaces that enforce Pod Security baseline or stricter (label pod-security.kubernetes.io/enforce=baseline or restricted); KyYard refuses to deploy into any other. Pod logs and the metadata above stay readable in every namespace by design. A namespace you drop from the list keeps its Role until you delete it by hand."
 
 // manifestNote goes with a regenerated manifest.
 const manifestNote = "Apply it with a cluster-admin kubeconfig: kubectl apply -f on the saved file. Create the namespaces first. Apply it again after upgrading KyYard: a release can add rules, as migrations added PersistentVolumeClaims and StorageClasses. A namespace you removed keeps its Role until you run kubectl -n <namespace> delete role,rolebinding kyyard-agent-deploy."
@@ -425,9 +425,6 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, err)
 		return
 	}
-	if !s.runtimeGate(w, r, a, id, dockerRoute) {
-		return
-	}
 	var body struct {
 		Action string `json:"action"`
 		// A command names a container or an image, never both; the action says which field
@@ -451,6 +448,16 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		// A command names one or the other. Preferring one silently would make the request
 		// mean something the caller did not write.
 		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	// The action's own permission before the runtime; an unknown action is the store's to refuse.
+	if needs, ok := store.CommandPermission(body.Action); ok {
+		if err := s.store.Tenancy().CheckEndpointAccess(r.Context(), a, needs, id); err != nil {
+			s.tenantError(w, err)
+			return
+		}
+	}
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	target := body.Container
@@ -521,6 +528,7 @@ func (s *Server) handleRemovalPreview(w http.ResponseWriter, r *http.Request, a 
 		s.tenantError(w, err)
 		return
 	}
+	// The preview's permission is endpoint.read, which runtimeGate's endpoint read checks.
 	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}

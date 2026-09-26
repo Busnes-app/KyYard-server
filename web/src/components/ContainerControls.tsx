@@ -65,8 +65,8 @@ export function ContainerControls({ base, container, active, scope, onRefresh, c
       }}>
       {container.state !== 'running' && <button className="btn-secondary" disabled={disabled} onClick={() => void act('start')}>Start</button>}
       {container.state === 'running' && <><button className="btn-secondary" disabled={disabled} onClick={() => void act('stop')}>Stop</button><button className="btn-secondary" disabled={disabled} onClick={() => void act('restart')}>Restart</button></>}
-      {canExec && <button className="btn-secondary" disabled={!active || container.state !== 'running'} onClick={() => setShowTerminal(!showTerminal)}>{showTerminal ? 'Close terminal' : 'Terminal'}</button>}
-      <button className="btn-secondary" disabled={!active} onClick={() => setShowLogs(!showLogs)}>{showLogs ? 'Close logs' : 'Logs'}</button>
+      {canExec && <button className="btn-secondary" disabled={!active || container.state !== 'running'} aria-expanded={showTerminal} onClick={() => setShowTerminal(!showTerminal)}>{showTerminal ? 'Close terminal' : 'Terminal'}</button>}
+      <button className="btn-secondary" disabled={!active} aria-expanded={showLogs} onClick={() => setShowLogs(!showLogs)}>{showLogs ? 'Close logs' : 'Logs'}</button>
       <button className="btn-secondary" disabled={disabled || ['running', 'paused', 'restarting'].includes(container.state)} onClick={() => void act('remove')}>Remove</button>
       </div>
     </details>

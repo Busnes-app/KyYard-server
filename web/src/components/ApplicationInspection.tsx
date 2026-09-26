@@ -41,6 +41,8 @@ export const unsupportedNames: Record<string, string> = {
   k8s_name: 'has a name Kubernetes cannot use as a label; end it with a letter or digit',
   k8s_namespace: "is mapped to a namespace the cluster's manifest no longer grants",
   k8s_volume_shared: 'mounts a named volume another service mounts too; a ReadWriteOnce claim serves one pod',
+  k8s_name_taken: 'plans a Deployment name another application or tool already uses in the namespace; rename the service or map the application to another namespace',
+  k8s_service_renamed: "shares its Kubernetes object name, once '_' and '.' read as '-', with a service already applied under that name, even a plain rename of this one (a_b to a-b); keep the applied name, or give this one a distinct name",
 };
 // K8S_VOLUME_CHOICE replaces k8s_volume's sentence when its detail is choice_required.
 export const K8S_VOLUME_CHOICE = "mounts a named volume with no storage choice. Each revision keeps the previous one's choices, and a volume newly declared on a destination cannot receive one in this release, so remove it from the definition";

@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { ContainerLogs } from './ContainerControls';
-import { displayName } from './Endpoints';
+import { displayName, healthBadge } from './Endpoints';
 import { ResourceTable } from './ResourceTable';
 import { ManifestRegeneration } from './KubernetesManifest';
 import type { ApplicationInstance } from './ApplicationAdoption';
 import type { Endpoint, KubernetesInventory, Pod, PodContainer } from '../tenant';
 
-const healthBadge: Record<string, string> = { healthy: 'badge-success', degraded: 'badge-danger' };
 const stateBadge: Record<string, string> = { running: 'badge-success', terminated: 'badge-danger' };
 
 // A Kubernetes endpoint shows health, nodes, workloads, pods with their logs, services, claims

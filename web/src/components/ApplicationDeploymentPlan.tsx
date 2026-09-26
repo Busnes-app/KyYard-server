@@ -111,6 +111,8 @@ export function stepText(s: { step?: string; outcome?: string; code?: string; de
     case 'conflict':
     case 'claim_immutable':
       return OBJECT.test(detail) ? `${text}: ${detail}.` : `${text}.`;
+    case 'pod_security':
+      return Object.hasOwn(POD_SECURITY, detail) ? POD_SECURITY[detail] ?? text : text;
     case 'rollout_timeout': {
       const reasons = detail.split(',').filter((r) => ROLLOUT.test(r)).map((r) => r.replace('=', ' '));
       return reasons.length ? `${text} (${reasons.join(', ')}).` : `${text}.`;
@@ -118,6 +120,12 @@ export function stepText(s: { step?: string; outcome?: string; code?: string; de
   }
   return text;
 }
+// A pod_security refusal by the namespace's enforce label: absent, privileged, or not a level.
+const POD_SECURITY: Record<string, string> = {
+  missing: 'The namespace has no Pod Security enforce label; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.',
+  privileged: 'The namespace enforces Pod Security privileged, which lets a pod run privileged; set pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.',
+  invalid: "The namespace's Pod Security enforce label is not a level Kubernetes knows; set pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.",
+};
 // The closed detail shapes of the Kubernetes codes: Kind/name, and condition=Reason words.
 const OBJECT = /^(Deployment|Service|ConfigMap|Secret|PersistentVolumeClaim)\/[a-z0-9][-a-z0-9.]{0,252}$/;
 const ROLLOUT = /^(progressing|available|replicafailure|pod)=[A-Za-z]{1,64}$/;
@@ -138,6 +146,9 @@ function preconditionExplanation(code: string): string {
   }
   return 'A mapped container has configuration the definition does not describe. Review it on the host before planning again.';
 }
+export const CLUSTER_STOPPED = 'The agent stopped before changing the cluster; the step below says why.';
+export const CLUSTER_FAILED = 'A step failed on the cluster; objects written before it stay as applied, and nothing was rolled back.';
+const CLUSTER_REMOVE_FAILED = 'A step failed on the cluster; objects removed before it are gone and the rest remain.';
 // The row's state decides first: an unknown or timed-out row may carry no steps, and a failed
 // row without a result never reached the host (FailDeployment). Then the result and step codes.
 function explanationFor(current: Deployment): string {
@@ -147,6 +158,10 @@ function explanationFor(current: Deployment): string {
   if (current.result?.code === 'clock_skew') return 'The host clock differs from the server by more than five minutes; nothing ran. Correct the host clock, then plan again.';
   const failing = current.result?.steps.find(s => s.outcome !== 'succeeded' && s.outcome !== 'skipped');
   if (!failing) return '';
+  if (current.plan.namespace) {
+    if (failing.outcome === 'denied' && failing.step === 'precondition') return CLUSTER_STOPPED;
+    if (failing.outcome === 'failed') return current.kind === 'remove' ? CLUSTER_REMOVE_FAILED : CLUSTER_FAILED;
+  }
   if (failing.outcome === 'denied' && (failing.step === 'precondition' || failing.step === 'recheck')) return current.kind === 'remove'
     ? 'A container of this application is not the one recorded; refresh the inventory and, if it was recreated outside KyYard, release and adopt it again.'
     : preconditionExplanation(failing.code ?? '');
@@ -161,7 +176,7 @@ function explanationFor(current: Deployment): string {
 export function ApplicationDeploymentPlan(props: Props) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close deployment plan' : 'Deployment plan'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Close deployment plan' : 'Deployment plan'}</button>
     {open && <PlanView key={`${props.instanceID}/${props.latestRevision}/${props.refreshKey ?? 0}`} {...props} />}
   </section>;
 }
@@ -226,7 +241,7 @@ const when = (t?: string | null) => t ? new Date(t).toLocaleString() : '—';
 export function ApplicationHistory({ base }: { base: string }) {
   const [open, setOpen] = useState(false);
   return <section className="dr-stack" style={{ overflowWrap: 'anywhere' }}>
-    <button type="button" className="btn-secondary" onClick={() => setOpen(!open)}>{open ? 'Close deployment history' : 'Deployment history'}</button>
+    <button type="button" className="btn-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Close deployment history' : 'Deployment history'}</button>
     {open && <HistoryView base={base} />}
   </section>;
 }

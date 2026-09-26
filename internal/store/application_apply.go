@@ -192,7 +192,7 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 		if !ok || spec.Services[i].Name != ps.Name {
 			return protocol.DeploymentRequest{}, ErrAdoptionChanged
 		}
-		svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: append([]protocol.Mount{}, ps.Mounts...)}
+		svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: serviceEnv(spec.Services[i], values), Mounts: append([]protocol.Mount{}, ps.Mounts...)}
 		if ps.PullDigest != "" {
 			svc.ImageID, svc.Pull = "", &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}
 			// The agent moves the service's tag to the pulled image, so the next plan (and
@@ -208,9 +208,6 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 		}
 		for _, p := range ps.Ports {
 			svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol, HostIP: p.HostIP})
-		}
-		for envName, ref := range spec.Services[i].Environment {
-			svc.Env[envName] = values[ref.SecretRef]
 		}
 		req.Services = append(req.Services, svc)
 	}
@@ -267,14 +264,11 @@ func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a Tenant
 		if spec.Services[i].Name != ps.Name || ps.PullDigest == "" || ps.Object == nil {
 			return protocol.DeploymentRequest{}, ErrAdoptionChanged
 		}
-		svc := protocol.DeploymentService{Name: ps.Name, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: []protocol.Mount{}, Pull: &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}, Volumes: ps.ClaimMounts}
+		svc := protocol.DeploymentService{Name: ps.Name, Restart: ps.Restart, Ports: []protocol.Port{}, Env: serviceEnv(spec.Services[i], values), Mounts: []protocol.Mount{}, Pull: &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}, Volumes: ps.ClaimMounts}
 		for _, p := range ps.Ports {
 			svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol})
 		}
 		// Every value is secret-backed today: the definition holds references only.
-		for envName, ref := range spec.Services[i].Environment {
-			svc.Env[envName] = values[ref.SecretRef]
-		}
 		svc.SecretKeys = slices.Sorted(maps.Keys(spec.Services[i].Environment))
 		req.Services = append(req.Services, svc)
 		hosts[svc.Pull.Host()] = true
@@ -298,6 +292,15 @@ func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a Tenant
 		}
 	}
 	return req, nil
+}
+
+// serviceEnv is a service's environment with each reference resolved to its value.
+func serviceEnv(s ApplicationService, values map[string]string) map[string]string {
+	env := make(map[string]string, len(s.Environment))
+	for name, ref := range s.Environment {
+		env[name] = values[ref.SecretRef]
+	}
+	return env
 }
 
 // frameBlocker names what stops req reaching an agent that accepts maxFrameBytes, or "" when
@@ -812,7 +815,7 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		req = &protocol.RemovalRequest{Deployment: id, RequestID: a.CorrelationID, Endpoint: endpoint, Project: project, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
 		count, unit := 0, "containers"
 		if namespace != "" {
-			services, claims, mounts, err := t.removalServices(ctx, tx, a, appID.String(), project, head, current)
+			services, claims, mounts, err := t.revisionServices(ctx, tx, a, appID.String(), project, head, current)
 			if err != nil {
 				return err
 			}
@@ -880,17 +883,19 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 	return out, req, nil
 }
 
-// removalServices names what a cluster removal deletes: the services of the latest revision and
-// of the one last applied (current, 0 when none), and the claims either still mounts (a claim a
-// newer revision dropped is kept until an operator removes it by hand, so its mounting service
-// still reports it retained). The agent finds each service's Deployment, Service and ConfigMap
-// by the instance label, and its Secret by the name the service gives it.
-func (t *tenancyStore) removalServices(ctx context.Context, tx *sql.Tx, a TenantAccess, app, project string, head, current int) ([]string, []protocol.KubernetesClaim, map[string][]protocol.KubernetesMount, error) {
+// revisionServices is the sorted union of the services of the application's revisions numbers,
+// skipping 0 (none), with the claims they mount. A cluster removal names the latest and the
+// last-applied revisions' services and the claims either still mounts (a claim a newer revision
+// dropped is kept until an operator removes it by hand, so its mounting service still reports it
+// retained); the agent finds each service's Deployment, Service and ConfigMap by the instance
+// label, and its Secret by the name the service gives it. A cluster plan compares the
+// last-applied names.
+func (t *tenancyStore) revisionServices(ctx context.Context, tx *sql.Tx, a TenantAccess, app, project string, numbers ...int) ([]string, []protocol.KubernetesClaim, map[string][]protocol.KubernetesMount, error) {
 	services := map[string]bool{}
 	claims := []protocol.KubernetesClaim{}
 	mounts := map[string][]protocol.KubernetesMount{}
 	seenClaim := map[string]bool{}
-	for _, number := range []int{head, current} {
+	for _, number := range numbers {
 		if number == 0 {
 			continue
 		}

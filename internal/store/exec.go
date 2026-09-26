@@ -56,7 +56,9 @@ func (t *tenancyStore) OpenExecTarget(ctx context.Context, a TenantAccess, endpo
 	return environment, err
 }
 
-// CheckExecAccess gates WebSocket admission without granting runtime authority.
-func (t *tenancyStore) CheckExecAccess(ctx context.Context, a TenantAccess, endpointID string) error {
-	return t.readTenant(ctx, a, permissions.ContainerExec, func(tx *sql.Tx) error { return t.endpointInScope(ctx, tx, a, endpointID) })
+// CheckEndpointAccess authorizes action on an endpoint in scope, with no success row and a
+// denied one on refusal. The API runs it before its runtime gate, so a member without the
+// permission is told so rather than told the endpoint's runtime; it grants no runtime authority.
+func (t *tenancyStore) CheckEndpointAccess(ctx context.Context, a TenantAccess, action permissions.Action, endpointID string) error {
+	return t.readTenant(ctx, a, action, func(tx *sql.Tx) error { return t.endpointInScope(ctx, tx, a, endpointID) })
 }

@@ -177,11 +177,27 @@ func TestSnapshotPagesWithLimitAndContinue(t *testing.T) {
 	}
 }
 
+// Facts and a snapshot each read the server version once, through the same call.
 func TestFactsNameTheCluster(t *testing.T) {
-	c, _ := cluster(t, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n2"}})
+	c, cs := cluster(t, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n2"}})
+	versionReads := func() int {
+		n := 0
+		for _, a := range cs.Discovery().(*fakediscovery.FakeDiscovery).Actions() {
+			if a.GetResource().Resource == "version" {
+				n++
+			}
+		}
+		return n
+	}
 	facts := c.Facts(context.Background())
 	if facts["runtime"] != "kubernetes" || facts["server_version"] != "v1.36.0" || facts["node_count"] != "2" || facts["platform"] != "linux/amd64" || len(facts) != 4 {
 		t.Fatalf("facts %v", facts)
+	}
+	if n := versionReads(); n != 1 {
+		t.Fatalf("Facts read the version %d times", n)
+	}
+	if snap, _ := c.Snapshot(context.Background()); snap.Engine.Version != "v1.36.0" || versionReads() != 2 {
+		t.Fatalf("engine %+v after %d version reads", snap.Engine, versionReads())
 	}
 }
 
