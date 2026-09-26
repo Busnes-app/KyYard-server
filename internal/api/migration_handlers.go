@@ -10,14 +10,17 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
-// analyzeMigration reads app's migration inputs against the cluster endpoint, inspects the
-// mapped containers through the plan-time primitive (the plan's per-actor budget, results used
-// once and dropped), and runs the analyzer with choices. It writes the refusal and reports false
-// when the inputs cannot be read.
+// analyzeMigration reads app's migration inputs against the cluster endpoint, refuses a namespace
+// the cluster does not grant and invalid choices, then inspects the mapped containers through the
+// plan-time primitive (the plan's per-actor budget, results used once and dropped), and runs the
+// analyzer with choices. It writes the refusal and reports false when the inputs cannot be read.
 func (s *Server) analyzeMigration(w http.ResponseWriter, r *http.Request, a store.TenantAccess, app, endpoint, namespace string, choices store.MigrationChoices) (*store.MigrationAnalysis, bool) {
 	src, err := s.store.Tenancy().ReadMigrationSource(r.Context(), a, app, endpoint)
 	if err == nil && !slices.Contains(src.Destination.Namespaces, namespace) {
 		err = store.ErrNamespaceUnknown // before any inspection is spent; the store checks again
+	}
+	if err == nil {
+		err = store.CheckMigrationChoices(src.Spec, src.Destination.StorageClasses, choices)
 	}
 	if err != nil {
 		s.tenantError(w, err)
@@ -50,10 +53,12 @@ func (s *Server) analyzeMigration(w http.ResponseWriter, r *http.Request, a stor
 	return &store.MigrationAnalysis{Revision: src.Revision, Report: raw, Ready: report.Ready}, true
 }
 
-// sourceMigration reads app's open migration as its source; a destination has nothing to change.
+// sourceMigration reads app's open migration as its source under application.migrate, so a
+// member who may not migrate is refused before learning whether one exists; a destination has
+// nothing to change.
 func (s *Server) sourceMigration(w http.ResponseWriter, r *http.Request, a store.TenantAccess) (*store.ApplicationMigration, bool) {
-	m, err := s.store.Tenancy().ReadMigration(r.Context(), a, r.PathValue("application"))
-	if err == nil && m.Role != "source" {
+	m, err := s.store.Tenancy().ReadOpenMigration(r.Context(), a, r.PathValue("application"))
+	if err == nil && m == nil {
 		err = store.ErrNotFound
 	}
 	if err != nil {
@@ -70,6 +75,15 @@ func (s *Server) handleStartMigration(w http.ResponseWriter, r *http.Request, a 
 		return
 	}
 	app := r.PathValue("application")
+	// An open migration refuses the start before any inspection is spent; the store checks again.
+	open, err := s.store.Tenancy().ReadOpenMigration(r.Context(), a, app)
+	if err == nil && open != nil {
+		err = store.ErrMigrationOpen
+	}
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
 	an, ok := s.analyzeMigration(w, r, a, app, input.DestinationEndpointID, input.Namespace, store.MigrationChoices{})
 	if !ok {
 		return
@@ -105,10 +119,15 @@ func (s *Server) handleAnalyzeMigration(w http.ResponseWriter, r *http.Request, 
 	s.reanalyze(w, r, a, nil)
 }
 
-// reanalyze analyzes the open migration again with choices, or its stored ones when nil.
+// reanalyze analyzes the open migration again with choices, or its stored ones when nil. Only an
+// analyzed migration takes choices; any other status is refused before an inspection is spent.
 func (s *Server) reanalyze(w http.ResponseWriter, r *http.Request, a store.TenantAccess, choices *store.MigrationChoices) {
 	m, ok := s.sourceMigration(w, r, a)
 	if !ok {
+		return
+	}
+	if m.Status != store.MigrationAnalyzed {
+		s.tenantError(w, store.ErrMigrationState)
 		return
 	}
 	if choices == nil {
