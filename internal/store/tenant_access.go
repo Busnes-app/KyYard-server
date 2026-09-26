@@ -106,6 +106,10 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 	}
 	if err != nil {
 		_ = tx.Rollback()
+		// A read answering "nothing here yet" is an answer, not a failed action: no row.
+		if !lock && errors.Is(err, ErrNotFound) {
+			return err
+		}
 		record.Result = "failure"
 		if errors.Is(err, ErrForbidden) {
 			record.Result = "denied"

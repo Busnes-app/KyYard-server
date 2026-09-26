@@ -167,12 +167,16 @@ func TestInventoryIsStoredAndReadWithFreshness(t *testing.T) {
 		t.Fatal(err)
 	}
 	counts := map[string]int{}
+	reads := 0
 	for _, r := range records {
+		if r.Action == "endpoint.read" {
+			reads++ // the 404 before the first report is an answer, not an audited failure
+		}
 		if r.Result == "success" {
 			counts[r.Action]++
 		}
 	}
-	if counts["endpoint.read"] != 0 || counts["organization.audit.read"] != 1 || counts["organization.members.manage"] != 1 || counts["endpoint.enroll"] == 0 {
+	if reads != 0 || counts["endpoint.read"] != 0 || counts["organization.audit.read"] != 1 || counts["organization.members.manage"] != 1 || counts["endpoint.enroll"] == 0 {
 		t.Fatalf("read audit: %v", counts)
 	}
 	_ = websocket.StatusNormalClosure
