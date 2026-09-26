@@ -76,7 +76,7 @@ func (s *Server) handleDiscardApplication(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleAdoptionPreview(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
-	if endpoint := r.URL.Query().Get("endpoint"); endpoint != "" && !s.runtimeGate(w, r, a, endpoint, dockerRoute) {
+	if endpoint := r.URL.Query().Get("endpoint"); endpoint != "" && !s.adoptionGate(w, r, a, r.PathValue("application"), endpoint, dockerRoute) {
 		return
 	}
 	p, err := s.store.Tenancy().PreviewApplicationAdoption(r.Context(), a, r.PathValue("application"), r.URL.Query().Get("endpoint"), r.URL.Query().Get("project"))
@@ -92,7 +92,7 @@ func (s *Server) handleAdoption(w http.ResponseWriter, r *http.Request, a store.
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
-	if input.EndpointID != "" && !s.runtimeGate(w, r, a, input.EndpointID, dockerRoute) {
+	if input.EndpointID != "" && !s.adoptionGate(w, r, a, r.PathValue("application"), input.EndpointID, dockerRoute) {
 		return
 	}
 	instance, err := s.store.Tenancy().AdoptApplication(r.Context(), a, r.PathValue("application"), input)
@@ -197,13 +197,15 @@ func (s *Server) handleSetApplicationMapping(w http.ResponseWriter, r *http.Requ
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
-	// A Kubernetes mapping names its endpoint; a Docker one its adopted instance. One that
-	// cannot be read is the store's to refuse, with its own answer.
+	// A Kubernetes mapping names its endpoint; a Docker one its adopted instance, read only
+	// then. One that cannot be read is the store's to refuse, with its own answer.
 	endpoint := input.EndpointID
-	if instance, err := s.store.Tenancy().ReadApplicationInstance(r.Context(), a, r.PathValue("application"), input.InstanceID); endpoint == "" && err == nil {
-		endpoint = instance.EndpointID
+	if endpoint == "" {
+		if instance, err := s.store.Tenancy().ReadApplicationInstance(r.Context(), a, r.PathValue("application"), input.InstanceID); err == nil {
+			endpoint = instance.EndpointID
+		}
 	}
-	if endpoint != "" && !s.runtimeGate(w, r, a, endpoint, applicationRoute) {
+	if endpoint != "" && !s.adoptionGate(w, r, a, r.PathValue("application"), endpoint, applicationRoute) {
 		return
 	}
 	if err := s.store.Tenancy().SetApplicationMapping(r.Context(), a, r.PathValue("application"), input); err != nil {
@@ -274,7 +276,10 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 	}
 	input.MaxFrameBytes = maxFrameBytes(ep.Capabilities)
 	// Inspect before taking a registry slot, so slow agents cannot hold the organization's slots.
-	input.Inspections = s.planInspections(w, r, a, ep, pre)
+	// A cluster has no containers to inspect.
+	if !kube {
+		input.Inspections = s.planInspections(w, r, a, ep, pre)
+	}
 	if len(input.Update) > 0 || kube {
 		release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
 		if !ok {
@@ -329,15 +334,12 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	// A plan is for its endpoint's runtime: a Kubernetes plan names a namespace, a Docker plan none.
-	kube := ep.Runtime == protocol.RuntimeKubernetes
-	if kube != (plan.Plan.Namespace != "") {
-		s.tenantError(w, store.ErrRuntimeUnsupported)
+	deploys, err := runtimeCapability(ep, plan.Plan.Namespace, protocol.CapabilityDeploymentApply, protocol.CapabilityKubernetesDeploy)
+	if err != nil {
+		s.tenantError(w, err)
 		return
 	}
-	deploys := protocol.CapabilityDeploymentApply
-	if kube {
-		deploys = protocol.CapabilityKubernetesDeploy
-	}
+	kube := plan.Plan.Namespace != ""
 	if !slices.Contains(ep.Capabilities, deploys) {
 		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable deployments")
 		return
@@ -390,14 +392,10 @@ func (s *Server) handleRemoveApplication(w http.ResponseWriter, r *http.Request,
 		s.tenantError(w, err)
 		return
 	}
-	kube := ep.Runtime == protocol.RuntimeKubernetes
-	if kube != (instance.Namespace != "") {
-		s.tenantError(w, store.ErrRuntimeUnsupported)
+	removes, err := runtimeCapability(ep, instance.Namespace, protocol.CapabilityDeploymentRemove, protocol.CapabilityKubernetesRemove)
+	if err != nil {
+		s.tenantError(w, err)
 		return
-	}
-	removes := protocol.CapabilityDeploymentRemove
-	if kube {
-		removes = protocol.CapabilityKubernetesRemove
 	}
 	if !slices.Contains(ep.Capabilities, removes) {
 		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable application removal")

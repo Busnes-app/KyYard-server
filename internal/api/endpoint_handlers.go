@@ -425,9 +425,6 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.tenantError(w, err)
 		return
 	}
-	if !s.runtimeGate(w, r, a, id, dockerRoute) {
-		return
-	}
 	var body struct {
 		Action string `json:"action"`
 		// A command names a container or an image, never both; the action says which field
@@ -451,6 +448,16 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		// A command names one or the other. Preferring one silently would make the request
 		// mean something the caller did not write.
 		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	// The action's own permission before the runtime; an unknown action is the store's to refuse.
+	if needs, ok := store.CommandPermission(body.Action); ok {
+		if err := s.store.Tenancy().CheckEndpointAccess(r.Context(), a, needs, id); err != nil {
+			s.tenantError(w, err)
+			return
+		}
+	}
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	target := body.Container
@@ -521,6 +528,7 @@ func (s *Server) handleRemovalPreview(w http.ResponseWriter, r *http.Request, a 
 		s.tenantError(w, err)
 		return
 	}
+	// The preview's permission is endpoint.read, which runtimeGate's endpoint read checks.
 	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}

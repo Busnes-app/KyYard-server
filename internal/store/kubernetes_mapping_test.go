@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 )
 
 // activeCluster enrolls, approves and reports a Kubernetes endpoint whose manifest granted
@@ -228,5 +229,50 @@ func TestClusterHealthReadsOnlyNodes(t *testing.T) {
 		if err != nil || e.ClusterHealth != want {
 			t.Errorf("%s: %q %v", raw, e.ClusterHealth, err)
 		}
+	}
+}
+
+// The pre-checks the API runs before its runtime gate write nothing when allowed (the operation
+// audits itself) and exactly one denied row when refused.
+func TestAccessChecksAuditOnlyDenials(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	cluster := activeCluster(t, ts, a, nil, nil)
+	app := kubernetesApp(t, st, a, ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1"}}}, nil)
+	rows := func(action string) []string {
+		t.Helper()
+		records, _, err := st.Audit().ListAuditRecords(ctx, 0, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range records {
+			if r.Action == action {
+				out = append(out, r.Result)
+			}
+		}
+		return out
+	}
+	if err := ts.CheckEndpointAccess(ctx, a, permissions.ContainerOperate, cluster); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.CheckApplicationAccess(ctx, a, permissions.ApplicationAdopt, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows("container.operate")) != 0 || len(rows("application.adopt")) != 0 {
+		t.Fatalf("an allowed check wrote a row: %v %v", rows("container.operate"), rows("application.adopt"))
+	}
+	if err := ts.SetMembership(ctx, &OrganizationMembership{OrganizationID: a.OrganizationID, UserID: a.ActorID, Role: RoleReadOnly, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.CheckEndpointAccess(ctx, a, permissions.ContainerOperate, cluster); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("viewer endpoint check: %v", err)
+	}
+	if err := ts.CheckApplicationAccess(ctx, a, permissions.ApplicationAdopt, app.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("viewer application check: %v", err)
+	}
+	if !slices.Equal(rows("container.operate"), []string{"denied"}) || !slices.Equal(rows("application.adopt"), []string{"denied"}) {
+		t.Fatalf("denials: %v %v", rows("container.operate"), rows("application.adopt"))
 	}
 }

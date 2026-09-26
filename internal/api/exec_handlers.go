@@ -62,7 +62,7 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 		s.writeError(w, 429, "Too many terminal attempts")
 		return
 	}
-	if err := s.store.Tenancy().CheckExecAccess(r.Context(), a, endpoint); err != nil {
+	if err := s.store.Tenancy().CheckEndpointAccess(r.Context(), a, permissions.ContainerExec, endpoint); err != nil {
 		s.tenantError(w, err)
 		return
 	}

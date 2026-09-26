@@ -269,3 +269,95 @@ func TestRuntimeGateMatrix(t *testing.T) {
 		}
 	}
 }
+
+// A member without the action's own permission is refused 403 with a denied audit row on every
+// route aimed at a cluster, never told the runtime first. The removal preview's and inspection's
+// permission is endpoint.read, which a viewer holds: they learn the runtime there.
+func TestViewerOnClusterRoutes(t *testing.T) {
+	h := newClusterHost(t, append(slices.Clone(clusterCapabilities), protocol.CapabilityPodLogs)...)
+	app := h.importApp(t, "shop", "services: {web: {image: ghcr.io/org/web:1}}")
+	viewer := loginAs(t, h.s, h.st, "viewer", "user")
+	if err := h.st.Tenancy().SetMembership(h.ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_viewer", Role: store.RoleReadOnly, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	ep := "/api/organizations/a/endpoints/" + h.ag.id
+	for _, route := range []struct{ method, path, body, action string }{
+		{"POST", ep + "/commands", `{"action":"container.restart","container":"shop-web"}`, "container.operate"},
+		{"POST", ep + "/commands", `{"action":"container.remove","container":"shop-web","confirm":"shop-web"}`, "container.destroy"},
+		{"GET", app + "/adoption?endpoint=" + h.ag.id + "&project=shop", "", "application.adopt"},
+		{"POST", app + "/adoption", `{"endpoint_id":"` + h.ag.id + `","project":"shop","digest":"x","confirm":"shop"}`, "application.adopt"},
+		{"PUT", app + "/mapping", `{"endpoint_id":"` + h.ag.id + `","namespace":"shop"}`, "application.adopt"},
+		{"GET", ep + "/pods/shop/web-1/logs", "", "container.logs"},
+		{"POST", ep + "/manifest", `{"namespaces":["shop"]}`, "endpoint.enroll"},
+	} {
+		w := tenantRequest(h.s, viewer, route.method, route.path, route.body, true)
+		if w.Code != 403 {
+			t.Errorf("%s %s: %d %s", route.method, route.path, w.Code, w.Body.String())
+			continue
+		}
+		rows, _, err := h.st.Audit().ListAuditRecords(h.ctx, 0, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.ContainsFunc(rows, func(row *store.AuditRecord) bool {
+			return row.UserID == "usr_viewer" && row.Action == route.action && row.Result == "denied"
+		}) {
+			t.Errorf("%s %s: no denied %s audit row", route.method, route.path, route.action)
+		}
+	}
+	for _, path := range []string{ep + "/containers/shop-web/removal", ep + "/containers/shop-web/inspection"} {
+		if w := tenantRequest(h.s, viewer, "GET", path, "", true); w.Code != 409 || !strings.Contains(w.Body.String(), "runtime_unsupported") {
+			t.Errorf("GET %s: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+// An apply to a cluster whose agent is not connected is refused before anything is recorded:
+// the plan stays planned and can be applied once the agent is back.
+func TestKubernetesApplyToAnOfflineCluster(t *testing.T) {
+	h := newClusterHost(t, clusterCapabilities...)
+	app := h.importApp(t, "shop", "services: {web: {image: ghcr.io/org/web:1}}")
+	h.do(t, "PUT", app+"/mapping", `{"endpoint_id":"`+h.ag.id+`","namespace":"shop"}`, 204)
+	var mapped store.ApplicationMapping
+	_ = json.Unmarshal([]byte(h.do(t, "GET", app+"/mapping", "", 200)), &mapped)
+	planBody, _ := json.Marshal(store.PlanRequest{InstanceID: mapped.InstanceID, MappingVersion: mapped.Version, Revision: 1, Confirm: "shop"})
+	var planned store.Deployment
+	if err := json.Unmarshal([]byte(h.do(t, "POST", app+"/deployments", string(planBody), 201)), &planned); err != nil {
+		t.Fatal(err)
+	}
+	h.sock.conn.CloseNow()
+	waitFor(t, func() bool { return !h.s.Connected(h.ag.id) })
+	if body := h.do(t, "POST", app+"/deployments/"+planned.ID+"/apply", `{"confirm":"shop"}`, 409); !strings.Contains(body, "endpoint_offline") {
+		t.Fatalf("apply: %s", body)
+	}
+	var after store.Deployment
+	if err := json.Unmarshal([]byte(h.do(t, "GET", app+"/deployments/"+planned.ID, "", 200)), &after); err != nil || after.State != "planned" {
+		t.Fatalf("after %+v %v", after, err)
+	}
+}
+
+// Removing an application mapped to a cluster but never applied names the latest revision's
+// services, and a result that removed nothing releases the instance.
+func TestKubernetesRemovalBeforeAnyApply(t *testing.T) {
+	h := newClusterHost(t, clusterCapabilities...)
+	app := h.importApp(t, "shop", "services: {web: {image: ghcr.io/org/web:1}}")
+	h.do(t, "PUT", app+"/mapping", `{"endpoint_id":"`+h.ag.id+`","namespace":"shop"}`, 204)
+	var mapped store.ApplicationMapping
+	_ = json.Unmarshal([]byte(h.do(t, "GET", app+"/mapping", "", 200)), &mapped)
+	var removing store.Deployment
+	if err := json.Unmarshal([]byte(h.do(t, "POST", app+"/removal", `{"instance_id":"`+mapped.InstanceID+`","confirm":"shop"}`, 202)), &removing); err != nil {
+		t.Fatal(err)
+	}
+	frame := readEnvelope(t, h.ctx, h.sock.conn)
+	var removal protocol.RemovalRequest
+	if frame.Type != protocol.TypeDeploymentRemove || json.Unmarshal(frame.Payload, &removal) != nil || removal.Kubernetes == nil || !slices.Equal(removal.Services, []string{"web"}) {
+		t.Fatalf("removal frame %s %+v", frame.Type, removal)
+	}
+	writeEnvelope(t, h.ctx, h.sock.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{Deployment: removing.ID, RequestID: removing.CorrelationID, Outcome: protocol.OutcomeSucceeded, Services: []protocol.DeploymentIdentity{},
+		Steps: []protocol.DeploymentStep{{Service: "web", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeSucceeded}, {Service: "web", Step: protocol.StepRemove, Outcome: protocol.OutcomeSkipped}}})
+	h.sync(t)
+	var instances []store.ApplicationInstance
+	if err := json.Unmarshal([]byte(h.do(t, "GET", h.base+"/instances", "", 200)), &instances); err != nil || len(instances) != 0 {
+		t.Fatalf("instances after removal %+v %v", instances, err)
+	}
+}

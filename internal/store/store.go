@@ -197,6 +197,9 @@ type TenancyStore interface {
 	// CheckImageUpdateAccess authorizes application.deploy on an application in scope, with
 	// no success row; the API calls it before taking the per-application check slot.
 	CheckImageUpdateAccess(ctx context.Context, access TenantAccess, applicationID string) error
+	// CheckApplicationAccess authorizes action on an application in scope the same way, audited
+	// on the application when denied; the API runs it before its runtime gate.
+	CheckApplicationAccess(ctx context.Context, access TenantAccess, action permissions.Action, applicationID string) error
 	// CheckImageUpdates resolves each mapped service's reference through resolver and replaces
 	// the instance's cached checks, audited as application.deploy on <app>/updates.
 	CheckImageUpdates(ctx context.Context, access TenantAccess, applicationID string, resolver DigestResolver, key []byte, privateAllowed bool) (*UpdateCheck, error)
@@ -308,7 +311,7 @@ type TenancyStore interface {
 	// Commands are durable intent: the row exists before the frame is sent, so an operation
 	// the control plane loses track of can still be marked unknown rather than vanish.
 	CreateCommand(ctx context.Context, access TenantAccess, endpointID, action, containerID, confirm string, expects protocol.Expectation) (*Command, error)
-	CheckExecAccess(ctx context.Context, access TenantAccess, endpointID string) error
+	CheckEndpointAccess(ctx context.Context, access TenantAccess, action permissions.Action, endpointID string) error
 	OpenExecTarget(ctx context.Context, access TenantAccess, endpointID, streamID, confirm string, spec protocol.ExecSpec) (string, error)
 	OpenLogTarget(ctx context.Context, access TenantAccess, endpointID, identifier string) (*LogTarget, error)
 	OpenPodLogTarget(ctx context.Context, access TenantAccess, endpointID string, pod protocol.PodTarget) error

@@ -57,6 +57,12 @@ var commandActions = map[string]permissions.Action{
 	protocol.ActionImageRemove: permissions.ImageDestroy,
 }
 
+// CommandPermission is the permission a command action needs; false for an unknown action.
+func CommandPermission(action string) (permissions.Action, bool) {
+	p, ok := commandActions[action]
+	return p, ok
+}
+
 // destructivePermissions are the permissions whose actions cannot be undone. Destructiveness
 // is a property of what an action is allowed to do rather than a list beside the actions, so a
 // new action granted one of these inherits the confirmation ceremony rather than missing it.
