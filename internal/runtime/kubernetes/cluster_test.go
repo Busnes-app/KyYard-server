@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,11 +32,13 @@ const deployNamespace = "kyyard-test-deploy"
 // TestManifestOnARealCluster applies the rendered manifest to the cluster KY_TEST_KUBECONFIG
 // names (a disposable kind cluster: it creates and deletes cluster-scoped RBAC), then acts as
 // the agent's ServiceAccount: Secrets are denied cluster-wide, pods are listed, the identity
-// Secret round-trips, and a snapshot names the cluster's nodes with nothing forbidden. In the
-// one granted namespace, which enforces Pod Security baseline, the agent may write Deployments
-// and read Secrets by name but not list them; it deploys KY_TEST_DEPLOY_IMAGE (a digest-pinned
-// image that keeps running, such as registry.k8s.io/pause@sha256:...) as one service, sees it
-// available, and removes it.
+// Secret round-trips, and a snapshot names the cluster's nodes and a default StorageClass with
+// nothing forbidden. In the one granted namespace, which enforces Pod Security baseline, the agent
+// may write Deployments, read Secrets by name but not list them, and create claims but neither
+// update nor delete them; it deploys KY_TEST_DEPLOY_IMAGE (a digest-pinned image that keeps
+// running, such as registry.k8s.io/pause@sha256:...) as one service mounting a claim of the
+// default StorageClass, sees it available and the claim bound, applies it again unchanged, and
+// removes it, leaving the claim.
 func TestManifestOnARealCluster(t *testing.T) {
 	path := os.Getenv("KY_TEST_KUBECONFIG")
 	if path == "" {
@@ -132,6 +135,11 @@ func TestManifestOnARealCluster(t *testing.T) {
 		{"list", "", "secrets", deployNamespace, false},
 		{"create", "apps", "deployments", "default", false},
 		{"create", "", "secrets", "default", false},
+		{"create", "", "persistentvolumeclaims", deployNamespace, true},
+		{"update", "", "persistentvolumeclaims", deployNamespace, false},
+		{"delete", "", "persistentvolumeclaims", deployNamespace, false},
+		{"create", "", "persistentvolumeclaims", "default", false},
+		{"list", "storage.k8s.io", "storageclasses", "", true},
 	} {
 		review, err := as.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authorizationv1.ResourceAttributes{Verb: tc.verb, Group: tc.group, Resource: tc.resource, Namespace: tc.namespace}}}, metav1.CreateOptions{})
 		if err != nil {
@@ -164,12 +172,17 @@ func TestManifestOnARealCluster(t *testing.T) {
 	if err != nil || len(snap.Truncated) != 0 || len(snap.Kubernetes.Nodes) == 0 || snap.Kubernetes.Nodes[0].Name == "" {
 		t.Fatalf("snapshot as the agent: %v truncated %v nodes %+v", err, snap.Truncated, snap.Kubernetes.Nodes)
 	}
+	if !slices.ContainsFunc(snap.Kubernetes.StorageClasses, func(c protocol.StorageClass) bool { return c.Default }) {
+		t.Fatalf("no default StorageClass reported: %+v", snap.Kubernetes.StorageClasses)
+	}
 
 	_, digest, _ := strings.Cut(image, "@")
 	now := time.Now()
-	target := &protocol.KubernetesTarget{Namespace: deployNamespace, ApplicationID: "11111111-2222-4333-8444-555555555555", InstanceID: "66666666-7777-4888-9999-aaaaaaaaaaaa", SpecDigest: "sha256:" + strings.Repeat("f", 64)}
+	target := &protocol.KubernetesTarget{Namespace: deployNamespace, ApplicationID: "11111111-2222-4333-8444-555555555555", InstanceID: "66666666-7777-4888-9999-aaaaaaaaaaaa", SpecDigest: "sha256:" + strings.Repeat("f", 64),
+		Claims: []protocol.KubernetesClaim{{Name: "kind-data", Size: "64Mi", AccessMode: protocol.AccessReadWriteOnce}}}
 	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_kind", Project: "kind", Revision: 1, IssuedAt: now, Deadline: now.Add(2 * time.Minute), Kubernetes: target,
-		Services: []protocol.DeploymentService{{Name: "idle", Pull: &protocol.ImagePull{Reference: image, Digest: digest}, Ports: []protocol.Port{{Container: 8080, Host: 80, Protocol: "tcp"}}, Env: map[string]string{"TOKEN": "x"}, SecretKeys: []string{"TOKEN"}, Mounts: []protocol.Mount{}}}}
+		Services: []protocol.DeploymentService{{Name: "idle", Pull: &protocol.ImagePull{Reference: image, Digest: digest}, Ports: []protocol.Port{{Container: 8080, Host: 80, Protocol: "tcp"}}, Env: map[string]string{"TOKEN": "x"}, SecretKeys: []string{"TOKEN"}, Mounts: []protocol.Mount{},
+			Volumes: []protocol.KubernetesMount{{Claim: "kind-data", MountPath: "/data"}}}}}
 	res := c.Deploy(ctx, req, func() {})
 	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
 		t.Fatalf("deploy as the agent: %+v", res)
@@ -178,9 +191,22 @@ func TestManifestOnARealCluster(t *testing.T) {
 	if err != nil || d.Status.ReadyReplicas != 1 || string(d.UID) != res.Services[0].UID {
 		t.Fatalf("deployed %+v %v", d, err)
 	}
-	removal := protocol.RemovalRequest{Deployment: "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_kind", Project: "kind", IssuedAt: time.Now(), Deadline: time.Now().Add(time.Minute), Kubernetes: target, Services: []string{"idle"}}
-	if res := c.Remove(ctx, removal, func() {}); res.Outcome != protocol.OutcomeSucceeded {
-		t.Fatalf("remove as the agent: %+v", res)
+	// The pod mounted the claim, so the default StorageClass bound it and filled in its name; a
+	// second apply takes the claim as it is.
+	pvc, err := cs.CoreV1().PersistentVolumeClaims(deployNamespace).Get(ctx, "kind-data", metav1.GetOptions{})
+	if err != nil || pvc.Status.Phase != corev1.ClaimBound || pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName == "" {
+		t.Fatalf("claim %+v %v", pvc, err)
+	}
+	again := req
+	again.Deployment, again.Revision, again.IssuedAt, again.Deadline = "5b4c3d2e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", 2, time.Now(), time.Now().Add(2*time.Minute)
+	if res := c.Deploy(ctx, again, func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("second deploy as the agent: %+v", res)
+	}
+	removal := protocol.RemovalRequest{Deployment: "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_kind", Project: "kind", IssuedAt: time.Now(), Deadline: time.Now().Add(time.Minute),
+		Kubernetes: &protocol.KubernetesTarget{Namespace: target.Namespace, ApplicationID: target.ApplicationID, InstanceID: target.InstanceID, SpecDigest: target.SpecDigest}, Services: []string{"idle"}}
+	removed := c.Remove(ctx, removal, func() {})
+	if removed.Outcome != protocol.OutcomeSucceeded || !slices.Contains(removed.Steps, protocol.DeploymentStep{Service: "idle", Step: protocol.StepVolume, Outcome: protocol.OutcomeSkipped, Detail: protocol.DetailRetained}) {
+		t.Fatalf("remove as the agent: %+v", removed)
 	}
 	for deadline := time.Now().Add(time.Minute); ; time.Sleep(time.Second) {
 		_, err := cs.AppsV1().Deployments(deployNamespace).Get(ctx, "kind-idle", metav1.GetOptions{})
@@ -197,6 +223,9 @@ func TestManifestOnARealCluster(t *testing.T) {
 		if !apierrors.IsNotFound(errCM) || !apierrors.IsNotFound(errS) {
 			t.Fatalf("%s left behind: %v %v", name, errCM, errS)
 		}
+	}
+	if kept, err := cs.CoreV1().PersistentVolumeClaims(deployNamespace).Get(ctx, "kind-data", metav1.GetOptions{}); err != nil || kept.DeletionTimestamp != nil {
+		t.Fatalf("the removal took the claim: %+v %v", kept, err)
 	}
 }
 
