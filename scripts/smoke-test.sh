@@ -215,11 +215,15 @@ if [ -x "$AGENT" ]; then
   AGENT_PID=$!
   endpoint_state() { curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p'; }
   wait_state() { for _ in $(seq 1 50); do [ "$(endpoint_state)" = "$1" ] && return 0; sleep 0.2; done; return 1; }
+  # The server records the enrollment before the agent has read the reply and printed, so wait
+  # for the log line rather than reading the log the moment the endpoint shows pending.
+  wait_log() { for _ in $(seq 1 50); do grep -Fq -- "$1" "$WORK/agent.log" && return 0; sleep 0.2; done; return 1; }
   wait_state pending || true
   check "agent enrolls as pending" "$(endpoint_state)" "pending"
   EP_JSON="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints")"
   EP_ID="$(printf '%s' "$EP_JSON" | sed -n 's/.*"id":"\(ep_[^"]*\)".*/\1/p')"
   EP_FP="$(printf '%s' "$EP_JSON" | sed -n 's/.*"fingerprint":"\([0-9a-f]*\)".*/\1/p')"
+  wait_log "agent key fingerprint: $EP_FP" || true
   contains "agent prints the enrolled key fingerprint" "$(cat "$WORK/agent.log")" "agent key fingerprint: $EP_FP"
   check "identity file is owner-only" "$(stat -c '%a' "$WORK/agent/identity.json")" "600"
   check "identity file never holds the token" \
