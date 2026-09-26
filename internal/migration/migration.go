@@ -1,0 +1,264 @@
+// Package migration analyzes how an application adopted on a Docker host would run on a
+// Kubernetes cluster: every service on every axis, as supported, operator_choice_required or
+// blocked, with a code from a closed vocabulary and a parameter. It is pure: it reads store and
+// protocol types, never the store's SQL, a runtime or a Kubernetes library.
+package migration
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/store"
+)
+
+// Version is the report format.
+const Version = 1
+
+// Classes, in increasing severity.
+const (
+	Supported      = "supported"
+	ChoiceRequired = "operator_choice_required"
+	Blocked        = "blocked"
+)
+
+// Axes, in report order.
+const (
+	AxisStorage    = "storage"
+	AxisNetworking = "networking"
+	AxisPorts      = "ports"
+	AxisSecrets    = "secrets"
+	AxisProbes     = "probes"
+	AxisResources  = "resources"
+	AxisScheduling = "scheduling"
+	AxisFlags      = "flags"
+)
+
+// Codes is the closed finding vocabulary; the web has a sentence for each
+// (web/src/migration-codes.json).
+var Codes = []string{
+	"volume_named", "volume_named_shared", "volume_bind", "volume_external", "storage_supported",
+	"network_host", "networks_multiple", "networking_supported",
+	"port_published", "port_host_ip", "port_unpublished",
+	"secrets_supported",
+	"healthcheck_dropped", "probes_supported",
+	"resource_limits_dropped", "resources_supported",
+	"scheduling_blocked", "scheduling_supported",
+	"flag_blocked", "restart_policy", "read_only_rootfs", "flags_supported",
+	"inspection_unavailable",
+}
+
+// AssumptionCodes are the report's fixed assumptions.
+var AssumptionCodes = []string{"volume_size_unknown"}
+
+// Input is one source analyzed against one destination.
+type Input struct {
+	// Spec is the source's latest revision, Project its Compose project.
+	Spec    store.ApplicationSpec
+	Project string
+	// Containers and Inspections are keyed by service: the mapped container from the endpoint's
+	// inventory and, when the plan-time inspection ran, what it observed.
+	Containers  map[string]protocol.Container
+	Inspections map[string]protocol.ContainerInspection
+	// Volumes are the source endpoint's volumes.
+	Volumes     []protocol.Volume
+	Destination Destination
+	Choices     store.KubernetesExtension
+}
+
+// Destination is the cluster side: the namespace, the destination application's project and the
+// StorageClasses the cluster reports.
+type Destination struct {
+	Namespace      string
+	Project        string
+	StorageClasses []protocol.StorageClass
+}
+
+type Report struct {
+	Version int `json:"version"`
+	// Ready is true when no finding is blocked or operator_choice_required.
+	Ready       bool            `json:"ready"`
+	Services    []ServiceReport `json:"services"`
+	Checklist   []Step          `json:"checklist"`
+	Assumptions []string        `json:"assumptions"`
+}
+
+// ServiceReport's Class is its most severe finding's.
+type ServiceReport struct {
+	Name     string    `json:"name"`
+	Class    string    `json:"class"`
+	Findings []Finding `json:"findings"`
+}
+
+// Finding's Detail is its code's parameter: a volume name, a mount target, a port as
+// <published>/<protocol>, a restart policy or a code from protocol.UnsupportedCodes.
+type Finding struct {
+	Axis   string `json:"axis"`
+	Class  string `json:"class"`
+	Code   string `json:"code"`
+	Detail string `json:"detail,omitempty"`
+}
+
+var severity = map[string]int{Supported: 0, ChoiceRequired: 1, Blocked: 2}
+
+// Inspection codes by the axis and finding they become; any other code is flag_blocked.
+var (
+	probeCodes      = map[string]bool{"image_config": true}
+	resourceCodes   = map[string]bool{"resource_limits": true, "ulimits": true}
+	schedulingCodes = map[string]bool{"pid_mode": true, "ipc_mode": true, "cgroup_parent": true, "userns_mode": true, "runtime": true}
+	networkCodes    = map[string]bool{"network": true}
+)
+
+// Analyze classifies every service of in.Spec, sorted by name, and lists the checklist.
+func Analyze(in Input) Report {
+	declared := map[string]store.DeclaredVolume{}
+	for _, v := range in.Spec.Volumes {
+		declared[v.Name] = v
+	}
+	users := map[string]int{}
+	for _, s := range in.Spec.Services {
+		seen := map[string]bool{}
+		for _, v := range s.Volumes {
+			if v.Kind == "named" && !seen[v.Source] {
+				seen[v.Source], users[v.Source] = true, users[v.Source]+1
+			}
+		}
+	}
+	r := Report{Version: Version, Ready: true, Services: []ServiceReport{}, Assumptions: []string{}}
+	for _, s := range in.Spec.Services {
+		inspection, inspected := in.Inspections[s.Name]
+		var f []Finding
+		f = append(f, storage(s, declared, users, in.Choices, in.Destination.StorageClasses)...)
+		f = append(f, networking(in.Containers[s.Name], inspection, inspected))
+		f = append(f, ports(s)...)
+		f = append(f, Finding{AxisSecrets, Supported, "secrets_supported", ""})
+		f = append(f, inspectedAxes(s, inspection, inspected)...)
+		sr := ServiceReport{Name: s.Name, Class: Supported, Findings: f}
+		for _, x := range f {
+			if severity[x.Class] > severity[sr.Class] {
+				sr.Class = x.Class
+			}
+		}
+		r.Ready = r.Ready && sr.Class == Supported
+		r.Services = append(r.Services, sr)
+	}
+	slices.SortFunc(r.Services, func(a, b ServiceReport) int { return strings.Compare(a.Name, b.Name) })
+	if len(users) > 0 {
+		r.Assumptions = append(r.Assumptions, "volume_size_unknown")
+	}
+	r.Checklist = checklist(in, users)
+	return r
+}
+
+func storage(s store.ApplicationService, declared map[string]store.DeclaredVolume, users map[string]int, choices store.KubernetesExtension, classes []protocol.StorageClass) []Finding {
+	var out []Finding
+	for _, v := range s.Volumes {
+		switch {
+		case v.Kind == "bind":
+			out = append(out, Finding{AxisStorage, Blocked, "volume_bind", v.Target})
+		case users[v.Source] > 1:
+			out = append(out, Finding{AxisStorage, Blocked, "volume_named_shared", v.Source})
+		default:
+			code := "volume_named"
+			if declared[v.Source].External {
+				code = "volume_external"
+			}
+			class := ChoiceRequired
+			if chosen(choices, classes, v.Source) {
+				class = Supported
+			}
+			out = append(out, Finding{AxisStorage, class, code, v.Source})
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, Finding{AxisStorage, Supported, "storage_supported", ""})
+	}
+	return out
+}
+
+// chosen reports a valid choice for volume whose StorageClass the destination still reports ("":
+// while it reports a default).
+func chosen(choices store.KubernetesExtension, classes []protocol.StorageClass, volume string) bool {
+	c, ok := choices.Volumes[volume]
+	return ok && c.Valid() && slices.ContainsFunc(classes, func(sc protocol.StorageClass) bool {
+		return sc.Name == c.StorageClass || (c.StorageClass == "" && sc.Default)
+	})
+}
+
+func networking(c protocol.Container, in protocol.ContainerInspection, inspected bool) Finding {
+	switch {
+	case slices.Contains(c.Networks, "host") || (inspected && in.NetworkMode == "host"):
+		return Finding{AxisNetworking, Blocked, "network_host", ""}
+	case len(c.Networks) > 1 || (inspected && (in.NetworkCount > 1 || slices.ContainsFunc(in.Unsupported, func(code string) bool { return networkCodes[code] }))):
+		return Finding{AxisNetworking, Supported, "networks_multiple", ""}
+	}
+	return Finding{AxisNetworking, Supported, "networking_supported", ""}
+}
+
+func ports(s store.ApplicationService) []Finding {
+	var out []Finding
+	for _, p := range s.Ports {
+		detail := fmt.Sprintf("%d/%s", p.Published, p.Protocol)
+		if p.HostIP != "" {
+			out = append(out, Finding{AxisPorts, Blocked, "port_host_ip", detail})
+		} else {
+			out = append(out, Finding{AxisPorts, Supported, "port_published", detail})
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, Finding{AxisPorts, Supported, "port_unpublished", ""})
+	}
+	return out
+}
+
+// inspectedAxes are probes, resources, scheduling and flags: each needs the inspection, so
+// without one each is inspection_unavailable rather than read as support. The restart policy is
+// the definition's and is judged either way.
+func inspectedAxes(s store.ApplicationService, in protocol.ContainerInspection, inspected bool) []Finding {
+	var out []Finding
+	restart := func() {
+		if s.Restart == "no" || s.Restart == "on-failure" {
+			out = append(out, Finding{AxisFlags, Blocked, "restart_policy", s.Restart})
+		}
+	}
+	if !inspected {
+		for _, axis := range []string{AxisProbes, AxisResources, AxisScheduling, AxisFlags} {
+			out = append(out, Finding{axis, ChoiceRequired, "inspection_unavailable", ""})
+		}
+		restart()
+		return out
+	}
+	if slices.ContainsFunc(in.Unsupported, func(c string) bool { return probeCodes[c] }) || (in.Health != "" && in.Health != "none") {
+		out = append(out, Finding{AxisProbes, ChoiceRequired, "healthcheck_dropped", ""})
+	} else {
+		out = append(out, Finding{AxisProbes, Supported, "probes_supported", ""})
+	}
+	var resources, scheduling, flags []Finding
+	for _, c := range in.Unsupported {
+		switch {
+		case probeCodes[c], networkCodes[c]:
+		case resourceCodes[c]:
+			resources = append(resources, Finding{AxisResources, ChoiceRequired, "resource_limits_dropped", c})
+		case schedulingCodes[c]:
+			scheduling = append(scheduling, Finding{AxisScheduling, Blocked, "scheduling_blocked", c})
+		case c == "read_only_rootfs":
+			flags = append(flags, Finding{AxisFlags, ChoiceRequired, "read_only_rootfs", ""})
+		default:
+			flags = append(flags, Finding{AxisFlags, Blocked, "flag_blocked", c})
+		}
+	}
+	if len(resources) == 0 {
+		resources = []Finding{{AxisResources, Supported, "resources_supported", ""}}
+	}
+	if len(scheduling) == 0 {
+		scheduling = []Finding{{AxisScheduling, Supported, "scheduling_supported", ""}}
+	}
+	out = append(append(out, resources...), scheduling...)
+	out = append(out, flags...)
+	restart()
+	if !slices.ContainsFunc(out, func(f Finding) bool { return f.Axis == AxisFlags }) {
+		out = append(out, Finding{AxisFlags, Supported, "flags_supported", ""})
+	}
+	return out
+}

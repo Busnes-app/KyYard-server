@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "ready": true,
+  "services": [
+    {
+      "name": "db",
+      "class": "supported",
+      "findings": [
+        {
+          "axis": "storage",
+          "class": "supported",
+          "code": "volume_named",
+          "detail": "data"
+        },
+        {
+          "axis": "networking",
+          "class": "supported",
+          "code": "networking_supported"
+        },
+        {
+          "axis": "ports",
+          "class": "supported",
+          "code": "port_unpublished"
+        },
+        {
+          "axis": "secrets",
+          "class": "supported",
+          "code": "secrets_supported"
+        },
+        {
+          "axis": "probes",
+          "class": "supported",
+          "code": "probes_supported"
+        },
+        {
+          "axis": "resources",
+          "class": "supported",
+          "code": "resources_supported"
+        },
+        {
+          "axis": "scheduling",
+          "class": "supported",
+          "code": "scheduling_supported"
+        },
+        {
+          "axis": "flags",
+          "class": "supported",
+          "code": "flags_supported"
+        }
+      ]
+    },
+    {
+      "name": "web",
+      "class": "supported",
+      "findings": [
+        {
+          "axis": "storage",
+          "class": "supported",
+          "code": "storage_supported"
+        },
+        {
+          "axis": "networking",
+          "class": "supported",
+          "code": "networking_supported"
+        },
+        {
+          "axis": "ports",
+          "class": "supported",
+          "code": "port_published",
+          "detail": "8080/tcp"
+        },
+        {
+          "axis": "secrets",
+          "class": "supported",
+          "code": "secrets_supported"
+        },
+        {
+          "axis": "probes",
+          "class": "supported",
+          "code": "probes_supported"
+        },
+        {
+          "axis": "resources",
+          "class": "supported",
+          "code": "resources_supported"
+        },
+        {
+          "axis": "scheduling",
+          "class": "supported",
+          "code": "scheduling_supported"
+        },
+        {
+          "axis": "flags",
+          "class": "supported",
+          "code": "flags_supported"
+        }
+      ]
+    }
+  ],
+  "checklist": [
+    {
+      "code": "grant_namespace",
+      "commands": [
+        "kubectl label namespace shop pod-security.kubernetes.io/enforce=baseline --overwrite"
+      ]
+    },
+    {
+      "code": "create_destination"
+    },
+    {
+      "code": "copy_volume",
+      "commands": [
+        "docker run --rm -v shop_data:/from:ro busybox tar -C /from -cf - . | kubectl -n shop exec -i deploy/shop-on-cluster-db -- tar -C '/var/lib/db' -xf -"
+      ]
+    },
+    {
+      "code": "validate_destination"
+    },
+    {
+      "code": "switch_traffic"
+    },
+    {
+      "code": "confirm_cutover"
+    }
+  ],
+  "assumptions": [
+    "volume_size_unknown"
+  ]
+}

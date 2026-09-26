@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "ready": false,
+  "services": [
+    {
+      "name": "api",
+      "class": "blocked",
+      "findings": [
+        {
+          "axis": "storage",
+          "class": "blocked",
+          "code": "volume_bind",
+          "detail": "/etc/api"
+        },
+        {
+          "axis": "storage",
+          "class": "blocked",
+          "code": "volume_named_shared",
+          "detail": "cache"
+        },
+        {
+          "axis": "networking",
+          "class": "supported",
+          "code": "networks_multiple"
+        },
+        {
+          "axis": "ports",
+          "class": "blocked",
+          "code": "port_host_ip",
+          "detail": "8080/tcp"
+        },
+        {
+          "axis": "secrets",
+          "class": "supported",
+          "code": "secrets_supported"
+        },
+        {
+          "axis": "probes",
+          "class": "operator_choice_required",
+          "code": "healthcheck_dropped"
+        },
+        {
+          "axis": "resources",
+          "class": "operator_choice_required",
+          "code": "resource_limits_dropped",
+          "detail": "resource_limits"
+        },
+        {
+          "axis": "scheduling",
+          "class": "supported",
+          "code": "scheduling_supported"
+        },
+        {
+          "axis": "flags",
+          "class": "blocked",
+          "code": "flag_blocked",
+          "detail": "privileged"
+        },
+        {
+          "axis": "flags",
+          "class": "blocked",
+          "code": "restart_policy",
+          "detail": "on-failure"
+        }
+      ]
+    },
+    {
+      "name": "worker",
+      "class": "blocked",
+      "findings": [
+        {
+          "axis": "storage",
+          "class": "blocked",
+          "code": "volume_named_shared",
+          "detail": "cache"
+        },
+        {
+          "axis": "networking",
+          "class": "blocked",
+          "code": "network_host"
+        },
+        {
+          "axis": "ports",
+          "class": "supported",
+          "code": "port_unpublished"
+        },
+        {
+          "axis": "secrets",
+          "class": "supported",
+          "code": "secrets_supported"
+        },
+        {
+          "axis": "probes",
+          "class": "operator_choice_required",
+          "code": "inspection_unavailable"
+        },
+        {
+          "axis": "resources",
+          "class": "operator_choice_required",
+          "code": "inspection_unavailable"
+        },
+        {
+          "axis": "scheduling",
+          "class": "operator_choice_required",
+          "code": "inspection_unavailable"
+        },
+        {
+          "axis": "flags",
+          "class": "operator_choice_required",
+          "code": "inspection_unavailable"
+        }
+      ]
+    }
+  ],
+  "checklist": [
+    {
+      "code": "grant_namespace",
+      "commands": [
+        "kubectl label namespace shop pod-security.kubernetes.io/enforce=baseline --overwrite"
+      ]
+    },
+    {
+      "code": "create_destination"
+    },
+    {
+      "code": "validate_destination"
+    },
+    {
+      "code": "switch_traffic"
+    },
+    {
+      "code": "confirm_cutover"
+    }
+  ],
+  "assumptions": [
+    "volume_size_unknown"
+  ]
+}
