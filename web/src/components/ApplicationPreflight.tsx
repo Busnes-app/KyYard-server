@@ -1,4 +1,4 @@
-import { ApplicationInspection, unsupportedNames, type InspectionTarget } from './ApplicationInspection';
+import { ApplicationInspection, K8S_VOLUME_CHOICE, unsupportedNames, type InspectionTarget } from './ApplicationInspection';
 import { useState } from 'react';
 import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
@@ -56,10 +56,11 @@ export function serviceFindings(payload: unknown): string[] {
   const lines: string[] = [];
   for (const s of services) {
     if (!s || typeof s !== 'object') continue;
-    const { name, blockers, unsupported } = s as { name?: unknown; blockers?: unknown; unsupported?: unknown };
+    const { name, blockers, unsupported, details } = s as { name?: unknown; blockers?: unknown; unsupported?: unknown; details?: unknown };
     if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) continue;
     const codes = Array.isArray(unsupported) ? unsupported.filter((c): c is string => typeof c === 'string' && Object.hasOwn(unsupportedNames, c)) : [];
-    if (codes.length) lines.push(`${name}: ${codes.map(c => unsupportedNames[c]).join(', ')}`);
+    const choice = details !== null && typeof details === 'object' && (details as Record<string, unknown>).k8s_volume === 'choice_required';
+    if (codes.length) lines.push(`${name}: ${codes.map(c => c === 'k8s_volume' && choice ? K8S_VOLUME_CHOICE : unsupportedNames[c]).join(', ')}`);
     else if (Array.isArray(blockers) && blockers.includes('inspection_unavailable')) lines.push(`${name}: no live inspection answered`);
   }
   return lines;
