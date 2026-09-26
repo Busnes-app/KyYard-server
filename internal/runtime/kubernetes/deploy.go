@@ -382,10 +382,14 @@ func upsert[T interface {
 
 // rollout waits until the Deployment's controller has seen the latest generation and its one
 // replica is updated, ready and available, reading it every poll within the request's deadline.
-// A failure the controller reports for the current generation ends the wait at once.
+// A failure the controller reports for the current generation on two consecutive polls ends the wait.
 func (r *run) rollout(ctx context.Context, set render.Set) (string, string, string) {
 	api := r.c.cs.AppsV1().Deployments(r.namespace)
 	var last *appsv1.Deployment
+	// A failure condition must hold on two consecutive polls: right after a Recreate write the
+	// controller can copy a stale ReplicaFailure or ProgressDeadlineExceeded from the previous
+	// ReplicaSet before the new one exists, and one poll must not fail a re-apply on it.
+	strikes := 0
 	for {
 		d, err := api.Get(ctx, set.Deployment.Name, metav1.GetOptions{})
 		switch {
@@ -395,7 +399,11 @@ func (r *run) rollout(ctx context.Context, set render.Set) (string, string, stri
 				return succeeded()
 			}
 			if failed(d) {
-				return protocol.OutcomeFailed, "rollout_timeout", r.stalled(set, d)
+				if strikes++; strikes >= 2 {
+					return protocol.OutcomeFailed, "rollout_timeout", r.stalled(set, d)
+				}
+			} else {
+				strikes = 0
 			}
 		case ctx.Err() == nil:
 			return r.failure(ctx, err)

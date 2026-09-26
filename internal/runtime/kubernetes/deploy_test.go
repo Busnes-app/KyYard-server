@@ -562,7 +562,7 @@ func TestDeployRolloutFailsFast(t *testing.T) {
 			c.poll = time.Second
 			began := time.Now()
 			res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
-			if took := time.Since(began); took > 2*c.poll {
+			if took := time.Since(began); took > 3*c.poll {
 				t.Fatalf("the wait ran %v past a final failure", took)
 			}
 			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
@@ -573,6 +573,37 @@ func TestDeployRolloutFailsFast(t *testing.T) {
 				t.Fatalf("step %+v", s)
 			}
 		})
+	}
+}
+
+// A ReplicaFailure the controller copied from the previous ReplicaSet, seen on the first poll
+// only, does not fail a re-apply: the condition must hold on two consecutive polls.
+func TestDeployIgnoresAStaleFailureOnOnePoll(t *testing.T) {
+	c, cs := deployClusterWith(t, func(d *appsv1.Deployment) {
+		d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
+	}, false)
+	polls := 0
+	cs.PrependReactor("get", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		polls++
+		if polls > 1 {
+			return false, nil, nil
+		}
+		obj, err := cs.Tracker().Get(deploymentsResource, action.GetNamespace(), action.(k8stesting.GetAction).GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		d := obj.(*appsv1.Deployment).DeepCopy()
+		d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Conditions: []appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentReplicaFailure, Status: corev1.ConditionTrue, Reason: "FailedCreate"},
+		}}
+		return true, d, nil
+	})
+	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("a stale failure on one poll ended the rollout: %+v", res)
+	}
+	if polls < 2 {
+		t.Fatalf("the wait ended after %d poll(s)", polls)
 	}
 }
 

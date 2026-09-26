@@ -380,8 +380,8 @@ lets it run any pod there, under any of that namespace's ServiceAccounts and mou
 Secrets. Where a namespace enforces no Pod Security level, such a pod could run privileged or on
 the host network and reach the node. KyYard therefore deploys only into namespaces that enforce
 Pod Security `baseline` or stricter: before every apply the agent reads the namespace's
-`pod-security.kubernetes.io/enforce` label and stops (`pod_security`) when it is missing or
-`privileged`. List only such namespaces. Pod logs and the metadata above are readable in every
+`pod-security.kubernetes.io/enforce` label and stops (`pod_security`) when it is missing,
+`privileged` or any value other than `baseline` or `restricted`. List only such namespaces. Pod logs and the metadata above are readable in every
 namespace by design, and a namespace dropped from the list keeps its Role until you delete it.
 
 To change the namespaces of an enrolled cluster, an organization or environment administrator
