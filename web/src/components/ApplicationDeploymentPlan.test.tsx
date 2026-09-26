@@ -488,7 +488,7 @@ it('names each service a Kubernetes plan refuses, with the fix', async () => {
   expect(alert.textContent).toContain(`cache: ${unsupportedNames.k8s_volume}, ${unsupportedNames.k8s_volume_shared}`);
   expect(alert.textContent).toContain('web: publishes a port on a host address');
   expect(alert.textContent).toContain('api: plans a Deployment name another application or tool already uses in the namespace');
-  expect(alert.textContent).toContain('a_b: shares its Kubernetes object name with another service');
+  expect(alert.textContent).toContain('a_b: shares its Kubernetes object name, once');
 });
 it('names a namespace revoked between plan and apply', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {

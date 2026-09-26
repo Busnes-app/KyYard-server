@@ -42,6 +42,15 @@ func deployRequest(deadline time.Duration) protocol.DeploymentRequest {
 		}}
 }
 
+// deployClaimRequest is deployRequest with a claim mounted on web, so its create is the first
+// write of the run.
+func deployClaimRequest(deadline time.Duration) protocol.DeploymentRequest {
+	req := deployRequest(deadline)
+	req.Kubernetes.Claims = []protocol.KubernetesClaim{{Name: "shop-web-data", Size: "1Gi", AccessMode: protocol.AccessReadWriteOnce}}
+	req.Services[0].Volumes = []protocol.KubernetesMount{{Claim: "shop-web-data", MountPath: "/data"}}
+	return req
+}
+
 // deployCluster is a fake API server whose namespace shop enforces Pod Security baseline, that
 // grants the agent's access review (unless denied), gives each Deployment a UID and a rising
 // generation as the API server would, and, when rollouts is true, reports it rolled out;
@@ -104,6 +113,8 @@ func deployRoleGrants(a *authorizationv1.ResourceAttributes) bool {
 		return slices.Contains([]string{"get", "list", "create", "update", "patch", "delete"}, a.Verb)
 	case a.Group == "" && a.Resource == "secrets":
 		return slices.Contains([]string{"get", "create", "update", "patch", "delete"}, a.Verb)
+	case a.Group == "" && a.Resource == "persistentvolumeclaims":
+		return slices.Contains([]string{"get", "list", "create"}, a.Verb)
 	}
 	return false
 }
@@ -861,6 +872,43 @@ func TestDeployWriteRefusalNamesItsCause(t *testing.T) {
 			want := authorizationv1.ResourceAttributes{Namespace: "shop", Verb: "create", Resource: "configmaps", Name: "shop-web-env"}
 			if !slices.Contains(asked, want) {
 				t.Fatalf("no access review for the failing write: %+v", asked)
+			}
+		})
+	}
+}
+
+// A 403 creating a claim (the first write of a service that mounts one) is told apart the same
+// way as any other write: not granted is forbidden, the Role granting create but the cluster
+// refusing the object is admission_denied naming it.
+func TestDeployClaimCreateRefusal(t *testing.T) {
+	for name, tc := range map[string]struct {
+		granted      bool
+		code, detail string
+	}{
+		"verb not granted": {false, "forbidden", ""},
+		"admission":        {true, "admission_denied", "PersistentVolumeClaim/shop-web-data"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, cs := deployCluster(t, true, false)
+			cs.PrependReactor("create", "persistentvolumeclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "persistentvolumeclaims"}, "shop-web-data", errors.New("secret-canary"))
+			})
+			cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+				a := *review.Spec.ResourceAttributes
+				if a.Resource != "persistentvolumeclaims" {
+					return false, nil, nil
+				}
+				review.Status.Allowed = tc.granted
+				return true, review, nil
+			})
+			res := c.Deploy(context.Background(), deployClaimRequest(time.Minute), func() {})
+			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+			if res.Outcome != protocol.OutcomeDenied || i < 0 || res.Validate() != nil {
+				t.Fatalf("result %+v %v", res, res.Validate())
+			}
+			if s := res.Steps[i]; s.Service != "web" || s.Step != protocol.StepCreate || s.Code != tc.code || s.Detail != tc.detail {
+				t.Fatalf("step %+v", s)
 			}
 		})
 	}

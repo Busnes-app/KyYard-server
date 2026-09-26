@@ -276,8 +276,9 @@ func (s *Server) handlePlanDeployment(w http.ResponseWriter, r *http.Request, a 
 	}
 	input.MaxFrameBytes = maxFrameBytes(ep.Capabilities)
 	// Inspect before taking a registry slot, so slow agents cannot hold the organization's slots.
-	// A cluster has no containers to inspect.
-	if !kube {
+	// A cluster has no containers to inspect. Decided from the endpoint's own runtime, not
+	// whether the instance lookup above succeeded, so a cluster preflight is never inspected.
+	if ep.Runtime != protocol.RuntimeKubernetes {
 		input.Inspections = s.planInspections(w, r, a, ep, pre)
 	}
 	if len(input.Update) > 0 || kube {
