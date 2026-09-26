@@ -191,6 +191,30 @@ func TestKubernetesPlanBlockersOverTheAPI(t *testing.T) {
 	}
 }
 
+// A namespace the manifest revokes between plan and apply is refused at apply with the plan's
+// k8s_namespace blocker, not a generic adoption change, and nothing is sent.
+func TestKubernetesApplyNamesARevokedNamespace(t *testing.T) {
+	h := newClusterHost(t, clusterCapabilities...)
+	app := h.importApp(t, "shop", "services: {web: {image: ghcr.io/org/web:1}}")
+	h.do(t, "PUT", app+"/mapping", `{"endpoint_id":"`+h.ag.id+`","namespace":"shop"}`, 204)
+	var mapped store.ApplicationMapping
+	_ = json.Unmarshal([]byte(h.do(t, "GET", app+"/mapping", "", 200)), &mapped)
+	planBody, _ := json.Marshal(store.PlanRequest{InstanceID: mapped.InstanceID, MappingVersion: mapped.Version, Revision: 1, Confirm: "shop"})
+	var planned store.Deployment
+	if err := json.Unmarshal([]byte(h.do(t, "POST", app+"/deployments", string(planBody), 201)), &planned); err != nil {
+		t.Fatal(err)
+	}
+	h.do(t, "POST", "/api/organizations/a/endpoints/"+h.ag.id+"/manifest", `{"namespaces":["billing"]}`, 200)
+	var refused struct {
+		Code     string
+		Blockers []string
+	}
+	if err := json.Unmarshal([]byte(h.do(t, "POST", app+"/deployments/"+planned.ID+"/apply", `{"confirm":"shop"}`, 409)), &refused); err != nil || refused.Code != "preflight_blocked" || !slices.Equal(refused.Blockers, []string{"k8s_namespace"}) {
+		t.Fatalf("refused %+v %v", refused, err)
+	}
+	h.sync(t)
+}
+
 // A cluster agent without kubernetes.deploy is asked to upgrade, not sent a frame.
 func TestKubernetesApplyNeedsTheCapability(t *testing.T) {
 	h := newClusterHost(t, protocol.CapabilityKubernetesInventory)

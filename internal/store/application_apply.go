@@ -246,11 +246,15 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a TenantAccess, d *Deployment, spec ApplicationSpec, values map[string]string, key []byte, now time.Time) (protocol.DeploymentRequest, error) {
 	var namespace, deployNamespaces string
 	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.namespace,e.deploy_namespaces FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND i.environment_id=? AND i.id=? AND i.endpoint_id=?`), a.OrganizationID, a.EnvironmentID, d.InstanceID, d.EndpointID).Scan(&namespace, &deployNamespaces)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && (namespace != d.Plan.Namespace || !slices.Contains(decodeNamespaces(deployNamespaces), namespace))) {
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && namespace != d.Plan.Namespace) {
 		return protocol.DeploymentRequest{}, ErrAdoptionChanged
 	}
 	if err != nil {
 		return protocol.DeploymentRequest{}, err
+	}
+	if !slices.Contains(decodeNamespaces(deployNamespaces), namespace) {
+		// The plan's blocker, so the refusal reads the same at apply as at plan.
+		return protocol.DeploymentRequest{}, &PreflightBlockedError{Blockers: []string{"k8s_namespace"}}
 	}
 	req := protocol.DeploymentRequest{Deployment: d.ID, RequestID: d.CorrelationID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{},
 		Kubernetes: &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: d.ApplicationID, InstanceID: d.InstanceID, SpecDigest: d.SpecDigest}}

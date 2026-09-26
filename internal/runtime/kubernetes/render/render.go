@@ -31,6 +31,14 @@ const (
 	ManagedBy            = "kyyard"
 )
 
+// ProgressDeadlineSeconds is below the server's ten-minute apply deadline, so a stuck rollout is
+// reported by the Deployment itself (ProgressDeadlineExceeded) while the agent still waits.
+// MinReadySeconds keeps a process that exits seconds after it starts from counting as available.
+const (
+	ProgressDeadlineSeconds = 540
+	MinReadySeconds         = 10
+)
+
 // Set is one service's objects. Secret is nil when the service has no secret-backed value, and
 // Service is nil when it publishes no port.
 type Set struct {
@@ -101,14 +109,16 @@ func service(req protocol.DeploymentRequest, s protocol.DeploymentService, name 
 		}
 		servicePorts = append(servicePorts, corev1.ServicePort{Name: fmt.Sprintf("%s-%d", p.Protocol, p.Host), Port: int32(p.Host), TargetPort: intstr.FromInt32(int32(p.Container)), Protocol: proto})
 	}
-	one, automount := int32(1), false
+	one, automount, progress := int32(1), false, int32(ProgressDeadlineSeconds)
 	// Each apply rolls the pods, as a Docker apply recreates the container: a changed value in
 	// the ConfigMap or Secret reaches the process.
 	pod := metav1.ObjectMeta{Labels: Labels(req, s.Name), Annotations: map[string]string{AnnotationDeployment: req.Deployment}}
 	set.Deployment = &appsv1.Deployment{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}, ObjectMeta: meta(name), Spec: appsv1.DeploymentSpec{
-		Replicas: &one,
-		Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
-		Selector: &metav1.LabelSelector{MatchLabels: Selector(k.InstanceID, s.Name)},
+		Replicas:                &one,
+		Strategy:                appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+		MinReadySeconds:         MinReadySeconds,
+		ProgressDeadlineSeconds: &progress,
+		Selector:                &metav1.LabelSelector{MatchLabels: Selector(k.InstanceID, s.Name)},
 		Template: corev1.PodTemplateSpec{ObjectMeta: pod, Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyAlways,
 			AutomountServiceAccountToken: &automount,

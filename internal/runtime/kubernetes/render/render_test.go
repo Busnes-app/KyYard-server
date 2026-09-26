@@ -57,10 +57,10 @@ func TestRenderTwoServices(t *testing.T) {
 	meta := func(name, s string) metav1.ObjectMeta {
 		return metav1.ObjectMeta{Name: name, Namespace: "shop", Labels: labels(s), Annotations: map[string]string{"kyyard.busnes.app/revision": "3", "kyyard.busnes.app/deployment": deployment, "kyyard.busnes.app/spec-digest": specDigest}}
 	}
-	one, automount := int32(1), false
+	one, automount, progress := int32(1), false, int32(540)
 	deploymentOf := func(name, s, image string, ports []corev1.ContainerPort, envFrom []corev1.EnvFromSource) *appsv1.Deployment {
 		return &appsv1.Deployment{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}, ObjectMeta: meta(name, s), Spec: appsv1.DeploymentSpec{
-			Replicas: &one, Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+			Replicas: &one, Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}, MinReadySeconds: 10, ProgressDeadlineSeconds: &progress,
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"kyyard.busnes.app/instance": instance, "kyyard.busnes.app/service": s}},
 			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels(s), Annotations: map[string]string{"kyyard.busnes.app/deployment": deployment}}, Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyAlways, AutomountServiceAccountToken: &automount,

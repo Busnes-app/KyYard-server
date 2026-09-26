@@ -80,6 +80,7 @@ const (
 	detailStatus                 // a 3-digit status
 	detailObject                 // empty, or a Kubernetes object's Kind/name
 	detailRollout                // a rollout_timeout's reasons
+	detailPodSecurity            // empty, or why a namespace's Pod Security level was refused
 )
 
 // stepCodes maps each step code to the parameter its detail carries.
@@ -95,6 +96,7 @@ var stepCodes = map[string]detailRule{
 	"pull_digest_mismatch": detailNone, "cancelled": detailNone, "runtime_timeout": detailNone,
 	"runtime_error": detailNone, "runtime_status": detailStatus, CodeLegacy: detailNone,
 	"forbidden": detailNone, "rollout_timeout": detailRollout, "conflict": detailObject,
+	"pod_security": detailPodSecurity, "admission_denied": detailObject,
 }
 
 var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
@@ -128,6 +130,8 @@ func validStepCode(code, detail string) bool {
 		return detail == "" || kubeObject.MatchString(detail)
 	case rule == detailRollout:
 		return rolloutDetail.MatchString(detail)
+	case rule == detailPodSecurity:
+		return podSecurityDetail[detail]
 	}
 	return detail == ""
 }

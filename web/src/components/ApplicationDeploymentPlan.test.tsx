@@ -450,13 +450,19 @@ it('renders a Kubernetes plan, its step codes and Deployment identities', async 
       { service: 'web', step: 'start', outcome: 'timed_out', code: 'rollout_timeout', detail: 'progressing=ProgressDeadlineExceeded,pod=ImagePullBackOff' },
       { service: 'api', step: 'start', outcome: 'timed_out', code: 'rollout_timeout', detail: 'pod=back-off <b>secret-canary</b>' },
       { service: 'api', step: 'create', outcome: 'denied', code: 'forbidden', detail: '' },
+      { service: 'api', step: 'precondition', outcome: 'denied', code: 'pod_security', detail: 'missing' },
+      { service: 'api', step: 'create', outcome: 'denied', code: 'admission_denied', detail: 'ConfigMap/shop-api-env' },
+      { service: 'api', step: 'start', outcome: 'failed', code: 'rollout_timeout', detail: 'progressing=NewReplicaSetCreated,replicafailure=FailedCreate' },
     ], services: [{ service: 'web', container_id: '', image_id: '', created_unix: 0, kind: 'Deployment', namespace: 'shop', name: 'shop-web', uid }] } };
   vi.stubGlobal('fetch', stubFetch([kube]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   expect(await screen.findByText('Something else already holds that name: Deployment/shop-web.')).toBeTruthy();
-  expect(screen.getByText('The Deployment did not become ready before the deadline; it stays as applied (progressing ProgressDeadlineExceeded, pod ImagePullBackOff).')).toBeTruthy();
-  expect(screen.getByText('The Deployment did not become ready before the deadline; it stays as applied.')).toBeTruthy();
+  expect(screen.getByText('The Deployment did not become available; it stays as applied (progressing ProgressDeadlineExceeded, pod ImagePullBackOff).')).toBeTruthy();
+  expect(screen.getByText('The Deployment did not become available; it stays as applied.')).toBeTruthy();
+  expect(screen.getByText('The Deployment did not become available; it stays as applied (progressing NewReplicaSetCreated, replicafailure FailedCreate).')).toBeTruthy();
+  expect(screen.getByText('The namespace does not enforce Pod Security baseline; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.')).toBeTruthy();
+  expect(screen.getByText("The cluster refused the object (quota or policy); check the namespace's quotas and admission policies. Object: ConfigMap/shop-api-env.")).toBeTruthy();
   expect(screen.getByText("The agent's access in the namespace does not allow this; apply the cluster's regenerated manifest.")).toBeTruthy();
   expect(screen.getAllByText('Deployment shop/shop-web').length).toBeGreaterThan(0);
   expect(screen.getByText(uid)).toBeTruthy();
@@ -479,4 +485,18 @@ it('names each service a Kubernetes plan refuses, with the fix', async () => {
   expect(alert.textContent).toContain(messages.k8s_namespace);
   expect(alert.textContent).toContain('db: mounts a volume; Kubernetes deployment of stateful services arrives with the migration analyzer');
   expect(alert.textContent).toContain('web: publishes a port on a host address');
+});
+it('names a namespace revoked between plan and apply', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
+    if (String(url).endsWith('/apply')) return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['k8s_namespace', 'secret-canary'] }), { status: 409 });
+    return new Response(JSON.stringify([plan]));
+  }));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
+  fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
+  expect(await screen.findByText(messages.k8s_namespace)).toBeTruthy();
+  expect(document.body.textContent).not.toContain('secret-canary');
 });

@@ -65,11 +65,13 @@ UUID), `kyyard.busnes.app/spec-digest`.
   instance; two replicas of a service with an implicit local state is not what the definition
   says), pod labels as above, one container `<service>` with the image pinned by digest
   (`image@sha256:...`, resolved server-side as today), `containerPort`s from the definition,
-  `envFrom` the ConfigMap and, when present, the Secret; `restartPolicy: Always`. No probes,
+  `envFrom` the ConfigMap and, when present, the Secret; `restartPolicy: Always`;
+  `progressDeadlineSeconds: 540` (below the apply deadline) and `minReadySeconds: 10`. No probes,
   no resources, no security context beyond what the definition can express (none) in PR 21;
   the plan says so in the `unsupported` detail only if the definition asked for something.
 - **Service** `<name>`, `ClusterIP`, one port per published port: `port` = published,
-  `targetPort` = target, protocol from the definition. Unpublished ports get no Service entry.
+  `targetPort` = target, protocol from the definition. Unpublished ports get no Service entry;
+  with none left, an owned Service from an earlier revision is deleted (UID-guarded).
 - **ConfigMap** `<name>-env`: every environment value that is not secret-backed.
 - **Secret** `<name>-secret`, `Opaque`: every secret-backed value. Omitted when there is none.
 
@@ -116,16 +118,21 @@ The agent (`kubernetes.Client.Deploy`, same signature as Docker's, wired to `Opt
 runs, per service in plan order:
 
 1. `precondition`: `SelfSubjectAccessReview` for `create deployments` in the namespace
-   (`forbidden`), then `Get` on each planned object and the ownership check (`name_taken`).
+   (`forbidden`), then `Get` on the namespace: its `pod-security.kubernetes.io/enforce` label
+   must be `baseline` or `restricted` (`pod_security`, detail `missing`, `privileged` or
+   `invalid`), then `Get` on each planned object and the ownership check (`name_taken`).
    The `started` marker is recorded after the last precondition and before the first write.
 2. `create`: apply ConfigMap, Secret, Deployment, Service in that order: `Update` when the
    object exists and is owned (preserving `resourceVersion` semantics), `Create` otherwise. A
    conflict is retried once after a re-read; a second conflict is `step_failed` with detail
-   `conflict`.
-3. `start`: wait until the Deployment's `observedGeneration` is current and `readyReplicas`
-   equals `replicas`, polling every 2 s within the request deadline. Timeout is `step_failed`
+   `conflict`. A 403 on a write (the grant was allowed, so a quota or admission policy refused
+   it) is `admission_denied` with detail `Kind/name`.
+3. `start`: wait until the Deployment's `observedGeneration` is current and `readyReplicas` and
+   `availableReplicas` equal `replicas`, polling every 2 s within the request deadline. For the
+   current generation, `ReplicaFailure=True` or `Progressing` with reason
+   `ProgressDeadlineExceeded` ends the wait at once as a failed `rollout_timeout`. Timeout is `step_failed`
    with code `rollout_timeout` (added to `stepCodes`) and a detail from the Deployment's
-   `Progressing`/`Available` conditions and the newest pod's waiting reason
+   `Progressing`/`Available`/`ReplicaFailure` conditions and the newest pod's waiting reason
    (`ImagePullBackOff`, `CrashLoopBackOff`, `CreateContainerConfigError`), all from the closed
    `CleanText` path. A timed-out rollout is not rolled back by the agent: the objects stay as
    applied and the result says so; the operator reapplies the previous revision.
@@ -163,9 +170,13 @@ No new action: mapping, plan, apply and removal keep the actions their Docker ro
 the manifest route is `endpoint.enroll`. Audit rows are the existing
 plan/apply/settle rows; the manifest route audits `endpoint.manifest` with the namespace list.
 Threat model: the Kubernetes agent row is rewritten (it can now write, only in listed
-namespaces, only objects it labels; `name_taken` stops it hijacking another tool's objects; a
-compromised agent can alter workloads in those namespaces and nothing else; `secrets` without
-`list`).
+namespaces, only objects it labels; `name_taken` stops it hijacking another tool's objects;
+`secrets` without `list`). Blast radius: within a granted namespace a compromised agent can
+create any pod, under any of the namespace's ServiceAccounts and mounting any Secret, and `get`
+any Secret by name. KyYard therefore deploys only into namespaces that enforce PodSecurity
+`baseline` or stricter (`pod_security` in the `precondition` step otherwise), and the operator
+should grant only such namespaces. Pod logs and listed metadata are readable cluster-wide by
+design; a namespace dropped from the list keeps its Role until deleted by hand.
 
 ## UI
 

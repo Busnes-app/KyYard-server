@@ -42,12 +42,31 @@ func deployRequest(deadline time.Duration) protocol.DeploymentRequest {
 		}}
 }
 
-// deployCluster is a fake API server that grants the agent's access review (unless denied),
-// gives each Deployment a UID and a rising generation as the API server would, and, when
-// rollouts is true, reports it rolled out.
+// deployCluster is a fake API server whose namespace shop enforces Pod Security baseline, that
+// grants the agent's access review (unless denied), gives each Deployment a UID and a rising
+// generation as the API server would, and, when rollouts is true, reports it rolled out;
+// otherwise it reports a rollout still progressing.
 func deployCluster(t *testing.T, rollouts, denied bool, objects ...runtime.Object) (*Client, *fake.Clientset) {
 	t.Helper()
-	c, cs := cluster(t, objects...)
+	status := func(d *appsv1.Deployment) {
+		d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 1, UpdatedReplicas: 1, Conditions: []appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionTrue, Reason: "ReplicaSetUpdated"},
+			{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionFalse, Reason: "MinimumReplicasUnavailable", Message: "secret-canary message text"},
+		}}
+	}
+	if rollouts {
+		status = func(d *appsv1.Deployment) {
+			d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
+		}
+	}
+	return deployClusterWith(t, status, denied, objects...)
+}
+
+// deployClusterWith is deployCluster with the status each written Deployment reports.
+func deployClusterWith(t *testing.T, status func(*appsv1.Deployment), denied bool, objects ...runtime.Object) (*Client, *fake.Clientset) {
+	t.Helper()
+	shop := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shop", Labels: map[string]string{"pod-security.kubernetes.io/enforce": "baseline"}}}
+	c, cs := cluster(t, append([]runtime.Object{shop}, objects...)...)
 	c.poll = 10 * time.Millisecond
 	cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
@@ -72,14 +91,7 @@ func deployCluster(t *testing.T, rollouts, denied bool, objects ...runtime.Objec
 		default:
 			return false, nil, nil
 		}
-		if rollouts {
-			d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1}
-		} else {
-			d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 1, UpdatedReplicas: 1, Conditions: []appsv1.DeploymentCondition{
-				{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: "ProgressDeadlineExceeded"},
-				{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionFalse, Reason: "MinimumReplicasUnavailable", Message: "secret-canary message text"},
-			}}
-		}
+		status(d)
 		return false, nil, nil
 	})
 	return c, cs
@@ -229,7 +241,7 @@ func TestDeployRolloutTimeout(t *testing.T) {
 		t.Fatalf("result %+v %v", res, res.Validate())
 	}
 	s := res.Steps[i]
-	if s.Service != "web" || s.Step != protocol.StepStart || s.Code != "rollout_timeout" || s.Detail != "progressing=ProgressDeadlineExceeded,available=MinimumReplicasUnavailable,pod=ImagePullBackOff" {
+	if s.Service != "web" || s.Step != protocol.StepStart || s.Code != "rollout_timeout" || s.Detail != "progressing=ReplicaSetUpdated,available=MinimumReplicasUnavailable,pod=ImagePullBackOff" {
 		t.Fatalf("step %+v", s)
 	}
 	if len(res.Services) != 1 || res.Services[0].Name != "shop-web" {
@@ -422,5 +434,175 @@ func TestSnapshotReadsKyYardLabels(t *testing.T) {
 	}
 	if byName["shop-web"].Application != testApp || byName["shop-web"].Instance != testInstance || byName["other"].Instance != "" {
 		t.Fatalf("workloads %+v", snap.Kubernetes.Workloads)
+	}
+}
+
+// Dropping a service's last published port deletes the Service an earlier apply left, guarded by
+// the UID it read; an unowned Service under the planned name is left alone.
+func TestDeployDropsAStaleServiceWhenPortsAreRemoved(t *testing.T) {
+	c, cs := deployCluster(t, true, false)
+	if res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("first deploy: %+v", res)
+	}
+	svc, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.UID = "22222222-2222-4222-8222-222222222222"
+	if _, err := cs.CoreV1().Services("shop").Update(context.Background(), svc, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cs.PrependReactor("delete", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		del := action.(k8stesting.DeleteActionImpl)
+		if del.DeleteOptions.Preconditions == nil || del.DeleteOptions.Preconditions.UID == nil || *del.DeleteOptions.Preconditions.UID != svc.UID {
+			t.Errorf("stale Service deleted without the UID it read: %+v", del.DeleteOptions)
+		}
+		return false, nil, nil
+	})
+	again := deployRequest(time.Minute)
+	again.Deployment, again.Revision = "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b", 2
+	again.Services[0].Ports = []protocol.Port{}
+	if res := c.Deploy(context.Background(), again, func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("second deploy: %+v", res)
+	}
+	if _, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the stale Service survived a redeploy without ports: %v", err)
+	}
+
+	foreign := metav1.ObjectMeta{Namespace: "shop", Name: "shop-api"}
+	c, cs = deployCluster(t, true, false, &corev1.Service{ObjectMeta: foreign})
+	if res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("deploy beside a foreign Service: %+v", res)
+	}
+	if _, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-api", metav1.GetOptions{}); err != nil {
+		t.Fatalf("the foreign Service was touched: %v", err)
+	}
+}
+
+// Only a namespace that enforces Pod Security baseline or restricted is deployed into: a missing
+// or privileged level stops the first precondition before any write, naming the level.
+func TestDeployRequiresPodSecurityBaseline(t *testing.T) {
+	for name, tc := range map[string]struct {
+		labels map[string]string
+		detail string
+	}{
+		"missing":    {map[string]string{"pod-security.kubernetes.io/warn": "restricted"}, "missing"},
+		"privileged": {map[string]string{"pod-security.kubernetes.io/enforce": "privileged"}, "privileged"},
+		"invalid":    {map[string]string{"pod-security.kubernetes.io/enforce": "strict"}, "invalid"},
+		"baseline":   {map[string]string{"pod-security.kubernetes.io/enforce": "baseline"}, ""},
+		"restricted": {map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, cs := deployCluster(t, true, false)
+			ns, _ := cs.CoreV1().Namespaces().Get(context.Background(), "shop", metav1.GetOptions{})
+			ns.Labels = tc.labels
+			if _, err := cs.CoreV1().Namespaces().Update(context.Background(), ns, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			cs.ClearActions()
+			started := false
+			res := c.Deploy(context.Background(), deployRequest(time.Minute), func() { started = true })
+			if res.Validate() != nil {
+				t.Fatalf("result %+v %v", res, res.Validate())
+			}
+			if tc.detail == "" {
+				if res.Outcome != protocol.OutcomeSucceeded {
+					t.Fatalf("%s refused: %+v", name, res)
+				}
+				return
+			}
+			s := res.Steps[0]
+			if res.Outcome != protocol.OutcomeDenied || s.Service != "web" || s.Step != protocol.StepPrecondition || s.Code != "pod_security" || s.Detail != tc.detail {
+				t.Fatalf("result %+v", res)
+			}
+			if started || len(writes(cs)) != 0 {
+				t.Fatalf("wrote %v, started %v", writes(cs), started)
+			}
+		})
+	}
+}
+
+// A write the agent's grant allows but the cluster refuses (a quota, an admission policy) is
+// admission_denied naming the object, not forbidden: re-applying the manifest would not help.
+func TestDeployAdmissionDenied(t *testing.T) {
+	c, cs := deployCluster(t, true, false)
+	cs.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", errors.New("exceeded quota: secret-canary"))
+	})
+	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+	if res.Outcome != protocol.OutcomeDenied || i < 0 || res.Validate() != nil {
+		t.Fatalf("result %+v %v", res, res.Validate())
+	}
+	if s := res.Steps[i]; s.Service != "web" || s.Step != protocol.StepCreate || s.Code != "admission_denied" || s.Detail != "ConfigMap/shop-web-env" {
+		t.Fatalf("step %+v", s)
+	}
+}
+
+// A rollout the cluster reports as failed ends the wait at once, well before the deadline, with
+// the reason: a pod admission refused (ReplicaFailure FailedCreate), or a progress deadline the
+// Deployment itself gave up on.
+func TestDeployRolloutFailsFast(t *testing.T) {
+	for name, tc := range map[string]struct {
+		conditions []appsv1.DeploymentCondition
+		detail     string
+	}{
+		"replica failure": {[]appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionTrue, Reason: "NewReplicaSetCreated"},
+			{Type: appsv1.DeploymentReplicaFailure, Status: corev1.ConditionTrue, Reason: "FailedCreate", Message: "secret-canary"},
+		}, "progressing=NewReplicaSetCreated,replicafailure=FailedCreate"},
+		"progress deadline": {[]appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: "ProgressDeadlineExceeded"},
+		}, "progressing=ProgressDeadlineExceeded"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := deployClusterWith(t, func(d *appsv1.Deployment) {
+				d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 0, Conditions: tc.conditions}
+			}, false)
+			c.poll = time.Second
+			began := time.Now()
+			res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+			if took := time.Since(began); took > 2*c.poll {
+				t.Fatalf("the wait ran %v past a final failure", took)
+			}
+			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+			if res.Outcome != protocol.OutcomeFailed || i < 0 || res.Validate() != nil {
+				t.Fatalf("result %+v %v", res, res.Validate())
+			}
+			if s := res.Steps[i]; s.Step != protocol.StepStart || s.Code != "rollout_timeout" || s.Detail != tc.detail {
+				t.Fatalf("step %+v", s)
+			}
+		})
+	}
+}
+
+// A pod that is Ready but not yet Available (inside minReadySeconds) does not end the wait: a
+// process that exits seconds after it starts must not read as a successful rollout.
+func TestDeployReadyIsNotAvailable(t *testing.T) {
+	c, _ := deployClusterWith(t, func(d *appsv1.Deployment) {
+		d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 0}
+	}, false)
+	res := c.Deploy(context.Background(), deployRequest(300*time.Millisecond), func() {})
+	if res.Outcome != protocol.OutcomeTimedOut {
+		t.Fatalf("a Ready but unavailable pod ended the wait: %+v", res)
+	}
+}
+
+// A service whose Deployment was never created (a failed revision wrote its ConfigMap and
+// Secret, then stopped) is still removed whole: its Secret is found by its ConfigMap's name.
+func TestRemoveFindsSecretByConfigMapName(t *testing.T) {
+	cm, secret := owned("cache"), owned("cache")
+	cm.Name, secret.Name = "shop-cache-env", "shop-cache-secret"
+	c, cs := deployCluster(t, true, false, &corev1.ConfigMap{ObjectMeta: cm}, &corev1.Secret{ObjectMeta: secret})
+	now := time.Now()
+	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: "shop", IssuedAt: now, Deadline: now.Add(time.Minute),
+		Kubernetes: &protocol.KubernetesTarget{Namespace: "shop", ApplicationID: testApp, InstanceID: testInstance, SpecDigest: testSpec}, Services: []string{"web"}}
+	if res := c.Remove(context.Background(), req, func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("result %+v", res)
+	}
+	_, errCM := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-cache-env", metav1.GetOptions{})
+	_, errS := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-cache-secret", metav1.GetOptions{})
+	if !apierrors.IsNotFound(errCM) || !apierrors.IsNotFound(errS) {
+		t.Fatalf("left behind: %v %v", errCM, errS)
 	}
 }

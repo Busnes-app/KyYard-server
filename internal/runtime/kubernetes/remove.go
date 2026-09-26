@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -83,8 +84,8 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, sta
 	return r.res
 }
 
-// find collects, by service label, every object of the instance. A Secret is found first by the
-// name of the Deployment that carries the same service label -- stable, unlike the name
+// find collects, by service label, every object of the instance. A Secret is found by the name
+// of each labelled Deployment and ConfigMap (<name>-env) found -- stable, unlike the name
 // KubernetesNames would recompute from the services in this request, whose hash suffix depends
 // on which other colliding service names are present -- and, as a fallback for a service whose
 // Deployment is already gone, by the name this request itself would compute. The role grants no
@@ -135,7 +136,14 @@ func (r *run) find(ctx context.Context, req protocol.RemovalRequest, found map[s
 		return r.failure(ctx, err)
 	}
 	for i := range configs.Items {
-		add("ConfigMap", &configs.Items[i], core.ConfigMaps(r.namespace).Delete)
+		cm := &configs.Items[i]
+		add("ConfigMap", cm, core.ConfigMaps(r.namespace).Delete)
+		// A service whose Deployment was never created still has its Secret beside the ConfigMap.
+		if base, ok := strings.CutSuffix(cm.Name, "-env"); ok {
+			if o, code, detail := addSecret(base + "-secret"); o != protocol.OutcomeSucceeded {
+				return o, code, detail
+			}
+		}
 	}
 	// Fallback for a named service whose Deployment is already gone: the name this removal
 	// request would itself compute.

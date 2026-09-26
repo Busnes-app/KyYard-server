@@ -174,7 +174,7 @@ func KubernetesProject(name string) string {
 }
 
 // mapKubernetes creates the application's instance on a Kubernetes endpoint, or moves it to
-// another listed namespace while nothing has been applied there. Every call is a review: the
+// another listed namespace while no apply has been sent there. Every call is a review: the
 // mapping version rises and the mapped revision becomes the latest.
 func (t *tenancyStore) mapKubernetes(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, r MappingRequest) error {
 	if r.InstanceID != "" || r.Version != 0 || r.Digest != "" || r.Confirm != "" || len(r.Bindings) > 0 || r.EndpointID == "" {
@@ -207,8 +207,10 @@ func (t *tenancyStore) mapKubernetes(ctx context.Context, tx *sql.Tx, a TenantAc
 		return ErrNamespaceUnknown
 	}
 	var instance, endpoint, namespace string
-	var current int
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT id,endpoint_id,namespace,current_revision FROM application_instances WHERE organization_id=? AND environment_id=? AND application_id=?`), a.OrganizationID, a.EnvironmentID, app).Scan(&instance, &endpoint, &namespace, &current)
+	var sent int
+	// sent counts the instance's deployments past planned: any apply that left, even one that
+	// failed or timed out, may have written objects in the namespace a move would leave.
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.id,i.endpoint_id,i.namespace,(SELECT COUNT(*) FROM deployments d WHERE d.organization_id=i.organization_id AND d.environment_id=i.environment_id AND d.instance_id=i.id AND d.state<>'planned') FROM application_instances i WHERE i.organization_id=? AND i.environment_id=? AND i.application_id=?`), a.OrganizationID, a.EnvironmentID, app).Scan(&instance, &endpoint, &namespace, &sent)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO application_instances(id,organization_id,environment_id,application_id,endpoint_id,project,revision,created_by,created_at,mapping_version,mapped_revision,namespace) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`), uuid.NewString(), a.OrganizationID, a.EnvironmentID, app, r.EndpointID, KubernetesProject(name), head, a.ActorID, time.Now().UTC(), 1, head, r.Namespace)
@@ -217,8 +219,8 @@ func (t *tenancyStore) mapKubernetes(ctx context.Context, tx *sql.Tx, a TenantAc
 		}
 	case err != nil:
 		return err
-	case endpoint != r.EndpointID || namespace == "" || (namespace != r.Namespace && current > 0):
-		// Mapped elsewhere, adopted on Docker, or applied in the namespace it would leave.
+	case endpoint != r.EndpointID || namespace == "" || (namespace != r.Namespace && sent > 0):
+		// Mapped elsewhere, adopted on Docker, or an apply was sent to the namespace it would leave.
 		return ErrApplicationAdopted
 	default:
 		var applying int

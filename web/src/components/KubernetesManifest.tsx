@@ -22,6 +22,10 @@ export function ManifestRegeneration({ org, endpoint, onSaved }: { org: string; 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<Manifest | null>(null);
+  const [copied, setCopied] = useState('');
+  const copy = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); setCopied('Copied.'); } catch { setCopied('Copy failed; open the manifest and copy it by hand.'); }
+  };
   const save = async () => {
     setBusy(true); setError('');
     try {
@@ -42,7 +46,9 @@ export function ManifestRegeneration({ org, endpoint, onSaved }: { org: string; 
       <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{result.command}</pre>
       <details><summary>Manifest</summary><pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{result.manifest}</pre></details>
       <p>{result.note}</p>
+      {copied && <p role="status">{copied}</p>}
       <button onClick={() => downloadManifest(result.manifest_file, result.manifest)}>Download manifest</button>{' '}
+      <button className="btn-secondary" onClick={() => { void copy(result.manifest); }}>Copy manifest</button>{' '}
       <button className="btn-secondary" onClick={() => setResult(null)}>Dismiss</button>
     </div>}
   </section>;

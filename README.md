@@ -351,7 +351,8 @@ kubeconfig for `kubectl apply`.
 
 1. On the environment screen choose **Kubernetes cluster**, name the cluster, optionally list
    the namespaces KyYard may deploy to, and select **Enroll a cluster**. Create those
-   namespaces first; KyYard never creates one. The manifest is shown once: download it (or copy
+   namespaces first, labelled `pod-security.kubernetes.io/enforce=baseline` (or `restricted`);
+   KyYard never creates one and refuses to deploy into one without that label. The manifest is shown once: download it (or copy
    it) and run the `kubectl apply -f kyyard-agent-<name>.yaml` command shown beside it.
 2. Read the key fingerprint with `kubectl -n kyyard-agent logs deploy/kyyard-agent` and
    approve the matching endpoint.
@@ -367,12 +368,21 @@ agent can ask what it may do: no Secrets, no ConfigMaps, no `watch`, no wildcard
 RoleBinding `kyyard-agent-identity` (`get`/`create` Secrets in `kyyard-agent` and `update` only
 on `kyyard-agent-identity`, where the agent keeps its identity); in each listed namespace the
 Role and RoleBinding `kyyard-agent-deploy` (`get`, `list`, `create`, `update`, `patch`,
-`delete` on Deployments, Services and ConfigMaps; the same on Secrets except `list`, so the
-agent reads only the Secrets it named); the Secret `kyyard-agent-enrollment`; and a one-replica
+`delete` on Deployments, Services and ConfigMaps; the same on Secrets except `list`); the Secret `kyyard-agent-enrollment`; and a one-replica
 `Recreate` Deployment running `/app/kyyard-agent --kubernetes` as UID 65532 with a read-only
 root filesystem, no privilege escalation, every capability dropped, seccomp `RuntimeDefault`,
 and 50m/64Mi requested, 500m/256Mi limited. Applying it needs cluster-admin because it creates
 cluster RBAC; the agent itself holds only the roles above.
+
+What a listed namespace exposes: the agent can `get` any Secret in it by name (it cannot list
+them, but names show through the cluster-wide pod and service reads), and creating Deployments
+lets it run any pod there, under any of that namespace's ServiceAccounts and mounting any of its
+Secrets. Where a namespace enforces no Pod Security level, such a pod could run privileged or on
+the host network and reach the node. KyYard therefore deploys only into namespaces that enforce
+Pod Security `baseline` or stricter: before every apply the agent reads the namespace's
+`pod-security.kubernetes.io/enforce` label and stops (`pod_security`) when it is missing or
+`privileged`. List only such namespaces. Pod logs and the metadata above are readable in every
+namespace by design, and a namespace dropped from the list keeps its Role until you delete it.
 
 To change the namespaces of an enrolled cluster, an organization or environment administrator
 opens the cluster (or an application's Kubernetes card), selects **Regenerate manifest**, types
@@ -389,8 +399,14 @@ Deployment (one replica, `Recreate`), a `ClusterIP` Service for its published po
 ConfigMap and a Secret for its environment, all named `<application>-<service>` and labelled
 with the application and instance; every image is pinned by digest at plan time. KyYard never
 touches an object with those names that it did not label (`name_taken`), and the apply waits
-for each rollout; one that does not finish before the apply's ten-minute deadline stops with
-the reason the cluster gives (`ImagePullBackOff`, `CrashLoopBackOff`, ...) and leaves the objects as applied.
+for each rollout until the pod has been available for 10 seconds; one the cluster reports as
+failed (a pod it refused to create, or the Deployment's own 9-minute progress deadline), or that
+does not finish before the apply's ten-minute deadline, stops with the reason the cluster gives
+(`FailedCreate`, `ImagePullBackOff`, `CrashLoopBackOff`, ...) and leaves the objects as applied.
+A write the cluster refuses after the agent's grant allowed it (a quota, an admission policy) stops
+with `admission_denied` and the object's name. The rendered pod has no resource requests or
+limits and no security context: the namespace must admit it, which Pod Security `baseline` does
+and `restricted` does not, and a ResourceQuota or policy that requires limits refuses it.
 Stateless only in this release: a service with a volume, a port bound to a host address, or a
 restart policy other than `always`/`unless-stopped` stops at the plan with the reason. The
 kubelet pulls the images: for a private registry, give the namespace's `default` ServiceAccount
@@ -404,7 +420,10 @@ cluster (`409 runtime_unsupported`) and not shown. Uninstall with
 cluster again after a revocation, delete the Secret `kyyard-agent-identity` (or uninstall)
 before applying a new manifest: an identity from an old enrollment refuses a new link.
 
-Upgrade a cluster agent in place with
+Upgrade in this order: the KyYard server first (a newer agent is refused by an older server at
+hello and loses even its inventory); then **Regenerate manifest** and `kubectl apply -f` the file
+(a newer agent may need grants the old ClusterRole lacks, and without them every apply stops
+`forbidden`); then the agent image, in place with
 `kubectl -n kyyard-agent set image deploy/kyyard-agent agent=ghcr.io/busnes-app/kyyard@sha256:<digest>`.
 The identity Secret survives the new pod, so no re-enrollment is needed. A new enrollment token
 mints a new enrollment link, which an already-enrolled identity refuses: to change namespaces,

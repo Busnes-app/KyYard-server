@@ -95,7 +95,8 @@ func TestKubernetesPlanAndFrame(t *testing.T) {
 }
 
 // A namespace the manifest revokes between plan and apply must not reach the agent: apply
-// re-reads the endpoint's granted list and refuses, producing no frame.
+// re-reads the endpoint's granted list and refuses with the plan's k8s_namespace blocker,
+// producing no frame and leaving the row planned.
 func TestKubernetesApplyRefusesARevokedNamespace(t *testing.T) {
 	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
 	ctx := context.Background()
@@ -109,8 +110,53 @@ func TestKubernetesApplyRefusesARevokedNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	applied, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop-front", imageCheckKey, protocol.MaxDeploymentRequestBytes)
-	if !errors.Is(err, ErrAdoptionChanged) || applied != nil || req != nil {
+	var blocked *PreflightBlockedError
+	if !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"k8s_namespace"}) || applied != nil || req != nil {
 		t.Fatalf("revoked namespace: %+v %+v %v", applied, req, err)
+	}
+	if got, err := ts.ReadDeployment(ctx, a, app.ID, d.ID); err != nil || got.State != "planned" {
+		t.Fatalf("the refused apply left the row %+v %v", got, err)
+	}
+}
+
+// A namespace move is refused once any apply was sent, even one that failed: a timed-out rollout
+// leaves its objects applied in the old namespace, where a removal would never look.
+func TestKubernetesMoveRefusedAfterAFailedApply(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, err := ts.SetEndpointDeployNamespaces(ctx, a, cluster, []string{"shop", "billing"}); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("b")}}}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop-front", imageCheckKey, protocol.MaxDeploymentRequestBytes); err != nil {
+		t.Fatal(err)
+	}
+	res := protocol.DeploymentResult{Deployment: d.ID, RequestID: d.CorrelationID, Outcome: protocol.OutcomeTimedOut, Code: protocol.ResultStepFailed,
+		Steps: []protocol.DeploymentStep{
+			{Service: "web", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeSucceeded},
+			{Service: "api", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeSucceeded},
+			{Service: "web", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded},
+			{Service: "web", Step: protocol.StepStart, Outcome: protocol.OutcomeTimedOut, Code: "rollout_timeout", Detail: "pod=ImagePullBackOff"},
+			{Service: "api", Step: protocol.StepCreate, Outcome: protocol.OutcomeSkipped},
+			{Service: "api", Step: protocol.StepStart, Outcome: protocol.OutcomeSkipped},
+		},
+		Services: []protocol.DeploymentIdentity{kubeIdentity(d.Plan.Services[0])}}
+	if err := ts.SettleDeployment(ctx, cluster, res); err != nil {
+		t.Fatal(err)
+	}
+	if instance, err := ts.ReadApplicationInstance(ctx, a, app.ID, m.InstanceID); err != nil || instance.CurrentRevision != 0 {
+		t.Fatalf("instance: %+v %v", instance, err)
+	}
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, MappingRequest{EndpointID: cluster, Namespace: "billing"}); !errors.Is(err, ErrApplicationAdopted) {
+		t.Fatalf("move after a timed-out apply: %v", err)
+	}
+	if err := ts.SetApplicationMapping(ctx, a, app.ID, MappingRequest{EndpointID: cluster, Namespace: "shop"}); err != nil {
+		t.Fatalf("review in place: %v", err)
 	}
 }
 

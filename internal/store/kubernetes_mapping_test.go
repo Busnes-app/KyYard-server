@@ -127,7 +127,7 @@ func kubernetesApp(t *testing.T, st *SQLStore, a TenantAccess, spec ApplicationS
 }
 
 // Mapping to a cluster creates the instance in a listed namespace with a project taken from
-// the application's name; the namespace may move only while nothing was applied there.
+// the application's name; the namespace may move only while no apply was sent there.
 func TestKubernetesMapping(t *testing.T) {
 	st, a := tenantAtomicStore(t)
 	ctx := context.Background()
@@ -177,15 +177,7 @@ func TestKubernetesMapping(t *testing.T) {
 	if err := ts.SetApplicationMapping(ctx, a, app.ID, MappingRequest{EndpointID: other, Namespace: "shop"}); !errors.Is(err, ErrApplicationAdopted) {
 		t.Fatalf("second endpoint: %v", err)
 	}
-	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE application_instances SET current_revision=1 WHERE id=?`), m.InstanceID); err != nil {
-		t.Fatal(err)
-	}
-	if err := ts.SetApplicationMapping(ctx, a, app.ID, MappingRequest{EndpointID: cluster, Namespace: "shop"}); !errors.Is(err, ErrApplicationAdopted) {
-		t.Fatalf("move after an apply: %v", err)
-	}
-	if err := ts.SetApplicationMapping(ctx, a, app.ID, MappingRequest{EndpointID: cluster, Namespace: "staging"}); err != nil {
-		t.Fatalf("review in place: %v", err)
-	}
+	// A move after an apply was sent: TestKubernetesMoveRefusedAfterAFailedApply.
 }
 
 // A Docker-adopted instance whose endpoint reads as a cluster is refused as the wrong runtime,

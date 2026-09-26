@@ -57,8 +57,10 @@ export const STEP_CODES: Record<string, string> = {
   runtime_error: 'The runtime call failed.',
   runtime_status: 'The runtime refused',
   forbidden: "The agent's access in the namespace does not allow this; apply the cluster's regenerated manifest.",
-  rollout_timeout: 'The Deployment did not become ready before the deadline; it stays as applied',
+  rollout_timeout: 'The Deployment did not become available; it stays as applied',
   conflict: 'The object kept changing under the agent',
+  pod_security: 'The namespace does not enforce Pod Security baseline; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.',
+  admission_denied: "The cluster refused the object (quota or policy); check the namespace's quotas and admission policies",
   legacy: LEGACY_OUTCOME,
 };
 export const RESULT_CODES: Record<string, string> = {
@@ -98,6 +100,8 @@ export function stepText(s: { code?: string; detail?: string }): string {
       return /^[0-9a-f]{64}$/.test(detail) ? `${text} (container ${detail}).` : `${text}.`;
     case 'runtime_status':
       return /^[1-5][0-9]{2}$/.test(detail) ? `${text} with status ${detail}.` : `${text}.`;
+    case 'admission_denied':
+      return OBJECT.test(detail) ? `${text}. Object: ${detail}.` : `${text}.`;
     case 'name_taken':
     case 'conflict':
       return OBJECT.test(detail) ? `${text}: ${detail}.` : `${text}.`;
@@ -110,7 +114,7 @@ export function stepText(s: { code?: string; detail?: string }): string {
 }
 // The closed detail shapes of the Kubernetes codes: Kind/name, and condition=Reason words.
 const OBJECT = /^(Deployment|Service|ConfigMap|Secret)\/[a-z0-9][-a-z0-9.]{0,252}$/;
-const ROLLOUT = /^(progressing|available|pod)=[A-Za-z]{1,64}$/;
+const ROLLOUT = /^(progressing|available|replicafailure|pod)=[A-Za-z]{1,64}$/;
 function isDeployment(x: unknown): x is Deployment {
   if (!x || typeof x !== 'object') return false;
   const d = x as Record<string, unknown>;
@@ -347,6 +351,8 @@ function PlanView({ base, instanceID, latestRevision, instance }: Props) {
       if (r.status === 409) {
         const payload: unknown = await r.json().catch(() => null);
         const code = payload && typeof payload === 'object' && 'code' in payload ? (payload as { code?: unknown }).code : undefined;
+        const blockers = code === 'preflight_blocked' ? knownBlockers(payload, messages).map(b => messages[b]) : [];
+        if (blockers.length) { setApplyError(blockers.join(' ')); return; }
         setApplyError((typeof code === 'string' && APPLY_CODES[code]) || 'The apply was refused or its outcome is unknown. Refresh before trying again.');
         return;
       }

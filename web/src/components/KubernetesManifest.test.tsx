@@ -33,3 +33,15 @@ it('names a refused list in fixed text', async () => {
   expect((await screen.findByRole('alert')).textContent).toContain('List at most 32 namespaces');
   expect(document.body.textContent).not.toContain('secret-canary');
 });
+
+it('copies the manifest beside Download', async () => {
+  const writeText = vi.fn(async () => undefined);
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  vi.stubGlobal('fetch', vi.fn(async () => json({ manifest: 'kind: Role', manifest_file: 'kyyard-agent-prod.yaml', command: 'kubectl apply -f kyyard-agent-prod.yaml', namespaces: ['shop'], note: 'n' })));
+  render(<ManifestRegeneration org="a" endpoint={endpoint} onSaved={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Regenerate manifest' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save and show manifest' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Copy manifest' }));
+  expect(writeText).toHaveBeenCalledWith('kind: Role');
+  expect((await screen.findByRole('status')).textContent).toBe('Copied.');
+});

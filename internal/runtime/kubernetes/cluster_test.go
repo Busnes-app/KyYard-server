@@ -32,9 +32,10 @@ const deployNamespace = "kyyard-test-deploy"
 // names (a disposable kind cluster: it creates and deletes cluster-scoped RBAC), then acts as
 // the agent's ServiceAccount: Secrets are denied cluster-wide, pods are listed, the identity
 // Secret round-trips, and a snapshot names the cluster's nodes with nothing forbidden. In the
-// one granted namespace the agent may write Deployments and read Secrets by name but not list
-// them; it deploys KY_TEST_DEPLOY_IMAGE (a digest-pinned image that keeps running, such as
-// registry.k8s.io/pause@sha256:...) as one service, sees it ready, and removes it.
+// one granted namespace, which enforces Pod Security baseline, the agent may write Deployments
+// and read Secrets by name but not list them; it deploys KY_TEST_DEPLOY_IMAGE (a digest-pinned
+// image that keeps running, such as registry.k8s.io/pause@sha256:...) as one service, sees it
+// available, and removes it.
 func TestManifestOnARealCluster(t *testing.T) {
 	path := os.Getenv("KY_TEST_KUBECONFIG")
 	if path == "" {
@@ -53,7 +54,7 @@ func TestManifestOnARealCluster(t *testing.T) {
 	defer cancel()
 	removeAgent(t, ctx, cs)
 	t.Cleanup(func() { removeAgent(t, context.Background(), cs) })
-	if _, err := cs.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: deployNamespace}}, metav1.CreateOptions{}); err != nil {
+	if _, err := cs.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: deployNamespace, Labels: map[string]string{"pod-security.kubernetes.io/enforce": "baseline"}}}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
