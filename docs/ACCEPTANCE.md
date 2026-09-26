@@ -97,9 +97,9 @@ preflight shows the clock blocker and no plan is made.
 - For step 6, one `acc-app` image must run at an older digest of a tag that has since moved.
   Pull the old digest and tag it before `up`: `docker pull <repo>@<old digest>` then
   `docker tag <repo>@<old digest> <repo>:<tag>` (unproven). If Check for updates later says "Up to
-  date" or "Unknown on host", the setup did not take; fix it and rerun step 6. A tag known to have moved works: pull the image's current digest on
-  a machine that has an older local copy and compare `docker buildx imagetools inspect` with
-  the local `RepoDigests`.
+  date" or "Unknown on host", the setup did not take; fix it and rerun step 6. To find a moved
+  tag, compare the tag's current digest from `docker buildx imagetools inspect <tag>` with the
+  local `RepoDigests`; the local copy is older when they differ.
 - Write a marker into the `acc-app_data` volume (a row, a file) and note it.
 
 **Accounts and two organizations**, all through the UI, signed in as the bootstrap `admin`

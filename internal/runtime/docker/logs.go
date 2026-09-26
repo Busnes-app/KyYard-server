@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	// logFetchBudget bounds a request for history. The runtime is reading a file it already
-	// has, so this is generous for a slow disk rather than for a slow network.
+	// logFetchBudget bounds a request for history, including time spent waiting on the session
+	// queue: a large history over a slow uplink can reach it and end as a failed close.
 	logFetchBudget = 60 * time.Second
 	// logFollowBudget is the absolute life of a following stream. A browser tab left open
 	// over a weekend must not hold a reader on the host forever; the operator reopens it.

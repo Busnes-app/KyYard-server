@@ -100,7 +100,9 @@ func TestLogsGatherFramesThatHaveArrived(t *testing.T) {
 	if got.String() != string(want) {
 		t.Fatalf("the log arrived as %q", got.String())
 	}
-	if calls > 3 {
+	// Ideally three: the short lines in one chunk, the long line in two. Each body read that
+	// ends mid-stream adds one flush, hence the slack; a chunk per line would be over 170.
+	if calls > 5 {
 		t.Fatalf("%d lines were handed on as %d chunks", lines+1, calls)
 	}
 }
