@@ -443,28 +443,47 @@ func TestKubernetesPlanVolumeBlockers(t *testing.T) {
 	}
 }
 
-// A cluster removal reports each kept claim as a skipped volume step with detail retained, and
-// settles; any other volume step is refused.
+// A cluster removal reports each kept claim as a skipped volume step with detail retained, under
+// the service that mounts it; a step for a service with no claim left to keep, or naming more of
+// them than it mounts, is refused, and a success settles only once every claim is reported
+// exactly once.
 func TestRemoveKubernetesRetainsClaims(t *testing.T) {
-	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	st, a, app, cluster, m := kubernetesPlanFixture(t, claimSpec(bothChosen), nil)
 	ctx := context.Background()
 	ts := st.Tenancy()
 	d, _, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: m.InstanceID, Confirm: "shop-front"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	steps := []protocol.DeploymentStep{
+	base := []protocol.DeploymentStep{
+		{Service: "db", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeSucceeded},
+		{Service: "db", Step: protocol.StepRemove, Outcome: protocol.OutcomeSucceeded},
 		{Service: "web", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeSucceeded},
 		{Service: "web", Step: protocol.StepRemove, Outcome: protocol.OutcomeSucceeded},
-		{Service: "web", Step: protocol.StepVolume, Outcome: protocol.OutcomeSkipped, Detail: protocol.DetailRetained},
 	}
-	res := protocol.DeploymentResult{Deployment: d.ID, RequestID: d.CorrelationID, Outcome: protocol.OutcomeSucceeded, Services: []protocol.DeploymentIdentity{}, Steps: steps}
-	bad := res
-	bad.Steps = append(slices.Clone(steps[:2]), protocol.DeploymentStep{Service: "web", Step: protocol.StepVolume, Outcome: protocol.OutcomeSucceeded})
-	if err := ts.SettleDeployment(ctx, cluster, bad); !errors.Is(err, ErrInvalid) {
+	retained := func(service string, n int) []protocol.DeploymentStep {
+		out := make([]protocol.DeploymentStep, n)
+		for i := range out {
+			out[i] = protocol.DeploymentStep{Service: service, Step: protocol.StepVolume, Outcome: protocol.OutcomeSkipped, Detail: protocol.DetailRetained}
+		}
+		return out
+	}
+	result := func(steps ...protocol.DeploymentStep) protocol.DeploymentResult {
+		return protocol.DeploymentResult{Deployment: d.ID, RequestID: d.CorrelationID, Outcome: protocol.OutcomeSucceeded, Services: []protocol.DeploymentIdentity{}, Steps: append(slices.Clone(base), steps...)}
+	}
+	notKept := result(protocol.DeploymentStep{Service: "db", Step: protocol.StepVolume, Outcome: protocol.OutcomeSucceeded})
+	if err := ts.SettleDeployment(ctx, cluster, notKept); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a volume step that is not a kept claim: %v", err)
 	}
-	if err := ts.SettleDeployment(ctx, cluster, res); err != nil {
+	unknown := result(append(retained("db", 2), retained("web", 1)...)...)
+	if err := ts.SettleDeployment(ctx, cluster, unknown); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a claim reported for a service that mounts none: %v", err)
+	}
+	missing := result(retained("db", 1)...)
+	if err := ts.SettleDeployment(ctx, cluster, missing); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a success missing a claim: %v", err)
+	}
+	if err := ts.SettleDeployment(ctx, cluster, result(retained("db", 2)...)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.ReadApplicationInstance(ctx, a, app.ID, m.InstanceID); !errors.Is(err, ErrNotFound) {
