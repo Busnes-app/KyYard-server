@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -81,7 +82,7 @@ func TestKubernetesPlanAndFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.State != "applying" || req.Kubernetes == nil || *req.Kubernetes != (protocol.KubernetesTarget{Namespace: "shop", ApplicationID: app.ID, InstanceID: m.InstanceID, SpecDigest: d.SpecDigest}) || len(req.Registries) != 0 || len(req.Volumes) != 0 {
+	if applied.State != "applying" || req.Kubernetes == nil || !reflect.DeepEqual(*req.Kubernetes, protocol.KubernetesTarget{Namespace: "shop", ApplicationID: app.ID, InstanceID: m.InstanceID, SpecDigest: d.SpecDigest}) || len(req.Registries) != 0 || len(req.Volumes) != 0 {
 		t.Fatalf("frame %+v", req)
 	}
 	s := req.Services[0]
