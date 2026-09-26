@@ -27,7 +27,8 @@ const rolloutPoll = 2 * time.Second
 // precondition: the agent's own grant (a SelfSubjectAccessReview for create deployments in the
 // namespace, forbidden when denied), the namespace's Pod Security level (pod_security unless it
 // enforces baseline or restricted), then each planned object read by name, refused name_taken
-// when one exists without this instance's label. Then per service create (ConfigMap, Secret,
+// when one exists without this instance's label, and each claim, refused claim_immutable when
+// this instance's differs from the plan. Then per service create (missing claims, ConfigMap, Secret,
 // Deployment, Service, each updated when it exists and is owned, created otherwise; one conflict
 // is re-read and retried; a write the cluster refuses is admission_denied) and start (the
 // rollout, polled until available, a failure the cluster reports, or the deadline:
@@ -189,11 +190,50 @@ func (r *run) refusedWrite(ctx context.Context, err error, kind, name string) (s
 }
 
 // existing is what a precondition found under a service's planned names: nil where nothing is.
+// claims names the service's claims that already exist, owned and as planned.
 type existing struct {
 	configMap  *corev1.ConfigMap
 	secret     *corev1.Secret
 	deployment *appsv1.Deployment
 	service    *corev1.Service
+	claims     map[string]bool
+}
+
+// claimImmutable refuses a claim the apply would have to change: KyYard never updates a claim.
+func claimImmutable(name string) (string, string, string) {
+	return protocol.OutcomeDenied, "claim_immutable", "PersistentVolumeClaim/" + name
+}
+
+// claimDiffers reports an existing claim that is not the planned one: another access mode or
+// size, or, when the plan names one, another StorageClass. A claim planned with the cluster
+// default takes whatever class the cluster gave it, so a second apply finds it unchanged.
+func claimDiffers(have, want *corev1.PersistentVolumeClaim) bool {
+	if want.Spec.StorageClassName != nil && (have.Spec.StorageClassName == nil || *have.Spec.StorageClassName != *want.Spec.StorageClassName) {
+		return true
+	}
+	h, w := have.Spec.Resources.Requests[corev1.ResourceStorage], want.Spec.Resources.Requests[corev1.ResourceStorage]
+	return h.Cmp(w) != 0 || !slices.Equal(have.Spec.AccessModes, want.Spec.AccessModes)
+}
+
+// checkClaim is a claim's precondition: absent, or this instance's and as planned.
+func (r *run) checkClaim(ctx context.Context, want *corev1.PersistentVolumeClaim) (bool, string, string, string) {
+	have, found, err := get(ctx, objectAPI[*corev1.PersistentVolumeClaim](r.c.cs.CoreV1().PersistentVolumeClaims(r.namespace)), want.Name)
+	switch {
+	case err != nil:
+		o, code, detail := r.failure(ctx, err)
+		return false, o, code, detail
+	case !found:
+		o, code, detail := succeeded()
+		return false, o, code, detail
+	case !r.owned(have):
+		o, code, detail := nameTaken("PersistentVolumeClaim", want.Name)
+		return true, o, code, detail
+	case claimDiffers(have, want):
+		o, code, detail := claimImmutable(want.Name)
+		return true, o, code, detail
+	}
+	o, code, detail := succeeded()
+	return true, o, code, detail
 }
 
 func (r *run) owned(o metav1.Object) bool { return o.GetLabels()[render.LabelInstance] == r.instance }
@@ -220,9 +260,17 @@ func get[T metav1.Object](ctx context.Context, api objectAPI[T], name string) (T
 	return o, err == nil, err
 }
 
-// read is a service's precondition: each planned object, owned or absent.
+// read is a service's precondition: each planned object, owned or absent, and each claim absent
+// or owned and as planned.
 func (r *run) read(ctx context.Context, set render.Set) (existing, string, string, string) {
-	var e existing
+	e := existing{claims: map[string]bool{}}
+	for _, want := range set.Claims {
+		found, o, code, detail := r.checkClaim(ctx, want)
+		if o != protocol.OutcomeSucceeded {
+			return e, o, code, detail
+		}
+		e.claims[want.Name] = found
+	}
 	core, apps := r.c.cs.CoreV1(), r.c.cs.AppsV1()
 	check := func(kind, name string, o metav1.Object, found bool, err error) (string, string, string) {
 		switch {
@@ -285,9 +333,27 @@ func (r *run) read(ctx context.Context, set render.Set) (existing, string, strin
 	return e, o, code, detail
 }
 
-// apply writes a service's objects in order and returns the Deployment as written.
+// apply writes a service's objects in order, its missing claims first, and returns the
+// Deployment as written. A claim is created, never updated: one that appeared since the
+// precondition must be this instance's and as planned.
 func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.Deployment, string, string, string) {
 	core, apps := r.c.cs.CoreV1(), r.c.cs.AppsV1()
+	for _, want := range set.Claims {
+		if e.claims[want.Name] {
+			continue
+		}
+		_, err := core.PersistentVolumeClaims(r.namespace).Create(ctx, want, metav1.CreateOptions{})
+		if apierrors.IsAlreadyExists(err) {
+			if _, o, code, detail := r.checkClaim(ctx, want); o != protocol.OutcomeSucceeded {
+				return nil, o, code, detail
+			}
+			continue
+		}
+		if err != nil {
+			o, code, detail := r.refusedWrite(ctx, err, "PersistentVolumeClaim", want.Name)
+			return nil, o, code, detail
+		}
+	}
 	if _, o, code, detail := upsert(ctx, r, "ConfigMap", core.ConfigMaps(r.namespace), set.ConfigMap, e.configMap, nil); o != protocol.OutcomeSucceeded {
 		return nil, o, code, detail
 	}

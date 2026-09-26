@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -28,7 +29,8 @@ type doomed struct {
 // namespace carrying its instance label, and each named service's Secret when it carries the
 // label too. An object without it is never touched. The first service's precondition does the
 // reads; each service then has a remove step, skipped when nothing of it is left. Deletes are
-// foreground, so a Deployment's pods go with it.
+// foreground, so a Deployment's pods go with it. The instance's claims are kept: each is a
+// skipped volume step, detail retained, under the service that mounts it.
 func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.ValidateFor(protocol.RuntimeKubernetes, time.Now()); err != nil {
@@ -37,11 +39,11 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, sta
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
 	r := &run{c: c, parent: parent, res: res, started: started, namespace: req.Kubernetes.Namespace, instance: req.Kubernetes.InstanceID}
-	found := map[string][]doomed{}
+	found, kept := map[string][]doomed{}, map[string][]string{}
 	services := slices.Clone(req.Services)
 	r.step(services[0], protocol.StepPrecondition, func() (string, string, string) {
-		o, code, detail := r.find(ctx, req, found)
-		for s := range found {
+		o, code, detail := r.find(ctx, req, found, kept)
+		for _, s := range slices.Concat(slices.Collect(maps.Keys(found)), slices.Collect(maps.Keys(kept))) {
 			if !slices.Contains(services, s) {
 				services = append(services, s)
 			}
@@ -57,31 +59,38 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, sta
 		}
 		if len(found[s]) == 0 {
 			r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: s, Step: protocol.StepRemove, Outcome: protocol.OutcomeSkipped})
-			continue
+		} else {
+			r.step(s, protocol.StepRemove, func() (string, string, string) { return r.remove(ctx, found[s]) })
 		}
-		r.step(s, protocol.StepRemove, func() (string, string, string) {
-			r.begin()
-			foreground := metav1.DeletePropagationForeground
-			for _, d := range found[s] {
-				uid := d.uid
-				err := d.remove(ctx, d.name, metav1.DeleteOptions{PropagationPolicy: &foreground, Preconditions: &metav1.Preconditions{UID: &uid}})
-				switch {
-				case err == nil, apierrors.IsNotFound(err):
-				case apierrors.IsConflict(err):
-					// The UID precondition failed: something else now holds this name. The
-					// object this removal found is already gone from the cluster's
-					// perspective, so this is treated like NotFound rather than a failure.
-				default:
-					return r.failure(ctx, err)
-				}
-			}
-			return succeeded()
-		})
+		// A claim is never deleted: the data in it is the operator's to delete deliberately.
+		for range kept[s] {
+			r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: s, Step: protocol.StepVolume, Outcome: protocol.OutcomeSkipped, Detail: protocol.DetailRetained})
+		}
 	}
 	if r.res.Outcome == "" {
 		r.res.Outcome = protocol.OutcomeSucceeded
 	}
 	return r.res
+}
+
+// remove deletes one service's objects in the foreground, each guarded by the UID it was read at.
+func (r *run) remove(ctx context.Context, objects []doomed) (string, string, string) {
+	r.begin()
+	foreground := metav1.DeletePropagationForeground
+	for _, d := range objects {
+		uid := d.uid
+		err := d.remove(ctx, d.name, metav1.DeleteOptions{PropagationPolicy: &foreground, Preconditions: &metav1.Preconditions{UID: &uid}})
+		switch {
+		case err == nil, apierrors.IsNotFound(err):
+		case apierrors.IsConflict(err):
+			// The UID precondition failed: something else now holds this name. The object this
+			// removal found is already gone from the cluster's perspective, so this is treated
+			// like NotFound rather than a failure.
+		default:
+			return r.failure(ctx, err)
+		}
+	}
+	return succeeded()
 }
 
 // find collects, by service label, every object of the instance. A Secret is found by the name
@@ -90,7 +99,7 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, sta
 // on which other colliding service names are present -- and, as a fallback for a service whose
 // Deployment is already gone, by the name this request itself would compute. The role grants no
 // list on Secrets, so each is read by name.
-func (r *run) find(ctx context.Context, req protocol.RemovalRequest, found map[string][]doomed) (string, string, string) {
+func (r *run) find(ctx context.Context, req protocol.RemovalRequest, found map[string][]doomed, kept map[string][]string) (string, string, string) {
 	core, apps := r.c.cs.CoreV1(), r.c.cs.AppsV1()
 	selector := metav1.ListOptions{LabelSelector: labels.SelectorFromSet(labels.Set{render.LabelInstance: r.instance}).String()}
 	add := func(kind string, o metav1.Object, remove func(context.Context, string, metav1.DeleteOptions) error) {
@@ -143,6 +152,17 @@ func (r *run) find(ctx context.Context, req protocol.RemovalRequest, found map[s
 			if o, code, detail := addSecret(base + "-secret"); o != protocol.OutcomeSucceeded {
 				return o, code, detail
 			}
+		}
+	}
+	// Claims are listed only to be reported kept, under the service that mounts them, at most
+	// one volume step per possible volume.
+	claims, err := core.PersistentVolumeClaims(r.namespace).List(ctx, selector)
+	if err != nil {
+		return r.failure(ctx, err)
+	}
+	for i, c := range claims.Items {
+		if s := c.Labels[render.LabelService]; protocol.ValidServiceName(s) && i < protocol.MaxDeploymentVolumes {
+			kept[s] = append(kept[s], c.Name)
 		}
 	}
 	// Fallback for a named service whose Deployment is already gone: the name this removal

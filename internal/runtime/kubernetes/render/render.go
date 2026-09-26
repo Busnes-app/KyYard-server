@@ -12,6 +12,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -40,7 +41,8 @@ const (
 )
 
 // Set is one service's objects. Secret is nil when the service has no secret-backed value, and
-// Service is nil when it publishes no port.
+// Service is nil when it publishes no port. Claims are the PersistentVolumeClaims it mounts,
+// each mounted by this service alone.
 type Set struct {
 	Service    string
 	Name       string
@@ -48,6 +50,7 @@ type Set struct {
 	Secret     *corev1.Secret
 	Deployment *appsv1.Deployment
 	Endpoint   *corev1.Service
+	Claims     []*corev1.PersistentVolumeClaim
 }
 
 // Request renders every service of req, in order. req must have passed
@@ -130,10 +133,34 @@ func service(req protocol.DeploymentRequest, s protocol.DeploymentService, name 
 			}},
 		}},
 	}}
+	for _, m := range s.Volumes {
+		spec := &set.Deployment.Spec.Template.Spec
+		spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: m.Claim, MountPath: m.MountPath, ReadOnly: m.ReadOnly})
+		if slices.ContainsFunc(spec.Volumes, func(v corev1.Volume) bool { return v.Name == m.Claim }) {
+			continue
+		}
+		spec.Volumes = append(spec.Volumes, corev1.Volume{Name: m.Claim, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: m.Claim}}})
+		i := slices.IndexFunc(k.Claims, func(c protocol.KubernetesClaim) bool { return c.Name == m.Claim })
+		set.Claims = append(set.Claims, claim(k.Claims[i], meta(m.Claim)))
+	}
 	if len(servicePorts) > 0 {
 		set.Endpoint = &corev1.Service{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"}, ObjectMeta: meta(name), Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP, Selector: Selector(k.InstanceID, s.Name), Ports: servicePorts,
 		}}
 	}
 	return set
+}
+
+// claim is a ReadWriteOnce PersistentVolumeClaim of the requested size, in the named StorageClass
+// or, with none, the cluster's default.
+func claim(c protocol.KubernetesClaim, meta metav1.ObjectMeta) *corev1.PersistentVolumeClaim {
+	pvc := &corev1.PersistentVolumeClaim{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}, ObjectMeta: meta, Spec: corev1.PersistentVolumeClaimSpec{
+		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(c.Size)}},
+	}}
+	if c.StorageClass != "" {
+		class := c.StorageClass
+		pvc.Spec.StorageClassName = &class
+	}
+	return pvc
 }
