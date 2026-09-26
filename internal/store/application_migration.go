@@ -172,17 +172,21 @@ func (t *tenancyStore) dockerSource(ctx context.Context, tx *sql.Tx, a TenantAcc
 }
 
 // migrationDestination reads a Kubernetes endpoint's namespaces and reported StorageClasses and
-// the name the destination of app would take on it.
+// the name the destination of app would take on it. The endpoint must be connected: a revoked or
+// offline cluster must not receive a destination application holding copied secrets.
 func (t *tenancyStore) migrationDestination(ctx context.Context, tx *sql.Tx, a TenantAccess, sourceName, endpoint string) (MigrationDestination, error) {
 	d := MigrationDestination{EndpointID: endpoint, StorageClasses: []protocol.StorageClass{}}
-	var runtime, name, namespaces string
+	var runtime, name, namespaces, state string
 	var snapshot sql.NullString
-	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT e.runtime,e.name,e.deploy_namespaces,v.snapshot FROM endpoints e LEFT JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE e.organization_id=? AND e.environment_id=? AND e.id=?`), a.OrganizationID, a.EnvironmentID, endpoint).Scan(&runtime, &name, &namespaces, &snapshot)
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT e.runtime,e.name,e.deploy_namespaces,e.state,v.snapshot FROM endpoints e LEFT JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE e.organization_id=? AND e.environment_id=? AND e.id=?`), a.OrganizationID, a.EnvironmentID, endpoint).Scan(&runtime, &name, &namespaces, &state, &snapshot)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, ErrNotFound
 	}
 	if err != nil {
 		return d, err
+	}
+	if state != "active" {
+		return d, ErrEndpointOffline
 	}
 	if runtime != protocol.RuntimeKubernetes {
 		return d, ErrRuntimeUnsupported
@@ -350,6 +354,22 @@ func (t *tenancyStore) openMigrationOf(ctx context.Context, tx *sql.Tx, a Tenant
 	return m, nil
 }
 
+// latestMigrationOf reads app's most recent migration as its source, whatever its status;
+// ErrNotFound when app has never had one. Distinct from openMigrationOf: changeMigration uses
+// this so confirming or abandoning an already-closed migration reports ErrMigrationState, not
+// the ErrNotFound that means the application never had a migration at all.
+func (t *tenancyStore) latestMigrationOf(ctx context.Context, tx *sql.Tx, a TenantAccess, app string) (*ApplicationMigration, error) {
+	m, err := scanMigration(tx.QueryRowContext(ctx, t.store.rebind(selectMigration+`WHERE m.organization_id=? AND m.environment_id=? AND m.application_id=? ORDER BY m.created_at DESC LIMIT 1`), a.OrganizationID, a.EnvironmentID, app))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.Role = "source"
+	return m, nil
+}
+
 // ReadMigration returns app's open migration when app is its source, else the migration that
 // created app as its destination, whatever its status; ErrNotFound when there is neither.
 func (t *tenancyStore) ReadMigration(ctx context.Context, a TenantAccess, app string) (*ApplicationMigration, error) {
@@ -392,9 +412,12 @@ func (t *tenancyStore) changeMigration(ctx context.Context, a TenantAccess, app 
 		if err != nil {
 			return err
 		}
-		m, err := t.openMigrationOf(ctx, tx, a, app)
+		m, err := t.latestMigrationOf(ctx, tx, a, app)
 		if err != nil {
 			return err
+		}
+		if m.Status == MigrationCutoverConfirmed || m.Status == MigrationAbandoned {
+			return ErrMigrationState
 		}
 		target = app + "/migration/" + m.ID
 		if err := op(tx, head, m); err != nil {
@@ -553,6 +576,11 @@ func (t *tenancyStore) ConfirmMigration(ctx context.Context, a TenantAccess, app
 			query, from, to = `UPDATE application_migrations SET status=?,confirmed_by=?,confirmed_at=?,cutover_note=?,updated_at=? WHERE organization_id=? AND environment_id=? AND id=?`, MigrationValidated, MigrationCutoverConfirmed
 		}
 		if m.Status != from {
+			return ErrMigrationState
+		}
+		// The destination can be removed and discarded after it was created: the FK clears
+		// destination_application_id, and there is nothing left to validate or cut over to.
+		if m.DestinationApplicationID == "" {
 			return ErrMigrationState
 		}
 		_, err := tx.ExecContext(ctx, t.store.rebind(query), to, a.ActorID, now, note, now, a.OrganizationID, a.EnvironmentID, m.ID)

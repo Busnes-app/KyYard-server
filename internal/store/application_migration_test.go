@@ -203,6 +203,9 @@ func TestMigrationLifecycle(t *testing.T) {
 	if m, err = ts.ConfirmMigration(ctx, a, app.ID, "cutover", "DNS moved to the ingress"); err != nil || m.Status != MigrationCutoverConfirmed || m.ConfirmedBy != "actor" || m.CutoverNote != "DNS moved to the ingress" {
 		t.Fatalf("cutover %+v %v", m, err)
 	}
+	if _, err := ts.ConfirmMigration(ctx, a, app.ID, "cutover", "again"); !errors.Is(err, ErrMigrationState) {
+		t.Fatalf("a second cutover: %v", err)
+	}
 	if _, err := ts.ReadMigration(ctx, a, app.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a closed migration read as the source: %v", err)
 	}
@@ -314,7 +317,7 @@ func TestMigrationKeepsTheSource(t *testing.T) {
 	if _, _, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: source.ID, Confirm: "shop"}); err != nil {
 		t.Fatalf("removing the source after abandoning: %v", err)
 	}
-	if _, err := ts.AbandonMigration(ctx, a, app.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := ts.AbandonMigration(ctx, a, app.ID); !errors.Is(err, ErrMigrationState) {
 		t.Fatalf("abandoning twice: %v", err)
 	}
 }
@@ -383,5 +386,64 @@ func TestMigrationIDOnDestinationApplies(t *testing.T) {
 	}
 	if later := apply(); later.MigrationID != "" {
 		t.Fatalf("an apply after the migration closed: %q", later.MigrationID)
+	}
+}
+
+// A destination application can be removed and discarded after it is created: the FK then
+// clears destination_application_id, and neither confirmation makes sense with nothing left to
+// validate or cut over to.
+func TestMigrationConfirmWithoutDestination(t *testing.T) {
+	st, a, app, cluster := migrationFixture(t, migrationSpec(), map[string]string{"db.PASSWORD": "p"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, err := ts.CreateMigration(ctx, a, app.ID, MigrationStart{DestinationEndpointID: cluster, Namespace: "shop"}, analysis(1, true)); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances, err := ts.ListApplicationInstances(ctx, a, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := instances[slices.IndexFunc(instances, func(i ApplicationInstance) bool { return i.ApplicationID == m.DestinationApplicationID })]
+	if _, err := st.db.Exec(st.rebind(`DELETE FROM application_resources WHERE instance_id=?`), dest.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(st.rebind(`DELETE FROM application_instances WHERE id=?`), dest.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.DiscardApplication(ctx, a, m.DestinationApplicationID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.ConfirmMigration(ctx, a, app.ID, "validated", "checked"); !errors.Is(err, ErrMigrationState) {
+		t.Fatalf("validating without a destination: %v", err)
+	}
+}
+
+// A revoked or offline cluster must not receive a destination application holding copied
+// secrets: neither starting nor completing a migration to it succeeds.
+func TestMigrationDestinationEndpointOffline(t *testing.T) {
+	st, a, app, cluster := migrationFixture(t, migrationSpec(), map[string]string{"db.PASSWORD": "p"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, err := st.db.Exec(st.rebind(`UPDATE endpoints SET state='offline' WHERE id=?`), cluster); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.CreateMigration(ctx, a, app.ID, MigrationStart{DestinationEndpointID: cluster, Namespace: "shop"}, analysis(1, false)); !errors.Is(err, ErrEndpointOffline) {
+		t.Fatalf("starting to an offline cluster: %v", err)
+	}
+	if _, err := st.db.Exec(st.rebind(`UPDATE endpoints SET state='active' WHERE id=?`), cluster); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.CreateMigration(ctx, a, app.ID, MigrationStart{DestinationEndpointID: cluster, Namespace: "shop"}, analysis(1, true)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(st.rebind(`UPDATE endpoints SET state='offline' WHERE id=?`), cluster); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey); !errors.Is(err, ErrEndpointOffline) {
+		t.Fatalf("creating a destination on an offline cluster: %v", err)
 	}
 }
