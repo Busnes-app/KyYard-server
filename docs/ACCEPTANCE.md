@@ -26,6 +26,34 @@ in the results table.
   which account from the prerequisites for step 8.
 - Container command results (restart, start, stop, remove) are not audited as results; the
   audit row is the request, under its permission.
+- A source build (`docker-compose.build.yml`) shows an enrollment token and a "Source
+  installation" note instead of the one-line command: the image has no published digest to
+  pin. Set `KY_AGENT_IMAGE` (README) or compose the `docker run` by hand from the token.
+- Per-row container actions sit inside a collapsed "Actions" disclosure; Logs, Restart and
+  Terminal are inside it.
+- Approve, Restart, Revoke, Save revision, Pin key and "Allow anonymous pulls" use the
+  browser's native confirm dialog; the fingerprint to compare is in that dialog's text.
+- After "Adopt reviewed containers" and after "Save revision N" the configuration view
+  collapses to the application list; reopen "View configuration" to continue. The status text
+  shows only inside the reopened view.
+- "Plan update" plans the latest saved revision, not the current one: after a put-back to an
+  earlier revision, applying an update also moves the definition forward. The plan panel says
+  which revision it planned.
+- An apply replaces every mapped container of the project, not only the services whose image
+  or definition changed.
+- A second organization's Containers home says "The standard installation connects local
+  Docker automatically; check Docker access if it is missing." Local Docker belongs to the
+  initial organization only.
+- A revoked host's page says "No inventory yet. It arrives with the agent's first report after
+  approval."; a revoked host never reports again. Its agent container, if started with
+  `--restart unless-stopped`, restarts every few seconds and writes an `agent.connect denied`
+  audit row each time: remove the container after revoking.
+- A read-only member still sees the mutating controls (Save new revision, Release adoption, Map
+  services to containers, Deployment plan, the registry form); the server refuses them.
+- Revisions that differ only in encrypted environment values show the same digest.
+- Recreated containers show their image ID, not the tag, in `docker ps` on the host: the
+  recreate pins by ID.
+- The agent container itself carries an anonymous volume for the image's declared `/data`.
 
 ## Prerequisites
 
@@ -69,7 +97,9 @@ preflight shows the clock blocker and no plan is made.
 - For step 6, one `acc-app` image must run at an older digest of a tag that has since moved.
   Pull the old digest and tag it before `up`: `docker pull <repo>@<old digest>` then
   `docker tag <repo>@<old digest> <repo>:<tag>` (unproven). If Check for updates later says "Up to
-  date" or "Unknown on host", the setup did not take; fix it and rerun step 6.
+  date" or "Unknown on host", the setup did not take; fix it and rerun step 6. A tag known to have moved works: pull the image's current digest on
+  a machine that has an older local copy and compare `docker buildx imagetools inspect` with
+  the local `RepoDigests`.
 - Write a marker into the `acc-app_data` volume (a row, a file) and note it.
 
 **Accounts and two organizations**, all through the UI, signed in as the bootstrap `admin`
