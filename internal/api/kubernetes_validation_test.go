@@ -28,11 +28,12 @@ var (
 // clusterValidation is a clusterHost whose application shop (web: ghcr.io/org/web:1) already ran
 // one succeeded manual apply at priorDigest: the deployment a rollback returns to. Every status
 // read goes through inspect, which reports the web Deployment at the last settled generation, its
-// one pod running with restarts.
+// one pod running with restarts. digests is the registry resolver the server holds now.
 type clusterValidation struct {
 	clusterHost
 	app, appID, instance string
 	prior                string
+	digests              *fakeDigests
 	mu                   sync.Mutex
 	generation           int64
 	restarts             int32
@@ -50,7 +51,8 @@ func newClusterValidation(t *testing.T, capabilities ...string) *clusterValidati
 	}
 	v.instance = mapped.InstanceID
 	api.SetPlanInspectorForTest(v.s, v.inspect)
-	api.SetDigestResolverForTest(v.s, &fakeDigests{digest: priorDigest})
+	v.digests = &fakeDigests{digest: priorDigest}
+	api.SetDigestResolverForTest(v.s, v.digests)
 	body, _ := json.Marshal(store.PlanRequest{InstanceID: mapped.InstanceID, MappingVersion: mapped.Version, Revision: 1, Confirm: "shop"})
 	var d store.Deployment
 	if err := json.Unmarshal([]byte(v.do(t, "POST", v.app+"/deployments", string(body), 201)), &d); err != nil {
@@ -126,7 +128,8 @@ func (v *clusterValidation) automate(t *testing.T) string {
 	if _, _, err := v.st.Tenancy().PutUpdatePolicy(context.Background(), v.access(), v.appID, store.PolicyInput{Mode: store.PolicyModeApply, Timezone: "UTC", Weekdays: days, StartMinute: 600, EndMinute: 660}); err != nil {
 		t.Fatal(err)
 	}
-	api.SetDigestResolverForTest(v.s, &fakeDigests{digest: updateDigest})
+	v.digests = &fakeDigests{digest: updateDigest}
+	api.SetDigestResolverForTest(v.s, v.digests)
 	api.PolicyTickForTest(v.s, tomorrow().Add(10*time.Hour+30*time.Minute))
 	api.WaitPolicyRunsForTest(v.s)
 	runs, err := v.st.Tenancy().ListPolicyRuns(context.Background(), v.access(), v.appID, 10)
@@ -194,8 +197,15 @@ func TestClusterValidationRollsBackToThePriorDigests(t *testing.T) {
 	id := v.automate(t)
 	v.at(t, id, afterGrace)
 	v.restart(2)
+	heads := v.digests.calls()
+	if heads == 0 {
+		t.Fatal("the update check did not go through the harness resolver")
+	}
 	v.at(t, id, afterGrace+store.ValidationPoll)
 	req := v.frame(t)
+	if n := v.digests.calls(); n != heads {
+		t.Fatalf("the rollback called the registry: %d calls, %d before", n, heads)
+	}
 	if req.Revision != 1 || len(req.Services) != 1 || req.Services[0].Pull.Digest != priorDigest || req.Services[0].Pull.Reference != "ghcr.io/org/web@"+priorDigest || req.Kubernetes.Namespace != "shop" {
 		t.Fatalf("rollback frame %+v", req)
 	}
@@ -250,5 +260,30 @@ func TestClusterValidationInspectsOverTheAgentSocket(t *testing.T) {
 	pending, err := v.st.Tenancy().PendingValidations(context.Background())
 	if err != nil || len(pending) != 1 || pending[0].Phase != store.PhaseObserving || !maps.Equal(pending[0].Baseline["web"].PodRestarts, map[string]int{clusterPod: 1}) {
 		t.Fatalf("pending %+v %v", pending, err)
+	}
+}
+
+// A cluster rollback pins digests and calls no registry, but the pulled host still needs a
+// registry row or anonymous pull: with anonymous pull turned off after the update, the rollback
+// plan is refused, nothing is planned and the policy pauses naming the blocker.
+func TestClusterValidationRollbackNeedsARegistryRow(t *testing.T) {
+	v := newClusterValidation(t, inspectingCluster...)
+	id := v.automate(t)
+	if err := v.st.Tenancy().SetAnonymousPull(context.Background(), store.TenantAccess{ActorID: "usr_deployer", OrganizationID: "a"}, false); err != nil {
+		t.Fatal(err)
+	}
+	v.at(t, id, afterGrace)
+	v.restart(2)
+	v.at(t, id, afterGrace+store.ValidationPoll)
+	got := v.validation(t, id)
+	if got.Verdict != store.VerdictRestarting || got.Rollback == nil || *got.Rollback != (store.ValidationRollback{Outcome: store.RollbackFailed, Detail: "registry_not_configured"}) {
+		t.Fatalf("validation %+v %+v", got, got.Rollback)
+	}
+	if p := v.policy(t); p.Status != store.PolicyPaused || p.PausedReason != store.ValidationReasonNotRolledBack+"registry_not_configured" {
+		t.Fatalf("policy %+v", p)
+	}
+	var list []store.Deployment
+	if err := json.Unmarshal([]byte(v.do(t, "GET", v.app+"/deployments", "", 200)), &list); err != nil || len(list) != 2 {
+		t.Fatalf("deployments: %d %v", len(list), err)
 	}
 }
