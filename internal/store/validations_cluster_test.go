@@ -205,3 +205,28 @@ func TestPendingValidationsOfACluster(t *testing.T) {
 		t.Fatalf("baseline read back: %+v", p.Baseline)
 	}
 }
+
+// A cluster row reads neither the instance's resource bindings nor the endpoint inventory: its
+// Deployments are placed unknown for the status read to decide. With both tables renamed away the
+// row is still listed, unchanged.
+func TestPendingValidationsOfAClusterReadsNoInventory(t *testing.T) {
+	st, a, app, cluster, _ := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	d := clusterApply(t, st, a, app, cluster, digestOf("b"))
+	before, err := ts.PendingValidations(ctx)
+	if err != nil || len(before) != 1 || before[0].DeploymentID != d.ID {
+		t.Fatalf("pending: %+v %v", before, err)
+	}
+	mustExec(t, st, `ALTER TABLE endpoint_inventory RENAME TO endpoint_inventory_hidden`)
+	mustExec(t, st, `ALTER TABLE application_resources RENAME TO application_resources_hidden`)
+	after, err := ts.PendingValidations(ctx)
+	if err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("without the tables: %+v %v, want %+v", after, err, before)
+	}
+	for _, s := range after[0].Services {
+		if s.Presence != PresenceUnknown {
+			t.Fatalf("service %+v", s)
+		}
+	}
+}

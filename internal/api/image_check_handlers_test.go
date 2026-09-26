@@ -21,8 +21,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// fakeDigests answers every Head with digest, or err when set. With gate set, it reports entry
-// on entered and holds until gate closes or ctx ends.
+// fakeDigests answers every Head with digest, or err when set, and counts the calls. With gate
+// set, it reports entry on entered and holds until gate closes or ctx ends.
 type fakeDigests struct {
 	digest  string
 	err     error
@@ -30,10 +30,18 @@ type fakeDigests struct {
 	entered chan struct{}
 	mu      sync.Mutex
 	secrets []string
+	heads   int
+}
+
+func (f *fakeDigests) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.heads
 }
 
 func (f *fakeDigests) Head(ctx context.Context, _ registry.Reference, cred *registry.Credential, _ bool) (string, error) {
 	f.mu.Lock()
+	f.heads++
 	if cred != nil {
 		f.secrets = append(f.secrets, cred.Secret)
 	}

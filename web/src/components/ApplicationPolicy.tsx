@@ -179,14 +179,16 @@ function RunList({ runs, zone }: { runs: PolicyRun[]; zone: string }) {
 
 // HealthWarning names a host whose agent cannot report what validation reads (container health on
 // Docker, workload status on a cluster): every automated update there ends unverifiable and pauses
-// the policy.
+// the policy. Another runtime gets no warning.
 function HealthWarning({ org, endpointID }: { org: string; endpointID: string }) {
   const endpoint = useTenantResource<Endpoint>(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpointID)}`);
   if (endpoint.state !== 'ready' || !endpoint.data) return null;
-  if (endpoint.data.runtime === 'kubernetes') {
-    if (endpoint.data.capabilities.includes('kubernetes.inspect')) return null;
+  const { runtime, capabilities } = endpoint.data;
+  if (runtime === 'kubernetes' && !capabilities.includes('kubernetes.inspect')) {
     return <p role="alert">This cluster's agent cannot report workload status, so automated updates here cannot be validated and pause the policy after each one. Upgrade the agent image.</p>;
   }
-  if (endpoint.data.capabilities.includes('container.inspect.health')) return null;
-  return <p role="alert">This host's agent cannot report container health, so automated updates here cannot be validated and pause the policy after each one. Upgrade the agent.</p>;
+  if (runtime === 'docker' && !capabilities.includes('container.inspect.health')) {
+    return <p role="alert">This host's agent cannot report container health, so automated updates here cannot be validated and pause the policy after each one. Upgrade the agent.</p>;
+  }
+  return null;
 }
