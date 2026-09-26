@@ -369,3 +369,105 @@ func TestKubernetesImageCheckReadsTheWorkload(t *testing.T) {
 		t.Fatalf("labelled Deployment: %+v", c)
 	}
 }
+
+func claimSpec(k *KubernetesExtension) ApplicationSpec {
+	return ApplicationSpec{Kind: "compose.v1", Volumes: []DeclaredVolume{{Name: "data"}, {Name: "logs"}}, Services: []ApplicationService{
+		{Name: "db", Image: "ghcr.io/org/db:1", Volumes: []ApplicationVolume{{Kind: "named", Source: "data", Target: "/var/lib/db"}, {Kind: "named", Source: "logs", Target: "/var/log/db", ReadOnly: true}}},
+		{Name: "web", Image: "ghcr.io/org/web:1"},
+	}, Kubernetes: k}
+}
+
+var bothChosen = &KubernetesExtension{Volumes: map[string]KubernetesVolume{
+	"data": {StorageClass: "fast", Size: "10Gi", AccessMode: protocol.AccessReadWriteOnce},
+	"logs": {Size: "1Gi", AccessMode: protocol.AccessReadWriteOnce},
+}}
+
+// Chosen named volumes plan as claims <project>-<volume> mounted by their one service, and the
+// frame carries both; the claims are what the agent creates and nothing else.
+func TestKubernetesPlanClaims(t *testing.T) {
+	st, a, app, _, m := kubernetesPlanFixture(t, claimSpec(bothChosen), nil)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/db:1": {digest: digestOf("b")}, "ghcr.io/org/web:1": {digest: digestOf("c")}}}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := []protocol.KubernetesClaim{
+		{Name: "shop-front-data", StorageClass: "fast", Size: "10Gi", AccessMode: protocol.AccessReadWriteOnce},
+		{Name: "shop-front-logs", Size: "1Gi", AccessMode: protocol.AccessReadWriteOnce},
+	}
+	mounts := []protocol.KubernetesMount{{Claim: "shop-front-data", MountPath: "/var/lib/db"}, {Claim: "shop-front-logs", MountPath: "/var/log/db", ReadOnly: true}}
+	if !reflect.DeepEqual(d.Plan.Claims, claims) || !reflect.DeepEqual(d.Plan.Services[0].ClaimMounts, mounts) || len(d.Plan.Services[1].ClaimMounts) != 0 {
+		t.Fatalf("plan %+v %+v", d.Plan.Claims, d.Plan.Services)
+	}
+	_, req, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop-front", imageCheckKey, protocol.MaxDeploymentRequestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(req.Kubernetes.Claims, claims) || !reflect.DeepEqual(req.Services[0].Volumes, mounts) || len(req.Services[1].Volumes) != 0 || len(req.Volumes) != 0 || len(req.Services[0].Mounts) != 0 {
+		t.Fatalf("frame %+v %+v", req.Kubernetes, req.Services)
+	}
+	if err := req.ValidateFor(protocol.RuntimeKubernetes, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A named volume without a choice is k8s_volume with detail choice_required; a bind keeps
+// k8s_volume without one; a volume two services mount is k8s_volume_shared.
+func TestKubernetesPlanVolumeBlockers(t *testing.T) {
+	unchosen := claimSpec(&KubernetesExtension{Volumes: map[string]KubernetesVolume{"data": bothChosen.Volumes["data"]}})
+	bind := claimSpec(bothChosen)
+	bind.Services[0].Volumes = append(bind.Services[0].Volumes, ApplicationVolume{Kind: "bind", Source: "/srv/db", Target: "/etc/db"})
+	shared := claimSpec(bothChosen)
+	shared.Services[1].Volumes = []ApplicationVolume{{Kind: "named", Source: "data", Target: "/data"}}
+	for name, tc := range map[string]struct {
+		spec ApplicationSpec
+		want map[string]BlockedService
+	}{
+		"no choice": {unchosen, map[string]BlockedService{"db": {Unsupported: []string{"k8s_volume"}, Details: map[string]string{"k8s_volume": "choice_required"}}}},
+		"a bind":    {bind, map[string]BlockedService{"db": {Unsupported: []string{"k8s_volume"}}}},
+		"shared":    {shared, map[string]BlockedService{"db": {Unsupported: []string{"k8s_volume_shared"}}, "web": {Unsupported: []string{"k8s_volume_shared"}}}},
+	} {
+		st, a, app, _, m := kubernetesPlanFixture(t, tc.spec, nil)
+		_, err := st.Tenancy().PlanDeployment(context.Background(), a, app.ID, kubePlanRequest(m), &fakeResolver{reply: map[string]fakeReply{}}, imageCheckKey, false)
+		var blocked *PreflightBlockedError
+		if !errors.As(err, &blocked) || len(blocked.Services) != len(tc.want) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, s := range blocked.Services {
+			if want := tc.want[s.Name]; !slices.Equal(s.Unsupported, want.Unsupported) || !reflect.DeepEqual(s.Details, want.Details) {
+				t.Errorf("%s: %s %+v", name, s.Name, s)
+			}
+		}
+	}
+}
+
+// A cluster removal reports each kept claim as a skipped volume step with detail retained, and
+// settles; any other volume step is refused.
+func TestRemoveKubernetesRetainsClaims(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	d, _, err := ts.RemoveApplication(ctx, a, app.ID, RemovalBody{InstanceID: m.InstanceID, Confirm: "shop-front"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := []protocol.DeploymentStep{
+		{Service: "web", Step: protocol.StepPrecondition, Outcome: protocol.OutcomeSucceeded},
+		{Service: "web", Step: protocol.StepRemove, Outcome: protocol.OutcomeSucceeded},
+		{Service: "web", Step: protocol.StepVolume, Outcome: protocol.OutcomeSkipped, Detail: protocol.DetailRetained},
+	}
+	res := protocol.DeploymentResult{Deployment: d.ID, RequestID: d.CorrelationID, Outcome: protocol.OutcomeSucceeded, Services: []protocol.DeploymentIdentity{}, Steps: steps}
+	bad := res
+	bad.Steps = append(slices.Clone(steps[:2]), protocol.DeploymentStep{Service: "web", Step: protocol.StepVolume, Outcome: protocol.OutcomeSucceeded})
+	if err := ts.SettleDeployment(ctx, cluster, bad); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a volume step that is not a kept claim: %v", err)
+	}
+	if err := ts.SettleDeployment(ctx, cluster, res); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.ReadApplicationInstance(ctx, a, app.ID, m.InstanceID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("instance kept: %v", err)
+	}
+}

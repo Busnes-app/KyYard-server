@@ -56,6 +56,8 @@ type PlannedService struct {
 	// Object is the Deployment (and Service) a Kubernetes plan applies for this service; nil on
 	// Docker. Replaces, ImageID and Mounts are then empty and the service always pulls.
 	Object *KubernetesObject `json:"object,omitempty"`
+	// ClaimMounts mount the plan's claims into a Kubernetes service.
+	ClaimMounts []protocol.KubernetesMount `json:"claim_mounts,omitempty"`
 }
 
 // KubernetesObject names a service's objects: the Deployment and Service <name>, the
@@ -75,6 +77,8 @@ type DeploymentPlan struct {
 	Volumes []string `json:"volumes,omitempty"`
 	// Namespace is set exactly for a Kubernetes plan or removal.
 	Namespace string `json:"namespace,omitempty"`
+	// Claims are the PersistentVolumeClaims a Kubernetes apply ensures.
+	Claims []protocol.KubernetesClaim `json:"claims,omitempty"`
 }
 type RemovalPlanTarget struct {
 	Service     string `json:"service"`
@@ -153,9 +157,10 @@ type PreflightBlockedError struct {
 // BlockedService names a service a refused plan blocked on: its own blockers and the codes a
 // live inspection reported, nothing else about it.
 type BlockedService struct {
-	Name        string   `json:"name"`
-	Blockers    []string `json:"blockers"`
-	Unsupported []string `json:"unsupported,omitempty"`
+	Name        string            `json:"name"`
+	Blockers    []string          `json:"blockers"`
+	Unsupported []string          `json:"unsupported,omitempty"`
+	Details     map[string]string `json:"details,omitempty"`
 }
 
 func (e *PreflightBlockedError) Error() string {
@@ -436,9 +441,11 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 	}
 	inspected := inspectsVerdicts(capabilities)
 	var objects map[string]string
+	var mounts map[string][]protocol.KubernetesMount
 	if m.Runtime == protocol.RuntimeKubernetes {
 		plan.Namespace = m.Namespace
 		objects = protocol.KubernetesNames(m.Preview.Project, spec.serviceNames())
+		plan.Claims, mounts = kubernetesClaims(m.Preview.Project, spec)
 	}
 	var refused []BlockedService
 	for i, s := range spec.Services {
@@ -450,7 +457,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 		}
 		blockers = append(blockers, row.Blockers...)
 		if len(row.Blockers) > 0 {
-			refused = append(refused, BlockedService{Name: row.Name, Blockers: row.Blockers, Unsupported: row.Unsupported})
+			refused = append(refused, BlockedService{Name: row.Name, Blockers: row.Blockers, Unsupported: row.Unsupported, Details: row.Details})
 		}
 		refs := make([]string, 0, len(s.Environment))
 		for _, ref := range s.Environment {
@@ -473,7 +480,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 			ps.Replaces = *row.InspectionTarget
 		}
 		if plan.Namespace != "" {
-			ps.Object = &KubernetesObject{Namespace: plan.Namespace, Name: objects[s.Name]}
+			ps.Object, ps.ClaimMounts = &KubernetesObject{Namespace: plan.Namespace, Name: objects[s.Name]}, mounts[s.Name]
 		}
 		plan.Services = append(plan.Services, ps)
 	}

@@ -261,13 +261,13 @@ func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a Tenant
 		return protocol.DeploymentRequest{}, &PreflightBlockedError{Blockers: []string{"k8s_namespace"}}
 	}
 	req := protocol.DeploymentRequest{Deployment: d.ID, RequestID: d.CorrelationID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{},
-		Kubernetes: &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: d.ApplicationID, InstanceID: d.InstanceID, SpecDigest: d.SpecDigest}}
+		Kubernetes: &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: d.ApplicationID, InstanceID: d.InstanceID, SpecDigest: d.SpecDigest, Claims: d.Plan.Claims}}
 	hosts := map[string]bool{}
 	for i, ps := range d.Plan.Services {
 		if spec.Services[i].Name != ps.Name || ps.PullDigest == "" || ps.Object == nil {
 			return protocol.DeploymentRequest{}, ErrAdoptionChanged
 		}
-		svc := protocol.DeploymentService{Name: ps.Name, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: []protocol.Mount{}, Pull: &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}}
+		svc := protocol.DeploymentService{Name: ps.Name, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: []protocol.Mount{}, Pull: &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}, Volumes: ps.ClaimMounts}
 		for _, p := range ps.Ports {
 			svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol})
 		}
@@ -591,11 +591,12 @@ func (t *tenancyStore) settleRemoval(ctx context.Context, tx *sql.Tx, endpointID
 	if len(res.Services) > 0 {
 		return ErrInvalid
 	}
-	// A cluster removal reports precondition and remove steps per service it found labelled;
-	// only a success releases the instance.
+	// A cluster removal reports precondition and remove steps per service it found labelled, and
+	// a skipped volume step per claim it kept; only a success releases the instance.
 	if plan.Namespace != "" {
 		for _, s := range res.Steps {
-			if s.Step != protocol.StepPrecondition && s.Step != protocol.StepRemove {
+			retained := s.Step == protocol.StepVolume && s.Outcome == protocol.OutcomeSkipped && s.Detail == protocol.DetailRetained
+			if s.Step != protocol.StepPrecondition && s.Step != protocol.StepRemove && !retained {
 				return ErrInvalid
 			}
 		}

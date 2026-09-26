@@ -39,6 +39,43 @@ type KubernetesVolume struct {
 	AccessMode   string `json:"access_mode"`
 }
 
+// volume is the choice for a declared volume, on a nil extension too.
+func (k *KubernetesExtension) volume(name string) (KubernetesVolume, bool) {
+	if k == nil {
+		return KubernetesVolume{}, false
+	}
+	v, ok := k.Volumes[name]
+	return v, ok
+}
+
+// kubernetesClaims turns spec's chosen named volumes into the claims <project>-<volume> (the
+// shared naming rule over the declared volumes) and each service's mounts of them, in mount
+// order. A volume with no choice, or one two services mount, gets no claim: the preflight
+// refused it already.
+func kubernetesClaims(project string, spec ApplicationSpec) ([]protocol.KubernetesClaim, map[string][]protocol.KubernetesMount) {
+	declared := make([]string, 0, len(spec.Volumes))
+	for _, v := range spec.Volumes {
+		declared = append(declared, v.Name)
+	}
+	names := protocol.KubernetesNames(project, declared)
+	users := volumeUsers(spec)
+	claims, mounts := []protocol.KubernetesClaim{}, map[string][]protocol.KubernetesMount{}
+	for _, s := range spec.Services {
+		for _, v := range s.Volumes {
+			choice, ok := spec.Kubernetes.volume(v.Source)
+			if v.Kind != "named" || !ok || users[v.Source] != 1 {
+				continue
+			}
+			claim := names[v.Source]
+			if !slices.ContainsFunc(claims, func(c protocol.KubernetesClaim) bool { return c.Name == claim }) {
+				claims = append(claims, protocol.KubernetesClaim{Name: claim, StorageClass: choice.StorageClass, Size: choice.Size, AccessMode: choice.AccessMode})
+			}
+			mounts[s.Name] = append(mounts[s.Name], protocol.KubernetesMount{Claim: claim, MountPath: v.Target, ReadOnly: v.ReadOnly})
+		}
+	}
+	return claims, mounts
+}
+
 // Valid checks one choice's grammar; the destination inventory decides whether its class exists.
 func (v KubernetesVolume) Valid() bool {
 	_, size := protocol.StorageSizeBytes(v.Size)

@@ -44,6 +44,9 @@ type PreflightService struct {
 	UnsupportedMounts []protocol.Mount `json:"unsupported_mounts"`
 	// Unsupported are the codes a plan-time live inspection reported (configuration_unsupported).
 	Unsupported []string `json:"unsupported,omitempty"`
+	// Details is a code's parameter, where one has one: k8s_volume is choice_required when every
+	// volume behind it is a named volume that only lacks a storage choice.
+	Details map[string]string `json:"details,omitempty"`
 }
 
 // anonymousVolume is the name Docker gives a volume nobody named.
@@ -342,13 +345,11 @@ func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec) *Depl
 	for _, n := range objects {
 		named[n]++
 	}
+	users := volumeUsers(spec)
 	blocked := false
 	for _, s := range spec.Services {
 		row := PreflightService{Name: s.Name, Reference: s.Image, Blockers: []string{}, Mounts: []protocol.Mount{}, DroppedBinds: []protocol.Mount{}, DroppedMounts: []protocol.Mount{}, UnsupportedMounts: []protocol.Mount{}}
-		var codes []string
-		if len(s.Volumes) > 0 {
-			codes = append(codes, "k8s_volume")
-		}
+		codes, details := kubernetesVolumeCodes(s, spec.Kubernetes, users)
 		if slices.ContainsFunc(s.Ports, func(p ApplicationPort) bool { return p.HostIP != "" }) {
 			codes = append(codes, "k8s_host_ip")
 		}
@@ -359,7 +360,7 @@ func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec) *Depl
 			codes = append(codes, "k8s_name")
 		}
 		if len(codes) > 0 {
-			row.Blockers, row.Unsupported = append(row.Blockers, "kubernetes_unsupported"), codes
+			row.Blockers, row.Unsupported, row.Details = append(row.Blockers, "kubernetes_unsupported"), codes, details
 		}
 		if _, tag := protocol.SplitImageReference(s.Image); tag == "" {
 			row.Blockers = append(row.Blockers, "explicit_image_reference_required")
@@ -378,6 +379,55 @@ func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec) *Depl
 	}
 	out.Executable = !blocked && len(out.Blockers) == 0
 	return out
+}
+
+// volumeUsers counts, per named volume, the services that mount it.
+func volumeUsers(spec ApplicationSpec) map[string]int {
+	users := map[string]int{}
+	for _, s := range spec.Services {
+		seen := map[string]bool{}
+		for _, v := range s.Volumes {
+			if v.Kind == "named" && !seen[v.Source] {
+				seen[v.Source], users[v.Source] = true, users[v.Source]+1
+			}
+		}
+	}
+	return users
+}
+
+// kubernetesVolumeCodes says why a service's volumes cannot become claims: k8s_volume for a bind
+// or more named mounts than a service may carry, k8s_volume with detail choice_required for a
+// named volume with no storage choice, and k8s_volume_shared for one another service mounts too
+// (a ReadWriteOnce claim serves one pod).
+func kubernetesVolumeCodes(s ApplicationService, k *KubernetesExtension, users map[string]int) ([]string, map[string]string) {
+	var bind, unchosen, shared bool
+	mounts := 0
+	for _, v := range s.Volumes {
+		if v.Kind != "named" {
+			bind = true
+			continue
+		}
+		mounts++
+		_, chosen := k.volume(v.Source)
+		switch {
+		case users[v.Source] > 1:
+			shared = true
+		case !chosen:
+			unchosen = true
+		}
+	}
+	var codes []string
+	var details map[string]string
+	switch {
+	case bind || mounts > protocol.MaxKubernetesMounts:
+		codes = append(codes, "k8s_volume")
+	case unchosen:
+		codes, details = append(codes, "k8s_volume"), map[string]string{"k8s_volume": "choice_required"}
+	}
+	if shared {
+		codes = append(codes, "k8s_volume_shared")
+	}
+	return codes, details
 }
 
 // resolveMounts turns a service's volumes into runtime mounts: a named volume by its host name
