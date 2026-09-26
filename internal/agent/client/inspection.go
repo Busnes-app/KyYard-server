@@ -28,6 +28,14 @@ type inspections struct {
 func newInspections(ctx context.Context, endpoint string, nonce []byte, opts *Options, out chan<- outFrame) *inspections {
 	return &inspections{live: map[string]context.CancelFunc{}, seen: map[string]time.Time{}, slots: opts.inspectionSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
 }
+
+// runtime is the target shape this agent answers: a cluster agent reads Deployments.
+func (s *inspections) runtime() string {
+	if s.opts.Kubernetes {
+		return protocol.RuntimeKubernetes
+	}
+	return protocol.RuntimeDocker
+}
 func (s *inspections) handle(f protocol.Envelope, active bool) error {
 	invalid := errors.New("invalid inspection frame")
 	if len(f.Payload) > protocol.MaxInspectionFrameBytes {
@@ -47,7 +55,7 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 		return nil
 	}
 	var req protocol.InspectionOpen
-	if json.Unmarshal(f.Payload, &req) != nil || req.Validate(time.Now()) != nil || !active || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
+	if json.Unmarshal(f.Payload, &req) != nil || req.ValidateFor(time.Now(), s.runtime()) != nil || !active || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
 		return invalid
 	}
 	s.mu.Lock()
@@ -95,6 +103,10 @@ func (s *inspections) run(ctx context.Context, req protocol.InspectionOpen, stop
 	if err == nil && result != nil && result.Validate(req.Target, time.Now(), true) == nil {
 		reply.Status = "ok"
 		reply.Result = result
+	}
+	// The server closes the socket on an oversized answer: one that does not fit is unavailable.
+	if raw, err := json.Marshal(reply); err != nil || len(raw) > protocol.MaxInspectionFrameBytes {
+		reply = protocol.InspectionResult{Request: req.Request, Status: "unavailable"}
 	}
 	if ctx.Err() != nil {
 		return

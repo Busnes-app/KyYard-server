@@ -80,7 +80,8 @@ function problem(days: number[], start: number, end: number): string {
   return '';
 }
 
-// org and endpointID, when known, let the card check the host for container.inspect.health.
+// org and endpointID, when known, let the card check the host for container.inspect.health, or a
+// cluster for kubernetes.inspect.
 type Props = { base: string; admin: boolean; org?: string; endpointID?: string };
 
 export function ApplicationPolicy(props: Props) {
@@ -176,10 +177,16 @@ function RunList({ runs, zone }: { runs: PolicyRun[]; zone: string }) {
   </table>;
 }
 
-// HealthWarning names a host whose agent cannot report container health: every automated update
-// there ends unverifiable and pauses the policy.
+// HealthWarning names a host whose agent cannot report what validation reads (container health on
+// Docker, workload status on a cluster): every automated update there ends unverifiable and pauses
+// the policy.
 function HealthWarning({ org, endpointID }: { org: string; endpointID: string }) {
   const endpoint = useTenantResource<Endpoint>(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpointID)}`);
-  if (endpoint.state !== 'ready' || !endpoint.data || endpoint.data.capabilities.includes('container.inspect.health')) return null;
+  if (endpoint.state !== 'ready' || !endpoint.data) return null;
+  if (endpoint.data.runtime === 'kubernetes') {
+    if (endpoint.data.capabilities.includes('kubernetes.inspect')) return null;
+    return <p role="alert">This cluster's agent cannot report workload status, so automated updates here cannot be validated and pause the policy after each one. Upgrade the agent image.</p>;
+  }
+  if (endpoint.data.capabilities.includes('container.inspect.health')) return null;
   return <p role="alert">This host's agent cannot report container health, so automated updates here cannot be validated and pause the policy after each one. Upgrade the agent.</p>;
 }

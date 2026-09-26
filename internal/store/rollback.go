@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
@@ -23,13 +25,15 @@ type Rollback struct {
 	MappingVersion int
 	Project        string
 	Revision       int
-	// Images maps each service to its plan's Replaces image ID.
+	// Images maps each service to its plan's Replaces image ID on Docker, and on a cluster to the
+	// prior succeeded apply's pull reference (host/repository@sha256:...).
 	Images map[string]string
 }
 
 // RollbackTarget decides, as a with application.deploy re-checked, whether the failed deployment
 // can be rolled back, and to what. The target comes from the deployment's own plan: each service's
-// Replaces identity is the container it recreated. An ineligible one returns a reason from the
+// Replaces identity is the container it recreated; a cluster deployment's comes from the prior
+// succeeded apply's pulled digests (clusterRollback). An ineligible one returns a reason from the
 // fixed vocabulary. A rollback deployment is never rolled back (ErrNotFound). See
 // docs/application-schema.md, Rollback.
 func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, deployment string) (*Rollback, string, error) {
@@ -82,8 +86,11 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 		if json.Unmarshal([]byte(planRaw), &plan) != nil || json.Unmarshal([]byte(resultRaw), &result) != nil {
 			return ErrRevisionCorrupt
 		}
-		// A Kubernetes plan replaces no recorded container, so it has nothing to roll back to.
-		if len(plan.Services) == 0 || plan.Namespace != "" {
+		if plan.Namespace != "" {
+			out, reason, err = t.clusterRollback(ctx, tx, a, appID.String(), depID.String(), instance, version, project, plan)
+			return err
+		}
+		if len(plan.Services) == 0 {
 			reason = RollbackNoPriorIdentity
 			return nil
 		}
@@ -102,13 +109,11 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 			images[ps.Name] = ps.Replaces.ImageID
 			missing = missing || ps.Replaces.ImageID == ""
 		}
-		var specRaw, digest string
-		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, appID.String(), revision).Scan(&specRaw, &digest)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		spec, valid, err := t.revisionValid(ctx, tx, a, appID.String(), revision)
+		if err != nil {
 			return err
 		}
-		var spec ApplicationSpec
-		if err != nil || applicationSpecDigest([]byte(specRaw)) != digest || json.Unmarshal([]byte(specRaw), &spec) != nil || ValidateApplicationSpec(spec) != nil {
+		if !valid {
 			reason = RollbackPriorDefinitionInvalid
 			return nil
 		}
@@ -155,4 +160,97 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 		return nil, "", err
 	}
 	return out, reason, nil
+}
+
+// clusterRollback decides a cluster deployment's rollback from the instance's previous succeeded
+// apply. Nothing may have been applied since the validated deployment: every later apply row is
+// still planned (the rollback frame has no compare-and-swap, so an apply that is applying, unknown
+// or settled may have changed the cluster), and the prior plan must name the same namespace, services and claims (claims are
+// immutable and never deleted, so a rollback must not try to change them), a pulled digest for
+// every service, and a revision that still validates. The kubelet pulls by digest: nothing is
+// checked on the cluster.
+func (t *tenancyStore) clusterRollback(ctx context.Context, tx *sql.Tx, a TenantAccess, app, deployment, instance string, version int, project string, plan DeploymentPlan) (*Rollback, string, error) {
+	var later int
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments d JOIN deployments n ON n.instance_id=d.instance_id AND n.kind='apply' AND n.created_at>d.created_at AND n.state<>'planned' WHERE d.id=?`), deployment).Scan(&later); err != nil {
+		return nil, "", err
+	}
+	if later > 0 {
+		return nil, RollbackServiceSetChanged, nil
+	}
+	// The instance's two latest succeeded applies: the validated deployment, then the prior one.
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,plan,revision FROM deployments WHERE instance_id=? AND kind='apply' AND state='succeeded' ORDER BY settled_at DESC,id DESC LIMIT 2`), instance)
+	if err != nil {
+		return nil, "", err
+	}
+	var ids, plans []string
+	var revisions []int
+	for rows.Next() {
+		var id, raw string
+		var revision int
+		if err := rows.Scan(&id, &raw, &revision); err != nil {
+			rows.Close()
+			return nil, "", err
+		}
+		ids, plans, revisions = append(ids, id), append(plans, raw), append(revisions, revision)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, "", err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	switch {
+	case len(ids) == 0 || ids[0] != deployment:
+		return nil, RollbackServiceSetChanged, nil
+	case len(ids) == 1:
+		return nil, RollbackNoPriorIdentity, nil
+	}
+	var prior DeploymentPlan
+	if json.Unmarshal([]byte(plans[1]), &prior) != nil {
+		return nil, "", ErrRevisionCorrupt
+	}
+	if prior.Namespace != plan.Namespace {
+		return nil, RollbackServiceSetChanged + "," + RollbackNamespaceChanged, nil
+	}
+	mounts := map[string][]protocol.KubernetesMount{}
+	for _, ps := range plan.Services {
+		mounts[ps.Name] = ps.ClaimMounts
+	}
+	if len(prior.Services) != len(plan.Services) || slices.ContainsFunc(prior.Services, func(ps PlannedService) bool { _, ok := mounts[ps.Name]; return !ok }) {
+		return nil, RollbackServiceSetChanged, nil
+	}
+	if !slices.Equal(prior.Claims, plan.Claims) || slices.ContainsFunc(prior.Services, func(ps PlannedService) bool { return !slices.Equal(ps.ClaimMounts, mounts[ps.Name]) }) {
+		return nil, RollbackServiceSetChanged + "," + RollbackClaimsChanged, nil
+	}
+	images := map[string]string{}
+	for _, ps := range prior.Services {
+		if ps.PullDigest == "" || !strings.HasSuffix(ps.PullReference, "@"+ps.PullDigest) {
+			return nil, RollbackNoPriorIdentity, nil
+		}
+		images[ps.Name] = ps.PullReference
+	}
+	_, valid, err := t.revisionValid(ctx, tx, a, app, revisions[1])
+	if err != nil {
+		return nil, "", err
+	}
+	if !valid {
+		return nil, RollbackPriorDefinitionInvalid, nil
+	}
+	return &Rollback{InstanceID: instance, MappingVersion: version, Project: project, Revision: revisions[1], Images: images}, "", nil
+}
+
+// revisionValid reads a rollback's target revision: valid when it exists, its digest matches and
+// its spec still validates.
+func (t *tenancyStore) revisionValid(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, revision int) (ApplicationSpec, bool, error) {
+	var specRaw, digest string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, app, revision).Scan(&specRaw, &digest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ApplicationSpec{}, false, nil
+	}
+	if err != nil {
+		return ApplicationSpec{}, false, err
+	}
+	var spec ApplicationSpec
+	valid := applicationSpecDigest([]byte(specRaw)) == digest && json.Unmarshal([]byte(specRaw), &spec) == nil && ValidateApplicationSpec(spec) == nil
+	return spec, valid, nil
 }

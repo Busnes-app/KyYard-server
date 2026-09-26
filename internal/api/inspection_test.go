@@ -36,7 +36,7 @@ func inspectionGrant(t *testing.T, f terminalFixture) protocol.InspectionOpen {
 	t.Helper()
 	frame := readEnvelope(t, f.ctx, f.ag.conn)
 	var req protocol.InspectionOpen
-	if frame.Type != protocol.TypeInspectionOpen || json.Unmarshal(frame.Payload, &req) != nil || req.Validate(time.Now()) != nil {
+	if frame.Type != protocol.TypeInspectionOpen || json.Unmarshal(frame.Payload, &req) != nil || req.ValidateFor(time.Now(), protocol.RuntimeDocker) != nil {
 		t.Fatalf("invalid inspection request: %+v", frame)
 	}
 	return req

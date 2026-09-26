@@ -3,19 +3,20 @@ import { planBlockers } from './ApplicationUpdates';
 
 // Verdicts (docs/application-schema.md, Health validation); '' is a validation still running.
 export const VALIDATION_VERDICTS: Record<string, string> = {
-  '': 'Validating: watching the containers after the deployment.',
-  healthy: 'Healthy: every service kept running and passed its healthcheck.',
-  unhealthy: 'Unhealthy: a healthcheck failed or never passed.',
+  '': 'Validating: watching the services after the deployment.',
+  healthy: 'Healthy: every service kept running and passed validation.',
+  unhealthy: 'Unhealthy: a service failed its health checks or never became ready.',
   exited: 'Exited: a container stopped or is gone.',
   restarting: 'Restarting: a container restarted.',
   unverifiable: 'Not validated.',
-  changed: 'Changed: the containers were replaced after this deployment.',
+  changed: 'Changed: the services were replaced or changed outside KyYard.',
 };
 // The loop's own sentences, as an unverifiable or changed detail or a pause reason carries them.
 const VALIDATION_DETAILS: Record<string, string> = {
   'the host could not be observed': 'The host could not be observed.',
   'the server was not running during the window': 'The server was not running during the window.',
   'the agent cannot report container health': "The host's agent cannot report container health; upgrade it.",
+  'the cluster agent cannot report workload status; upgrade the agent image': "The cluster's agent cannot report workload status; upgrade the agent image.",
   'an inspection failed validation': "An inspection answer from the host's agent failed validation.",
   'the application was released': 'The application was released.',
 };
@@ -23,7 +24,9 @@ const VALIDATION_DETAILS: Record<string, string> = {
 export const ROLLBACK_REASONS: Record<string, string> = {
   no_prior_identity: 'No record of what ran before this update.',
   prior_definition_invalid: 'The earlier revision no longer validates.',
-  service_set_changed: "The application's services changed since the earlier revision.",
+  service_set_changed: "The application's services changed, or something was applied, since the earlier revision.",
+  namespace_changed: 'The earlier deployment ran in another namespace.',
+  claims_changed: "The application's volume claims changed since the earlier deployment.",
   prior_images_missing: 'The earlier images are no longer on the host.',
   rollback_in_flight: 'Another rollback was still in progress.',
   already_rolled_back: 'This deployment was already rolled back.',
@@ -43,14 +46,28 @@ const SERVICE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const DEPLOYMENT = /^[0-9a-f-]{36}$/;
 const fixed = (table: Record<string, string>, key: string) => Object.hasOwn(table, key) ? table[key] : '';
 
-// KUBERNETES_UNVERIFIED replaces the upgrade advice for a cluster: no agent can report health yet.
-export const KUBERNETES_UNVERIFIED = 'Not validated: KyYard does not read health from a Kubernetes Deployment yet, so the rollout wait was this apply\'s health check.';
+// Why a cluster service failed at once: its container's waiting reason, as <service>:<reason>.
+const WAITING_REASONS: Record<string, string> = {
+  CrashLoopBackOff: 'its container keeps crashing (CrashLoopBackOff)',
+  ImagePullBackOff: 'its image cannot be pulled (ImagePullBackOff)',
+  ErrImagePull: 'its image cannot be pulled (ErrImagePull)',
+  CreateContainerConfigError: 'its container configuration is invalid (CreateContainerConfigError)',
+  CreateContainerError: 'its container cannot be created (CreateContainerError)',
+};
+
+// serviceText is a failing verdict's deciding service, with a cluster waiting reason when one decided.
+function serviceText(detail: string): string {
+  const [service, reason, ...rest] = detail.split(':');
+  if (!SERVICE.test(service) || rest.length > 0) return '';
+  if (reason === undefined) return `Service ${service}.`;
+  const why = fixed(WAITING_REASONS, reason);
+  return why ? `Service ${service}: ${why}.` : `Service ${service}.`;
+}
 
 // verdictText is the verdict and why, through the fixed tables and the service-name shape only.
-export function verdictText(v: Validation, kubernetes = false): string {
-  if (kubernetes && v.verdict === 'unverifiable') return KUBERNETES_UNVERIFIED;
+export function verdictText(v: Validation): string {
   const head = fixed(VALIDATION_VERDICTS, v.verdict) || 'Unrecognised verdict.';
-  const why = fixed(VALIDATION_DETAILS, v.detail) || (SERVICE.test(v.detail) ? `Service ${v.detail}.` : '');
+  const why = fixed(VALIDATION_DETAILS, v.detail) || serviceText(v.detail);
   return why ? `${head} ${why}` : head;
 }
 // reasonText renders comma-separated codes; unknown codes are dropped.
@@ -80,7 +97,7 @@ export function pauseText(reason: string): string {
   return '';
 }
 // ValidationLine is one validation: verdict, rollback and the rollback deployment's ID prefix.
-export function ValidationLine({ v, kubernetes = false }: { v: Validation; kubernetes?: boolean }) {
+export function ValidationLine({ v }: { v: Validation }) {
   const id = v.rollback?.outcome === 'applied' ? v.rollback.deployment_id : '';
-  return <span>{verdictText(v, kubernetes)}{v.rollback && <> {rollbackText(v)}</>}{DEPLOYMENT.test(id) && <> Deployment <code title={id}>{id.slice(0, 8)}</code>.</>}</span>;
+  return <span>{verdictText(v)}{v.rollback && <> {rollbackText(v)}</>}{DEPLOYMENT.test(id) && <> Deployment <code title={id}>{id.slice(0, 8)}</code>.</>}</span>;
 }

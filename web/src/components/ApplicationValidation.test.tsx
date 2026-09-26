@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { KUBERNETES_UNVERIFIED, ROLLBACK_REASONS, VALIDATION_VERDICTS, ValidationLine, pauseText, reasonText } from './ApplicationValidation';
+import { ROLLBACK_REASONS, VALIDATION_VERDICTS, ValidationLine, pauseText, reasonText } from './ApplicationValidation';
 import type { Validation } from '../tenant';
 afterEach(cleanup);
 
@@ -13,6 +13,14 @@ const line = (over: Partial<Validation>) => {
 it('renders every verdict from the fixed table', () => {
   for (const [verdict, text] of Object.entries(VALIDATION_VERDICTS)) expect(line({ verdict })).toContain(text);
   expect(line({ verdict: 'exploded' })).toContain('Unrecognised verdict.');
+});
+
+// One table serves Docker and Kubernetes: no sentence may name what only one runtime has.
+it('words every verdict and the service-set refusal for both runtimes', () => {
+  for (const text of Object.values(VALIDATION_VERDICTS)) expect(text).not.toMatch(/healthcheck|containers were replaced|watching the containers/);
+  expect(VALIDATION_VERDICTS.healthy).toBe('Healthy: every service kept running and passed validation.');
+  expect(VALIDATION_VERDICTS.changed).toBe('Changed: the services were replaced or changed outside KyYard.');
+  expect(ROLLBACK_REASONS.service_set_changed).toBe("The application's services changed, or something was applied, since the earlier revision.");
 });
 
 it('names the deciding service and the loop sentences, and nothing else the server sent', () => {
@@ -48,15 +56,23 @@ it('has a fixed text for every rollback code the server can emit', () => {
     'no_prior_identity', 'prior_definition_invalid', 'service_set_changed', 'prior_images_missing',
     'rollback_in_flight', 'already_rolled_back', 'creator_lost', 'not_sent', 'interrupted',
     'policy_changed', 'endpoint_offline', 'not_adopted', 'mapping_required', 'adoption_changed',
-    'deployment_in_progress', 'invalid', 'error',
+    'deployment_in_progress', 'invalid', 'error', 'namespace_changed', 'claims_changed',
   ];
   for (const code of emitted) expect(Object.hasOwn(ROLLBACK_REASONS, code)).toBe(true);
 });
 
-it('gives a Kubernetes apply the one unverifiable sentence instead of the upgrade advice', () => {
-  cleanup();
-  const text = render(<ValidationLine v={validation({ verdict: 'unverifiable', detail: 'the agent cannot report container health' })} kubernetes />).container.textContent ?? '';
-  expect(text).toBe(KUBERNETES_UNVERIFIED);
-  expect(text).not.toContain('upgrade');
-  expect(line({ verdict: 'unverifiable', detail: 'the agent cannot report container health' })).toContain('upgrade it');
+// Mirrors internal/store/validations.go failingWaits: every waiting reason a cluster verdict's
+// detail can carry has a fixed text; any other suffix is dropped.
+it('names a cluster service and its waiting reason, and the cluster upgrade advice', () => {
+  for (const reason of ['CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'CreateContainerConfigError', 'CreateContainerError']) {
+    const text = line({ verdict: 'unhealthy', detail: `web:${reason}` });
+    expect(text.startsWith(`${VALIDATION_VERDICTS.unhealthy} Service web: `)).toBe(true);
+    expect(text.endsWith(`(${reason}).`)).toBe(true);
+  }
+  expect(line({ verdict: 'unhealthy', detail: 'web:CrashLoopBackOff' })).toContain('Service web: its container keeps crashing (CrashLoopBackOff).');
+  expect(line({ verdict: 'unhealthy', detail: 'web:secret-canary' })).toBe(`${VALIDATION_VERDICTS.unhealthy} Service web.`);
+  expect(line({ verdict: 'unhealthy', detail: 'web:CrashLoopBackOff:secret-canary' })).toBe(VALIDATION_VERDICTS.unhealthy);
+  expect(line({ verdict: 'unverifiable', detail: 'the cluster agent cannot report workload status; upgrade the agent image' })).toBe(`${VALIDATION_VERDICTS.unverifiable} The cluster's agent cannot report workload status; upgrade the agent image.`);
+  expect(pauseText('update could not be validated: the cluster agent cannot report workload status; upgrade the agent image')).toContain('upgrade the agent image');
+  expect(reasonText('service_set_changed,claims_changed')).toBe(`${ROLLBACK_REASONS.service_set_changed} ${ROLLBACK_REASONS.claims_changed}`);
 });

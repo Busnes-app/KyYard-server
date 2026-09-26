@@ -96,7 +96,7 @@ func main() {
 			log.Fatalf("identity: %v", err)
 		}
 		identities, where = fatalOnConflict{secret}, "Secret "+namespace+"/"+*identitySecret
-		snapshot, logs, deploy, remove = cluster.Snapshot, cluster.Logs, cluster.Deploy, cluster.Remove
+		snapshot, logs, deploy, remove, inspect = cluster.Snapshot, cluster.Logs, cluster.Deploy, cluster.Remove, cluster.Inspect
 		facts = cluster.Facts(ctx)
 	} else if *socket != "" {
 		engine := docker.New(*socket)

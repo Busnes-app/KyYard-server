@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -459,7 +460,7 @@ func TestValidationInspectsOverTheAgentSocketAsTheSystem(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); api.ValidationTickForTest(v.s, start.Add(afterGrace)) }()
 	g := grant(t, v.ctx, v.sock)
-	if g.Actor != "system-validation" || g.Validate(time.Now()) != nil || g.Target.ContainerID != priorContainer {
+	if g.Actor != "system-validation" || g.ValidateFor(time.Now(), protocol.RuntimeDocker) != nil || g.Target.ContainerID != priorContainer {
 		t.Fatalf("grant: %+v", g)
 	}
 	in := verifiedObservation(g.Target)
@@ -471,7 +472,7 @@ func TestValidationInspectsOverTheAgentSocketAsTheSystem(t *testing.T) {
 		t.Fatal("the tick never finished")
 	}
 	pending, err := v.st.Tenancy().PendingValidations(context.Background())
-	if err != nil || len(pending) != 1 || pending[0].Phase != store.PhaseObserving || pending[0].Baseline["web"] != (store.ServiceBaseline{ContainerID: priorContainer, RestartCount: 2}) {
+	if err != nil || len(pending) != 1 || pending[0].Phase != store.PhaseObserving || !reflect.DeepEqual(pending[0].Baseline["web"], store.ServiceBaseline{ContainerID: priorContainer, RestartCount: 2}) {
 		t.Fatalf("pending: %+v %v", pending, err)
 	}
 }

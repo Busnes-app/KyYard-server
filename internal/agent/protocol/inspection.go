@@ -12,15 +12,30 @@ import (
 // InspectionTarget pins the identity already authorized by the caller. Docker
 // inventory exposes creation time in whole seconds. See application-schema.md,
 // Runtime inspection foundation. This is not a wire grant or deployment approval.
+// A Kubernetes target names a Deployment (Workload) and no container.
 type InspectionTarget struct {
-	ContainerID string `json:"container_id"`
-	ImageID     string `json:"image_id"`
-	CreatedUnix int64  `json:"created_unix"`
+	ContainerID string      `json:"container_id"`
+	ImageID     string      `json:"image_id"`
+	CreatedUnix int64       `json:"created_unix"`
+	Workload    WorkloadRef `json:"workload,omitzero"`
 }
 
+// Validate holds a target to the Docker shape.
 func (t InspectionTarget) Validate() error {
-	if !fullDockerID.MatchString(t.ContainerID) || !strings.HasPrefix(t.ImageID, "sha256:") || !fullDockerID.MatchString(strings.TrimPrefix(t.ImageID, "sha256:")) || t.CreatedUnix <= 0 {
+	if !fullDockerID.MatchString(t.ContainerID) || !strings.HasPrefix(t.ImageID, "sha256:") || !fullDockerID.MatchString(strings.TrimPrefix(t.ImageID, "sha256:")) || t.CreatedUnix <= 0 || t.Workload != (WorkloadRef{}) {
 		return errors.New("inspection requires full container/image IDs and creation time")
+	}
+	return nil
+}
+
+// ValidateFor holds a target to the one shape the runtime reads: a container for Docker, a
+// Deployment for Kubernetes.
+func (t InspectionTarget) ValidateFor(runtime string) error {
+	if runtime != RuntimeKubernetes {
+		return t.Validate()
+	}
+	if t.ContainerID != "" || t.ImageID != "" || t.CreatedUnix != 0 || !t.Workload.valid() {
+		return errors.New("a Kubernetes inspection names a Deployment's namespace, name and UID and no container")
 	}
 	return nil
 }
@@ -53,6 +68,9 @@ type ContainerInspection struct {
 	AutoRemove            bool          `json:"auto_remove"`
 	Unsupported           []string      `json:"unsupported"`
 	ConfigurationVerified bool          `json:"configuration_verified"`
+	// Workload is a cluster agent's answer, set exactly for a Kubernetes target; every Docker
+	// field is then empty.
+	Workload *WorkloadStatus `json:"workload,omitempty"`
 }
 type ImagePlatform struct {
 	OS           string `json:"os"`
@@ -115,11 +133,12 @@ type InspectionOpen struct {
 	Target     InspectionTarget `json:"target"`
 }
 
-func (r InspectionOpen) Validate(now time.Time) error {
+// ValidateFor checks a grant for an agent of the runtime.
+func (r InspectionOpen) ValidateFor(now time.Time, runtime string) error {
 	if !execStreamID.MatchString(r.Request) || !execStreamID.MatchString(r.Actor) || !execStreamID.MatchString(r.Endpoint) || len(r.Connection) != 32 || !r.Expires.After(now) || r.Expires.After(now.Add(InspectionLifetime)) {
 		return errors.New("invalid inspection grant")
 	}
-	return r.Target.Validate()
+	return r.Target.ValidateFor(runtime)
 }
 
 type InspectionCancel struct {
@@ -133,12 +152,22 @@ type InspectionResult struct {
 
 var inspectionPlatform = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 
-// Validate bounds an untrusted agent result before it reaches an HTTP response. health says the
-// answering agent advertised CapabilityContainerInspectHealth: health and restart_count are then
-// required and bounded, and otherwise absent.
+// Validate bounds an untrusted agent result before it reaches an HTTP response. The target's
+// shape decides the runtime: a Workload target takes a WorkloadStatus answer and nothing else. For
+// a container, health says the answering agent advertised CapabilityContainerInspectHealth:
+// health and restart_count are then required and bounded, and otherwise absent.
 func (r ContainerInspection) Validate(target InspectionTarget, now time.Time, health bool) error {
 	invalid := errors.New("invalid inspection result")
-	if r.Target != target || target.Validate() != nil || r.ConfigurationVerified != (len(r.Unsupported) == 0) || !knownCodes(r.Unsupported) || r.ObservedAt.Before(now.Add(-InspectionLifetime)) || r.ObservedAt.After(now.Add(5*time.Second)) {
+	if r.Target != target || r.ObservedAt.Before(now.Add(-InspectionLifetime)) || r.ObservedAt.After(now.Add(5*time.Second)) {
+		return invalid
+	}
+	if target.Workload != (WorkloadRef{}) {
+		if target.ValidateFor(RuntimeKubernetes) != nil || !r.dockerEmpty() || r.Workload == nil || r.Workload.validate() != nil {
+			return invalid
+		}
+		return nil
+	}
+	if r.Workload != nil || target.Validate() != nil || r.ConfigurationVerified != (len(r.Unsupported) == 0) || !knownCodes(r.Unsupported) {
 		return invalid
 	}
 	switch r.State {

@@ -419,9 +419,17 @@ A service with a host path, a port bound to a host address, or a restart policy 
 `always`/`unless-stopped` stops at the plan with the reason; a named volume needs a storage choice,
 which a migration (below) records. The
 kubelet pulls the images: for a private registry, give the namespace's `default` ServiceAccount
-an imagePullSecret. A Kubernetes apply is not health-validated and never rolls back
-automatically; plan and apply the earlier revision to go back. Removing the application
-deletes the objects labelled as its own and nothing else.
+an imagePullSecret. A Kubernetes apply is health-validated like a Docker one (Update policies,
+below): for two and a half minutes the server reads the Deployment and its pods, and an update a
+policy applied that fails is returned to the digests the previous apply pulled, unless an apply
+was sent since (whatever its outcome, running or unknown included) or the namespace, services or
+volume claims changed. It sees what Kubernetes reports (replica counts, whether the rollout reached the latest change, container states and
+waiting reasons, restarts); it cannot see whether the application answers requests, since KyYard
+adds no readiness probe. A Deployment someone else edits, scales or recreates during the window is
+`changed` and left alone — an autoscaled Deployment, whose generation changes on every scale, is
+always `changed` and so is never validated. This needs a current agent image: an older one cannot
+report workload status, every automated update pauses the policy, and the policy card says so.
+Removing the application deletes the objects labelled as its own and nothing else.
 
 Services of one application reach each other through their Kubernetes Service, by its object
 name (`<application>-<service>`, for example `shop-web`, or `shop-web.shop.svc.cluster.local`

@@ -191,9 +191,9 @@ it('falls back to a typed zone when Intl.supportedValuesOf is unavailable', asyn
   expect(put).toBeTruthy();
 });
 
-const endpoint = (capabilities: string[]) => ({ id: 'host', environment_id: 'env', name: 'Docker', runtime: 'docker', state: 'active', facts: {}, fingerprint: 'f', capabilities, alerts: [], created_at: '2026-09-24T10:00:00Z' });
-function stubWithEndpoint(p: unknown, capabilities: string[]) {
-  const fetcher = vi.fn(async (url: string) => String(url).includes('/endpoints/') ? json(endpoint(capabilities)) : json(p));
+const endpoint = (capabilities: string[], runtime = 'docker') => ({ id: 'host', environment_id: 'env', name: 'Docker', runtime, state: 'active', facts: {}, fingerprint: 'f', capabilities, alerts: [], created_at: '2026-09-24T10:00:00Z' });
+function stubWithEndpoint(p: unknown, capabilities: string[], runtime = 'docker') {
+  const fetcher = vi.fn(async (url: string) => String(url).includes('/endpoints/') ? json(endpoint(capabilities, runtime)) : json(p));
   vi.stubGlobal('fetch', fetcher);
   return fetcher;
 }
@@ -220,6 +220,21 @@ it('does not warn for a host that reports health, and asks nothing for a plan-on
   open();
   await screen.findByText(/Plan only; apply by hand ·/);
   expect(planOnly.mock.calls.some(isEndpoint)).toBe(false);
+});
+
+it('warns for a cluster whose agent cannot report workload status, and not once it can', async () => {
+  stubWithEndpoint(policy(), ['kubernetes.inventory', 'kubernetes.deploy'], 'kubernetes');
+  render(<ApplicationPolicy base="/app" admin={false} org="a" endpointID="host" />);
+  open();
+  await screen.findByText(/cluster's agent cannot report workload status.*Upgrade the agent image\./);
+  expect(screen.queryByText(/cannot report container health/)).toBeNull();
+  cleanup();
+  const fetcher = stubWithEndpoint(policy(), ['kubernetes.inventory', 'kubernetes.deploy', 'kubernetes.inspect'], 'kubernetes');
+  render(<ApplicationPolicy base="/app" admin={false} org="a" endpointID="host" />);
+  open();
+  await vi.waitFor(() => expect(fetcher.mock.calls.some(isEndpoint)).toBe(true));
+  await screen.findByText(/Plan and apply ·/);
+  expect(screen.queryByText(/cannot report/)).toBeNull();
 });
 
 it('shows each run validation and its rollback, and explains a validation pause', async () => {

@@ -2,7 +2,6 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ApplicationDeploymentPlan, CLAIM_RETAINED, CLUSTER_FAILED, CLUSTER_STOPPED, STEP_CODES, stepText } from './ApplicationDeploymentPlan';
 import { messages } from './ApplicationPreflight';
-import { KUBERNETES_UNVERIFIED } from './ApplicationValidation';
 import { K8S_VOLUME_CHOICE, unsupportedNames } from './ApplicationInspection';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const mapping = { instance_id: 'i', version: 3, mapped_revision: 2, services: [], bindings: {}, preview: { revision: 2, digest: 'd', project: 'shop', endpoint_name: 'Docker', containers: [] } };
@@ -438,14 +437,14 @@ it('shows the validation verdict and the rollback of a settled deployment', asyn
   vi.stubGlobal('fetch', stubFetch([validated]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
-  expect((await screen.findAllByText(/Unhealthy: a healthcheck failed or never passed\./)).length).toBeGreaterThan(0);
+  expect((await screen.findAllByText(/Unhealthy: a service failed its health checks or never became ready\./)).length).toBeGreaterThan(0);
   expect(screen.getAllByText(/Rollback sent to revision 1\./).length).toBeGreaterThan(0);
 });
 
 it('renders a Kubernetes plan, its step codes and Deployment identities', async () => {
   const uid = '0f1e2d3c-4b5a-4968-8776-655443322110';
   const kube = { ...plan, state: 'timed_out', plan: { project: 'shop', namespace: 'shop', services: [{ ...plan.plan.services[0], image_id: '', container_id: '', pull_digest: `sha256:${'d'.repeat(64)}`, object: { namespace: 'shop', name: 'shop-web' } }] },
-    validation: { deployment_id: 'd1', policy_run_id: '', automated: false, is_rollback: false, phase: 'done', started_at: '', observe_until: '', verdict: 'unverifiable', detail: 'the agent cannot report container health', rollback: null, correlation_id: 'c', finished_at: null },
+    validation: { deployment_id: 'd1', policy_run_id: '', automated: false, is_rollback: false, phase: 'done', started_at: '', observe_until: '', verdict: 'unverifiable', detail: 'the cluster agent cannot report workload status; upgrade the agent image', rollback: null, correlation_id: 'c', finished_at: null },
     result: { code: 'step_failed', steps: [
       { service: 'web', step: 'precondition', outcome: 'denied', code: 'name_taken', detail: 'Deployment/shop-web' },
       { service: 'web', step: 'start', outcome: 'timed_out', code: 'rollout_timeout', detail: 'progressing=ProgressDeadlineExceeded,pod=ImagePullBackOff' },
@@ -467,7 +466,7 @@ it('renders a Kubernetes plan, its step codes and Deployment identities', async 
   expect(screen.getByText("The agent's access in the namespace does not allow this; apply the cluster's regenerated manifest.")).toBeTruthy();
   expect(screen.getAllByText('Deployment shop/shop-web').length).toBeGreaterThan(0);
   expect(screen.getByText(uid)).toBeTruthy();
-  expect(screen.getByText(KUBERNETES_UNVERIFIED)).toBeTruthy();
+  expect(screen.getByText("Not validated. The cluster's agent cannot report workload status; upgrade the agent image.")).toBeTruthy();
   expect(document.body.textContent).not.toContain('secret-canary');
 });
 it('names each service a Kubernetes plan refuses, with the fix', async () => {
