@@ -263,10 +263,6 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 		}
 		updates := r.Update
 		if kube {
-			// Pins cover every service or none: an unpinned one would need the registry.
-			if len(r.PinImages) > 0 && len(r.PinImages) != len(d.Plan.Services) {
-				return ErrInvalid
-			}
 			updates = nil
 			for _, ps := range d.Plan.Services {
 				updates = append(updates, ps.Name)
@@ -279,7 +275,15 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 				continue
 			}
 			reference := d.Plan.Services[i].Reference
-			if pin, ok := r.PinImages[name]; ok {
+			if kube && len(r.PinImages) > 0 {
+				// Pins cover every service or none (an unpinned one would need the registry), each
+				// at its own image's host and repository.
+				pin, ok := r.PinImages[name]
+				spec, err := registry.ParseReference(reference)
+				pinned, _ := registry.ParseReference(pin) // parsed above
+				if !ok || err != nil || pinned.Host != spec.Host || pinned.Repository != spec.Repository {
+					return ErrInvalid
+				}
 				reference = pin // a digest reference: pinned below with no registry call
 			}
 			ref, err := registry.ParseReference(reference)

@@ -109,13 +109,11 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 			images[ps.Name] = ps.Replaces.ImageID
 			missing = missing || ps.Replaces.ImageID == ""
 		}
-		var specRaw, digest string
-		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, appID.String(), revision).Scan(&specRaw, &digest)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		spec, valid, err := t.revisionValid(ctx, tx, a, appID.String(), revision)
+		if err != nil {
 			return err
 		}
-		var spec ApplicationSpec
-		if err != nil || applicationSpecDigest([]byte(specRaw)) != digest || json.Unmarshal([]byte(specRaw), &spec) != nil || ValidateApplicationSpec(spec) != nil {
+		if !valid {
 			reason = RollbackPriorDefinitionInvalid
 			return nil
 		}
@@ -223,14 +221,28 @@ func (t *tenancyStore) clusterRollback(ctx context.Context, tx *sql.Tx, a Tenant
 		}
 		images[ps.Name] = ps.PullReference
 	}
-	var specRaw, digest string
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, app, revisions[1]).Scan(&specRaw, &digest)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	_, valid, err := t.revisionValid(ctx, tx, a, app, revisions[1])
+	if err != nil {
 		return nil, "", err
 	}
-	var spec ApplicationSpec
-	if err != nil || applicationSpecDigest([]byte(specRaw)) != digest || json.Unmarshal([]byte(specRaw), &spec) != nil || ValidateApplicationSpec(spec) != nil {
+	if !valid {
 		return nil, RollbackPriorDefinitionInvalid, nil
 	}
 	return &Rollback{InstanceID: instance, MappingVersion: version, Project: project, Revision: revisions[1], Images: images}, "", nil
+}
+
+// revisionValid reads a rollback's target revision: valid when it exists, its digest matches and
+// its spec still validates.
+func (t *tenancyStore) revisionValid(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, revision int) (ApplicationSpec, bool, error) {
+	var specRaw, digest string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, app, revision).Scan(&specRaw, &digest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ApplicationSpec{}, false, nil
+	}
+	if err != nil {
+		return ApplicationSpec{}, false, err
+	}
+	var spec ApplicationSpec
+	valid := applicationSpecDigest([]byte(specRaw)) == digest && json.Unmarshal([]byte(specRaw), &spec) == nil && ValidateApplicationSpec(spec) == nil
+	return spec, valid, nil
 }

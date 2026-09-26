@@ -24,6 +24,9 @@ func TestPlanDeploymentPinsAClusterDigest(t *testing.T) {
 		"a tag and a digest":   {"web": "ghcr.io/org/web:1@" + digestOf("c"), "api": api},
 		"not canonical":        {"web": "ghcr.io/org/web@" + digestOf("c"), "api": "GHCR.io/org/api@" + digestOf("a")},
 		"an unknown service":   {"web": web, "api": api, "db": web},
+		"a renamed service":    {"db": web, "api": api},
+		"another repository":   {"web": "ghcr.io/org/api@" + digestOf("c"), "api": api},
+		"another host":         {"web": "docker.io/org/web@" + digestOf("c"), "api": api},
 	} {
 		req := kubePlanRequest(m)
 		req.PinImages = pins
@@ -120,6 +123,29 @@ func TestClusterRollbackTarget(t *testing.T) {
 			}
 		})
 	}
+	// A failed apply between the two is no rollback target: the older succeeded one is.
+	t.Run("a failed apply between", func(t *testing.T) {
+		st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+		ctx := context.Background()
+		ts := st.Tenancy()
+		clusterApply(t, st, a, app, cluster, digestOf("b"))
+		resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("d")}}}
+		d, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, "shop-front", imageCheckKey, protocol.MaxDeploymentRequestBytes); err != nil {
+			t.Fatal(err)
+		}
+		if err := ts.FailDeployment(ctx, d.ID, "test"); err != nil {
+			t.Fatal(err)
+		}
+		failed := clusterApply(t, st, a, app, cluster, digestOf("c"))
+		rb, reason, err := ts.RollbackTarget(ctx, a, app.ID, failed.ID)
+		if err != nil || reason != "" || rb.Images["web"] != "ghcr.io/org/web@"+digestOf("b") {
+			t.Fatalf("rollback %+v %q %v", rb, reason, err)
+		}
+	})
 	t.Run("a later apply", func(t *testing.T) {
 		st, a, app, cluster, _ := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
 		clusterApply(t, st, a, app, cluster, digestOf("b"))
