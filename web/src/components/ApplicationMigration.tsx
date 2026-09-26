@@ -59,7 +59,7 @@ export const MIGRATION_ERRORS: Record<string, string> = {
   size_invalid: 'A size is a whole number of Mi, Gi or Ti, from 1Mi to 16Ti.',
   volume_unknown: 'The source mounts no named volume by that name.',
   application_name_taken: 'Applications already hold the destination name and every suffix up to (9). Discard one of them first.',
-  destination_name_too_long: "The destination's name, the source's name plus \" on \" and the cluster's, would be longer than 255 characters. Rename the cluster.",
+  destination_name_too_long: "The destination's name, the source's name plus \" on \" and the cluster's, would be longer than 255 bytes. Rename the cluster.",
   inventory_stale: "The cluster's inventory is stale. Wait for the agent's next report, then try again.",
   migration_not_ready: 'Resolve every blocked finding and make every choice first.',
   migration_state: 'The migration moved on; refresh it.',

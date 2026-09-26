@@ -108,7 +108,7 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrApplicationNameTaken):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Other applications hold the destination's name and each suffix up to (9)", "code": "application_name_taken"})
 	case errors.Is(err, store.ErrDestinationNameTooLong):
-		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The destination's name would be longer than 255 characters; rename the cluster", "code": "destination_name_too_long"})
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The destination's name would be longer than 255 bytes; rename the cluster", "code": "destination_name_too_long"})
 	case errors.Is(err, store.ErrInventoryStale):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The cluster's inventory is stale; wait for its next report and try again", "code": "inventory_stale"})
 	case errors.Is(err, store.ErrStorageClassUnknown):
