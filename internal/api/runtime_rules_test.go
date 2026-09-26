@@ -107,6 +107,8 @@ func TestHelloCapabilitiesMustFitTheRuntime(t *testing.T) {
 		{"cluster deployment from a host", f.host, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityKubernetesDeploy}, false},
 		{"cluster deployment capabilities from a cluster", f.cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesClaims, protocol.CapabilityKubernetesRemove}, true},
 		{"claims from a host", f.host, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityKubernetesClaims}, false},
+		{"workload inspection from a host", f.host, []string{protocol.CapabilityContainerInspect, protocol.CapabilityKubernetesInspect}, false},
+		{"workload inspection from a cluster", f.cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesInspect}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, reason := connect(t, ctx, f.url, tc.agent, tc.agent.priv, protocol.Version)

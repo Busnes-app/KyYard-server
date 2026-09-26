@@ -27,6 +27,12 @@ func TestHelloCapabilitiesPerRuntime(t *testing.T) {
 	if readOnly := helloCapabilities(&Options{Kubernetes: true, Logs: logs}); !slices.Equal(readOnly, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs}) {
 		t.Fatalf("read-only cluster %v", readOnly)
 	}
+	inspect := func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error) {
+		return nil, nil
+	}
+	if inspecting := helloCapabilities(&Options{Kubernetes: true, Inspect: inspect}); !slices.Equal(inspecting, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesInspect}) || !protocol.CapabilitiesFit(protocol.RuntimeKubernetes, inspecting) {
+		t.Fatalf("inspecting cluster %v", inspecting)
+	}
 	docker := helloCapabilities(&Options{Deploy: deploy, Remove: remove})
 	if !slices.Equal(docker, []string{protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityDeploymentRemove}) || !protocol.CapabilitiesFit(protocol.RuntimeDocker, docker) {
 		t.Fatalf("docker %v", docker)

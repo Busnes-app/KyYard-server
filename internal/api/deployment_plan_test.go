@@ -244,7 +244,7 @@ func TestPlanInspectsOverTheAgentSocket(t *testing.T) {
 	go func() { response <- tenantRequest(h.s, h.admin, "POST", h.deployments, h.planBody, true) }()
 	frame := readEnvelope(t, ctx, sock.conn)
 	var grant protocol.InspectionOpen
-	if frame.Type != protocol.TypeInspectionOpen || json.Unmarshal(frame.Payload, &grant) != nil || grant.Validate(time.Now()) != nil {
+	if frame.Type != protocol.TypeInspectionOpen || json.Unmarshal(frame.Payload, &grant) != nil || grant.ValidateFor(time.Now(), protocol.RuntimeDocker) != nil {
 		t.Fatalf("expected an inspection grant, got %s", frame.Type)
 	}
 	if grant.Target != h.targets[0] || grant.Actor != "usr_planner" || grant.Expires.After(start.Add(api.PlanInspectionBudgetForTest+time.Second)) {

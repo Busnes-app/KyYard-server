@@ -459,7 +459,7 @@ func TestValidationInspectsOverTheAgentSocketAsTheSystem(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); api.ValidationTickForTest(v.s, start.Add(afterGrace)) }()
 	g := grant(t, v.ctx, v.sock)
-	if g.Actor != "system-validation" || g.Validate(time.Now()) != nil || g.Target.ContainerID != priorContainer {
+	if g.Actor != "system-validation" || g.ValidateFor(time.Now(), protocol.RuntimeDocker) != nil || g.Target.ContainerID != priorContainer {
 		t.Fatalf("grant: %+v", g)
 	}
 	in := verifiedObservation(g.Target)

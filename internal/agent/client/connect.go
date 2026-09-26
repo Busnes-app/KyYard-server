@@ -82,7 +82,8 @@ type Options struct {
 // helloCapabilities is what the agent advertises for its runtime. A cluster agent names only
 // cluster capabilities: kubernetes.deploy and kubernetes.remove in place of deployment.apply and
 // deployment.remove, and never deployment.pull, because the kubelet pulls. A cluster agent that
-// deploys applies claims too (kubernetes.claims).
+// deploys applies claims too (kubernetes.claims), and one that inspects reads Deployments
+// (kubernetes.inspect).
 func helloCapabilities(opts *Options) []string {
 	capabilities := []string{}
 	if opts.Kubernetes {
@@ -95,6 +96,9 @@ func helloCapabilities(opts *Options) []string {
 		}
 		if opts.Remove != nil {
 			capabilities = append(capabilities, protocol.CapabilityKubernetesRemove)
+		}
+		if opts.Inspect != nil {
+			capabilities = append(capabilities, protocol.CapabilityKubernetesInspect)
 		}
 		return capabilities
 	}
