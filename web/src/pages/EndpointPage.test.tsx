@@ -177,6 +177,22 @@ it('stops polling once a polled resource is denied', async () => {
   }
 });
 
+it('keeps polling through no inventory yet and shows the first report', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  try {
+    const host = pollingHost();
+    host.poll(() => json({ error: 'not found' }, 404));
+    render(<EndpointPage org="a" endpoint="ep_1" />);
+    await screen.findByText(/No inventory yet/);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    host.poll(() => json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: host.now, received_at: host.now, snapshot: { ...terminalSnapshot(host.now), containers: [host.web] } }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(await screen.findByRole('table')).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('pages host containers and resets pagination when searching', async () => {
   const now = new Date().toISOString();
   const containers = Array.from({ length: 52 }, (_, i) => ({ id: `c${i}`, name: `container-${i}`, image: 'alpine:3', state: 'running', ports: [] }));

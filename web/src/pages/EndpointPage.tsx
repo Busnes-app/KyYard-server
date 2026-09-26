@@ -30,9 +30,9 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const samples = useTenantResource<Sample[]>(`${base}/samples`);
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
   // The agent reports on its own schedule; poll while the page is mounted and visible so the
-  // status line and usage column follow newer generations. A denial or not-found stops the poll:
-  // every denied read writes an audit row.
-  const pollStopped = [inventory.state, samples.state].some((s) => s === 'denied' || s === 'notfound');
+  // status line and usage column follow newer generations, and a host with no report yet fills
+  // in. A denial stops the poll: every denied read writes an audit row.
+  const pollStopped = inventory.state === 'denied' || samples.state === 'denied';
   useEffect(() => {
     if (pollStopped) return;
     const t = window.setInterval(() => { if (!document.hidden) { inventory.reload(); samples.reload(); } }, 30_000);
