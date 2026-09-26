@@ -407,8 +407,9 @@ A write the cluster refuses after the agent's grant allowed it (a quota, an admi
 with `admission_denied` and the object's name. The rendered pod has no resource requests or
 limits and no security context: the namespace must admit it, which Pod Security `baseline` does
 and `restricted` does not, and a ResourceQuota or policy that requires limits refuses it.
-Stateless only in this release: a service with a volume, a port bound to a host address, or a
-restart policy other than `always`/`unless-stopped` stops at the plan with the reason. The
+A service with a host path, a port bound to a host address, or a restart policy other than
+`always`/`unless-stopped` stops at the plan with the reason; a named volume needs a storage choice,
+which a migration (below) records. The
 kubelet pulls the images: for a private registry, give the namespace's `default` ServiceAccount
 an imagePullSecret. A Kubernetes apply is not health-validated and never rolls back
 automatically; plan and apply the earlier revision to go back. Removing the application
@@ -428,6 +429,42 @@ hello and loses even its inventory); then **Regenerate manifest** and `kubectl a
 The identity Secret survives the new pod, so no re-enrollment is needed. A new enrollment token
 mints a new enrollment link, which an already-enrolled identity refuses: to change namespaces,
 use **Regenerate manifest**, which carries no link.
+
+### Migrating a Docker application to a cluster
+
+An organization administrator opens an application adopted on a Docker host and, under
+**Migrate to a Kubernetes cluster**, picks a cluster and one of its namespaces and selects
+**Analyze**. KyYard reads the definition and a live inspection of each container and shows every
+service on every axis (storage, networking, ports, secrets, probes, resources, scheduling, flags)
+as supported, a choice to make, or blocked, each with its reason. Host paths, a volume two
+services share, host networking, host-bound ports, privileged and host-namespace settings, and a
+restart policy of `no` or `on-failure` are blocked: change the definition or the container, then
+**Analyze again**. For each named volume choose a StorageClass the cluster reports and a size
+(`Mi`, `Gi` or `Ti`; Docker reports no volume size); it becomes a `ReadWriteOnce`
+PersistentVolumeClaim named `<application>-<volume>`.
+
+When the report is ready, **Create destination** makes a new application, `<name> on <cluster>`,
+mapped to the namespace, with a copy of the source's environment values. Then follow the
+checklist; KyYard never stops, changes or removes the source for you:
+
+1. Label the namespace `pod-security.kubernetes.io/enforce=baseline` and apply the regenerated
+   manifest: this release adds `persistentvolumeclaims` `get, list, create` to each namespace's
+   Role and `storageclasses` `get, list` to the ClusterRole.
+2. Open the destination application, plan and apply it.
+3. Stop writes to the source, then copy each volume into its claim with the recipe the checklist
+   prints (`docker run --rm -v <volume>:/from:ro busybox tar -C /from -cf - . | kubectl -n <ns> exec -i deploy/<name> -- tar -C <path> -xf -`).
+4. Validate the destination and select **Confirm validation** with a note.
+5. Point your DNS or Ingress at the destination.
+6. Select **Confirm cutover** with a note, then remove the source with KyYard's removal, which
+   is refused while the migration is open.
+
+**Abandon migration** closes it and keeps a created destination. Claims survive the removal of
+their application; delete one deliberately with `kubectl -n <ns> delete pvc <name>` when its data
+is no longer needed. Health probes, resource limits and a read-only root filesystem are not
+carried over: add them to the Deployment after cutover.
+
+The destination application keeps its name after an abandoned migration: a new migration's
+destination creation answers `application_name_taken` until the old destination is removed.
 
 ## Persistent keys
 

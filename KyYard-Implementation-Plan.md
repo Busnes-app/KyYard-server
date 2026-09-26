@@ -41,7 +41,7 @@ Deliver the numbered PR slices in dependency order. Each slice includes its owni
 | Runtime adapters | Proposed `internal/runtime/docker`, later `internal/runtime/kubernetes`; SDK types stay inside adapters |
 | Frontend | `web`; routes, context, fleet and application screens, accessible interaction |
 | Recovery | `internal/backup`; payload, restore checks, settings/key glue over recoveryclient |
-| Migration | Proposed `internal/migration`, created in M8 only |
+| Migration | `internal/migration` (M8 PR 22): the pure Docker-to-Kubernetes analyzer |
 
 Confirm directory names when implementing. Create child AGENTS.md files only as real domains land; update parent indexes then. Keep domain store interfaces narrow, with shared SQLite/PostgreSQL implementation patterns. Add no policy engine, scheduler service, cache, or generic plugin framework without a demonstrated requirement. SQLite is the default; PostgreSQL support alone does not establish multi-replica control-plane safety.
 
@@ -267,7 +267,9 @@ Implemented M8 PR 20 (`feat/k8s-enrollment`): a Kubernetes cluster enrolls by a 
 
 Implemented M8 PR 21 (`feat/k8s-reconcile`): the stateless reference definition deploys to a Kubernetes endpoint. The manifest grants a `kyyard-agent-deploy` Role in each namespace the administrator lists (at enrollment, or later through an audited RBAC-only regeneration; migration 34 stores the list and each instance's namespace). An application maps to a listed namespace, plans with every image pinned at the registry and stops with named `k8s_` reasons for volumes, host addresses, restart policies and names; the cluster agent (`kubernetes.deploy`, `kubernetes.remove`) checks its own grant, refuses objects it did not label, applies a Deployment, Service, ConfigMap and Secret per service, waits for the rollout, and removes by label. Applies are unverifiable and never roll back; update checks read the running digest from the labelled Deployment. The real-cluster test deploys and removes one service locally with `KY_TEST_KUBECONFIG` and `KY_TEST_DEPLOY_IMAGE`, not in CI.
 
-Next: M8 PR 22 (StatefulSets, persistent volume claims and the migration analyzer).
+Implemented M8 PR 22 (`feat/migration-analysis`): an organization administrator analyzes a Docker-adopted application against a granted namespace of a cluster (`internal/migration`, pure: every service on every axis as supported, a choice or blocked, with a fixed code), records a StorageClass and size per named volume, and creates a destination application (`<name> on <cluster>`, revision 1 = the analyzed revision with a `kubernetes` storage extension, the values copied and re-sealed) that plans and applies through PR 21's path with PersistentVolumeClaims created once and kept on removal; migration 35 records the migration and each destination apply's `migration_id`. Data copy and traffic switching are the operator's checklist steps, confirmed with notes; the source cannot be removed while its migration is open. StatefulSets and `ReadWriteMany` stay out of scope. The real-cluster test mounts a claim of the default StorageClass, applies twice and removes, locally with `KY_TEST_KUBECONFIG`.
+
+M8 gate: the stateless reference definition previews and deploys on Docker and Kubernetes (PR 21); a stateful definition stops with specific blockers and required operator actions until its storage choices are made through a migration (PR 22); Docker operations are unchanged. Next: the 0.1 human acceptance script (section 7) on both runtimes.
 
 The engineering gates still apply, including the unrun 24-hour soak. No UI or completed unit suite establishes that capacity gate.
 

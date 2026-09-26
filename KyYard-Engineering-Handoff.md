@@ -252,11 +252,11 @@ Version 0.1 replaces everyday single-host Portainer use for KyYard's own Docker 
 
 ### Deferred
 
-- Kubernetes adapter.
+- Kubernetes adapter (delivered after 0.1 in M8 PRs 20 and 21).
 - Automated update policies and maintenance windows.
 - Automated rollback based on health checks.
 - Registry-to-registry image copying.
-- Docker-to-Kubernetes migration analyzer.
+- Docker-to-Kubernetes migration analyzer (delivered after 0.1 in M8 PR 22: analysis, storage choices and a destination application; copying data and switching traffic stay the operator's steps).
 - Advanced metrics retention and alerting.
 - Infrastructure provisioning.
 - Arbitrary Kubernetes CRD editing.
