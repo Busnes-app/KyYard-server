@@ -71,7 +71,7 @@ func deployClusterWith(t *testing.T, status func(*appsv1.Deployment), denied boo
 	cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
 		a := review.Spec.ResourceAttributes
-		review.Status.Allowed = !denied && a.Namespace == "shop" && a.Verb == "create" && a.Group == "apps" && a.Resource == "deployments"
+		review.Status.Allowed = !denied && a.Namespace == "shop" && deployRoleGrants(a)
 		return true, review, nil
 	})
 	cs.PrependReactor("*", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -95,6 +95,17 @@ func deployClusterWith(t *testing.T, status func(*appsv1.Deployment), denied boo
 		return false, nil, nil
 	})
 	return c, cs
+}
+
+// deployRoleGrants is the kyyard-agent-deploy Role the manifest grants in a listed namespace.
+func deployRoleGrants(a *authorizationv1.ResourceAttributes) bool {
+	switch {
+	case a.Group == "apps" && a.Resource == "deployments", a.Group == "" && (a.Resource == "services" || a.Resource == "configmaps"):
+		return slices.Contains([]string{"get", "list", "create", "update", "patch", "delete"}, a.Verb)
+	case a.Group == "" && a.Resource == "secrets":
+		return slices.Contains([]string{"get", "create", "update", "patch", "delete"}, a.Verb)
+	}
+	return false
 }
 
 // writes lists the verbs that changed the cluster, the access review aside.
@@ -635,5 +646,262 @@ func TestRemoveFindsSecretByConfigMapName(t *testing.T) {
 	_, errS := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-cache-secret", metav1.GetOptions{})
 	if !apierrors.IsNotFound(errCM) || !apierrors.IsNotFound(errS) {
 		t.Fatalf("left behind: %v %v", errCM, errS)
+	}
+}
+
+// failDeploymentGets makes the next n reads of a Deployment after its first create answer 500,
+// standing in for an API server that drops a request mid-rollout.
+func failDeploymentGets(cs *fake.Clientset, n int) {
+	created, left := false, n
+	cs.PrependReactor("create", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		created = true
+		return false, nil, nil
+	})
+	cs.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if !created || left == 0 {
+			return false, nil, nil
+		}
+		left--
+		return true, nil, apierrors.NewInternalError(errors.New("etcd leader changed"))
+	})
+}
+
+// One failed read during the rollout wait does not end it: the wait polls on and the rollout
+// still succeeds.
+func TestDeployRolloutSurvivesATransientRead(t *testing.T) {
+	c, cs := deployCluster(t, true, false)
+	failDeploymentGets(cs, 1)
+	if res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("one failed read ended the rollout: %+v", res)
+	}
+}
+
+// Reads that keep failing run the wait to the deadline, which names the reasons from the last
+// read that succeeded.
+func TestDeployRolloutTimeoutKeepsTheLastGoodRead(t *testing.T) {
+	c, cs := deployCluster(t, false, false)
+	reads := 0
+	cs.PrependReactor("get", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if _, err := cs.Tracker().Get(deploymentsResource, "shop", action.(k8stesting.GetAction).GetName()); err != nil {
+			return false, nil, nil // the precondition's read of an absent Deployment
+		}
+		if reads++; reads > 1 {
+			return true, nil, apierrors.NewInternalError(errors.New("etcd leader changed"))
+		}
+		return false, nil, nil
+	})
+	res := c.Deploy(context.Background(), deployRequest(300*time.Millisecond), func() {})
+	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+	if res.Outcome != protocol.OutcomeTimedOut || i < 0 || res.Validate() != nil {
+		t.Fatalf("result %+v %v", res, res.Validate())
+	}
+	if s := res.Steps[i]; s.Step != protocol.StepStart || s.Code != "rollout_timeout" || s.Detail != "progressing=ReplicaSetUpdated,available=MinimumReplicasUnavailable" {
+		t.Fatalf("step %+v", s)
+	}
+}
+
+// The agent stopping mid-rollout ends the wait as cancelled: the API server may already have
+// acted, so the outcome is unknown, not failed.
+func TestDeployParentCancelledDuringRollout(t *testing.T) {
+	c, _ := deployCluster(t, false, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	res := c.Deploy(ctx, deployRequest(time.Minute), func() { time.AfterFunc(50*time.Millisecond, cancel) })
+	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+	if res.Outcome != protocol.OutcomeUnknown || i < 0 || res.Validate() != nil {
+		t.Fatalf("result %+v %v", res, res.Validate())
+	}
+	if s := res.Steps[i]; s.Service != "web" || s.Step != protocol.StepStart || s.Code != "cancelled" {
+		t.Fatalf("step %+v", s)
+	}
+}
+
+// Re-sending the same frame updates every owned object in place to the same content: no create,
+// no delete, the same Secret and ConfigMap data.
+func TestDeployReapplyIsIdempotent(t *testing.T) {
+	c, cs := deployCluster(t, true, false)
+	if res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("first apply %+v", res)
+	}
+	cs.ClearActions()
+	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded || len(res.Services) != 2 || res.Services[0].UID != testUID {
+		t.Fatalf("re-apply %+v", res)
+	}
+	if !slices.Equal(writes(cs), []string{"update configmaps", "update secrets", "update deployments", "update services", "update configmaps", "update deployments"}) {
+		t.Fatalf("writes %v", writes(cs))
+	}
+	cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{})
+	secret, _ := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-web-secret", metav1.GetOptions{})
+	if len(cm.Data) != 1 || cm.Data["MODE"] != "prod" || len(secret.Data) != 1 || string(secret.Data["TOKEN"]) != "s3cret" {
+		t.Fatalf("re-apply changed content: %v %v", cm.Data, secret.Data)
+	}
+}
+
+// An owned object deleted between the precondition read and its update is created instead.
+func TestDeployUpdateOfAVanishedObjectCreates(t *testing.T) {
+	existing := &corev1.ConfigMap{ObjectMeta: owned("web")}
+	existing.Name = "shop-web-env"
+	c, cs := deployCluster(t, true, false, existing)
+	cs.PrependReactor("update", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if err := cs.Tracker().Delete(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "shop", "shop-web-env"); err != nil {
+			return false, nil, nil // already deleted: let the tracker answer NotFound again
+		}
+		return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "shop-web-env")
+	})
+	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("result %+v", res)
+	}
+	if cm, err := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{}); err != nil || cm.Labels[render.LabelInstance] != testInstance {
+		t.Fatalf("configmap %+v %v", cm, err)
+	}
+}
+
+// Losing a race on a write re-reads the object: one another tool now holds under the name is
+// name_taken (never overwritten), and one this instance holds is written again.
+func TestDeployRaceRereadsTheObject(t *testing.T) {
+	foreign := func() *corev1.ConfigMap {
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-web-env", Labels: map[string]string{"app": "other"}}}
+	}
+	ours := func() *corev1.ConfigMap {
+		m := owned("web")
+		m.Name = "shop-web-env"
+		return &corev1.ConfigMap{ObjectMeta: m}
+	}
+	cmResource := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	for name, tc := range map[string]struct {
+		existing runtime.Object
+		verb     string
+		winner   *corev1.ConfigMap
+		lost     error
+		code     string
+	}{
+		"conflict, now foreign":    {ours(), "update", foreign(), apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", nil), "name_taken"},
+		"exists race, now foreign": {nil, "create", foreign(), apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, "shop-web-env"), "name_taken"},
+		"exists race, ours":        {nil, "create", ours(), apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, "shop-web-env"), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var objects []runtime.Object
+			if tc.existing != nil {
+				objects = append(objects, tc.existing)
+			}
+			c, cs := deployCluster(t, true, false, objects...)
+			raced := false
+			cs.PrependReactor(tc.verb, "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+				if raced {
+					return false, nil, nil
+				}
+				raced = true
+				if err := cs.Tracker().Delete(cmResource, "shop", "shop-web-env"); err != nil && !apierrors.IsNotFound(err) {
+					return true, nil, err
+				}
+				if err := cs.Tracker().Add(tc.winner); err != nil {
+					return true, nil, err
+				}
+				return true, nil, tc.lost
+			})
+			res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+			if res.Validate() != nil {
+				t.Fatalf("result %+v %v", res, res.Validate())
+			}
+			if tc.code == "" {
+				if res.Outcome != protocol.OutcomeSucceeded {
+					t.Fatalf("result %+v", res)
+				}
+				return
+			}
+			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+			if res.Outcome != protocol.OutcomeDenied || i < 0 || res.Steps[i].Step != protocol.StepCreate || res.Steps[i].Code != tc.code || res.Steps[i].Detail != "ConfigMap/shop-web-env" {
+				t.Fatalf("result %+v", res)
+			}
+			if cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{}); cm.Labels["app"] != "other" {
+				t.Fatalf("the foreign ConfigMap was overwritten: %+v", cm)
+			}
+		})
+	}
+}
+
+// A 403 on a write the agent's Role does not grant (an older or edited manifest) is forbidden:
+// re-applying the manifest fixes it. A 403 on a write the Role grants is the cluster refusing
+// the object, admission_denied, which a manifest does not fix.
+func TestDeployWriteRefusalNamesItsCause(t *testing.T) {
+	for name, tc := range map[string]struct {
+		granted      bool
+		outcome      string
+		code, detail string
+	}{
+		"verb not granted": {false, protocol.OutcomeDenied, "forbidden", ""},
+		"admission":        {true, protocol.OutcomeDenied, "admission_denied", "ConfigMap/shop-web-env"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, cs := deployCluster(t, true, false)
+			cs.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", errors.New("secret-canary"))
+			})
+			var asked []authorizationv1.ResourceAttributes
+			cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+				a := *review.Spec.ResourceAttributes
+				asked = append(asked, a)
+				if a.Resource != "configmaps" {
+					return false, nil, nil
+				}
+				review.Status.Allowed = tc.granted
+				return true, review, nil
+			})
+			res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+			if res.Outcome != tc.outcome || i < 0 || res.Validate() != nil {
+				t.Fatalf("result %+v %v", res, res.Validate())
+			}
+			if s := res.Steps[i]; s.Step != protocol.StepCreate || s.Code != tc.code || s.Detail != tc.detail {
+				t.Fatalf("step %+v", s)
+			}
+			want := authorizationv1.ResourceAttributes{Namespace: "shop", Verb: "create", Resource: "configmaps", Name: "shop-web-env"}
+			if !slices.Contains(asked, want) {
+				t.Fatalf("no access review for the failing write: %+v", asked)
+			}
+		})
+	}
+}
+
+// A read the API server answers with something waiting will not change (the grant removed: 403;
+// the Deployment deleted by someone else: 404) ends the wait at once with that code.
+func TestDeployRolloutEndsOnAnAnswer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err          error
+		outcome      string
+		code, detail string
+	}{
+		"forbidden": {apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "shop-web", errors.New("secret-canary")), protocol.OutcomeDenied, "forbidden", ""},
+		"not found": {apierrors.NewNotFound(schema.GroupResource{Group: "apps", Resource: "deployments"}, "shop-web"), protocol.OutcomeFailed, "runtime_status", "404"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, cs := deployCluster(t, false, false)
+			created := false
+			cs.PrependReactor("create", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+				created = true
+				return false, nil, nil
+			})
+			cs.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+				if !created {
+					return false, nil, nil
+				}
+				return true, nil, tc.err
+			})
+			began := time.Now()
+			res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+			if took := time.Since(began); took > 5*time.Second {
+				t.Fatalf("the wait ran %v on an answer that will not change", took)
+			}
+			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+			if res.Outcome != tc.outcome || i < 0 || res.Validate() != nil {
+				t.Fatalf("result %+v %v", res, res.Validate())
+			}
+			if s := res.Steps[i]; s.Step != protocol.StepStart || s.Code != tc.code || s.Detail != tc.detail {
+				t.Fatalf("step %+v", s)
+			}
+		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -30,11 +31,11 @@ const rolloutPoll = 2 * time.Second
 // when one exists without this instance's label, and each claim, refused claim_immutable when
 // this instance's differs from the plan. Then per service create (missing claims, ConfigMap, Secret,
 // Deployment, Service, each updated when it exists and is owned, created otherwise; one conflict
-// is re-read and retried; a write the cluster refuses is admission_denied) and start (the
-// rollout, polled until available, a failure the cluster reports, or the deadline:
-// rollout_timeout). The first step that is not a success ends the run and every later step is
-// skipped. Nothing is rolled back: a failed rollout leaves the objects as applied. started is
-// called once, before the first write.
+// is re-read and retried; a refused write is forbidden without the verb, admission_denied with
+// it) and start (the rollout, polled until available, a failure the cluster reports, or the
+// deadline: rollout_timeout). The first step that is not a success ends the run and every later
+// step is skipped. Nothing is rolled back: a failed rollout leaves the objects as applied.
+// started is called once, before the first write.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.ValidateFor(protocol.RuntimeKubernetes, time.Now()); err != nil {
@@ -145,16 +146,23 @@ func (r *run) failure(ctx context.Context, err error) (string, string, string) {
 // allowed asks the API server whether the agent may create Deployments in the namespace: the
 // grant, not the namespace list the server stores, decides.
 func (r *run) allowed(ctx context.Context) (string, string, string) {
-	review, err := r.c.cs.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{
-		ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: r.namespace, Verb: "create", Group: "apps", Resource: "deployments"},
-	}}, metav1.CreateOptions{})
+	ok, err := r.review(ctx, authorizationv1.ResourceAttributes{Namespace: r.namespace, Verb: "create", Group: "apps", Resource: "deployments"})
 	if err != nil {
 		return r.failure(ctx, err)
 	}
-	if !review.Status.Allowed {
+	if !ok {
 		return protocol.OutcomeDenied, "forbidden", ""
 	}
 	return succeeded()
+}
+
+// review asks the API server whether the agent may act as attrs describe.
+func (r *run) review(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error) {
+	review, err := r.c.cs.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &attrs}}, metav1.CreateOptions{})
+	if err != nil {
+		return false, err
+	}
+	return review.Status.Allowed, nil
 }
 
 // podSecurityEnforce is the namespace label Pod Security admission enforces.
@@ -179,14 +187,23 @@ func (r *run) podSecurity(ctx context.Context) (string, string, string) {
 	return protocol.OutcomeDenied, "pod_security", "invalid"
 }
 
-// refusedWrite classifies a write that did not succeed. The access review already allowed the
-// agent's grant, so a 403 here is the cluster's admission (a quota, a policy engine) refusing
-// the object, named by kind and name.
-func (r *run) refusedWrite(ctx context.Context, err error, kind, name string) (string, string, string) {
-	if apierrors.IsForbidden(err) {
-		return protocol.OutcomeDenied, "admission_denied", kind + "/" + name
+// kindResource is the API group and resource each rendered kind is written through.
+var kindResource = map[string][2]string{"ConfigMap": {"", "configmaps"}, "Secret": {"", "secrets"}, "Deployment": {"apps", "deployments"}, "Service": {"", "services"}, "PersistentVolumeClaim": {"", "persistentvolumeclaims"}}
+
+// refusedWrite classifies a write that did not succeed. A 403 is the agent's Role lacking the
+// verb (an older or edited manifest: forbidden, fixed by applying the manifest) or the cluster's
+// admission refusing the object (a quota, a policy engine: admission_denied, named by kind and
+// name); an access review for the failing write tells them apart, and an unreadable review
+// leaves admission_denied.
+func (r *run) refusedWrite(ctx context.Context, err error, verb, kind, name string) (string, string, string) {
+	if !apierrors.IsForbidden(err) {
+		return r.failure(ctx, err)
 	}
-	return r.failure(ctx, err)
+	gr := kindResource[kind]
+	if ok, rerr := r.review(ctx, authorizationv1.ResourceAttributes{Namespace: r.namespace, Verb: verb, Group: gr[0], Resource: gr[1], Name: name}); rerr == nil && !ok {
+		return protocol.OutcomeDenied, "forbidden", ""
+	}
+	return protocol.OutcomeDenied, "admission_denied", kind + "/" + name
 }
 
 // existing is what a precondition found under a service's planned names: nil where nothing is.
@@ -350,7 +367,7 @@ func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.De
 			continue
 		}
 		if err != nil {
-			o, code, detail := r.refusedWrite(ctx, err, "PersistentVolumeClaim", want.Name)
+			o, code, detail := r.refusedWrite(ctx, err, "create", "PersistentVolumeClaim", want.Name)
 			return nil, o, code, detail
 		}
 	}
@@ -396,12 +413,13 @@ func (r *run) drop(ctx context.Context, kind string, remove func(context.Context
 	if err == nil || apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 		return succeeded()
 	}
-	return r.refusedWrite(ctx, err, kind, o.GetName())
+	return r.refusedWrite(ctx, err, "delete", kind, o.GetName())
 }
 
 // upsert updates want over have, an owned object read at the precondition (nil: create it),
-// keeping have's resourceVersion. A conflict, or an object that appeared since, is re-read once:
-// still owned, it is written again; a second conflict fails with conflict.
+// keeping have's resourceVersion. A conflict, an object that appeared since, or one that vanished
+// before its update is re-read once: still owned it is written again, gone it is created, and a
+// second conflict fails with conflict.
 func upsert[T interface {
 	metav1.Object
 	comparable
@@ -410,7 +428,9 @@ func upsert[T interface {
 	for attempt := 0; ; attempt++ {
 		var got T
 		var err error
+		verb := "update"
 		if have == zero {
+			verb = "create"
 			want.SetResourceVersion("")
 			got, err = api.Create(ctx, want, metav1.CreateOptions{})
 		} else {
@@ -423,8 +443,8 @@ func upsert[T interface {
 		if err == nil {
 			return got, protocol.OutcomeSucceeded, "", ""
 		}
-		if !apierrors.IsConflict(err) && !apierrors.IsAlreadyExists(err) {
-			o, code, detail := r.refusedWrite(ctx, err, kind, want.GetName())
+		if !apierrors.IsConflict(err) && !apierrors.IsAlreadyExists(err) && (verb == "create" || !apierrors.IsNotFound(err)) {
+			o, code, detail := r.refusedWrite(ctx, err, verb, kind, want.GetName())
 			return zero, o, code, detail
 		}
 		if attempt == 1 {
@@ -448,7 +468,8 @@ func upsert[T interface {
 
 // rollout waits until the Deployment's controller has seen the latest generation and its one
 // replica is updated, ready and available, reading it every poll within the request's deadline.
-// A failure the controller reports for the current generation on two consecutive polls ends the wait.
+// A failure the controller reports for the current generation on two consecutive polls ends the
+// wait. A transient read failure is not an answer: the wait keeps the last good read and polls on.
 func (r *run) rollout(ctx context.Context, set render.Set) (string, string, string) {
 	api := r.c.cs.AppsV1().Deployments(r.namespace)
 	var last *appsv1.Deployment
@@ -471,7 +492,7 @@ func (r *run) rollout(ctx context.Context, set render.Set) (string, string, stri
 			} else {
 				strikes = 0
 			}
-		case ctx.Err() == nil:
+		case ctx.Err() == nil && !transient(err):
 			return r.failure(ctx, err)
 		}
 		select {
@@ -483,6 +504,17 @@ func (r *run) rollout(ctx context.Context, set render.Set) (string, string, stri
 		case <-time.After(r.c.poll):
 		}
 	}
+}
+
+// transient is a read error worth another poll: no answer from the API server, or one that says
+// try again (429, 5xx). Any other answer (403, 404) will not change by waiting.
+func transient(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return true
+	}
+	code := status.Status().Code
+	return code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
 }
 
 func ready(d *appsv1.Deployment) bool {
