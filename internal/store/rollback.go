@@ -163,12 +163,20 @@ func (t *tenancyStore) RollbackTarget(ctx context.Context, a TenantAccess, app, 
 }
 
 // clusterRollback decides a cluster deployment's rollback from the instance's previous succeeded
-// apply. The validated deployment must still be the latest succeeded apply (nothing applied
-// since), and the prior plan must name the same namespace, services and claims (claims are
+// apply. Nothing may have been applied since the validated deployment: every later apply row is
+// still planned (the rollback frame has no compare-and-swap, so an apply that is applying, unknown
+// or settled may have changed the cluster), and the prior plan must name the same namespace, services and claims (claims are
 // immutable and never deleted, so a rollback must not try to change them), a pulled digest for
 // every service, and a revision that still validates. The kubelet pulls by digest: nothing is
 // checked on the cluster.
 func (t *tenancyStore) clusterRollback(ctx context.Context, tx *sql.Tx, a TenantAccess, app, deployment, instance string, version int, project string, plan DeploymentPlan) (*Rollback, string, error) {
+	var later int
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM deployments d JOIN deployments n ON n.instance_id=d.instance_id AND n.kind='apply' AND n.created_at>d.created_at AND n.state<>'planned' WHERE d.id=?`), deployment).Scan(&later); err != nil {
+		return nil, "", err
+	}
+	if later > 0 {
+		return nil, RollbackServiceSetChanged, nil
+	}
 	// The instance's two latest succeeded applies: the validated deployment, then the prior one.
 	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,plan,revision FROM deployments WHERE instance_id=? AND kind='apply' AND state='succeeded' ORDER BY settled_at DESC,id DESC LIMIT 2`), instance)
 	if err != nil {

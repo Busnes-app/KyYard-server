@@ -196,13 +196,17 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	if kube && len(r.PinImages) == 0 && resolver == nil {
 		return nil, ErrInvalid
 	}
-	if kube {
-		// A cluster pin is a canonical digest reference, as pinPull wrote it into the prior plan.
-		for _, pin := range r.PinImages {
-			if ref, err := registry.ParseReference(pin); err != nil || !validSHA256(ref.Digest) || pin != ref.Host+"/"+ref.Repository+"@"+ref.Digest {
-				return nil, ErrInvalid
-			}
+	// A cluster pin is a canonical digest reference, as pinPull wrote it into the prior plan.
+	pins := map[string]registry.Reference{}
+	for name, pin := range r.PinImages {
+		if !kube {
+			break
 		}
+		ref, err := registry.ParseReference(pin)
+		if err != nil || !validSHA256(ref.Digest) || pin != ref.Host+"/"+ref.Repository+"@"+ref.Digest {
+			return nil, ErrInvalid
+		}
+		pins[name] = ref
 	}
 	if len(r.Update) > 0 {
 		sorted := slices.Sorted(slices.Values(r.Update))
@@ -274,19 +278,16 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 				blockers = append(blockers, "update_not_mapped")
 				continue
 			}
-			reference := d.Plan.Services[i].Reference
-			if kube && len(r.PinImages) > 0 {
+			ref, err := registry.ParseReference(d.Plan.Services[i].Reference)
+			if len(pins) > 0 {
 				// Pins cover every service or none (an unpinned one would need the registry), each
 				// at its own image's host and repository.
-				pin, ok := r.PinImages[name]
-				spec, err := registry.ParseReference(reference)
-				pinned, _ := registry.ParseReference(pin) // parsed above
-				if !ok || err != nil || pinned.Host != spec.Host || pinned.Repository != spec.Repository {
+				pin, ok := pins[name]
+				if !ok || err != nil || pin.Host != ref.Host || pin.Repository != ref.Repository {
 					return ErrInvalid
 				}
-				reference = pin // a digest reference: pinned below with no registry call
+				ref = pin // a digest reference: pinned below with no registry call
 			}
-			ref, err := registry.ParseReference(reference)
 			if err != nil {
 				blockers = append(blockers, "registry_unavailable")
 				continue

@@ -146,13 +146,69 @@ func TestClusterRollbackTarget(t *testing.T) {
 			t.Fatalf("rollback %+v %q %v", rb, reason, err)
 		}
 	})
-	t.Run("a later apply", func(t *testing.T) {
-		st, a, app, cluster, _ := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+	// Any apply sent after the validated one may have changed the cluster: the rollback frame has
+	// no compare-and-swap, so only a later plan never applied leaves it eligible.
+	for name, later := range map[string]func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, cluster string){
+		"a later succeeded apply": func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, cluster string) {
+			clusterApply(t, st, a, app, cluster, digestOf("d"))
+		},
+		"a later applying apply": func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, cluster string) {
+			laterApply(t, st, a, app)
+		},
+		"a later unknown apply": func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, cluster string) {
+			laterApply(t, st, a, app)
+			if _, err := st.Tenancy().AbandonDeployments(context.Background(), cluster); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a later failed apply": func(t *testing.T, st *SQLStore, a TenantAccess, app *Application, cluster string) {
+			if err := st.Tenancy().FailDeployment(context.Background(), laterApply(t, st, a, app), "test"); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st, a, app, cluster, _ := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+			clusterApply(t, st, a, app, cluster, digestOf("b"))
+			failed := clusterApply(t, st, a, app, cluster, digestOf("c"))
+			later(t, st, a, app, cluster)
+			if _, reason, err := st.Tenancy().RollbackTarget(context.Background(), a, app.ID, failed.ID); err != nil || reason != RollbackServiceSetChanged {
+				t.Fatalf("reason %q %v", reason, err)
+			}
+		})
+	}
+	// A later plan never applied changes nothing.
+	t.Run("a later planned apply", func(t *testing.T) {
+		st, a, app, cluster, m := kubernetesPlanFixture(t, twoServiceSpec(), map[string]string{"web.TOKEN": "x"})
+		ctx := context.Background()
 		clusterApply(t, st, a, app, cluster, digestOf("b"))
 		failed := clusterApply(t, st, a, app, cluster, digestOf("c"))
-		clusterApply(t, st, a, app, cluster, digestOf("d"))
-		if _, reason, err := st.Tenancy().RollbackTarget(context.Background(), a, app.ID, failed.ID); err != nil || reason != RollbackServiceSetChanged {
+		resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("d")}}}
+		if _, err := st.Tenancy().PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, reason, err := st.Tenancy().RollbackTarget(ctx, a, app.ID, failed.ID); err != nil || reason != "" {
 			t.Fatalf("reason %q %v", reason, err)
 		}
 	})
+}
+
+// laterApply plans and sends a cluster apply that has not settled, returning its ID.
+func laterApply(t *testing.T, st *SQLStore, a TenantAccess, app *Application) string {
+	t.Helper()
+	ctx := context.Background()
+	ts := st.Tenancy()
+	m, err := ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/web:1": {digest: digestOf("d")}}}
+	d, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, d.ID, m.Preview.Project, imageCheckKey, protocol.MaxDeploymentRequestBytes); err != nil {
+		t.Fatal(err)
+	}
+	return d.ID
 }
