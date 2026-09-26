@@ -3,13 +3,13 @@ import { planBlockers } from './ApplicationUpdates';
 
 // Verdicts (docs/application-schema.md, Health validation); '' is a validation still running.
 export const VALIDATION_VERDICTS: Record<string, string> = {
-  '': 'Validating: watching the containers after the deployment.',
-  healthy: 'Healthy: every service kept running and passed its healthcheck.',
-  unhealthy: 'Unhealthy: a healthcheck failed or never passed.',
+  '': 'Validating: watching the services after the deployment.',
+  healthy: 'Healthy: every service kept running and passed validation.',
+  unhealthy: 'Unhealthy: a service failed its health checks or never became ready.',
   exited: 'Exited: a container stopped or is gone.',
   restarting: 'Restarting: a container restarted.',
   unverifiable: 'Not validated.',
-  changed: 'Changed: the containers were replaced after this deployment.',
+  changed: 'Changed: the services were replaced or changed outside KyYard.',
 };
 // The loop's own sentences, as an unverifiable or changed detail or a pause reason carries them.
 const VALIDATION_DETAILS: Record<string, string> = {
@@ -24,7 +24,7 @@ const VALIDATION_DETAILS: Record<string, string> = {
 export const ROLLBACK_REASONS: Record<string, string> = {
   no_prior_identity: 'No record of what ran before this update.',
   prior_definition_invalid: 'The earlier revision no longer validates.',
-  service_set_changed: "The application's services changed since the earlier revision.",
+  service_set_changed: "The application's services changed, or something was applied, since the earlier revision.",
   namespace_changed: 'The earlier deployment ran in another namespace.',
   claims_changed: "The application's volume claims changed since the earlier deployment.",
   prior_images_missing: 'The earlier images are no longer on the host.',

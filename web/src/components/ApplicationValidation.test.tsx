@@ -15,6 +15,14 @@ it('renders every verdict from the fixed table', () => {
   expect(line({ verdict: 'exploded' })).toContain('Unrecognised verdict.');
 });
 
+// One table serves Docker and Kubernetes: no sentence may name what only one runtime has.
+it('words every verdict and the service-set refusal for both runtimes', () => {
+  for (const text of Object.values(VALIDATION_VERDICTS)) expect(text).not.toMatch(/healthcheck|containers were replaced|watching the containers/);
+  expect(VALIDATION_VERDICTS.healthy).toBe('Healthy: every service kept running and passed validation.');
+  expect(VALIDATION_VERDICTS.changed).toBe('Changed: the services were replaced or changed outside KyYard.');
+  expect(ROLLBACK_REASONS.service_set_changed).toBe("The application's services changed, or something was applied, since the earlier revision.");
+});
+
 it('names the deciding service and the loop sentences, and nothing else the server sent', () => {
   expect(line({ verdict: 'unhealthy', detail: 'web' })).toContain('Service web.');
   expect(line({ verdict: 'unverifiable', detail: 'the host could not be observed' })).toContain('The host could not be observed.');

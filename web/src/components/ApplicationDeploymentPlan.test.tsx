@@ -437,7 +437,7 @@ it('shows the validation verdict and the rollback of a settled deployment', asyn
   vi.stubGlobal('fetch', stubFetch([validated]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
-  expect((await screen.findAllByText(/Unhealthy: a healthcheck failed or never passed\./)).length).toBeGreaterThan(0);
+  expect((await screen.findAllByText(/Unhealthy: a service failed its health checks or never became ready\./)).length).toBeGreaterThan(0);
   expect(screen.getAllByText(/Rollback sent to revision 1\./).length).toBeGreaterThan(0);
 });
 
