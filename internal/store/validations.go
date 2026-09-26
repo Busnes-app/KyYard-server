@@ -65,6 +65,10 @@ const (
 	RollbackCreatorLost            = "creator_lost"
 	RollbackNotSent                = "not_sent"
 	RollbackInterrupted            = "interrupted"
+	// A cluster rollback's service_set_changed names what changed beside it: the namespace, or
+	// the claims or their mounts.
+	RollbackNamespaceChanged = "namespace_changed"
+	RollbackClaimsChanged    = "claims_changed"
 )
 
 // The loop's own sentences: the only prose a validation detail or its pause reason holds. A

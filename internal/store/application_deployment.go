@@ -33,7 +33,9 @@ type PlanRequest struct {
 	MaxFrameBytes int                                     `json:"-"`
 	Inspections   map[string]protocol.ContainerInspection `json:"-"`
 	// PinImages is set only by a validation's rollback: service to image ID, taken instead of
-	// resolving the service's tag. The ID must be on the host; nothing is pulled.
+	// resolving the service's tag. The ID must be on the host; nothing is pulled. On a cluster it
+	// maps every service to a digest reference (host/repository@sha256:...), which the plan pulls
+	// with no registry call.
 	PinImages map[string]string `json:"-"`
 }
 type PlannedService struct {
@@ -183,16 +185,24 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	if len(r.Update) > 0 && len(r.PinImages) > 0 {
 		return nil, ErrInvalid
 	}
-	// A Kubernetes plan resolves every image at the registry, so it takes the update path. This
-	// read only picks the path: both paths re-read the instance under authorization and refuse
-	// one whose runtime changed since.
+	// A Kubernetes plan resolves every image at the registry, or takes every one pinned, so it
+	// takes the update path. This read only picks the path: both paths re-read the instance under
+	// authorization and refuse one whose runtime changed since.
 	var namespace string
 	if err := t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT namespace FROM application_instances WHERE organization_id=? AND environment_id=? AND application_id=?`), a.OrganizationID, a.EnvironmentID, id.String()).Scan(&namespace); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	kube := namespace != ""
-	if kube && (len(r.PinImages) > 0 || resolver == nil) {
+	if kube && len(r.PinImages) == 0 && resolver == nil {
 		return nil, ErrInvalid
+	}
+	if kube {
+		// A cluster pin is a canonical digest reference, as pinPull wrote it into the prior plan.
+		for _, pin := range r.PinImages {
+			if ref, err := registry.ParseReference(pin); err != nil || !validSHA256(ref.Digest) || pin != ref.Host+"/"+ref.Repository+"@"+ref.Digest {
+				return nil, ErrInvalid
+			}
+		}
 	}
 	if len(r.Update) > 0 {
 		sorted := slices.Sorted(slices.Values(r.Update))
@@ -253,6 +263,10 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 		}
 		updates := r.Update
 		if kube {
+			// Pins cover every service or none: an unpinned one would need the registry.
+			if len(r.PinImages) > 0 && len(r.PinImages) != len(d.Plan.Services) {
+				return ErrInvalid
+			}
 			updates = nil
 			for _, ps := range d.Plan.Services {
 				updates = append(updates, ps.Name)
@@ -264,7 +278,11 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 				blockers = append(blockers, "update_not_mapped")
 				continue
 			}
-			ref, err := registry.ParseReference(d.Plan.Services[i].Reference)
+			reference := d.Plan.Services[i].Reference
+			if pin, ok := r.PinImages[name]; ok {
+				reference = pin // a digest reference: pinned below with no registry call
+			}
+			ref, err := registry.ParseReference(reference)
 			if err != nil {
 				blockers = append(blockers, "registry_unavailable")
 				continue
