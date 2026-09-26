@@ -205,7 +205,7 @@ function ResultSection({ current }: { current: Deployment }) {
     {detail && <p>{detail}</p>}
     {outcome && <p>{outcome}</p>}
     {explanation && <p role="alert">{explanation}</p>}
-    {current.validation && <p><ValidationLine v={current.validation} kubernetes={Boolean(current.plan.namespace)} /></p>}
+    {current.validation && <p><ValidationLine v={current.validation} /></p>}
     {current.result && <>
       {steps.controls}
       <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Step</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>{steps.rows.map((s, i) => <tr key={`${s.service}-${s.step}-${i}`}>
