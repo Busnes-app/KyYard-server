@@ -237,6 +237,15 @@ it('warns for a cluster whose agent cannot report workload status, and not once 
   expect(screen.queryByText(/cannot report/)).toBeNull();
 });
 
+it('warns nothing for a runtime it does not know', async () => {
+  const fetcher = stubWithEndpoint(policy(), [], 'podman');
+  render(<ApplicationPolicy base="/app" admin={false} org="a" endpointID="host" />);
+  open();
+  await vi.waitFor(() => expect(fetcher.mock.calls.some(isEndpoint)).toBe(true));
+  await screen.findByText(/Plan and apply ·/);
+  expect(screen.queryByText(/cannot report/)).toBeNull();
+});
+
 it('shows each run validation and its rollback, and explains a validation pause', async () => {
   const rolledBack = '3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b';
   const v = (over: Record<string, unknown>) => ({ deployment_id: 'd', policy_run_id: 'r', automated: true, is_rollback: false, phase: 'done', started_at: '2026-09-24T10:00:00Z', observe_until: '2026-09-24T10:02:30Z', verdict: 'unhealthy', detail: 'web', rollback: null, correlation_id: 'c', finished_at: '2026-09-24T10:00:31Z', ...over });
