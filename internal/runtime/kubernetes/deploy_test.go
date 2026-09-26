@@ -905,3 +905,82 @@ func TestDeployRolloutEndsOnAnAnswer(t *testing.T) {
 		})
 	}
 }
+
+// A SelfSubjectAccessReview that itself fails during a write refusal is a failed call, not an
+// admission decision: the outcome comes from the existing failure mapping, never admission_denied.
+func TestDeployWriteRefusalReviewFailureIsNotAdmissionDenied(t *testing.T) {
+	for name, tc := range map[string]struct {
+		reviewErr    error
+		outcome      string
+		code, detail string
+	}{
+		"500":              {apierrors.NewInternalError(errors.New("etcd unavailable")), protocol.OutcomeFailed, "runtime_status", "500"},
+		"context deadline": {context.DeadlineExceeded, protocol.OutcomeFailed, "runtime_error", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, cs := deployCluster(t, true, false)
+			cs.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", errors.New("secret-canary"))
+			})
+			cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+				if review.Spec.ResourceAttributes.Resource != "configmaps" {
+					return false, nil, nil
+				}
+				return true, nil, tc.reviewErr
+			})
+			res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+			if res.Outcome != tc.outcome || i < 0 || res.Validate() != nil {
+				t.Fatalf("result %+v %v", res, res.Validate())
+			}
+			if s := res.Steps[i]; s.Step != protocol.StepCreate || s.Code != tc.code || s.Detail != tc.detail {
+				t.Fatalf("step %+v", s)
+			}
+		})
+	}
+}
+
+// A write that finds its object gone, then loses the create race that follows to a foreign
+// object, is name_taken: the free re-read after the vanish must not spend the one conflict
+// retry the following race needs to tell a foreign object apart from a retryable one.
+func TestDeployVanishThenRaceIsNameTaken(t *testing.T) {
+	existing := &corev1.ConfigMap{ObjectMeta: owned("web")}
+	existing.Name = "shop-web-env"
+	foreign := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-web-env", Labels: map[string]string{"app": "other"}}}
+	cmResource := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	c, cs := deployCluster(t, true, false, existing)
+	vanished := false
+	cs.PrependReactor("update", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if vanished {
+			return false, nil, nil
+		}
+		vanished = true
+		if err := cs.Tracker().Delete(cmResource, "shop", "shop-web-env"); err != nil {
+			return true, nil, err
+		}
+		return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "shop-web-env")
+	})
+	raced := false
+	cs.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if raced {
+			return false, nil, nil
+		}
+		raced = true
+		if err := cs.Tracker().Add(foreign); err != nil {
+			return true, nil, err
+		}
+		return true, nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, "shop-web-env")
+	})
+	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
+	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
+	if res.Outcome != protocol.OutcomeDenied || i < 0 || res.Validate() != nil {
+		t.Fatalf("result %+v %v", res, res.Validate())
+	}
+	if s := res.Steps[i]; s.Step != protocol.StepCreate || s.Code != "name_taken" || s.Detail != "ConfigMap/shop-web-env" {
+		t.Fatalf("step %+v", s)
+	}
+	if cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{}); cm.Labels["app"] != "other" {
+		t.Fatalf("the foreign ConfigMap was overwritten: %+v", cm)
+	}
+}

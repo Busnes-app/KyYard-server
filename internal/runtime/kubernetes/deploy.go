@@ -193,14 +193,18 @@ var kindResource = map[string][2]string{"ConfigMap": {"", "configmaps"}, "Secret
 // refusedWrite classifies a write that did not succeed. A 403 is the agent's Role lacking the
 // verb (an older or edited manifest: forbidden, fixed by applying the manifest) or the cluster's
 // admission refusing the object (a quota, a policy engine: admission_denied, named by kind and
-// name); an access review for the failing write tells them apart, and an unreadable review
-// leaves admission_denied.
+// name); an access review for the failing write tells them apart. A review the API server could
+// not answer is not itself an admission decision: it is classified like any other failed call.
 func (r *run) refusedWrite(ctx context.Context, err error, verb, kind, name string) (string, string, string) {
 	if !apierrors.IsForbidden(err) {
 		return r.failure(ctx, err)
 	}
 	gr := kindResource[kind]
-	if ok, rerr := r.review(ctx, authorizationv1.ResourceAttributes{Namespace: r.namespace, Verb: verb, Group: gr[0], Resource: gr[1], Name: name}); rerr == nil && !ok {
+	ok, rerr := r.review(ctx, authorizationv1.ResourceAttributes{Namespace: r.namespace, Verb: verb, Group: gr[0], Resource: gr[1], Name: name})
+	if rerr != nil {
+		return r.failure(ctx, rerr)
+	}
+	if !ok {
 		return protocol.OutcomeDenied, "forbidden", ""
 	}
 	return protocol.OutcomeDenied, "admission_denied", kind + "/" + name
@@ -425,7 +429,8 @@ func upsert[T interface {
 	comparable
 }](ctx context.Context, r *run, kind string, api objectAPI[T], want, have T, keep func(want, have T)) (T, string, string, string) {
 	var zero T
-	for attempt := 0; ; attempt++ {
+	conflicts := 0
+	for {
 		var got T
 		var err error
 		verb := "update"
@@ -443,12 +448,18 @@ func upsert[T interface {
 		if err == nil {
 			return got, protocol.OutcomeSucceeded, "", ""
 		}
-		if !apierrors.IsConflict(err) && !apierrors.IsAlreadyExists(err) && (verb == "create" || !apierrors.IsNotFound(err)) {
+		// An update whose object vanished re-reads for free: it spends no conflict retry, so a
+		// foreign object won by someone else on the create that follows is still name_taken,
+		// never a spurious conflict.
+		vanished := verb == "update" && apierrors.IsNotFound(err)
+		if !apierrors.IsConflict(err) && !apierrors.IsAlreadyExists(err) && !vanished {
 			o, code, detail := r.refusedWrite(ctx, err, verb, kind, want.GetName())
 			return zero, o, code, detail
 		}
-		if attempt == 1 {
-			return zero, protocol.OutcomeFailed, "conflict", kind + "/" + want.GetName()
+		if !vanished {
+			if conflicts++; conflicts > 1 {
+				return zero, protocol.OutcomeFailed, "conflict", kind + "/" + want.GetName()
+			}
 		}
 		fresh, found, err := get(ctx, api, want.GetName())
 		switch {
