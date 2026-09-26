@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -269,7 +270,7 @@ func TestMigrationAuthorization(t *testing.T) {
 	}
 }
 
-// The destination refuses a name already taken and a source whose definition moved on since the
+// The destination refuses when its name and every suffix are taken, and a source whose definition moved on since the
 // analysis; nothing is created either way.
 func TestMigrationDestination(t *testing.T) {
 	st, a, app, cluster := migrationFixture(t, migrationSpec(), map[string]string{"db.PASSWORD": "p"})
@@ -282,14 +283,22 @@ func TestMigrationDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	squatter, err := ts.ImportApplication(ctx, a, src.Destination.Name, twoServiceSpec(), map[string]string{"web.TOKEN": "x"}, imageCheckKey)
-	if err != nil {
-		t.Fatal(err)
+	var squatters []*Application
+	for n := 1; n <= MaxDestinationSuffix; n++ {
+		name := src.Destination.Name
+		if n > 1 {
+			name += fmt.Sprintf(" (%d)", n)
+		}
+		squatter, err := ts.ImportApplication(ctx, a, name, twoServiceSpec(), map[string]string{"web.TOKEN": "x"}, imageCheckKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		squatters = append(squatters, squatter)
 	}
 	if _, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey); !errors.Is(err, ErrApplicationNameTaken) {
-		t.Fatalf("a taken name: %v", err)
+		t.Fatalf("every name taken: %v", err)
 	}
-	if err := ts.DiscardApplication(ctx, a, squatter.ID, 1); err != nil {
+	if err := ts.DiscardApplication(ctx, a, squatters[4].ID, 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.ReplaceApplicationRevision(ctx, a, app.ID, 1, migrationSpec(), map[string]string{"db.PASSWORD": "changed"}, imageCheckKey); err != nil {
@@ -299,8 +308,110 @@ func TestMigrationDestination(t *testing.T) {
 		t.Fatalf("a stale analysis: %v", err)
 	}
 	apps, err := ts.ListApplications(ctx, a, 0, 100)
-	if err != nil || len(apps) != 1 {
+	if err != nil || len(apps) != MaxDestinationSuffix {
 		t.Fatalf("applications %+v %v", apps, err)
+	}
+}
+
+// readyMigration starts app's migration to namespace shop of cluster and makes it ready.
+func readyMigration(t *testing.T, ts TenancyStore, a TenantAccess, app, cluster string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := ts.CreateMigration(ctx, a, app, MigrationStart{DestinationEndpointID: cluster, Namespace: "shop"}, analysis(1, true)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AnalyzeMigration(ctx, a, app, MigrationChoices{Volumes: dataChoice.Volumes, Acknowledged: MigrationAcknowledgeable}, analysis(1, true)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Abandoning a migration keeps its destination; migrating again names the new destination
+// "<source> on <cluster> (2)", with its own project, and the analysis already names it so.
+func TestMigrationDestinationNaming(t *testing.T) {
+	st, a, app, cluster := migrationFixture(t, migrationSpec(), map[string]string{"db.PASSWORD": "p"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	readyMigration(t, ts, a, app.ID, cluster)
+	first, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := first.DestinationApplicationName
+	if _, err := ts.AbandonMigration(ctx, a, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	src, err := ts.ReadMigrationSource(ctx, a, app.ID, cluster)
+	if err != nil || src.Destination.Name != base+" (2)" || src.Destination.Project != KubernetesProject(base+" (2)") {
+		t.Fatalf("the next analysis %+v %v", src, err)
+	}
+	readyMigration(t, ts, a, app.ID, cluster)
+	second, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey)
+	if err != nil || second.DestinationApplicationName != base+" (2)" || second.DestinationApplicationID == first.DestinationApplicationID {
+		t.Fatalf("second destination %+v %v", second, err)
+	}
+	mapped, err := ts.ReadApplicationMapping(ctx, a, second.DestinationApplicationID)
+	if err != nil || mapped.Preview.Project != KubernetesProject(base+" (2)") {
+		t.Fatalf("second destination mapping %+v %v", mapped, err)
+	}
+	kept, err := ts.ReadApplicationMapping(ctx, a, first.DestinationApplicationID)
+	if err != nil || kept.Preview.ApplicationName != base || kept.Preview.Project != KubernetesProject(base) {
+		t.Fatalf("the abandoned destination changed %+v %v", kept, err)
+	}
+}
+
+// A destination name over 255 bytes is refused at analysis already: the name itself, or the
+// " (2)" a taken name needs.
+func TestMigrationDestinationNameTooLong(t *testing.T) {
+	st, a, app, cluster := migrationFixture(t, migrationSpec(), map[string]string{"db.PASSWORD": "p"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if err := ts.RenameEndpoint(ctx, a, cluster, "k"); err != nil {
+		t.Fatal(err)
+	}
+	rename := func(n int) {
+		t.Helper()
+		if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE applications SET name=? WHERE id=?`), strings.Repeat("s", n), app.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rename(251) // "<251> on k" is 256 bytes
+	if _, err := ts.ReadMigrationSource(ctx, a, app.ID, cluster); !errors.Is(err, ErrDestinationNameTooLong) {
+		t.Fatalf("a 256-byte name: %v", err)
+	}
+	rename(248) // "<248> on k" is 253 bytes; with " (2)" it is 257
+	src, err := ts.ReadMigrationSource(ctx, a, app.ID, cluster)
+	if err != nil || len(src.Destination.Name) != 253 {
+		t.Fatalf("a 253-byte name: %+v %v", src, err)
+	}
+	if _, err := ts.ImportApplication(ctx, a, src.Destination.Name, twoServiceSpec(), map[string]string{"web.TOKEN": "x"}, imageCheckKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.ReadMigrationSource(ctx, a, app.ID, cluster); !errors.Is(err, ErrDestinationNameTooLong) {
+		t.Fatalf("a taken name whose suffix overflows: %v", err)
+	}
+}
+
+// Analysis and choices read the destination's StorageClasses only from a fresh inventory: a stale
+// one is ErrInventoryStale, even for a class the stale snapshot lists.
+func TestMigrationNeedsAFreshDestinationInventory(t *testing.T) {
+	st, a, app, cluster := migrationFixture(t, migrationSpec(), map[string]string{"db.PASSWORD": "p"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if _, err := ts.CreateMigration(ctx, a, app.ID, MigrationStart{DestinationEndpointID: cluster, Namespace: "shop"}, analysis(1, false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE endpoint_inventory SET received_at=? WHERE endpoint_id=?`), time.Now().UTC().Add(-10*time.Minute), cluster); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.ReadMigrationSource(ctx, a, app.ID, cluster); !errors.Is(err, ErrInventoryStale) {
+		t.Fatalf("analysis on a stale inventory: %v", err)
+	}
+	if _, err := ts.AnalyzeMigration(ctx, a, app.ID, dataChoice, analysis(1, true)); !errors.Is(err, ErrInventoryStale) {
+		t.Fatalf("choices on a stale inventory: %v", err)
+	}
+	putStorageClasses(t, ts, cluster, []protocol.StorageClass{{Name: "standard", Default: true}, {Name: "fast"}})
+	if _, err := ts.AnalyzeMigration(ctx, a, app.ID, dataChoice, analysis(1, true)); err != nil {
+		t.Fatalf("choices on a fresh inventory: %v", err)
 	}
 }
 

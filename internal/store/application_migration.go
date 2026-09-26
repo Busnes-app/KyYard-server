@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -26,6 +27,9 @@ const (
 	MigrationAbandoned          = "abandoned"
 	MaxMigrationReportBytes     = 65536
 	MaxMigrationNoteRunes       = 500
+	// MaxDestinationSuffix is the last " (n)" a destination name takes when the ones before it
+	// are held.
+	MaxDestinationSuffix = 9
 )
 
 var (
@@ -37,6 +41,10 @@ var (
 	ErrSizeInvalid          = errors.New("invalid claim size")
 	ErrVolumeUnknown        = errors.New("the source mounts no such named volume")
 	ErrApplicationNameTaken = errors.New("the destination's name is taken")
+	// ErrDestinationNameTooLong is a destination name over validTenantName's 255 bytes.
+	ErrDestinationNameTooLong = errors.New("the destination's name would be too long")
+	// ErrInventoryStale is a destination cluster whose inventory is not fresh (freshInventory).
+	ErrInventoryStale = errors.New("the destination cluster's inventory is stale")
 )
 
 // ApplicationMigration is one migration of a Docker source to a destination application on a
@@ -187,14 +195,16 @@ func (t *tenancyStore) dockerSource(ctx context.Context, tx *sql.Tx, a TenantAcc
 	return nil
 }
 
-// migrationDestination reads a Kubernetes endpoint's namespaces and reported StorageClasses and
-// the name the destination of app would take on it. The endpoint must be connected: a revoked or
-// offline cluster must not receive a destination application holding copied secrets.
+// migrationDestination reads a Kubernetes endpoint's namespaces and, from its fresh inventory
+// (freshInventory, else ErrInventoryStale), its StorageClasses; given the source's name, also the
+// destination's (destinationName). The endpoint must be connected: a revoked or offline cluster
+// must not receive a destination application holding copied secrets.
 func (t *tenancyStore) migrationDestination(ctx context.Context, tx *sql.Tx, a TenantAccess, sourceName, endpoint string) (MigrationDestination, error) {
 	d := MigrationDestination{EndpointID: endpoint, StorageClasses: []protocol.StorageClass{}}
 	var runtime, name, namespaces, state string
 	var snapshot sql.NullString
-	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT e.runtime,e.name,e.deploy_namespaces,e.state,v.snapshot FROM endpoints e LEFT JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE e.organization_id=? AND e.environment_id=? AND e.id=?`), a.OrganizationID, a.EnvironmentID, endpoint).Scan(&runtime, &name, &namespaces, &state, &snapshot)
+	var received, observed sql.NullTime
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT e.runtime,e.name,e.deploy_namespaces,e.state,v.snapshot,v.received_at,v.observed_at FROM endpoints e LEFT JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE e.organization_id=? AND e.environment_id=? AND e.id=?`), a.OrganizationID, a.EnvironmentID, endpoint).Scan(&runtime, &name, &namespaces, &state, &snapshot, &received, &observed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, ErrNotFound
 	}
@@ -207,14 +217,47 @@ func (t *tenancyStore) migrationDestination(ctx context.Context, tx *sql.Tx, a T
 	if runtime != protocol.RuntimeKubernetes {
 		return d, ErrRuntimeUnsupported
 	}
+	if !snapshot.Valid {
+		return d, ErrInventoryStale
+	}
+	s, _, err := freshInventory(state, snapshot.String, received.Time, observed.Time)
+	if err != nil {
+		return d, ErrInventoryStale
+	}
 	d.Namespaces = decodeNamespaces(namespaces)
-	var s protocol.Snapshot
-	if snapshot.Valid && json.Unmarshal([]byte(snapshot.String), &s) == nil && s.Kubernetes != nil && s.Kubernetes.StorageClasses != nil {
+	if s.Kubernetes != nil && s.Kubernetes.StorageClasses != nil {
 		d.StorageClasses = s.Kubernetes.StorageClasses
 	}
-	d.Name = sourceName + " on " + name
-	d.Project = KubernetesProject(d.Name)
-	return d, nil
+	if sourceName == "" {
+		return d, nil
+	}
+	d.Name, d.Project, err = t.destinationName(ctx, tx, a, sourceName+" on "+name, endpoint)
+	return d, err
+}
+
+// destinationName is the first of base, "base (2)" to "base (MaxDestinationSuffix)" that no
+// application in the environment is named and whose project no instance on endpoint holds, so an
+// abandoned migration's destination can stay while a new one is created. A candidate over 255
+// bytes is ErrDestinationNameTooLong; all of them held is ErrApplicationNameTaken.
+func (t *tenancyStore) destinationName(ctx context.Context, tx *sql.Tx, a TenantAccess, base, endpoint string) (string, string, error) {
+	for n := 1; n <= MaxDestinationSuffix; n++ {
+		name := base
+		if n > 1 {
+			name = fmt.Sprintf("%s (%d)", base, n)
+		}
+		if len(name) > 255 {
+			return "", "", ErrDestinationNameTooLong
+		}
+		project := KubernetesProject(name)
+		var taken int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT (SELECT COUNT(*) FROM applications WHERE organization_id=? AND environment_id=? AND name=?)+(SELECT COUNT(*) FROM application_instances WHERE organization_id=? AND environment_id=? AND endpoint_id=? AND project=?)`), a.OrganizationID, a.EnvironmentID, name, a.OrganizationID, a.EnvironmentID, endpoint, project).Scan(&taken); err != nil {
+			return "", "", err
+		}
+		if taken == 0 {
+			return name, project, nil
+		}
+	}
+	return "", "", ErrApplicationNameTaken
 }
 
 // revisionSpec reads and verifies one revision's spec.
@@ -414,6 +457,27 @@ func (t *tenancyStore) ReadMigration(ctx context.Context, a TenantAccess, app st
 	return out, nil
 }
 
+// ReadOpenMigration returns app's open migration as its source, under application.migrate, and
+// nil when it has none: the API reads it before a mutation spends an inspection.
+func (t *tenancyStore) ReadOpenMigration(ctx context.Context, a TenantAccess, app string) (*ApplicationMigration, error) {
+	app, err := migrationApp(a, app)
+	if err != nil {
+		return nil, err
+	}
+	var out *ApplicationMigration
+	err = t.readTenant(ctx, a, permissions.ApplicationMigrate, func(tx *sql.Tx) error {
+		out, err = t.openMigrationOf(ctx, tx, a, app)
+		if errors.Is(err, ErrNotFound) {
+			out, err = nil, nil
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // changeMigration runs op on app's open migration under application.migrate, locked behind the
 // application row and audited on <app>/migration/<id>.
 func (t *tenancyStore) changeMigration(ctx context.Context, a TenantAccess, app string, op func(tx *sql.Tx, head int, m *ApplicationMigration) error) (*ApplicationMigration, error) {
@@ -456,14 +520,6 @@ func (t *tenancyStore) AnalyzeMigration(ctx context.Context, a TenantAccess, app
 	if err := checkAnalysis(an); err != nil {
 		return nil, err
 	}
-	if len(choices.Volumes) > protocol.MaxKubernetesClaims {
-		return nil, ErrInvalid
-	}
-	for i, code := range choices.Acknowledged {
-		if !slices.Contains(MigrationAcknowledgeable, code) || slices.Contains(choices.Acknowledged[:i], code) {
-			return nil, ErrInvalid
-		}
-	}
 	return t.changeMigration(ctx, a, app, func(tx *sql.Tx, head int, m *ApplicationMigration) error {
 		if m.Status != MigrationAnalyzed {
 			return ErrMigrationState
@@ -479,7 +535,7 @@ func (t *tenancyStore) AnalyzeMigration(ctx context.Context, a TenantAccess, app
 		if err != nil {
 			return err
 		}
-		if err := checkChoices(spec, dest.StorageClasses, choices); err != nil {
+		if err := CheckMigrationChoices(spec, dest.StorageClasses, choices); err != nil {
 			return err
 		}
 		if choices.Volumes == nil {
@@ -497,8 +553,19 @@ func (t *tenancyStore) AnalyzeMigration(ctx context.Context, a TenantAccess, app
 	})
 }
 
-// checkChoices holds each choice to a named volume of spec and to the destination's classes.
-func checkChoices(spec ApplicationSpec, classes []protocol.StorageClass, choices MigrationChoices) error {
+// CheckMigrationChoices holds choices to at most MaxKubernetesClaims volumes and distinct
+// MigrationAcknowledgeable codes, each volume to a named volume of spec, a valid size, ReadWriteOnce
+// and one of the destination's classes. The API checks before it spends an inspection; the store
+// checks again against the head revision.
+func CheckMigrationChoices(spec ApplicationSpec, classes []protocol.StorageClass, choices MigrationChoices) error {
+	if len(choices.Volumes) > protocol.MaxKubernetesClaims {
+		return ErrInvalid
+	}
+	for i, code := range choices.Acknowledged {
+		if !slices.Contains(MigrationAcknowledgeable, code) || slices.Contains(choices.Acknowledged[:i], code) {
+			return ErrInvalid
+		}
+	}
 	named := spec.namedVolumes()
 	for name, v := range choices.Volumes {
 		if !slices.Contains(named, name) {
@@ -520,7 +587,7 @@ func checkChoices(spec ApplicationSpec, classes []protocol.StorageClass, choices
 	return nil
 }
 
-// CreateMigrationDestination creates the destination application "<name> on <endpoint>": revision
+// CreateMigrationDestination creates the destination application under destinationName: revision
 // 1 is the analyzed revision with the storage choices, its values are the analyzed revision's
 // sealed afresh for the new application, and it is mapped to the migration's namespace. The
 // migration must be analyzed and ready, and the source must still be at the analyzed revision.
@@ -552,13 +619,6 @@ func (t *tenancyStore) CreateMigrationDestination(ctx context.Context, a TenantA
 		}
 		if !slices.Contains(dest.Namespaces, m.Namespace) {
 			return ErrNamespaceUnknown
-		}
-		var taken int
-		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT (SELECT COUNT(*) FROM applications WHERE organization_id=? AND environment_id=? AND name=?)+(SELECT COUNT(*) FROM application_instances WHERE organization_id=? AND environment_id=? AND endpoint_id=? AND project=?)`), a.OrganizationID, a.EnvironmentID, dest.Name, a.OrganizationID, a.EnvironmentID, dest.EndpointID, dest.Project).Scan(&taken); err != nil {
-			return err
-		}
-		if taken > 0 {
-			return ErrApplicationNameTaken
 		}
 		spec.Kubernetes = nil
 		if len(m.Choices.Volumes) > 0 {
