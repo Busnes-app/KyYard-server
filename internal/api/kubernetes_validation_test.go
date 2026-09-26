@@ -203,6 +203,7 @@ func TestClusterValidationRollsBackToThePriorDigests(t *testing.T) {
 	}
 	v.at(t, id, afterGrace+store.ValidationPoll)
 	req := v.frame(t)
+	// The rollback plans with a nil resolver; this pins that the server's resolver is not wired in.
 	if n := v.digests.calls(); n != heads {
 		t.Fatalf("the rollback called the registry: %d calls, %d before", n, heads)
 	}
