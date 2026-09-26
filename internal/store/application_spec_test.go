@@ -124,3 +124,54 @@ func TestApplicationSpecVolumesRoundTrip(t *testing.T) {
 		t.Fatalf("volumes lost: %s", got)
 	}
 }
+
+// A kubernetes extension names declared volumes only, each with a valid class, size and access
+// mode; an empty one is refused, and the digest covers it.
+func TestApplicationSpecKubernetesExtension(t *testing.T) {
+	good := func() store.ApplicationSpec {
+		spec := withVolumes()
+		spec.Kubernetes = &store.KubernetesExtension{Volumes: map[string]store.KubernetesVolume{
+			"db":     {StorageClass: "fast.ssd", Size: "20Gi", AccessMode: "ReadWriteOnce"},
+			"shared": {Size: "1Ti", AccessMode: "ReadWriteOnce"},
+		}}
+		return spec
+	}
+	if err := store.ValidateApplicationSpec(good()); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*store.ApplicationSpec){
+		"empty":      func(s *store.ApplicationSpec) { s.Kubernetes.Volumes = nil },
+		"undeclared": func(s *store.ApplicationSpec) { s.Kubernetes.Volumes["cache"] = s.Kubernetes.Volumes["db"] },
+		"bad size": func(s *store.ApplicationSpec) {
+			s.Kubernetes.Volumes["db"] = store.KubernetesVolume{StorageClass: "fast", Size: "20GB", AccessMode: "ReadWriteOnce"}
+		},
+		"too large": func(s *store.ApplicationSpec) {
+			s.Kubernetes.Volumes["db"] = store.KubernetesVolume{Size: "17Ti", AccessMode: "ReadWriteOnce"}
+		},
+		"bad class": func(s *store.ApplicationSpec) {
+			s.Kubernetes.Volumes["db"] = store.KubernetesVolume{StorageClass: "Fast", Size: "1Gi", AccessMode: "ReadWriteOnce"}
+		},
+		"read write many": func(s *store.ApplicationSpec) {
+			s.Kubernetes.Volumes["db"] = store.KubernetesVolume{Size: "1Gi", AccessMode: "ReadWriteMany"}
+		},
+		"17 volumes": func(s *store.ApplicationSpec) {
+			for i := range 15 {
+				name := fmt.Sprint("v", i)
+				s.Volumes = append(s.Volumes, store.DeclaredVolume{Name: name})
+				s.Kubernetes.Volumes[name] = store.KubernetesVolume{Size: "1Gi", AccessMode: "ReadWriteOnce"}
+			}
+		},
+	} {
+		spec := good()
+		mutate(&spec)
+		if err := store.ValidateApplicationSpec(spec); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("%s accepted: %v", name, err)
+		}
+	}
+	plain, extended := withVolumes(), good()
+	a, _ := json.Marshal(plain)
+	b, _ := json.Marshal(extended)
+	if strings.Contains(string(a), "kubernetes") || !strings.Contains(string(b), `"kubernetes":{"volumes":{"db":{"storage_class":"fast.ssd","size":"20Gi","access_mode":"ReadWriteOnce"}`) {
+		t.Fatalf("encoded %s / %s", a, b)
+	}
+}

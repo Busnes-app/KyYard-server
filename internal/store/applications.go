@@ -47,40 +47,46 @@ func (t *tenancyStore) CreateApplication(ctx context.Context, a TenantAccess, na
 func (t *tenancyStore) createApplication(ctx context.Context, a TenantAccess, name string, spec ApplicationSpec, values map[string]string, key []byte) (*Application, error) {
 	app := Application{ID: uuid.NewString(), OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, Name: strings.TrimSpace(name), LatestRevision: 1, CreatedBy: a.ActorID, CreatedAt: time.Now().UTC()}
 	err := t.withTenantTarget(ctx, a, permissions.ApplicationImport, app.ID, func(tx *sql.Tx) error {
-		if a.EnvironmentID == "" || !validTenantName(app.Name) {
-			return ErrInvalid
-		}
-		raw, digest, err := encodeApplicationSpec(spec)
-		if err != nil {
-			return err
-		}
-		// Serialize the organization-wide quota across distinct administrators.
-		if _, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE organizations SET name=name WHERE id=?`), a.OrganizationID); err != nil {
-			return err
-		}
-		var count int
-		if err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM applications WHERE organization_id=?`), a.OrganizationID).Scan(&count); err != nil {
-			return err
-		}
-		if count >= MaxApplicationsPerOrganization {
-			return ErrApplicationLimit
-		}
-		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO applications(id,organization_id,environment_id,name,latest_revision,created_by,created_at) VALUES(?,?,?,?,?,?,?)`), app.ID, app.OrganizationID, app.EnvironmentID, app.Name, app.LatestRevision, app.CreatedBy, app.CreatedAt)
-		if err != nil {
-			return err
-		}
-		if err := t.insertApplicationRevision(ctx, tx, a, app.ID, 1, raw, digest, app.CreatedAt); err != nil {
-			return err
-		}
-		if values != nil {
-			return t.sealApplicationValues(ctx, tx, a, app.ID, 1, spec, digest, values, key)
-		}
-		return nil
+		return t.insertApplication(ctx, tx, a, app, spec, values, key)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &app, nil
+}
+
+// insertApplication writes app with revision 1 = spec and, when values is non-nil, its sealed
+// values, inside the caller's authorized transaction, under the organization's quota.
+func (t *tenancyStore) insertApplication(ctx context.Context, tx *sql.Tx, a TenantAccess, app Application, spec ApplicationSpec, values map[string]string, key []byte) error {
+	if a.EnvironmentID == "" || !validTenantName(app.Name) {
+		return ErrInvalid
+	}
+	raw, digest, err := encodeApplicationSpec(spec)
+	if err != nil {
+		return err
+	}
+	// Serialize the organization-wide quota across distinct administrators.
+	if _, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE organizations SET name=name WHERE id=?`), a.OrganizationID); err != nil {
+		return err
+	}
+	var count int
+	if err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM applications WHERE organization_id=?`), a.OrganizationID).Scan(&count); err != nil {
+		return err
+	}
+	if count >= MaxApplicationsPerOrganization {
+		return ErrApplicationLimit
+	}
+	_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO applications(id,organization_id,environment_id,name,latest_revision,created_by,created_at) VALUES(?,?,?,?,?,?,?)`), app.ID, app.OrganizationID, app.EnvironmentID, app.Name, app.LatestRevision, app.CreatedBy, app.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if err := t.insertApplicationRevision(ctx, tx, a, app.ID, 1, raw, digest, app.CreatedAt); err != nil {
+		return err
+	}
+	if values != nil {
+		return t.sealApplicationValues(ctx, tx, a, app.ID, 1, spec, digest, values, key)
+	}
+	return nil
 }
 func (t *tenancyStore) insertApplicationRevision(ctx context.Context, tx *sql.Tx, a TenantAccess, id string, number int, raw []byte, digest string, at time.Time) error {
 	_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO application_revisions(id,application_id,organization_id,environment_id,number,spec,digest,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)`), uuid.NewString(), id, a.OrganizationID, a.EnvironmentID, number, string(raw), digest, a.ActorID, at)

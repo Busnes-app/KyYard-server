@@ -234,6 +234,16 @@ type TenancyStore interface {
 	// replaced revision and images, or an ineligibility reason (docs/application-schema.md, Rollback).
 	RollbackTarget(ctx context.Context, access TenantAccess, applicationID, deploymentID string) (*Rollback, string, error)
 	SetApplicationMapping(ctx context.Context, access TenantAccess, applicationID string, request MappingRequest) error
+	// Migrations (docs/application-schema.md, Migration): writes under application.migrate,
+	// audited on <app>/migration/<id>; ReadMigration under application.read. The API runs the
+	// analyzer between ReadMigrationSource and the write that stores its report.
+	ReadMigrationSource(ctx context.Context, access TenantAccess, applicationID, endpointID string) (*MigrationSource, error)
+	CreateMigration(ctx context.Context, access TenantAccess, applicationID string, start MigrationStart, analysis MigrationAnalysis) (*ApplicationMigration, error)
+	ReadMigration(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMigration, error)
+	AnalyzeMigration(ctx context.Context, access TenantAccess, applicationID string, choices KubernetesExtension, analysis MigrationAnalysis) (*ApplicationMigration, error)
+	CreateMigrationDestination(ctx context.Context, access TenantAccess, applicationID string, key []byte) (*ApplicationMigration, error)
+	ConfirmMigration(ctx context.Context, access TenantAccess, applicationID, step, note string) (*ApplicationMigration, error)
+	AbandonMigration(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMigration, error)
 	CompareApplication(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationComparison, error)
 	ReadApplicationRevision(ctx context.Context, access TenantAccess, applicationID string, number int) (*ApplicationRevision, error)
 	ReadOrganization(ctx context.Context, access TenantAccess) (*Organization, error)

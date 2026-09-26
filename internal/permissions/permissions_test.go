@@ -108,3 +108,16 @@ func TestUpdatePolicyIsOrganizationAdminOnly(t *testing.T) {
 		t.Fatal("the audit identifier changed")
 	}
 }
+
+// A migration copies the source's secret values into the destination it creates, so only the
+// organization administrator, who may reveal them, migrates (docs/authorization-matrix.md).
+func TestMigrateIsOrganizationAdminOnly(t *testing.T) {
+	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer", "read_only", "admin", "unknown", ""} {
+		if Allows(role, ApplicationMigrate) != (role == "organization_admin") || PlatformAllows(role, ApplicationMigrate) {
+			t.Errorf("%q application.migrate", role)
+		}
+	}
+	if ApplicationMigrate != "application.migrate" {
+		t.Fatal("the audit identifier changed")
+	}
+}

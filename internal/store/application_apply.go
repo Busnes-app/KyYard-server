@@ -121,7 +121,8 @@ func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app,
 		if frameBlocker(frame, now, maxFrameBytes) != "" {
 			return ErrInvalid
 		}
-		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=?,policy_run_id=? WHERE id=? AND state='planned'`), a.ActorID, now, frame.Deadline, run, d.ID)
+		// An open migration's destination records the migration on every apply, as a policy run does.
+		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=?,policy_run_id=?,migration_id=(SELECT m.id FROM application_migrations m WHERE m.organization_id=? AND m.environment_id=? AND m.destination_application_id=? AND m.`+openMigration+`) WHERE id=? AND state='planned'`), a.ActorID, now, frame.Deadline, run, a.OrganizationID, a.EnvironmentID, d.ApplicationID, d.ID)
 		if err != nil {
 			return err
 		}
@@ -131,6 +132,9 @@ func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app,
 		}
 		if n != 1 {
 			return ErrAdoptionChanged
+		}
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COALESCE(migration_id,'') FROM deployments WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, d.ID).Scan(&d.MigrationID); err != nil {
+			return err
 		}
 		d.State, d.AppliedBy, d.AppliedAt, d.Deadline = "applying", a.ActorID, &now, &frame.Deadline
 		out, req = d, &frame
@@ -767,6 +771,14 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		}
 		if r.Confirm != project {
 			return ErrInvalid
+		}
+		// The source of an open migration stays until the operator confirms cutover or abandons.
+		var migrating int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM application_migrations WHERE organization_id=? AND environment_id=? AND application_id=? AND `+openMigration), a.OrganizationID, a.EnvironmentID, appID.String()).Scan(&migrating); err != nil {
+			return err
+		}
+		if migrating > 0 {
+			return ErrMigrationOpen
 		}
 		if endpointState != "active" {
 			return ErrEndpointOffline

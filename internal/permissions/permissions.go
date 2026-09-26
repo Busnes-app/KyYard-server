@@ -53,6 +53,10 @@ const (
 	// policy deploys unattended as whoever saved it last, so the matrix stops at the organization
 	// administrator.
 	ApplicationPolicy Action = "application.policy"
+	// ApplicationMigrate analyzes an application for a cluster, records its storage choices and
+	// creates the destination application, copying the source's secret values into it. Only the
+	// organization administrator, who may reveal those values anyway, holds it.
+	ApplicationMigrate Action = "application.migrate"
 )
 
 func PlatformAllows(role string, action Action) bool {
@@ -63,7 +67,7 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage:
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage:
 			return true
 		}
 	case "environment_admin":
