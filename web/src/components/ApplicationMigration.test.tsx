@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { ACKNOWLEDGEMENTS, ApplicationMigration, ASSUMPTIONS, CHECKLIST_STEPS, MIGRATION_CODES, MIGRATION_ERRORS, findingText } from './ApplicationMigration';
+import { ACKNOWLEDGEMENTS, ApplicationMigration, ASSUMPTIONS, INSPECTION_AGENT, CHECKLIST_STEPS, MIGRATION_CODES, MIGRATION_ERRORS, findingText } from './ApplicationMigration';
 import { messages } from './ApplicationPreflight';
 import { STEP_CODES } from './ApplicationDeploymentPlan';
 import { unsupportedNames } from './ApplicationInspection';
@@ -45,6 +45,8 @@ it('renders a finding with its parameter and nothing for an unknown code', () =>
   expect(findingText({ axis: 'flags', class: 'blocked', code: 'flag_blocked', detail: 'privileged' })).toBe(`${MIGRATION_CODES.flag_blocked} (runs privileged)`);
   expect(findingText({ axis: 'ports', class: 'supported', code: 'port_published', detail: '8080/tcp' })).toBe(`${MIGRATION_CODES.port_published} (8080/tcp)`);
   expect(findingText({ axis: 'x', class: 'blocked', code: '<b>secret-canary</b>' })).toBe('');
+  expect(findingText({ axis: 'probes', class: 'operator_choice_required', code: 'inspection_unavailable', detail: 'agent' })).toBe(INSPECTION_AGENT);
+  expect(findingText({ axis: 'probes', class: 'operator_choice_required', code: 'inspection_unavailable' })).toBe(MIGRATION_CODES.inspection_unavailable);
 });
 
 it('offers an administrator the analysis of a Docker source and posts the cluster and namespace', async () => {

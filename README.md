@@ -470,14 +470,15 @@ checklist; KyYard never stops, changes or removes the source for you:
    Compose name (environment values, configuration) to the destination name the checklist lists,
    save the destination's definition and apply it.
 4. Stop writes to the source, then copy each volume into its claim with the recipe the checklist
-   prints. First set `HELPER_IMAGE` to a digest-pinned image that has `tar`
+   prints. First set `HELPER_IMAGE` to a digest-pinned image that has `sh` and `tar`
    (`busybox@sha256:<digest>`); the source host and the cluster both run it. Per service the
    recipe scales the Deployment to 0 and waits for its pod to go, runs a helper pod
-   (`<name>-copy`) that mounts the claim at `/to`, streams
+   (`<name>-copy`, sleeping until the recipe deletes it) that mounts the claim at `/to`, empties
+   `/to` (`rm -rf /to/* /to/..?* /to/.[!.]*`), streams
    `docker run --rm -v <volume>:/from:ro "$HELPER_IMAGE" tar -C /from -cf - .` into
    `kubectl exec -i <name>-copy -- tar -C /to -xf -`, deletes the helper and scales back to 1.
-   The destination started once against its empty claim at step 2: if it wrote data there (a
-   database initializes a directory), clear the claim from the helper pod before the copy.
+   Emptying the claim removes what the destination wrote on its first start at step 2 (a
+   database initializes a directory), so the two datasets never mix.
 5. Validate the destination and select **Confirm validation** with a note.
 6. Point your DNS or Ingress at the destination.
 7. Select **Confirm cutover** with a note, then remove the source with KyYard's removal, which

@@ -177,7 +177,7 @@ func TestAnalyzeUnknownHealth(t *testing.T) {
 	unknown := verified()
 	unknown.Health = ""
 	in.Inspections["db"] = unknown
-	if f := Analyze(in).Services[0].Findings; !slices.Contains(f, Finding{AxisProbes, ChoiceRequired, "inspection_unavailable", ""}) || slices.ContainsFunc(f, func(x Finding) bool { return x.Code == "probes_supported" }) {
+	if f := Analyze(in).Services[0].Findings; !slices.Contains(f, Finding{AxisProbes, ChoiceRequired, "inspection_unavailable", "agent"}) || slices.ContainsFunc(f, func(x Finding) bool { return x.Code == "probes_supported" }) {
 		t.Fatalf("empty health: %+v", f)
 	}
 	unknown.Unsupported = []string{"image_config"}
@@ -239,8 +239,9 @@ func TestChecklist(t *testing.T) {
 	want := []string{
 		"kubectl -n shop scale deploy/shop-on-cluster-db --replicas=0",
 		"kubectl -n shop wait --for=delete pod -l " + render.LabelInstanceName + "=shop-on-cluster," + render.LabelService + "=db --timeout=5m",
-		`kubectl -n shop run shop-on-cluster-db-copy --image="$HELPER_IMAGE" --restart=Never --override-type=strategic --overrides='` + overrides + `' -- sleep 3600`,
+		`kubectl -n shop run shop-on-cluster-db-copy --image="$HELPER_IMAGE" --restart=Never --override-type=strategic --overrides='` + overrides + `' -- sleep infinity`,
 		"kubectl -n shop wait --for=condition=Ready pod/shop-on-cluster-db-copy --timeout=5m",
+		`kubectl -n shop exec shop-on-cluster-db-copy -- sh -c 'rm -rf /to/* /to/..?* /to/.[!.]*'`,
 		`docker run --rm -v shop_data:/from:ro "$HELPER_IMAGE" tar -C /from -cf - . | kubectl -n shop exec -i shop-on-cluster-db-copy -- tar -C /to -xf -`,
 		"kubectl -n shop delete pod shop-on-cluster-db-copy",
 		"kubectl -n shop scale deploy/shop-on-cluster-db --replicas=1",

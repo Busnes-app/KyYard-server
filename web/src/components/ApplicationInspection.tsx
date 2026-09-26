@@ -43,7 +43,7 @@ export const unsupportedNames: Record<string, string> = {
   k8s_volume_shared: 'mounts a named volume another service mounts too; a ReadWriteOnce claim serves one pod',
 };
 // K8S_VOLUME_CHOICE replaces k8s_volume's sentence when its detail is choice_required.
-export const K8S_VOLUME_CHOICE = "mounts a named volume with no storage choice. Each revision keeps the previous one's choices; a newly declared volume has none, so remove it from the definition or migrate the application again";
+export const K8S_VOLUME_CHOICE = "mounts a named volume with no storage choice. Each revision keeps the previous one's choices, and a volume newly declared on a destination cannot receive one in this release, so remove it from the definition";
 type Inspection = {
   observed_at: string; state: string; image_platform: { os: string; architecture: string; variant?: string };
   restart_policy: string; restart_retries: number; ports: Port[];

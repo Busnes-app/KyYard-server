@@ -133,8 +133,9 @@ A service is `blocked` if any finding is; the report's `Ready` is true when no f
 `blocked` or `operator_choice_required`. When no inspection is available the probes, resources,
 scheduling and flags axes carry `inspection_unavailable` (choice required: run again when the
 host is online) so absence is never read as support. An inspection without a health answer (an
-agent lacking `container.inspect.health`) is `inspection_unavailable` on the probes axis, never
-`probes_supported`.
+agent lacking `container.inspect.health`) is `inspection_unavailable` with detail `agent` on
+the probes axis, never `probes_supported`; its sentence says to upgrade the Docker agent, then
+analyze again.
 
 Amendment (controller, 2026-09-26): `network_references` and `port_unpublished` have nothing to
 record, so the operator answers them by acknowledging them. The choices carry
@@ -154,7 +155,8 @@ KyYard; `update_references` (more than one service: every `<service> → <destin
 pair; the operator edits the destination's definition); copy each volume's data, per service:
 `kubectl scale deploy/<name> --replicas=0`, wait for its pods to be deleted, per claim
 `kubectl run <name>-copy --image="$HELPER_IMAGE" --restart=Never --override-type=strategic
---overrides='<mount the claim at /to>' -- sleep 3600`, wait for it, `docker run --rm -v
+--overrides='<mount the claim at /to>' -- sleep infinity`, wait for it, empty `/to` (the
+destination's first-start data), `docker run --rm -v
 <volume>:/from:ro "$HELPER_IMAGE" tar -C /from -cf - . | kubectl exec -i <name>-copy -- tar -C
 /to -xf -`, delete the helper, then `--replicas=1` (`HELPER_IMAGE` is the operator's
 digest-pinned image with `tar`); validate the destination; switch traffic (operator's DNS or

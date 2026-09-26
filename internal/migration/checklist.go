@@ -21,7 +21,8 @@ type Step struct {
 // checklist lists the steps. update_references appears in an application of several services;
 // copy_volume when a named volume a single service mounts exists on the source host. Every
 // interpolated name is held to a DNS-label or volume-name grammar, so none needs quoting;
-// $HELPER_IMAGE is the operator's digest-pinned image with tar.
+// $HELPER_IMAGE is the operator's digest-pinned image with sh and tar. The helper sleeps until the
+// recipe deletes it, so a long copy is never cut off.
 func checklist(in Input, users map[string]int, names map[string]string) []Step {
 	ns := in.Destination.Namespace
 	// No --overwrite: kubectl refuses to change an existing label, so a stricter one stays.
@@ -50,8 +51,10 @@ func checklist(in Input, users map[string]int, names map[string]string) []Step {
 			}
 			overrides := `{"spec":{"containers":[{"name":"` + pod + `","volumeMounts":[{"name":"to","mountPath":"/to"}]}],"volumes":[{"name":"to","persistentVolumeClaim":{"claimName":"` + claims[v.Name] + `"}}]}}`
 			recipe = append(recipe,
-				"kubectl -n "+ns+" run "+pod+` --image="$HELPER_IMAGE" --restart=Never --override-type=strategic --overrides='`+overrides+`' -- sleep 3600`,
+				"kubectl -n "+ns+" run "+pod+` --image="$HELPER_IMAGE" --restart=Never --override-type=strategic --overrides='`+overrides+`' -- sleep infinity`,
 				"kubectl -n "+ns+" wait --for=condition=Ready pod/"+pod+" --timeout=5m",
+				// The destination's first start wrote into the claim; the copy must not mix datasets.
+				"kubectl -n "+ns+" exec "+pod+` -- sh -c 'rm -rf /to/* /to/..?* /to/.[!.]*'`,
 				"docker run --rm -v "+host+`:/from:ro "$HELPER_IMAGE" tar -C /from -cf - . | kubectl -n `+ns+" exec -i "+pod+" -- tar -C /to -xf -",
 				"kubectl -n "+ns+" delete pod "+pod)
 		}

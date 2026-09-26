@@ -37,11 +37,14 @@ export const CHECKLIST_STEPS: Record<string, string> = {
   grant_namespace: "Label the namespace to enforce Pod Security baseline. The command refuses to change an existing label, so a namespace already at restricted stays there, and restricted refuses the destination's pods, which carry no security context. Then regenerate the cluster's manifest and apply it, and set the agent Deployment's image to the current pinned digest: migrations need the claim and StorageClass rules and an agent that applies claims.",
   create_destination: 'Create the destination below, then plan and apply it from its own entry in Applications.',
   update_references: "Change every reference one service makes to another by its Compose name (environment values, configuration) to the destination name, then save the destination's definition and apply it:",
-  copy_volume: 'Stop writes to the source. Set HELPER_IMAGE to a digest-pinned image that has tar; both sides use it. Each Deployment is scaled to 0, each claim filled through a helper pod that mounts it, and the Deployment scaled back to 1. The destination started once against its empty claim at the first apply: if it wrote data there (a database does), clear the claim from the helper pod before the copy.',
+  copy_volume: "Stop writes to the source. Set HELPER_IMAGE to a digest-pinned image that has sh and tar; both sides use it. Each Deployment is scaled to 0; a helper pod mounts each claim, the destination's first-start data is removed from it, and the source volume is copied in; then the helper is deleted and the Deployment scaled back to 1.",
   validate_destination: 'Check the destination works, then confirm validation below.',
   switch_traffic: 'Point your DNS or Ingress at the destination.',
   confirm_cutover: "Confirm cutover below, then remove the source with KyYard's removal. KyYard never stops or removes it for you.",
 };
+// INSPECTION_AGENT replaces inspection_unavailable's sentence when its detail is agent: the host
+// answered, but its agent reports no health.
+export const INSPECTION_AGENT = "The host's agent does not report container health, so this is unknown; upgrade the Docker agent, then analyze again.";
 export const ASSUMPTIONS: Record<string, string> = {
   volume_size_unknown: 'Docker reports no volume size; size each claim yourself.',
 };
@@ -87,6 +90,7 @@ function isMigration(x: unknown): x is Migration {
 // findingText is a finding's sentence with its parameter: a code from UnsupportedCodes by its
 // name, anything else as inert text; an unknown code renders nothing.
 export function findingText(f: Finding): string {
+  if (f.code === 'inspection_unavailable' && f.detail === 'agent') return INSPECTION_AGENT;
   const text = fixed(MIGRATION_CODES, f.code);
   if (!text || !f.detail) return text;
   if (Object.hasOwn(unsupportedNames, f.detail)) return `${text} (${unsupportedNames[f.detail]})`;

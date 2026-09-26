@@ -93,7 +93,8 @@ type ServiceReport struct {
 
 // Finding's Detail is its code's parameter: a volume name, a mount target, a port as
 // <published>/<protocol>, a restart policy, a code from protocol.UnsupportedCodes, a service's
-// destination name, or "acknowledged" on an acknowledged drop that has no parameter.
+// destination name, "acknowledged" on an acknowledged drop that has no parameter, or "agent" on
+// an inspection_unavailable caused by an agent that reports no health.
 type Finding struct {
 	Axis   string `json:"axis"`
 	Class  string `json:"class"`
@@ -271,12 +272,13 @@ func inspectedAxes(s store.ApplicationService, in protocol.ContainerInspection, 
 		restart()
 		return out
 	}
-	// An agent without container.inspect.health answers no health: unknown, not "none".
+	// An agent without container.inspect.health answers no health: unknown, not "none", and the
+	// fix is upgrading that agent (detail "agent"), not waiting for the host to come online.
 	switch {
 	case slices.ContainsFunc(in.Unsupported, func(c string) bool { return probeCodes[c] }) || (in.Health != "" && in.Health != "none"):
 		out = append(out, drop(AxisProbes, "healthcheck_dropped", ""))
 	case in.Health == "":
-		out = append(out, Finding{AxisProbes, ChoiceRequired, "inspection_unavailable", ""})
+		out = append(out, Finding{AxisProbes, ChoiceRequired, "inspection_unavailable", "agent"})
 	default:
 		out = append(out, Finding{AxisProbes, Supported, "probes_supported", ""})
 	}
