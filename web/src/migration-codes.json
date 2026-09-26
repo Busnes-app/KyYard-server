@@ -23,6 +23,7 @@
     "volume_named_shared",
     "volume_bind",
     "volume_external",
+    "volume_unverified",
     "storage_supported",
     "network_host",
     "networks_multiple",

@@ -28,7 +28,7 @@ func stateful(choices store.MigrationChoices) Input {
 			{Name: "db", Image: "ghcr.io/org/db:1", Restart: "unless-stopped", Volumes: []store.ApplicationVolume{{Kind: "named", Source: "data", Target: "/var/lib/db"}}},
 		}},
 		Project:     "shop",
-		Containers:  map[string]protocol.Container{"web": {Name: "shop-web", Networks: []string{"shop_default"}}, "db": {Name: "shop-db", Networks: []string{"shop_default"}}},
+		Containers:  map[string]protocol.Container{"web": {Name: "shop-web", Networks: []string{"shop_default"}}, "db": {Name: "shop-db", Networks: []string{"shop_default"}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: "shop_data", Target: "/var/lib/db"}}}},
 		Inspections: map[string]protocol.ContainerInspection{"web": verified(), "db": verified()},
 		Volumes:     []protocol.Volume{{Name: "shop_data"}},
 		Destination: Destination{Namespace: "shop", Project: "shop-on-cluster", StorageClasses: classes},
@@ -170,6 +170,44 @@ func TestAnalyzeAcknowledgedDrops(t *testing.T) {
 	}
 }
 
+// A copy recipe is pasted into the operator's shell: a host volume name the Docker grammar
+// refuses (a project name carrying shell syntax, as a compromised agent could report) emits no
+// command and blocks the volume.
+func TestChecklistRefusesAnUnsafeHostVolumeName(t *testing.T) {
+	in := stateful(ackedData)
+	in.Project = "shop;touch /tmp/pwned;"
+	host := in.Project + "_data"
+	in.Volumes = []protocol.Volume{{Name: host}}
+	in.Containers["db"] = protocol.Container{Networks: []string{"shop_default"}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: host, Target: "/var/lib/db"}}}
+	r := Analyze(in)
+	if r.Ready || !slices.Contains(r.Services[0].Findings, Finding{AxisStorage, Blocked, "volume_unverified", "data"}) {
+		t.Fatalf("db %+v", r.Services[0].Findings)
+	}
+	for _, step := range r.Checklist {
+		if step.Code == "copy_volume" || slices.ContainsFunc(step.Commands, func(c string) bool { return strings.Contains(c, "pwned") }) {
+			t.Fatalf("a command carries the unsafe name: %+v", step)
+		}
+	}
+}
+
+// Only a volume the mapped source container really mounts is the application's data: an
+// external volume the definition names and the host has, but the container does not mount, is
+// blocked volume_unverified and never copied.
+func TestAnalyzeCopiesOnlyMountedVolumes(t *testing.T) {
+	in := stateful(ackedData)
+	in.Spec.Volumes = []store.DeclaredVolume{{Name: "payroll", External: true}}
+	in.Spec.Services[1].Volumes = []store.ApplicationVolume{{Kind: "named", Source: "payroll", Target: "/var/lib/db"}}
+	in.Choices.Volumes = map[string]store.KubernetesVolume{"payroll": chosenData.Volumes["data"]}
+	in.Volumes = []protocol.Volume{{Name: "payroll"}, {Name: "shop_data"}}
+	r := Analyze(in)
+	if r.Ready || !slices.Contains(r.Services[0].Findings, Finding{AxisStorage, Blocked, "volume_unverified", "payroll"}) {
+		t.Fatalf("db %+v", r.Services[0].Findings)
+	}
+	if slices.ContainsFunc(r.Checklist, func(s Step) bool { return s.Code == "copy_volume" }) {
+		t.Fatalf("copied a volume the container does not mount: %+v", r.Checklist)
+	}
+}
+
 // An agent without container.inspect.health answers no health: the probes axis is unknown, never
 // read as support. An image_config override still says the healthcheck is dropped.
 func TestAnalyzeUnknownHealth(t *testing.T) {
@@ -196,10 +234,13 @@ func TestVocabularyIsExact(t *testing.T) {
 	extra.Spec.Volumes = append(extra.Spec.Volumes, store.DeclaredVolume{Name: "ext", External: true})
 	extra.Spec.Services[0].Volumes = []store.ApplicationVolume{{Kind: "named", Source: "ext", Target: "/ext"}}
 	extra.Inspections["web"] = scheduling
+	extra.Containers["web"] = protocol.Container{Networks: []string{"shop_default"}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: "ext", Target: "/ext"}}}
+	unverified := stateful(chosenData)
+	unverified.Containers["db"] = protocol.Container{Networks: []string{"shop_default"}}
 	single := stateful(chosenData)
 	single.Spec.Services = single.Spec.Services[1:]
 	seen := map[string]bool{}
-	for _, in := range []Input{stateful(store.MigrationChoices{}), stateful(chosenData), blocked(), extra, single} {
+	for _, in := range []Input{stateful(store.MigrationChoices{}), stateful(chosenData), blocked(), extra, single, unverified} {
 		for _, s := range Analyze(in).Services {
 			for _, f := range s.Findings {
 				if !slices.Contains(Codes, f.Code) {
@@ -242,7 +283,7 @@ func TestChecklist(t *testing.T) {
 		`kubectl -n shop run shop-on-cluster-db-copy --image="$HELPER_IMAGE" --restart=Never --override-type=strategic --overrides='` + overrides + `' -- sleep infinity`,
 		"kubectl -n shop wait --for=condition=Ready pod/shop-on-cluster-db-copy --timeout=5m",
 		`kubectl -n shop exec shop-on-cluster-db-copy -- sh -c 'rm -rf /to/* /to/..?* /to/.[!.]*'`,
-		`docker run --rm -v shop_data:/from:ro "$HELPER_IMAGE" tar -C /from -cf - . | kubectl -n shop exec -i shop-on-cluster-db-copy -- tar -C /to -xf -`,
+		`docker run --rm -v 'shop_data:/from:ro' "$HELPER_IMAGE" tar -C /from -cf - . | kubectl -n shop exec -i shop-on-cluster-db-copy -- tar -C /to -xf -`,
 		"kubectl -n shop delete pod shop-on-cluster-db-copy",
 		"kubectl -n shop scale deploy/shop-on-cluster-db --replicas=1",
 	}

@@ -2,6 +2,7 @@ package migration
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -19,8 +20,9 @@ type Step struct {
 }
 
 // checklist lists the steps. update_references appears in an application of several services;
-// copy_volume when a named volume a single service mounts exists on the source host. Every
-// interpolated name is held to a DNS-label or volume-name grammar, so none needs quoting;
+// copy_volume when a named volume a single service's mapped container mounts exists on the
+// source host. Kubernetes names are DNS labels; the host volume name is held to Docker's grammar
+// (mounted) and shell-quoted as well, since it comes from the source host's inventory;
 // $HELPER_IMAGE is the operator's digest-pinned image with sh and tar. The helper sleeps until the
 // recipe deletes it, so a long copy is never cut off.
 func checklist(in Input, users map[string]int, names map[string]string) []Step {
@@ -45,8 +47,8 @@ func checklist(in Input, users map[string]int, names map[string]string) []Step {
 		var recipe []string
 		for _, v := range in.Spec.Volumes {
 			host := store.VolumeHostName(in.Project, v)
-			mounted := slices.ContainsFunc(s.Volumes, func(m store.ApplicationVolume) bool { return m.Kind == "named" && m.Source == v.Name })
-			if !mounted || users[v.Name] != 1 || !slices.ContainsFunc(in.Volumes, func(pv protocol.Volume) bool { return pv.Name == host }) {
+			declares := slices.ContainsFunc(s.Volumes, func(m store.ApplicationVolume) bool { return m.Kind == "named" && m.Source == v.Name })
+			if !declares || users[v.Name] != 1 || !mounted(in, s.Name, v) || !slices.ContainsFunc(in.Volumes, func(pv protocol.Volume) bool { return pv.Name == host }) {
 				continue
 			}
 			overrides := `{"spec":{"containers":[{"name":"` + pod + `","volumeMounts":[{"name":"to","mountPath":"/to"}]}],"volumes":[{"name":"to","persistentVolumeClaim":{"claimName":"` + claims[v.Name] + `"}}]}}`
@@ -55,7 +57,7 @@ func checklist(in Input, users map[string]int, names map[string]string) []Step {
 				"kubectl -n "+ns+" wait --for=condition=Ready pod/"+pod+" --timeout=5m",
 				// The destination's first start wrote into the claim; the copy must not mix datasets.
 				"kubectl -n "+ns+" exec "+pod+` -- sh -c 'rm -rf /to/* /to/..?* /to/.[!.]*'`,
-				"docker run --rm -v "+host+`:/from:ro "$HELPER_IMAGE" tar -C /from -cf - . | kubectl -n `+ns+" exec -i "+pod+" -- tar -C /to -xf -",
+				"docker run --rm -v "+shellQuote(host+":/from:ro")+` "$HELPER_IMAGE" tar -C /from -cf - . | kubectl -n `+ns+" exec -i "+pod+" -- tar -C /to -xf -",
 				"kubectl -n "+ns+" delete pod "+pod)
 		}
 		if len(recipe) > 0 {
@@ -76,6 +78,11 @@ func checklist(in Input, users map[string]int, names map[string]string) []Step {
 // app.kubernetes.io/instance and the service as kyyard.busnes.app/service.
 func podSelector(project, service string) string {
 	return "app.kubernetes.io/instance=" + project + ",kyyard.busnes.app/service=" + service
+}
+
+// shellQuote makes s one POSIX shell word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // copyPod names the helper pod after its Deployment; kubectl run names the container the same,

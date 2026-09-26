@@ -20,7 +20,7 @@ const migrationCanary = "migration-secret-canary"
 // migrationFleet is a clusterHost whose cluster reports the default StorageClass standard, plus
 // a Docker endpoint "docker-1" (no socket: its inventory is accepted directly and inspections
 // answer through the plan-time hook) where "shop" is adopted and mapped: db mounts named volume
-// data and holds a secret, web publishes 8080.
+// data (its container mounts shop_data) and holds a secret, web publishes 8080.
 func migrationFleet(t *testing.T) (clusterHost, string, string) {
 	t.Helper()
 	h := newClusterHost(t, clusterCapabilities...)
@@ -40,7 +40,11 @@ func migrationFleet(t *testing.T) (clusterHost, string, string) {
 	bindings := map[string]string{}
 	for i, name := range []string{"db", "web"} {
 		id, image := strings.Repeat(string("12"[i]), 64), "sha256:"+strings.Repeat(string("ab"[i]), 64)
-		snapshot.Containers = append(snapshot.Containers, protocol.Container{ID: id, Name: "shop-" + name, ImageID: image, ComposeProject: "shop", CreatedAt: created, Mounts: []protocol.Mount{}, Networks: []string{"shop_default"}})
+		mounts := []protocol.Mount{}
+		if name == "db" {
+			mounts = append(mounts, protocol.Mount{Kind: protocol.MountVolume, Source: "shop_data", Target: "/var/lib/db"})
+		}
+		snapshot.Containers = append(snapshot.Containers, protocol.Container{ID: id, Name: "shop-" + name, ImageID: image, ComposeProject: "shop", CreatedAt: created, Mounts: mounts, Networks: []string{"shop_default"}})
 		snapshot.Images = append(snapshot.Images, protocol.Image{ID: image, Tags: []string{"ghcr.io/org/" + name + ":1"}})
 		bindings[name] = id
 	}

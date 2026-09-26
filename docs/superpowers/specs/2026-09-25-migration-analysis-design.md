@@ -103,7 +103,13 @@ Codes, one sentence each in the UI (closed, tested):
   `volume_named_shared` (blocked: mounted by more than one service, ReadWriteOnce cannot serve
   two pods), `volume_bind` (blocked), `volume_external` (choice: an existing PVC name is out of
   scope, so it is treated as `volume_named`), `volume_size_unknown` (assumption: Docker reports
-  no volume size; the operator sizes the claim).
+  no volume size; the operator sizes the claim), `volume_unverified` (blocked, detail the volume
+  name; amendment 2026-09-26): the mapped source container does not mount the volume's host name
+  (`<project>_<volume>`, or the name itself when external), or that name is outside Docker's
+  volume grammar `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$` (at most 255). The definition is editable and the
+  host holds foreign volumes, so only the running container's own mount makes a volume the
+  application's data; the copy recipe is emitted only for a verified volume, with the whole
+  `-v` argument shell-quoted.
 - networking: `network_host` (blocked, from `NetworkMode`), `networks_multiple` (supported,
   note: services reach each other as `<project>-<service>` on published ports only). In an
   application of more than one service every service also gets `network_references`

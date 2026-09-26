@@ -12,6 +12,7 @@ export const MIGRATION_CODES: Record<string, string> = {
   volume_named_shared: 'Two services mount this volume; a ReadWriteOnce claim serves one pod, so it cannot move as it is.',
   volume_bind: 'A host path cannot follow the service to a cluster.',
   volume_external: 'An external volume moves as a new claim (KyYard adopts no existing claim); choose its StorageClass and size.',
+  volume_unverified: "The running container does not mount this volume, so its data cannot be verified as the application's; adopt the container that mounts it or remove the volume.",
   storage_supported: 'No volumes.',
   network_host: 'Host networking has no equivalent on the cluster.',
   networks_multiple: 'On the cluster, services reach each other only as <project>-<service> on published ports.',

@@ -6,6 +6,7 @@ package migration
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -38,7 +39,7 @@ const (
 // Codes is the closed finding vocabulary; the web has a sentence for each
 // (web/src/migration-codes.json).
 var Codes = []string{
-	"volume_named", "volume_named_shared", "volume_bind", "volume_external", "storage_supported",
+	"volume_named", "volume_named_shared", "volume_bind", "volume_external", "volume_unverified", "storage_supported",
 	"network_host", "networks_multiple", "network_references", "networking_supported",
 	"port_published", "port_host_ip", "port_unpublished",
 	"secrets_supported",
@@ -150,7 +151,7 @@ func Analyze(in Input) Report {
 	for _, s := range in.Spec.Services {
 		inspection, inspected := in.Inspections[s.Name]
 		var f []Finding
-		f = append(f, storage(s, declared, users, in.Choices, in.Destination.StorageClasses)...)
+		f = append(f, storage(s, declared, users, in.Choices, in.Destination.StorageClasses, func(volume string) bool { return mounted(in, s.Name, declared[volume]) })...)
 		network := networking(in.Containers[s.Name], inspection, inspected)
 		if shared {
 			network = append(network, Finding{AxisNetworking, acknowledged("network_references"), "network_references", names[s.Name]})
@@ -186,7 +187,7 @@ func serviceNames(spec store.ApplicationSpec) []string {
 	return out
 }
 
-func storage(s store.ApplicationService, declared map[string]store.DeclaredVolume, users map[string]int, choices store.MigrationChoices, classes []protocol.StorageClass) []Finding {
+func storage(s store.ApplicationService, declared map[string]store.DeclaredVolume, users map[string]int, choices store.MigrationChoices, classes []protocol.StorageClass, verified func(volume string) bool) []Finding {
 	var out []Finding
 	for _, v := range s.Volumes {
 		switch {
@@ -194,6 +195,8 @@ func storage(s store.ApplicationService, declared map[string]store.DeclaredVolum
 			out = append(out, Finding{AxisStorage, Blocked, "volume_bind", v.Target})
 		case users[v.Source] > 1:
 			out = append(out, Finding{AxisStorage, Blocked, "volume_named_shared", v.Source})
+		case !verified(v.Source):
+			out = append(out, Finding{AxisStorage, Blocked, "volume_unverified", v.Source})
 		default:
 			code := "volume_named"
 			if declared[v.Source].External {
@@ -210,6 +213,20 @@ func storage(s store.ApplicationService, declared map[string]store.DeclaredVolum
 		out = append(out, Finding{AxisStorage, Supported, "storage_supported", ""})
 	}
 	return out
+}
+
+// hostVolumeName is Docker's volume-name grammar. The name reaches a command the operator
+// pastes, so one outside it is never emitted.
+var hostVolumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
+
+// mounted reports that service's mapped container really mounts v's host volume, under a name
+// Docker's grammar accepts. The definition is editable and the host holds foreign volumes too:
+// only the running container's own mount makes a volume the application's data.
+func mounted(in Input, service string, v store.DeclaredVolume) bool {
+	host := store.VolumeHostName(in.Project, v)
+	return len(host) <= 255 && hostVolumeName.MatchString(host) && slices.ContainsFunc(in.Containers[service].Mounts, func(m protocol.Mount) bool {
+		return m.Kind == protocol.MountVolume && m.Source == host
+	})
 }
 
 // chosen reports a valid choice for volume whose StorageClass the destination still reports ("":

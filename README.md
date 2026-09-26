@@ -437,7 +437,8 @@ An organization administrator opens an application adopted on a Docker host and,
 **Analyze**. KyYard reads the definition and a live inspection of each container and shows every
 service on every axis (storage, networking, ports, secrets, probes, resources, scheduling, flags)
 as supported, a choice to make, or blocked, each with its reason. Host paths, a volume two
-services share, host networking, host-bound ports, privileged and host-namespace settings, and a
+services share, a volume the running container does not mount (its data cannot be verified as
+the application's), host networking, host-bound ports, privileged and host-namespace settings, and a
 restart policy of `no` or `on-failure` are blocked: change the definition or the container, then
 **Analyze again**. For each named volume choose a StorageClass the cluster reports and a size
 (`Mi`, `Gi` or `Ti`; Docker reports no volume size); it becomes a `ReadWriteOnce`
