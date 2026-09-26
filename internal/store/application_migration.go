@@ -43,29 +43,41 @@ var (
 // cluster. Report is the analyzer's JSON, stored as produced. Role says which end the
 // application it was read for is.
 type ApplicationMigration struct {
-	ID                         string              `json:"id"`
-	ApplicationID              string              `json:"application_id"`
-	ApplicationName            string              `json:"application_name"`
-	DestinationApplicationID   string              `json:"destination_application_id,omitempty"`
-	DestinationApplicationName string              `json:"destination_application_name,omitempty"`
-	DestinationEndpointID      string              `json:"destination_endpoint_id"`
-	Namespace                  string              `json:"namespace"`
-	Status                     string              `json:"status"`
-	SourceRevision             int                 `json:"source_revision"`
-	Ready                      bool                `json:"ready"`
-	Report                     json.RawMessage     `json:"report"`
-	Choices                    KubernetesExtension `json:"choices"`
-	CreatedBy                  string              `json:"created_by"`
-	CreatedAt                  time.Time           `json:"created_at"`
-	UpdatedAt                  time.Time           `json:"updated_at"`
-	ValidatedBy                string              `json:"validated_by,omitempty"`
-	ValidatedAt                *time.Time          `json:"validated_at,omitempty"`
-	ValidatedNote              string              `json:"validated_note,omitempty"`
-	ConfirmedBy                string              `json:"confirmed_by,omitempty"`
-	ConfirmedAt                *time.Time          `json:"confirmed_at,omitempty"`
-	CutoverNote                string              `json:"cutover_note,omitempty"`
-	Role                       string              `json:"role"`
+	ID                         string           `json:"id"`
+	ApplicationID              string           `json:"application_id"`
+	ApplicationName            string           `json:"application_name"`
+	DestinationApplicationID   string           `json:"destination_application_id,omitempty"`
+	DestinationApplicationName string           `json:"destination_application_name,omitempty"`
+	DestinationEndpointID      string           `json:"destination_endpoint_id"`
+	Namespace                  string           `json:"namespace"`
+	Status                     string           `json:"status"`
+	SourceRevision             int              `json:"source_revision"`
+	Ready                      bool             `json:"ready"`
+	Report                     json.RawMessage  `json:"report"`
+	Choices                    MigrationChoices `json:"choices"`
+	CreatedBy                  string           `json:"created_by"`
+	CreatedAt                  time.Time        `json:"created_at"`
+	UpdatedAt                  time.Time        `json:"updated_at"`
+	ValidatedBy                string           `json:"validated_by,omitempty"`
+	ValidatedAt                *time.Time       `json:"validated_at,omitempty"`
+	ValidatedNote              string           `json:"validated_note,omitempty"`
+	ConfirmedBy                string           `json:"confirmed_by,omitempty"`
+	ConfirmedAt                *time.Time       `json:"confirmed_at,omitempty"`
+	CutoverNote                string           `json:"cutover_note,omitempty"`
+	Role                       string           `json:"role"`
 }
+
+// MigrationChoices are the operator's answers: a claim per named volume, and the findings they
+// acknowledge that have nothing to record (MigrationAcknowledgeable).
+type MigrationChoices struct {
+	Volumes      map[string]KubernetesVolume `json:"volumes"`
+	Acknowledged []string                    `json:"acknowledged"`
+}
+
+// MigrationAcknowledgeable are the analyzer's codes an operator answers by acknowledging them:
+// in an application of several services, the names the others must use and a service no other
+// can reach. The analyzer owns the vocabulary; the store only bounds the request.
+var MigrationAcknowledgeable = []string{"network_references", "port_unpublished"}
 
 // MigrationStart names the cluster and namespace a migration targets.
 type MigrationStart struct {
@@ -121,6 +133,9 @@ func scanMigration(row interface{ Scan(...any) error }) (*ApplicationMigration, 
 	}
 	if m.Choices.Volumes == nil {
 		m.Choices.Volumes = map[string]KubernetesVolume{}
+	}
+	if m.Choices.Acknowledged == nil {
+		m.Choices.Acknowledged = []string{}
 	}
 	m.Ready, m.Report = ready == 1, json.RawMessage(report)
 	if validated.Valid {
@@ -434,13 +449,19 @@ func (t *tenancyStore) changeMigration(ctx context.Context, a TenantAccess, app 
 
 // AnalyzeMigration replaces an analyzed migration's choices and report together: the choices
 // name named volumes of the analyzed revision, each with a StorageClass the destination reports
-// (or "" while it reports a default) and a valid size.
-func (t *tenancyStore) AnalyzeMigration(ctx context.Context, a TenantAccess, app string, choices KubernetesExtension, an MigrationAnalysis) (*ApplicationMigration, error) {
+// (or "" while it reports a default) and a valid size, and acknowledge distinct codes of
+// MigrationAcknowledgeable.
+func (t *tenancyStore) AnalyzeMigration(ctx context.Context, a TenantAccess, app string, choices MigrationChoices, an MigrationAnalysis) (*ApplicationMigration, error) {
 	if err := checkAnalysis(an); err != nil {
 		return nil, err
 	}
 	if len(choices.Volumes) > protocol.MaxKubernetesClaims {
 		return nil, ErrInvalid
+	}
+	for i, code := range choices.Acknowledged {
+		if !slices.Contains(MigrationAcknowledgeable, code) || slices.Contains(choices.Acknowledged[:i], code) {
+			return nil, ErrInvalid
+		}
 	}
 	return t.changeMigration(ctx, a, app, func(tx *sql.Tx, head int, m *ApplicationMigration) error {
 		if m.Status != MigrationAnalyzed {
@@ -463,6 +484,9 @@ func (t *tenancyStore) AnalyzeMigration(ctx context.Context, a TenantAccess, app
 		if choices.Volumes == nil {
 			choices.Volumes = map[string]KubernetesVolume{}
 		}
+		if choices.Acknowledged == nil {
+			choices.Acknowledged = []string{}
+		}
 		raw, err := json.Marshal(choices)
 		if err != nil {
 			return err
@@ -473,7 +497,7 @@ func (t *tenancyStore) AnalyzeMigration(ctx context.Context, a TenantAccess, app
 }
 
 // checkChoices holds each choice to a named volume of spec and to the destination's classes.
-func checkChoices(spec ApplicationSpec, classes []protocol.StorageClass, choices KubernetesExtension) error {
+func checkChoices(spec ApplicationSpec, classes []protocol.StorageClass, choices MigrationChoices) error {
 	named := spec.namedVolumes()
 	for name, v := range choices.Volumes {
 		if !slices.Contains(named, name) {
@@ -520,6 +544,7 @@ func (t *tenancyStore) CreateMigrationDestination(ctx context.Context, a TenantA
 		if err != nil {
 			return err
 		}
+		defer clear(values) // sealed below; nothing keeps the plaintext past this write
 		dest, err := t.migrationDestination(ctx, tx, a, m.ApplicationName, m.DestinationEndpointID)
 		if err != nil {
 			return err

@@ -14,7 +14,7 @@ import (
 // mapped containers through the plan-time primitive (the plan's per-actor budget, results used
 // once and dropped), and runs the analyzer with choices. It writes the refusal and reports false
 // when the inputs cannot be read.
-func (s *Server) analyzeMigration(w http.ResponseWriter, r *http.Request, a store.TenantAccess, app, endpoint, namespace string, choices store.KubernetesExtension) (*store.MigrationAnalysis, bool) {
+func (s *Server) analyzeMigration(w http.ResponseWriter, r *http.Request, a store.TenantAccess, app, endpoint, namespace string, choices store.MigrationChoices) (*store.MigrationAnalysis, bool) {
 	src, err := s.store.Tenancy().ReadMigrationSource(r.Context(), a, app, endpoint)
 	if err == nil && !slices.Contains(src.Destination.Namespaces, namespace) {
 		err = store.ErrNamespaceUnknown // before any inspection is spent; the store checks again
@@ -70,7 +70,7 @@ func (s *Server) handleStartMigration(w http.ResponseWriter, r *http.Request, a 
 		return
 	}
 	app := r.PathValue("application")
-	an, ok := s.analyzeMigration(w, r, a, app, input.DestinationEndpointID, input.Namespace, store.KubernetesExtension{})
+	an, ok := s.analyzeMigration(w, r, a, app, input.DestinationEndpointID, input.Namespace, store.MigrationChoices{})
 	if !ok {
 		return
 	}
@@ -93,7 +93,7 @@ func (s *Server) handleMigration(w http.ResponseWriter, r *http.Request, a store
 
 // handleMigrationChoices stores the choices and the analysis they produce together.
 func (s *Server) handleMigrationChoices(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
-	var choices store.KubernetesExtension
+	var choices store.MigrationChoices
 	if strictJSON(r, &choices) != nil {
 		s.tenantError(w, store.ErrInvalid)
 		return
@@ -106,7 +106,7 @@ func (s *Server) handleAnalyzeMigration(w http.ResponseWriter, r *http.Request, 
 }
 
 // reanalyze analyzes the open migration again with choices, or its stored ones when nil.
-func (s *Server) reanalyze(w http.ResponseWriter, r *http.Request, a store.TenantAccess, choices *store.KubernetesExtension) {
+func (s *Server) reanalyze(w http.ResponseWriter, r *http.Request, a store.TenantAccess, choices *store.MigrationChoices) {
 	m, ok := s.sourceMigration(w, r, a)
 	if !ok {
 		return

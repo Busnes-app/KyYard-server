@@ -76,6 +76,25 @@ func kubernetesClaims(project string, spec ApplicationSpec) ([]protocol.Kubernet
 	return claims, mounts
 }
 
+// carried is k for a new revision spec that brings none: the choices of the volumes spec still
+// declares, nil when none remain. A Compose import never sets the extension, and a claim is
+// immutable, so the previous choice is what the cluster holds.
+func (k *KubernetesExtension) carried(spec ApplicationSpec) *KubernetesExtension {
+	if k == nil {
+		return nil
+	}
+	kept := map[string]KubernetesVolume{}
+	for _, v := range spec.Volumes {
+		if c, ok := k.Volumes[v.Name]; ok {
+			kept[v.Name] = c
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return &KubernetesExtension{Volumes: kept}
+}
+
 // Valid checks one choice's grammar; the destination inventory decides whether its class exists.
 func (v KubernetesVolume) Valid() bool {
 	_, size := protocol.StorageSizeBytes(v.Size)

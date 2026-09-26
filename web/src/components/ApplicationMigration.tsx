@@ -15,10 +15,11 @@ export const MIGRATION_CODES: Record<string, string> = {
   storage_supported: 'No volumes.',
   network_host: 'Host networking has no equivalent on the cluster.',
   networks_multiple: 'On the cluster, services reach each other only as <project>-<service> on published ports.',
-  networking_supported: 'The project network becomes cluster networking.',
+  network_references: 'On the cluster the other services reach this one only by its destination name, on its published ports; update their references to it, then acknowledge.',
+  networking_supported: 'A single service: no other service addresses it by name.',
   port_published: 'Published as a ClusterIP Service; exposing it outside the cluster is your Ingress.',
   port_host_ip: 'A port bound to one host address has no Service equivalent; drop the address.',
-  port_unpublished: 'Publishes no port, so other services cannot reach it.',
+  port_unpublished: 'Publishes no port, so it gets no Service and no other service on the cluster can reach it.',
   secrets_supported: "Environment values move into a Secret, copied from the source's encrypted values.",
   healthcheck_dropped: "The container's healthcheck is not rendered as a probe; add one after cutover or rely on the rollout wait.",
   probes_supported: 'No healthcheck to carry over.',
@@ -33,9 +34,10 @@ export const MIGRATION_CODES: Record<string, string> = {
   inspection_unavailable: 'The host answered no live inspection, so this is unknown; analyze again when the host is online.',
 };
 export const CHECKLIST_STEPS: Record<string, string> = {
-  grant_namespace: "Label the namespace to enforce Pod Security baseline, then regenerate the cluster's manifest and apply it: migrations need its claim and StorageClass rules.",
+  grant_namespace: "Label the namespace to enforce Pod Security baseline. The command refuses to change an existing label, so a namespace already at restricted stays there, and restricted refuses the destination's pods, which carry no security context. Then regenerate the cluster's manifest and apply it, and set the agent Deployment's image to the current pinned digest: migrations need the claim and StorageClass rules and an agent that applies claims.",
   create_destination: 'Create the destination below, then plan and apply it from its own entry in Applications.',
-  copy_volume: 'Stop writes to the source, then copy each volume into its claim once the destination pod runs:',
+  update_references: "Change every reference one service makes to another by its Compose name (environment values, configuration) to the destination name, then save the destination's definition and apply it:",
+  copy_volume: 'Stop writes to the source. Set HELPER_IMAGE to a digest-pinned image that has tar; both sides use it. Each Deployment is scaled to 0, each claim filled through a helper pod that mounts it, and the Deployment scaled back to 1. The destination started once against its empty claim at the first apply: if it wrote data there (a database does), clear the claim from the helper pod before the copy.',
   validate_destination: 'Check the destination works, then confirm validation below.',
   switch_traffic: 'Point your DNS or Ingress at the destination.',
   confirm_cutover: "Confirm cutover below, then remove the source with KyYard's removal. KyYard never stops or removes it for you.",
@@ -49,13 +51,18 @@ export const MIGRATION_ERRORS: Record<string, string> = {
   mapping_required: 'Adopt and map the application on a Docker host first.',
   adoption_changed: "The source host's inventory is stale or changed; refresh it and try again.",
   migration_open: 'This application already has an open migration.',
-  storage_class_unknown: 'The cluster does not report that StorageClass. If the list is empty, apply the regenerated manifest.',
+  storage_class_unknown: "The cluster does not report that StorageClass. If the list is empty, apply the regenerated manifest and set the agent Deployment's image to the current pinned digest.",
   size_invalid: 'A size is a whole number of Mi, Gi or Ti, from 1Mi to 16Ti.',
   volume_unknown: 'The source mounts no named volume by that name.',
   application_name_taken: 'An application named like the destination already exists. Rename or discard it first.',
   migration_not_ready: 'Resolve every blocked finding and make every choice first.',
   migration_state: 'The migration moved on; refresh it.',
   migration_stale: 'The source definition changed since the analysis; analyze again.',
+};
+// ACKNOWLEDGEMENTS are the findings answered by acknowledging them (store.MigrationAcknowledgeable).
+export const ACKNOWLEDGEMENTS: Record<string, string> = {
+  network_references: 'I will update every reference to the destination names in the checklist.',
+  port_unpublished: 'I accept that a service publishing no port is unreachable from the others.',
 };
 const CLASSES: Record<string, string> = { supported: 'Supported', operator_choice_required: 'Choice required', blocked: 'Blocked' };
 const STATUSES: Record<string, string> = { analyzed: 'Analyzed', destination_created: 'Destination created', validated: 'Validated', cutover_confirmed: 'Cutover confirmed', abandoned: 'Abandoned' };
@@ -64,7 +71,7 @@ const fixed = (table: Record<string, string>, key: string) => Object.hasOwn(tabl
 type Finding = { axis: string; class: string; code: string; detail?: string };
 type Report = { version: number; ready: boolean; services: { name: string; class: string; findings: Finding[] }[]; checklist: { code: string; commands?: string[] }[]; assumptions: string[] };
 type Choice = { storage_class: string; size: string; access_mode: string };
-export type Migration = { id: string; application_id: string; application_name: string; destination_application_id?: string; destination_application_name?: string; destination_endpoint_id: string; namespace: string; status: string; ready: boolean; report: Report; choices: { volumes: Record<string, Choice> }; role: 'source' | 'destination' };
+export type Migration = { id: string; application_id: string; application_name: string; destination_application_id?: string; destination_application_name?: string; destination_endpoint_id: string; namespace: string; status: string; ready: boolean; report: Report; choices: { volumes: Record<string, Choice>; acknowledged?: string[] }; role: 'source' | 'destination' };
 
 // isMigration holds a response to the shape this card renders; anything else renders nothing.
 function isMigration(x: unknown): x is Migration {
@@ -124,7 +131,7 @@ export function ApplicationMigration({ base, org, env, instance, admin, onOpen }
       <td data-label="Finding">{findingText(f)}</td>
     </tr>))}</tbody></table>
     {report.assumptions.map((a) => <p key={a}>{fixed(ASSUMPTIONS, a)}</p>)}
-    {admin && m.status === 'analyzed' && <MigrationChoices key={JSON.stringify(m.choices)} org={org} migration={m} busy={busy} onSave={(volumes) => void write('PUT', '/choices', { volumes })} />}
+    {admin && m.status === 'analyzed' && <MigrationChoices key={JSON.stringify(m.choices)} org={org} migration={m} busy={busy} onSave={(volumes, acknowledged) => void write('PUT', '/choices', { volumes, acknowledged })} />}
     {admin && m.status === 'analyzed' && <div className="ky-inline-form">
       <button type="button" className="btn-secondary" disabled={busy} onClick={() => void write('POST', '/analyze')}>Analyze again</button>
       <button type="button" disabled={busy || !m.ready} onClick={() => void write('POST', '/destination')}>Create destination</button>
@@ -167,17 +174,23 @@ function MigrationStart({ org, env, admin, busy, message, onStart }: { org: stri
   </section>;
 }
 
-function MigrationChoices({ org, migration, busy, onSave }: { org: string; migration: Migration; busy: boolean; onSave: (volumes: Record<string, Choice>) => void }) {
+function MigrationChoices({ org, migration, busy, onSave }: { org: string; migration: Migration; busy: boolean; onSave: (volumes: Record<string, Choice>, acknowledged: string[]) => void }) {
   const inventory = useTenantResource<Inventory>(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(migration.destination_endpoint_id)}/inventory`);
   const classes = inventory.data?.snapshot.kubernetes?.storage_classes ?? [];
   const fallback = classes.find((c) => c.default);
   const volumes = [...new Set(migration.report.services.flatMap((s) => s.findings.filter((f) => (f.code === 'volume_named' || f.code === 'volume_external') && f.detail).map((f) => f.detail ?? '')))];
   const [choices, setChoices] = useState<Record<string, Choice>>(() => Object.fromEntries(volumes.map((v) => [v, migration.choices.volumes[v] ?? { storage_class: '', size: '', access_mode: 'ReadWriteOnce' }])));
-  if (volumes.length === 0) return null;
+  const reported = Object.keys(ACKNOWLEDGEMENTS).filter((code) => migration.report.services.some((s) => s.findings.some((f) => f.code === code)));
+  const [acknowledged, setAcknowledged] = useState<string[]>(() => (migration.choices.acknowledged ?? []).filter((code) => reported.includes(code)));
+  if (volumes.length === 0 && reported.length === 0) return null;
   const set = (v: string, patch: Partial<Choice>) => setChoices({ ...choices, [v]: { ...choices[v], ...patch } });
-  return <form className="dr-stack" aria-label="Storage choices" onSubmit={(e) => { e.preventDefault(); onSave(choices); }}>
-    <h4>Storage choices</h4>
-    <StateNotice state={inventory.state} onRetry={inventory.reload} />
+  return <form className="dr-stack" aria-label="Choices" onSubmit={(e) => { e.preventDefault(); onSave(choices, acknowledged); }}>
+    {reported.length > 0 && <fieldset>
+      <legend>Acknowledgements</legend>
+      {reported.map((code) => <label key={code}><input type="checkbox" checked={acknowledged.includes(code)} disabled={busy} onChange={(e) => setAcknowledged(e.target.checked ? [...acknowledged, code] : acknowledged.filter((c) => c !== code))} /> {ACKNOWLEDGEMENTS[code]}</label>)}
+    </fieldset>}
+    {volumes.length > 0 && <h4>Storage choices</h4>}
+    {volumes.length > 0 && <StateNotice state={inventory.state} onRetry={inventory.reload} />}
     {volumes.map((v) => <fieldset key={v}>
       <legend>Volume {v}</legend>
       <label>StorageClass for {v}<select value={choices[v]?.storage_class ?? ''} disabled={busy} onChange={(e) => set(v, { storage_class: e.target.value })}>
@@ -187,7 +200,7 @@ function MigrationChoices({ org, migration, busy, onSave }: { org: string; migra
       <label>Size for {v}<input value={choices[v]?.size ?? ''} placeholder="10Gi" disabled={busy} onChange={(e) => set(v, { size: e.target.value })} /></label>
       <p>Access mode: ReadWriteOnce.</p>
     </fieldset>)}
-    <button disabled={busy}>Save storage choices</button>
+    <button disabled={busy}>Save choices</button>
   </form>;
 }
 

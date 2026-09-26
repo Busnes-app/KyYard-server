@@ -110,8 +110,7 @@ func (t *tenancyStore) appendApplicationRevision(ctx context.Context, a TenantAc
 		if a.EnvironmentID == "" || expected < 1 || expected > MaxApplicationRevisions {
 			return ErrInvalid
 		}
-		raw, digest, err := encodeApplicationSpec(spec)
-		if err != nil {
+		if _, _, err := encodeApplicationSpec(spec); err != nil {
 			return err
 		}
 		result, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE applications SET latest_revision=latest_revision+1 WHERE organization_id=? AND environment_id=? AND id=? AND latest_revision=? AND latest_revision<?`), a.OrganizationID, a.EnvironmentID, id, expected, MaxApplicationRevisions)
@@ -135,6 +134,17 @@ func (t *tenancyStore) appendApplicationRevision(ctx context.Context, a TenantAc
 				return ErrApplicationLimit
 			}
 			return ErrRevisionConflict
+		}
+		if spec.Kubernetes == nil {
+			previous, err := t.revisionSpec(ctx, tx, a, id, expected)
+			if err != nil {
+				return err
+			}
+			spec.Kubernetes = previous.Kubernetes.carried(spec)
+		}
+		raw, digest, err := encodeApplicationSpec(spec)
+		if err != nil {
+			return err
 		}
 		if err := t.insertApplicationRevision(ctx, tx, a, id, next, raw, digest, time.Now().UTC()); err != nil {
 			return err

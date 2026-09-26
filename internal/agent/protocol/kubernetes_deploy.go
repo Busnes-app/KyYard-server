@@ -11,8 +11,11 @@ import (
 
 // Cluster deployment capabilities. A cluster agent advertises them when it can apply and remove
 // an application's objects; it never advertises deployment.pull, because the kubelet pulls.
+// kubernetes.claims says it applies KubernetesTarget.Claims and service volumes: an agent
+// without it decodes a frame leniently and would run the pod with no claim.
 const (
 	CapabilityKubernetesDeploy = "kubernetes.deploy"
+	CapabilityKubernetesClaims = "kubernetes.claims"
 	CapabilityKubernetesRemove = "kubernetes.remove"
 )
 

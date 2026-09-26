@@ -119,7 +119,7 @@ func TestClusterAgentEnrollsAndReportsTheCluster(t *testing.T) {
 	for {
 		ep, err := ts.ReadEndpoint(ctx, access, id.EndpointID)
 		// The server stores them sorted; a hello it refused would store none.
-		if err == nil && slices.Equal(ep.Capabilities, []string{protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesRemove, protocol.CapabilityPodLogs}) {
+		if err == nil && slices.Equal(ep.Capabilities, []string{protocol.CapabilityKubernetesClaims, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesRemove, protocol.CapabilityPodLogs}) {
 			break
 		}
 		if time.Now().After(deadline) {

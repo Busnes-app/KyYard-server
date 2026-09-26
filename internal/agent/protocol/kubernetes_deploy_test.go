@@ -229,10 +229,10 @@ func TestKubernetesStepCodes(t *testing.T) {
 	}
 }
 
-// A cluster agent may advertise deploy and remove; deployment.pull and deployment.apply stay
+// A cluster agent may advertise deploy, claims and remove; deployment.pull and deployment.apply stay
 // Docker capabilities, and a Docker agent cannot claim the cluster ones.
 func TestCapabilitiesFitClusterDeployment(t *testing.T) {
-	if !CapabilitiesFit(RuntimeKubernetes, []string{CapabilityKubernetesInventory, CapabilityPodLogs, CapabilityKubernetesDeploy, CapabilityKubernetesRemove}) {
+	if !CapabilitiesFit(RuntimeKubernetes, []string{CapabilityKubernetesInventory, CapabilityPodLogs, CapabilityKubernetesDeploy, CapabilityKubernetesClaims, CapabilityKubernetesRemove}) {
 		t.Fatal("cluster deployment capabilities refused")
 	}
 	for _, c := range []string{CapabilityDeploymentPull, CapabilityDeploymentApply, CapabilityDeploymentRemove} {
@@ -240,7 +240,7 @@ func TestCapabilitiesFitClusterDeployment(t *testing.T) {
 			t.Errorf("%s fits a cluster", c)
 		}
 	}
-	for _, c := range []string{CapabilityKubernetesDeploy, CapabilityKubernetesRemove} {
+	for _, c := range []string{CapabilityKubernetesDeploy, CapabilityKubernetesClaims, CapabilityKubernetesRemove} {
 		if CapabilitiesFit(RuntimeDocker, []string{c}) {
 			t.Errorf("%s fits a Docker host", c)
 		}

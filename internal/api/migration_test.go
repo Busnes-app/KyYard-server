@@ -32,7 +32,7 @@ func migrationFleet(t *testing.T) (clusterHost, string, string) {
 	h.sync(t)
 	host := enrollAgent(t, h.s, h.st, h.admin, "docker-1")
 	h.do(t, "POST", "/api/organizations/a/endpoints/"+host.id+"/approve", `{"fingerprint":"`+host.fp+`"}`, 204)
-	if err := ts.SetEndpointCapabilities(ctx, host.id, inspecting); err != nil {
+	if err := ts.SetEndpointCapabilities(ctx, host.id, append(slices.Clone(inspecting), protocol.CapabilityContainerInspectHealth)); err != nil {
 		t.Fatal(err)
 	}
 	created := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
@@ -64,7 +64,12 @@ func migrationFleet(t *testing.T) (clusterHost, string, string) {
 	}
 	mapping, _ := json.Marshal(store.MappingRequest{InstanceID: instance.ID, Version: mapped.Version, Digest: mapped.Preview.Digest, Confirm: "shop", Bindings: bindings})
 	h.do(t, "PUT", app+"/mapping", string(mapping), 204)
-	api.SetPlanInspectorForTest(h.s, verifiedInspector)
+	// The host reports health, so the probes axis is known: no healthcheck.
+	api.SetPlanInspectorForTest(h.s, func(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+		o := verifiedObservation(target)
+		o.Health = "none"
+		return o, nil
+	})
 	return h, app, host.id
 }
 
@@ -122,7 +127,12 @@ func TestMigrationOverTheAPI(t *testing.T) {
 			t.Errorf("%s: %s", code, body)
 		}
 	}
-	if err := json.Unmarshal([]byte(h.do(t, "PUT", app+"/migration/choices", `{"volumes":{"data":{"storage_class":"","size":"1Gi","access_mode":"ReadWriteOnce"}}}`, 200)), &m); err != nil || !m.Ready || !readReport(t, m).Ready {
+	h.do(t, "PUT", app+"/migration/choices", `{"volumes":{},"acknowledged":["volume_named"]}`, 400) // a choice is not acknowledged away
+	// web reaches db as shop-on-cluster-1-db, and db publishes no port: both need acknowledging.
+	if err := json.Unmarshal([]byte(h.do(t, "PUT", app+"/migration/choices", `{"volumes":{"data":{"storage_class":"","size":"1Gi","access_mode":"ReadWriteOnce"}}}`, 200)), &m); err != nil || m.Ready || !slices.Contains(readReport(t, m).Services[0].Findings, migration.Finding{Axis: migration.AxisNetworking, Class: migration.ChoiceRequired, Code: "network_references", Detail: "shop-on-cluster-1-db"}) {
+		t.Fatalf("chosen, unacknowledged %+v %v", m, err)
+	}
+	if err := json.Unmarshal([]byte(h.do(t, "PUT", app+"/migration/choices", `{"volumes":{"data":{"storage_class":"","size":"1Gi","access_mode":"ReadWriteOnce"}},"acknowledged":["network_references","port_unpublished"]}`, 200)), &m); err != nil || !m.Ready || !readReport(t, m).Ready {
 		t.Fatalf("chosen %+v %v", m, err)
 	}
 	if err := json.Unmarshal([]byte(h.do(t, "POST", app+"/migration/analyze", "", 200)), &m); err != nil || !m.Ready || m.Choices.Volumes["data"].Size != "1Gi" {
@@ -150,6 +160,14 @@ func TestMigrationOverTheAPI(t *testing.T) {
 	claim := protocol.KubernetesClaim{Name: "shop-on-cluster-1-data", Size: "1Gi", AccessMode: protocol.AccessReadWriteOnce}
 	if !reflect.DeepEqual(planned.Plan.Claims, []protocol.KubernetesClaim{claim}) || planned.Plan.Services[0].ClaimMounts[0] != (protocol.KubernetesMount{Claim: claim.Name, MountPath: "/var/lib/db"}) {
 		t.Fatalf("plan %+v", planned.Plan)
+	}
+	// An agent rolled back to one that cannot apply claims after the plan is refused at apply.
+	if err := h.st.Tenancy().SetEndpointCapabilities(context.Background(), h.ag.id, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesRemove}); err != nil {
+		t.Fatal(err)
+	}
+	h.do(t, "POST", dest+"/deployments/"+planned.ID+"/apply", `{"confirm":"shop-on-cluster-1"}`, 501)
+	if err := h.st.Tenancy().SetEndpointCapabilities(context.Background(), h.ag.id, clusterCapabilities); err != nil {
+		t.Fatal(err)
 	}
 	var applying store.Deployment
 	if err := json.Unmarshal([]byte(h.do(t, "POST", dest+"/deployments/"+planned.ID+"/apply", `{"confirm":"shop-on-cluster-1"}`, 202)), &applying); err != nil || applying.MigrationID != m.ID {
@@ -198,7 +216,7 @@ func TestMigrationAbandonKeepsTheDestination(t *testing.T) {
 	h, app, _ := migrationFleet(t)
 	body, _ := json.Marshal(store.MigrationStart{DestinationEndpointID: h.ag.id, Namespace: "shop"})
 	h.do(t, "POST", app+"/migration", string(body), 201)
-	h.do(t, "PUT", app+"/migration/choices", `{"volumes":{"data":{"storage_class":"standard","size":"1Gi","access_mode":"ReadWriteOnce"}}}`, 200)
+	h.do(t, "PUT", app+"/migration/choices", `{"volumes":{"data":{"storage_class":"standard","size":"1Gi","access_mode":"ReadWriteOnce"}},"acknowledged":["network_references","port_unpublished"]}`, 200)
 	var m store.ApplicationMigration
 	if err := json.Unmarshal([]byte(h.do(t, "POST", app+"/migration/destination", "", 201)), &m); err != nil {
 		t.Fatal(err)

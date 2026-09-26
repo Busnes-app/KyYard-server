@@ -1,10 +1,15 @@
 {
+  "acknowledgeable": [
+    "network_references",
+    "port_unpublished"
+  ],
   "assumptions": [
     "volume_size_unknown"
   ],
   "checklist": [
     "grant_namespace",
     "create_destination",
+    "update_references",
     "copy_volume",
     "validate_destination",
     "switch_traffic",
@@ -18,6 +23,7 @@
     "storage_supported",
     "network_host",
     "networks_multiple",
+    "network_references",
     "networking_supported",
     "port_published",
     "port_host_ip",

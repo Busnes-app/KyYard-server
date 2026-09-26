@@ -240,7 +240,7 @@ type TenancyStore interface {
 	ReadMigrationSource(ctx context.Context, access TenantAccess, applicationID, endpointID string) (*MigrationSource, error)
 	CreateMigration(ctx context.Context, access TenantAccess, applicationID string, start MigrationStart, analysis MigrationAnalysis) (*ApplicationMigration, error)
 	ReadMigration(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMigration, error)
-	AnalyzeMigration(ctx context.Context, access TenantAccess, applicationID string, choices KubernetesExtension, analysis MigrationAnalysis) (*ApplicationMigration, error)
+	AnalyzeMigration(ctx context.Context, access TenantAccess, applicationID string, choices MigrationChoices, analysis MigrationAnalysis) (*ApplicationMigration, error)
 	CreateMigrationDestination(ctx context.Context, access TenantAccess, applicationID string, key []byte) (*ApplicationMigration, error)
 	ConfirmMigration(ctx context.Context, access TenantAccess, applicationID, step, note string) (*ApplicationMigration, error)
 	AbandonMigration(ctx context.Context, access TenantAccess, applicationID string) (*ApplicationMigration, error)

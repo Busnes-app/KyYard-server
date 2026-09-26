@@ -24,6 +24,12 @@
           "code": "networks_multiple"
         },
         {
+          "axis": "networking",
+          "class": "operator_choice_required",
+          "code": "network_references",
+          "detail": "shop-on-cluster-api"
+        },
+        {
           "axis": "ports",
           "class": "blocked",
           "code": "port_host_ip",
@@ -80,8 +86,14 @@
           "code": "network_host"
         },
         {
+          "axis": "networking",
+          "class": "operator_choice_required",
+          "code": "network_references",
+          "detail": "shop-on-cluster-worker"
+        },
+        {
           "axis": "ports",
-          "class": "supported",
+          "class": "operator_choice_required",
           "code": "port_unpublished"
         },
         {
@@ -116,11 +128,18 @@
     {
       "code": "grant_namespace",
       "commands": [
-        "kubectl label namespace shop pod-security.kubernetes.io/enforce=baseline --overwrite"
+        "kubectl label namespace shop pod-security.kubernetes.io/enforce=baseline"
       ]
     },
     {
       "code": "create_destination"
+    },
+    {
+      "code": "update_references",
+      "commands": [
+        "api → shop-on-cluster-api",
+        "worker → shop-on-cluster-worker"
+      ]
     },
     {
       "code": "validate_destination"

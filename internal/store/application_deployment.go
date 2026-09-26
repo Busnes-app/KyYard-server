@@ -446,6 +446,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 		plan.Namespace = m.Namespace
 		objects = protocol.KubernetesNames(m.Preview.Project, spec.serviceNames())
 		plan.Claims, mounts = kubernetesClaims(m.Preview.Project, spec)
+		blockers = append(blockers, storageClassBlockers(plan.Namespace, plan.Claims, snapshot)...)
 	}
 	var refused []BlockedService
 	for i, s := range spec.Services {
@@ -515,15 +516,41 @@ func inspectsVerdicts(capabilities map[string]bool) bool {
 	return capabilities[protocol.CapabilityContainerInspect] && capabilities[protocol.CapabilityContainerInspectVerdict]
 }
 
+// storageClassBlockers refuses a claim whose StorageClass the cluster's fresh inventory does not
+// report ("" needs a default class): its PVC would stay Pending, and KyYard never changes a claim.
+// A claim the cluster already holds bound needs no class, and a cut list cannot prove absence.
+func storageClassBlockers(namespace string, claims []protocol.KubernetesClaim, s protocol.Snapshot) []string {
+	if s.Kubernetes == nil || slices.Contains(s.Truncated, "storage_classes") {
+		return nil
+	}
+	for _, c := range claims {
+		bound := slices.ContainsFunc(s.Kubernetes.Claims, func(k protocol.Claim) bool {
+			return k.Namespace == namespace && k.Name == c.Name && k.Phase == "Bound"
+		})
+		known := slices.ContainsFunc(s.Kubernetes.StorageClasses, func(sc protocol.StorageClass) bool {
+			return sc.Name == c.StorageClass || (c.StorageClass == "" && sc.Default)
+		})
+		if !bound && !known {
+			return []string{"storage_class_unknown"}
+		}
+	}
+	return nil
+}
+
 // capabilityBlockers refuses a plan the endpoint's agent could not run: no deployments, no live
 // inspection for the plan to check, or a pull without deployment.pull. Apply checks again. A
-// Kubernetes plan needs kubernetes.deploy only: the kubelet pulls, and nothing is inspected.
+// Kubernetes plan needs kubernetes.deploy, and kubernetes.claims when it carries claims: the
+// kubelet pulls, and nothing is inspected.
 func capabilityBlockers(capabilities map[string]bool, plan DeploymentPlan) []string {
 	if plan.Namespace != "" {
+		var out []string
 		if !capabilities[protocol.CapabilityKubernetesDeploy] {
-			return []string{"agent_deploy_unsupported"}
+			out = append(out, "agent_deploy_unsupported")
 		}
-		return nil
+		if len(plan.Claims) > 0 && !capabilities[protocol.CapabilityKubernetesClaims] {
+			out = append(out, "agent_claims_unsupported")
+		}
+		return out
 	}
 	var out []string
 	if !capabilities[protocol.CapabilityDeploymentApply] {

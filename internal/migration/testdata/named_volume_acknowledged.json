@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "ready": false,
+  "ready": true,
   "services": [
     {
       "name": "db",
-      "class": "operator_choice_required",
+      "class": "supported",
       "findings": [
         {
           "axis": "storage",
@@ -14,13 +14,13 @@
         },
         {
           "axis": "networking",
-          "class": "operator_choice_required",
+          "class": "supported",
           "code": "network_references",
           "detail": "shop-on-cluster-db"
         },
         {
           "axis": "ports",
-          "class": "operator_choice_required",
+          "class": "supported",
           "code": "port_unpublished"
         },
         {
@@ -52,7 +52,7 @@
     },
     {
       "name": "web",
-      "class": "operator_choice_required",
+      "class": "supported",
       "findings": [
         {
           "axis": "storage",
@@ -61,7 +61,7 @@
         },
         {
           "axis": "networking",
-          "class": "operator_choice_required",
+          "class": "supported",
           "code": "network_references",
           "detail": "shop-on-cluster-web"
         },

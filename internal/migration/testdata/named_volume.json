@@ -14,12 +14,13 @@
         },
         {
           "axis": "networking",
-          "class": "supported",
-          "code": "networking_supported"
+          "class": "operator_choice_required",
+          "code": "network_references",
+          "detail": "shop-on-cluster-db"
         },
         {
           "axis": "ports",
-          "class": "supported",
+          "class": "operator_choice_required",
           "code": "port_unpublished"
         },
         {
@@ -51,7 +52,7 @@
     },
     {
       "name": "web",
-      "class": "supported",
+      "class": "operator_choice_required",
       "findings": [
         {
           "axis": "storage",
@@ -60,8 +61,9 @@
         },
         {
           "axis": "networking",
-          "class": "supported",
-          "code": "networking_supported"
+          "class": "operator_choice_required",
+          "code": "network_references",
+          "detail": "shop-on-cluster-web"
         },
         {
           "axis": "ports",
@@ -101,16 +103,29 @@
     {
       "code": "grant_namespace",
       "commands": [
-        "kubectl label namespace shop pod-security.kubernetes.io/enforce=baseline --overwrite"
+        "kubectl label namespace shop pod-security.kubernetes.io/enforce=baseline"
       ]
     },
     {
       "code": "create_destination"
     },
     {
+      "code": "update_references",
+      "commands": [
+        "web → shop-on-cluster-web",
+        "db → shop-on-cluster-db"
+      ]
+    },
+    {
       "code": "copy_volume",
       "commands": [
-        "docker run --rm -v shop_data:/from:ro busybox tar -C /from -cf - . | kubectl -n shop exec -i deploy/shop-on-cluster-db -- tar -C '/var/lib/db' -xf -"
+        "kubectl -n shop scale deploy/shop-on-cluster-db --replicas=0",
+        "kubectl -n shop wait --for=delete pod -l app.kubernetes.io/instance=shop-on-cluster,kyyard.busnes.app/service=db --timeout=5m",
+        "kubectl -n shop run shop-on-cluster-db-copy --image=\"$HELPER_IMAGE\" --restart=Never --override-type=strategic --overrides='{\"spec\":{\"containers\":[{\"name\":\"shop-on-cluster-db-copy\",\"volumeMounts\":[{\"name\":\"to\",\"mountPath\":\"/to\"}]}],\"volumes\":[{\"name\":\"to\",\"persistentVolumeClaim\":{\"claimName\":\"shop-on-cluster-data\"}}]}}' -- sleep 3600",
+        "kubectl -n shop wait --for=condition=Ready pod/shop-on-cluster-db-copy --timeout=5m",
+        "docker run --rm -v shop_data:/from:ro \"$HELPER_IMAGE\" tar -C /from -cf - . | kubectl -n shop exec -i shop-on-cluster-db-copy -- tar -C /to -xf -",
+        "kubectl -n shop delete pod shop-on-cluster-db-copy",
+        "kubectl -n shop scale deploy/shop-on-cluster-db --replicas=1"
       ]
     },
     {

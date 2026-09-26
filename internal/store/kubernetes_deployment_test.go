@@ -413,6 +413,69 @@ func TestKubernetesPlanClaims(t *testing.T) {
 	}
 }
 
+// Claims need an agent that applies them: an older cluster agent decodes the frame leniently and
+// would run the pod on ephemeral storage, so the plan is refused with agent_claims_unsupported.
+// A plan without claims does not need it.
+func TestKubernetesPlanClaimsNeedTheAgent(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, claimSpec(bothChosen), nil)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if err := ts.SetEndpointCapabilities(ctx, cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesRemove}); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/db:1": {digest: digestOf("b")}, "ghcr.io/org/web:1": {digest: digestOf("c")}}}
+	_, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	var blocked *PreflightBlockedError
+	if !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"agent_claims_unsupported"}) {
+		t.Fatalf("claims without kubernetes.claims: %v", err)
+	}
+	st2, a2, app2, cluster2, m2 := kubernetesPlanFixture(t, claimSpec(nil), nil)
+	stateless := claimSpec(nil)
+	stateless.Volumes, stateless.Services[0].Volumes = nil, nil
+	if _, err := st2.Tenancy().ReplaceApplicationRevision(ctx, a2, app2.ID, 1, stateless, nil, imageCheckKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := st2.Tenancy().SetEndpointCapabilities(ctx, cluster2, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesDeploy}); err != nil {
+		t.Fatal(err)
+	}
+	r := kubePlanRequest(m2)
+	r.Revision = 2
+	if _, err := st2.Tenancy().PlanDeployment(ctx, a2, app2.ID, r, resolver, imageCheckKey, false); err != nil {
+		t.Fatalf("no claims, no kubernetes.claims: %v", err)
+	}
+}
+
+// Each claim's StorageClass is checked against the cluster's fresh inventory at plan time (the
+// default class for ""): a PVC for a class that is gone would stay Pending and immutable. A
+// truncated list cannot prove absence and is not held against the plan.
+func TestKubernetesPlanClaimsNeedTheStorageClass(t *testing.T) {
+	st, a, app, cluster, m := kubernetesPlanFixture(t, claimSpec(bothChosen), nil)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/db:1": {digest: digestOf("b")}, "ghcr.io/org/web:1": {digest: digestOf("c")}}}
+	plan := func() error {
+		_, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+		return err
+	}
+	if err := plan(); err != nil {
+		t.Fatalf("both classes reported: %v", err)
+	}
+	for name, classes := range map[string][]protocol.StorageClass{
+		"fast gone":  {{Name: "standard", Default: true}},
+		"no default": {{Name: "standard"}, {Name: "fast"}},
+	} {
+		putStorageClasses(t, ts, cluster, classes)
+		var blocked *PreflightBlockedError
+		if err := plan(); !errors.As(err, &blocked) || !slices.Equal(blocked.Blockers, []string{"storage_class_unknown"}) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	putStorageClassesTruncated(t, ts, cluster)
+	if err := plan(); err != nil {
+		t.Fatalf("a truncated list: %v", err)
+	}
+}
+
 // A named volume without a choice is k8s_volume with detail choice_required; a bind keeps
 // k8s_volume without one; a volume two services mount is k8s_volume_shared.
 func TestKubernetesPlanVolumeBlockers(t *testing.T) {

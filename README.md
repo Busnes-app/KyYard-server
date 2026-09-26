@@ -441,21 +441,46 @@ services share, host networking, host-bound ports, privileged and host-namespace
 restart policy of `no` or `on-failure` are blocked: change the definition or the container, then
 **Analyze again**. For each named volume choose a StorageClass the cluster reports and a size
 (`Mi`, `Gi` or `Ti`; Docker reports no volume size); it becomes a `ReadWriteOnce`
-PersistentVolumeClaim named `<application>-<volume>`.
+PersistentVolumeClaim named `<destination project>-<volume>` (for `shop on cluster-a`,
+`shop-on-cluster-a-data`; a long name is cut and suffixed with a hash). In an application of
+several services, each one is reached on the cluster only by its destination name
+(`<destination project>-<service>`, shown on the report) and only on the ports it publishes:
+acknowledge that you will update the references, and that a service publishing no port is
+unreachable from the others, before the report is ready. The destination keeps its storage
+choices when you edit its definition later; a volume it newly declares has none, so remove it or
+migrate again.
 
 When the report is ready, **Create destination** makes a new application, `<name> on <cluster>`,
 mapped to the namespace, with a copy of the source's environment values. Then follow the
 checklist; KyYard never stops, changes or removes the source for you:
 
-1. Label the namespace `pod-security.kubernetes.io/enforce=baseline` and apply the regenerated
-   manifest: this release adds `persistentvolumeclaims` `get, list, create` to each namespace's
-   Role and `storageclasses` `get, list` to the ClusterRole.
-2. Open the destination application, plan and apply it.
-3. Stop writes to the source, then copy each volume into its claim with the recipe the checklist
-   prints (`docker run --rm -v <volume>:/from:ro busybox tar -C /from -cf - . | kubectl -n <ns> exec -i deploy/<name> -- tar -C <path> -xf -`).
-4. Validate the destination and select **Confirm validation** with a note.
-5. Point your DNS or Ingress at the destination.
-6. Select **Confirm cutover** with a note, then remove the source with KyYard's removal, which
+1. Label the namespace `pod-security.kubernetes.io/enforce=baseline`. The command has no
+   `--overwrite`, so it refuses to change an existing label; a namespace at `restricted` refuses
+   the destination's pods (above). Then apply the regenerated manifest, which adds
+   `persistentvolumeclaims` `get, list, create` to each namespace's Role and `storageclasses`
+   `get, list` to the ClusterRole, and upgrade the agent image
+   (`kubectl -n kyyard-agent set image deploy/kyyard-agent agent=ghcr.io/busnes-app/kyyard@sha256:<digest>`):
+   an agent from before this release reports no StorageClasses and cannot apply claims, and a
+   plan with claims is refused (`agent_claims_unsupported`) until it advertises
+   `kubernetes.claims`.
+2. Open the destination application, plan and apply it. The plan is refused
+   (`storage_class_unknown`) while a claim's StorageClass, or a default class for a claim on the
+   cluster default, is missing from the cluster's inventory.
+3. With more than one service, change every reference one service makes to another by its
+   Compose name (environment values, configuration) to the destination name the checklist lists,
+   save the destination's definition and apply it.
+4. Stop writes to the source, then copy each volume into its claim with the recipe the checklist
+   prints. First set `HELPER_IMAGE` to a digest-pinned image that has `tar`
+   (`busybox@sha256:<digest>`); the source host and the cluster both run it. Per service the
+   recipe scales the Deployment to 0 and waits for its pod to go, runs a helper pod
+   (`<name>-copy`) that mounts the claim at `/to`, streams
+   `docker run --rm -v <volume>:/from:ro "$HELPER_IMAGE" tar -C /from -cf - .` into
+   `kubectl exec -i <name>-copy -- tar -C /to -xf -`, deletes the helper and scales back to 1.
+   The destination started once against its empty claim at step 2: if it wrote data there (a
+   database initializes a directory), clear the claim from the helper pod before the copy.
+5. Validate the destination and select **Confirm validation** with a note.
+6. Point your DNS or Ingress at the destination.
+7. Select **Confirm cutover** with a note, then remove the source with KyYard's removal, which
    is refused while the migration is open.
 
 **Abandon migration** closes it and keeps a created destination. Claims survive the removal of

@@ -75,11 +75,24 @@ func putStorageClasses(t *testing.T, ts TenancyStore, endpoint string, classes [
 	}
 }
 
+// putStorageClassesTruncated reports a fresh cluster snapshot whose StorageClass list was cut.
+func putStorageClassesTruncated(t *testing.T, ts TenancyStore, endpoint string) {
+	t.Helper()
+	snap := protocol.Snapshot{Engine: protocol.Engine{Runtime: protocol.RuntimeKubernetes, Version: "v1.31.0"}, Truncated: []string{"storage_classes"},
+		Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
+		Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "n1", Ready: true}}, Namespaces: []string{"shop"}, Workloads: []protocol.Workload{}, Pods: []protocol.Pod{}, Services: []protocol.Service{}, Claims: []protocol.Claim{}, StorageClasses: []protocol.StorageClass{{Name: "standard"}}}}
+	raw, _ := json.Marshal(snap)
+	generation := uint64(time.Now().Unix()) - 1000 + clusterGeneration.Add(1)
+	if ok, err := ts.AcceptInventory(context.Background(), endpoint, generation, time.Now().UTC(), raw); err != nil || !ok {
+		t.Fatalf("cluster inventory: %v %v", ok, err)
+	}
+}
+
 func analysis(revision int, ready bool) MigrationAnalysis {
 	return MigrationAnalysis{Revision: revision, Report: []byte(`{"version":1}`), Ready: ready}
 }
 
-var dataChoice = KubernetesExtension{Volumes: map[string]KubernetesVolume{"data": {StorageClass: "fast", Size: "10Gi", AccessMode: protocol.AccessReadWriteOnce}}}
+var dataChoice = MigrationChoices{Volumes: map[string]KubernetesVolume{"data": {StorageClass: "fast", Size: "10Gi", AccessMode: protocol.AccessReadWriteOnce}}}
 
 // A migration starts only from a Docker source to a granted namespace of a cluster, once per
 // source; the source reads its inputs; choices are held to its named volumes and the cluster's
@@ -141,11 +154,16 @@ func TestMigrationLifecycle(t *testing.T) {
 		"read write many":  {KubernetesVolume{StorageClass: "fast", Size: "10Gi", AccessMode: "ReadWriteMany"}, "data", ErrInvalid},
 		"class grammar":    {KubernetesVolume{StorageClass: "Fast!", Size: "10Gi", AccessMode: protocol.AccessReadWriteOnce}, "data", ErrStorageClassUnknown},
 	} {
-		if _, err := ts.AnalyzeMigration(ctx, a, app.ID, KubernetesExtension{Volumes: map[string]KubernetesVolume{tc.vol: tc.v}}, analysis(1, true)); !errors.Is(err, tc.want) {
+		if _, err := ts.AnalyzeMigration(ctx, a, app.ID, MigrationChoices{Volumes: map[string]KubernetesVolume{tc.vol: tc.v}}, analysis(1, true)); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	defaulted := KubernetesExtension{Volumes: map[string]KubernetesVolume{"data": {Size: "1Gi", AccessMode: protocol.AccessReadWriteOnce}}}
+	for _, acknowledged := range [][]string{{"volume_named"}, {"network_references", "network_references"}} {
+		if _, err := ts.AnalyzeMigration(ctx, a, app.ID, MigrationChoices{Acknowledged: acknowledged}, analysis(1, true)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("acknowledged %v: %v", acknowledged, err)
+		}
+	}
+	defaulted := MigrationChoices{Volumes: map[string]KubernetesVolume{"data": {Size: "1Gi", AccessMode: protocol.AccessReadWriteOnce}}}
 	if _, err := ts.AnalyzeMigration(ctx, a, app.ID, defaulted, analysis(1, true)); err != nil {
 		t.Fatalf("the default class while one is reported: %v", err)
 	}
@@ -153,8 +171,8 @@ func TestMigrationLifecycle(t *testing.T) {
 	if _, err := ts.AnalyzeMigration(ctx, a, app.ID, defaulted, analysis(1, true)); !errors.Is(err, ErrStorageClassUnknown) {
 		t.Fatalf("the default class with none reported: %v", err)
 	}
-	m, err = ts.AnalyzeMigration(ctx, a, app.ID, dataChoice, MigrationAnalysis{Revision: 1, Report: []byte(`{"version":1,"ready":true}`), Ready: true})
-	if err != nil || !m.Ready || m.Choices.Volumes["data"] != dataChoice.Volumes["data"] || string(m.Report) != `{"version":1,"ready":true}` {
+	m, err = ts.AnalyzeMigration(ctx, a, app.ID, MigrationChoices{Volumes: dataChoice.Volumes, Acknowledged: MigrationAcknowledgeable}, MigrationAnalysis{Revision: 1, Report: []byte(`{"version":1,"ready":true}`), Ready: true})
+	if err != nil || !m.Ready || m.Choices.Volumes["data"] != dataChoice.Volumes["data"] || !slices.Equal(m.Choices.Acknowledged, MigrationAcknowledgeable) || string(m.Report) != `{"version":1,"ready":true}` {
 		t.Fatalf("analyzed %+v %v", m, err)
 	}
 
@@ -445,5 +463,53 @@ func TestMigrationDestinationEndpointOffline(t *testing.T) {
 	}
 	if _, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey); !errors.Is(err, ErrEndpointOffline) {
 		t.Fatalf("creating a destination on an offline cluster: %v", err)
+	}
+}
+
+// Editing the destination keeps its storage choices: a Compose import never carries the
+// kubernetes extension, so each revision inherits the previous one's for the volumes it still
+// declares. The claim is immutable, so the old choice is what the cluster holds.
+func TestDestinationEditKeepsClaims(t *testing.T) {
+	st, a, app, cluster := migrationFixture(t, migrationSpec(), map[string]string{"db.PASSWORD": "p"})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	if err := ts.SetAnonymousPull(ctx, a, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.CreateMigration(ctx, a, app.ID, MigrationStart{DestinationEndpointID: cluster, Namespace: "shop"}, analysis(1, false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AnalyzeMigration(ctx, a, app.ID, dataChoice, analysis(1, true)); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ts.CreateMigrationDestination(ctx, a, app.ID, imageCheckKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.DestinationApplicationID
+	resolver := &fakeResolver{reply: map[string]fakeReply{"ghcr.io/org/db:1": {digest: digestOf("b")}, "ghcr.io/org/web:2": {digest: digestOf("c")}}}
+	edited := migrationSpec()
+	edited.Services[1].Image = "ghcr.io/org/web:2"
+	if _, err := ts.ReplaceApplicationRevision(ctx, a, dest, 1, edited, map[string]string{"db.PASSWORD": "p"}, imageCheckKey); err != nil {
+		t.Fatal(err)
+	}
+	mapped, err := ts.ReadApplicationMapping(ctx, a, dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := ts.PlanDeployment(ctx, a, dest, kubePlanRequest(mapped), resolver, imageCheckKey, false)
+	if err != nil {
+		t.Fatalf("planning the edited destination: %v", err)
+	}
+	if want := (protocol.KubernetesClaim{Name: mapped.Preview.Project + "-data", StorageClass: "fast", Size: "10Gi", AccessMode: protocol.AccessReadWriteOnce}); len(d.Plan.Claims) != 1 || d.Plan.Claims[0] != want {
+		t.Fatalf("claims %+v", d.Plan.Claims)
+	}
+	dropped := migrationSpec()
+	dropped.Volumes, dropped.Services[0].Volumes = nil, nil
+	if _, err := ts.ReplaceApplicationRevision(ctx, a, dest, 2, dropped, map[string]string{"db.PASSWORD": "p"}, imageCheckKey); err != nil {
+		t.Fatal(err)
+	}
+	if rev, err := ts.ReadApplicationRevision(ctx, a, dest, 3); err != nil || rev.Spec.Kubernetes != nil {
+		t.Fatalf("a revision that declares the volume no more keeps its choice: %+v %v", rev.Spec.Kubernetes, err)
 	}
 }

@@ -65,6 +65,9 @@ type KubernetesVolume struct {
 
 The Compose importer never sets it; the spec digest covers it; `encodeApplicationSpec` validates
 it. It lives on the destination application's revision, so the source definition is untouched.
+A new revision that brings no extension (every Compose import) inherits the previous
+revision's, keeping only the volumes it still declares: the claim is immutable, so the old choice
+is what the cluster holds, and an edit of the destination does not strand it.
 
 ## Analyzer
 
@@ -102,10 +105,17 @@ Codes, one sentence each in the UI (closed, tested):
   scope, so it is treated as `volume_named`), `volume_size_unknown` (assumption: Docker reports
   no volume size; the operator sizes the claim).
 - networking: `network_host` (blocked, from `NetworkMode`), `networks_multiple` (supported,
-  note: services reach each other as `<project>-<service>` on published ports only).
+  note: services reach each other as `<project>-<service>` on published ports only). In an
+  application of more than one service every service also gets `network_references`
+  (`operator_choice_required`, detail the destination DNS name the other services must use,
+  `<destination project>-<service>` from `KubernetesNames`): Compose names stop resolving on the
+  cluster. A single-service application gets `networking_supported` (supported: no other
+  service addresses it by name) when nothing else applies. The project network does not become
+  cluster networking; only published ports get a Service.
 - ports: `port_published` (supported: a ClusterIP Service; external exposure is the operator's
-  Ingress), `port_host_ip` (blocked), `port_unpublished` (supported, note: unreachable from
-  other services).
+  Ingress), `port_host_ip` (blocked), `port_unpublished`: no Service, so unreachable from the
+  other services; `operator_choice_required` in an application of more than one service,
+  `supported` in a single-service one.
 - secrets: `secrets_supported`.
 - probes: `healthcheck_dropped` (choice required: no probe is rendered; the operator adds one
   after cutover or accepts the rollout wait) when the inspection's `Unsupported` names
@@ -121,14 +131,30 @@ Codes, one sentence each in the UI (closed, tested):
 A service is `blocked` if any finding is; the report's `Ready` is true when no finding is
 `blocked` or `operator_choice_required`. When no inspection is available the probes, resources,
 scheduling and flags axes carry `inspection_unavailable` (choice required: run again when the
-host is online) so absence is never read as support.
+host is online) so absence is never read as support. An inspection without a health answer (an
+agent lacking `container.inspect.health`) is `inspection_unavailable` on the probes axis, never
+`probes_supported`.
+
+Amendment (controller, 2026-09-26): `network_references` and `port_unpublished` have nothing to
+record, so the operator answers them by acknowledging them. The choices carry
+`acknowledged: [code]`, distinct codes of `store.MigrationAcknowledgeable`
+(`network_references`, `port_unpublished`); an acknowledged finding is `supported` and keeps its
+code and detail, so the destination names stay on the report.
 
 Checklist (fixed steps, each with a sentence and, where it applies, a command template with
-the real names filled in): label and grant the namespace (`kubectl label ns … enforce=baseline`,
-regenerate the manifest); create the destination and apply it in KyYard; copy each volume's
-data (`docker run --rm -v <volume>:/from … | kubectl exec … tar` recipe per PVC); validate the
-destination; switch traffic (operator's DNS or Ingress); confirm cutover, then remove the source
-with KyYard's removal. The checklist is display only; status moves by the two confirmations.
+the real names filled in): label and grant the namespace (`kubectl label namespace …
+enforce=baseline` without `--overwrite`, so an existing label is never changed; regenerate and
+apply the manifest and upgrade the agent image); create the destination and apply it in
+KyYard; `update_references` (more than one service: every `<service> → <destination DNS name>`
+pair; the operator edits the destination's definition); copy each volume's data, per service:
+`kubectl scale deploy/<name> --replicas=0`, wait for its pods to be deleted, per claim
+`kubectl run <name>-copy --image="$HELPER_IMAGE" --restart=Never --override-type=strategic
+--overrides='<mount the claim at /to>' -- sleep 3600`, wait for it, `docker run --rm -v
+<volume>:/from:ro "$HELPER_IMAGE" tar -C /from -cf - . | kubectl exec -i <name>-copy -- tar -C
+/to -xf -`, delete the helper, then `--replicas=1` (`HELPER_IMAGE` is the operator's
+digest-pinned image with `tar`); validate the destination; switch traffic (operator's DNS or
+Ingress); confirm cutover, then remove the source with KyYard's removal. The checklist is
+display only; status moves by the two confirmations.
 
 ## Flow and API
 
@@ -143,7 +169,7 @@ roles that hold `application.adopt` (organization administrators), audited on
   (`system-migration`, same rate budget as a plan), analyzes, stores `analyzed`, returns the
   migration.
 - `GET …/migration`: the open migration (404 when none), report, choices, status, links.
-- `PUT …/migration/choices` `{volumes: {name: {storage_class, size, access_mode}}}`: validated
+- `PUT …/migration/choices` `{volumes: {name: {storage_class, size, access_mode}}, acknowledged: [code]}`: validated
   against the report's named volumes and the destination inventory's StorageClasses (400
   `storage_class_unknown`, `size_invalid`, `volume_unknown`); re-analyzes with the choices.
   Allowed only in `analyzed`.
@@ -183,7 +209,22 @@ migration link.
   with detail `retained`, and the docs say the operator deletes data deliberately.
 - Manifest: the namespaced Role gains `persistentvolumeclaims` `get, list, create` (no update,
   patch or delete); the ClusterRole gains `storage.k8s.io` `storageclasses` `get, list`. The
-  regeneration route and docs tell the operator to re-apply.
+  regeneration route and docs tell the operator to re-apply, and to upgrade the agent image.
+- Capability (amendment, 2026-09-26): a cluster agent that deploys advertises
+  `kubernetes.claims` (`CapabilitiesFit` allows it for the `kubernetes` runtime only). An agent
+  from before claims decodes the frame leniently and would run the pod on ephemeral storage, so a
+  Kubernetes plan whose `Claims` is non-empty is refused with the top-level blocker
+  `agent_claims_unsupported` when the endpoint lacks it, and apply answers 501 the same way.
+
+### Plan and apply (amendment, 2026-09-26)
+
+A Kubernetes plan checks each claim's StorageClass against the destination endpoint's fresh
+inventory `storage_classes` (`""` needs a class marked default) and refuses with the top-level
+blocker `storage_class_unknown` (the same code the choices route answers with 400; it is now
+also a plan blocker). A claim the inventory already reports `Bound` in the namespace needs no
+class, and a list cut at `MaxStorageClasses` cannot prove absence and is not held against the
+plan. This replaces finding a missing class only after the rollout's progress deadline, with a
+Pending claim KyYard cannot change left behind.
 - Inventory: `KubernetesInventory.StorageClasses []StorageClass{Name string; Default bool}`
   (cap 100), read by the agent, shown in the choices form.
 

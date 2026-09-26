@@ -39,7 +39,7 @@ const (
 // (web/src/migration-codes.json).
 var Codes = []string{
 	"volume_named", "volume_named_shared", "volume_bind", "volume_external", "storage_supported",
-	"network_host", "networks_multiple", "networking_supported",
+	"network_host", "networks_multiple", "network_references", "networking_supported",
 	"port_published", "port_host_ip", "port_unpublished",
 	"secrets_supported",
 	"healthcheck_dropped", "probes_supported",
@@ -64,7 +64,7 @@ type Input struct {
 	// Volumes are the source endpoint's volumes.
 	Volumes     []protocol.Volume
 	Destination Destination
-	Choices     store.KubernetesExtension
+	Choices     store.MigrationChoices
 }
 
 // Destination is the cluster side: the namespace, the destination application's project and the
@@ -92,7 +92,8 @@ type ServiceReport struct {
 }
 
 // Finding's Detail is its code's parameter: a volume name, a mount target, a port as
-// <published>/<protocol>, a restart policy or a code from protocol.UnsupportedCodes.
+// <published>/<protocol>, a restart policy, a code from protocol.UnsupportedCodes or a service's
+// destination name.
 type Finding struct {
 	Axis   string `json:"axis"`
 	Class  string `json:"class"`
@@ -126,12 +127,28 @@ func Analyze(in Input) Report {
 		}
 	}
 	r := Report{Version: Version, Ready: true, Services: []ServiceReport{}, Assumptions: []string{}}
+	names := protocol.KubernetesNames(in.Destination.Project, serviceNames(in.Spec))
+	// In an application of several services the others address each one by name; a finding
+	// that asks only for the operator's attention is supported once acknowledged.
+	shared := len(in.Spec.Services) > 1
+	acknowledged := func(code string) string {
+		if slices.Contains(in.Choices.Acknowledged, code) {
+			return Supported
+		}
+		return ChoiceRequired
+	}
 	for _, s := range in.Spec.Services {
 		inspection, inspected := in.Inspections[s.Name]
 		var f []Finding
 		f = append(f, storage(s, declared, users, in.Choices, in.Destination.StorageClasses)...)
-		f = append(f, networking(in.Containers[s.Name], inspection, inspected))
-		f = append(f, ports(s)...)
+		network := networking(in.Containers[s.Name], inspection, inspected)
+		if shared {
+			network = append(network, Finding{AxisNetworking, acknowledged("network_references"), "network_references", names[s.Name]})
+		} else if len(network) == 0 {
+			network = []Finding{{AxisNetworking, Supported, "networking_supported", ""}}
+		}
+		f = append(f, network...)
+		f = append(f, ports(s, shared, acknowledged)...)
 		f = append(f, Finding{AxisSecrets, Supported, "secrets_supported", ""})
 		f = append(f, inspectedAxes(s, inspection, inspected)...)
 		sr := ServiceReport{Name: s.Name, Class: Supported, Findings: f}
@@ -147,11 +164,19 @@ func Analyze(in Input) Report {
 	if len(users) > 0 {
 		r.Assumptions = append(r.Assumptions, "volume_size_unknown")
 	}
-	r.Checklist = checklist(in, users)
+	r.Checklist = checklist(in, users, names)
 	return r
 }
 
-func storage(s store.ApplicationService, declared map[string]store.DeclaredVolume, users map[string]int, choices store.KubernetesExtension, classes []protocol.StorageClass) []Finding {
+func serviceNames(spec store.ApplicationSpec) []string {
+	out := make([]string, 0, len(spec.Services))
+	for _, s := range spec.Services {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+func storage(s store.ApplicationService, declared map[string]store.DeclaredVolume, users map[string]int, choices store.MigrationChoices, classes []protocol.StorageClass) []Finding {
 	var out []Finding
 	for _, v := range s.Volumes {
 		switch {
@@ -179,24 +204,28 @@ func storage(s store.ApplicationService, declared map[string]store.DeclaredVolum
 
 // chosen reports a valid choice for volume whose StorageClass the destination still reports ("":
 // while it reports a default).
-func chosen(choices store.KubernetesExtension, classes []protocol.StorageClass, volume string) bool {
+func chosen(choices store.MigrationChoices, classes []protocol.StorageClass, volume string) bool {
 	c, ok := choices.Volumes[volume]
 	return ok && c.Valid() && slices.ContainsFunc(classes, func(sc protocol.StorageClass) bool {
 		return sc.Name == c.StorageClass || (c.StorageClass == "" && sc.Default)
 	})
 }
 
-func networking(c protocol.Container, in protocol.ContainerInspection, inspected bool) Finding {
+// networking is what the container's own networks say: host networking, or more than one
+// network. Analyze adds how other services address it.
+func networking(c protocol.Container, in protocol.ContainerInspection, inspected bool) []Finding {
 	switch {
 	case slices.Contains(c.Networks, "host") || (inspected && in.NetworkMode == "host"):
-		return Finding{AxisNetworking, Blocked, "network_host", ""}
+		return []Finding{{AxisNetworking, Blocked, "network_host", ""}}
 	case len(c.Networks) > 1 || (inspected && (in.NetworkCount > 1 || slices.ContainsFunc(in.Unsupported, func(code string) bool { return networkCodes[code] }))):
-		return Finding{AxisNetworking, Supported, "networks_multiple", ""}
+		return []Finding{{AxisNetworking, Supported, "networks_multiple", ""}}
 	}
-	return Finding{AxisNetworking, Supported, "networking_supported", ""}
+	return nil
 }
 
-func ports(s store.ApplicationService) []Finding {
+// ports: a service that publishes none gets no Service, so in an application of several no
+// other service can reach it on the cluster.
+func ports(s store.ApplicationService, shared bool, acknowledged func(string) string) []Finding {
 	var out []Finding
 	for _, p := range s.Ports {
 		detail := fmt.Sprintf("%d/%s", p.Published, p.Protocol)
@@ -207,7 +236,11 @@ func ports(s store.ApplicationService) []Finding {
 		}
 	}
 	if len(out) == 0 {
-		out = append(out, Finding{AxisPorts, Supported, "port_unpublished", ""})
+		class := Supported
+		if shared {
+			class = acknowledged("port_unpublished")
+		}
+		out = append(out, Finding{AxisPorts, class, "port_unpublished", ""})
 	}
 	return out
 }
@@ -229,9 +262,13 @@ func inspectedAxes(s store.ApplicationService, in protocol.ContainerInspection, 
 		restart()
 		return out
 	}
-	if slices.ContainsFunc(in.Unsupported, func(c string) bool { return probeCodes[c] }) || (in.Health != "" && in.Health != "none") {
+	// An agent without container.inspect.health answers no health: unknown, not "none".
+	switch {
+	case slices.ContainsFunc(in.Unsupported, func(c string) bool { return probeCodes[c] }) || (in.Health != "" && in.Health != "none"):
 		out = append(out, Finding{AxisProbes, ChoiceRequired, "healthcheck_dropped", ""})
-	} else {
+	case in.Health == "":
+		out = append(out, Finding{AxisProbes, ChoiceRequired, "inspection_unavailable", ""})
+	default:
 		out = append(out, Finding{AxisProbes, Supported, "probes_supported", ""})
 	}
 	var resources, scheduling, flags []Finding
