@@ -106,7 +106,7 @@ export function ApplicationMigration({ base, org, env, instance, admin, onOpen }
       setMessage(r.status === 403 ? 'Only an organization administrator can migrate applications.' : fixed(MIGRATION_ERRORS, code) || 'The request was refused. Refresh the migration and try again.');
     } catch { setMessage('Offline: the server could not be reached.'); } finally { setBusy(false); }
   };
-  if (migration.state === 'notfound') return !instance.namespace && admin ? <MigrationStart org={org} env={env} busy={busy} message={message} onStart={(body) => void write('POST', '', body)} /> : null;
+  if (migration.state === 'notfound') return !instance.namespace && admin ? <MigrationStart org={org} env={env} admin={admin} busy={busy} message={message} onStart={(body) => void write('POST', '', body)} /> : null;
   if (migration.state !== 'ready') return <StateNotice state={migration.state} onRetry={migration.reload} />;
   if (!isMigration(m)) return null;
   if (m.role === 'destination') return <section className="dr-stack" aria-label="Migration">
@@ -134,12 +134,12 @@ export function ApplicationMigration({ base, org, env, instance, admin, onOpen }
     <ol>{report.checklist.map((step) => <li key={step.code}>{fixed(CHECKLIST_STEPS, step.code)}{step.commands?.map((c) => <pre key={c}><code>{c}</code></pre>)}</li>)}</ol>
     {admin && m.status === 'destination_created' && <MigrationConfirm label="Confirm validation" busy={busy} onConfirm={(note) => void write('POST', '/validated', { note })} />}
     {admin && m.status === 'validated' && <MigrationConfirm label="Confirm cutover" busy={busy} onConfirm={(note) => void write('POST', '/cutover', { note })} />}
-    {admin && <button type="button" className="btn-danger" disabled={busy} onClick={() => { if (window.confirm('Abandon this migration? The source keeps running and a created destination stays.')) void write('DELETE', ''); }}>Abandon migration</button>}
+    {admin && m.status !== 'abandoned' && m.status !== 'cutover_confirmed' && <button type="button" className="btn-danger" disabled={busy} onClick={() => { if (window.confirm('Abandon this migration? The source keeps running and a created destination stays.')) void write('DELETE', ''); }}>Abandon migration</button>}
     {message && <p role="alert">{message}</p>}
   </section>;
 }
 
-function MigrationStart({ org, env, busy, message, onStart }: { org: string; env: string; busy: boolean; message: string; onStart: (body: { destination_endpoint_id: string; namespace: string }) => void }) {
+function MigrationStart({ org, env, admin, busy, message, onStart }: { org: string; env: string; admin: boolean; busy: boolean; message: string; onStart: (body: { destination_endpoint_id: string; namespace: string }) => void }) {
   const endpoints = useTenantResource<Endpoint[]>(`/api/organizations/${encodeURIComponent(org)}/environments/${encodeURIComponent(env)}/endpoints?limit=200`);
   const clusters = (Array.isArray(endpoints.data) ? endpoints.data : []).filter((e) => e.runtime === 'kubernetes');
   const [cluster, setCluster] = useState('');
@@ -155,10 +155,12 @@ function MigrationStart({ org, env, busy, message, onStart }: { org: string; env
         <option value="">Choose a cluster</option>
         {clusters.map((c) => <option key={c.id} value={c.id}>{displayName(c.name)}</option>)}
       </select></label>
-      {chosen && <label>Destination namespace<select value={namespace} disabled={busy} onChange={(e) => setNamespace(e.target.value)}>
-        <option value="">Choose a namespace</option>
-        {(chosen.deploy_namespaces ?? []).map((ns) => <option key={ns} value={ns}>{ns}</option>)}
-      </select></label>}
+      {chosen && ((chosen.deploy_namespaces ?? []).length > 0
+        ? <label>Destination namespace<select value={namespace} disabled={busy} onChange={(e) => setNamespace(e.target.value)}>
+            <option value="">Choose a namespace</option>
+            {(chosen.deploy_namespaces ?? []).map((ns) => <option key={ns} value={ns}>{ns}</option>)}
+          </select></label>
+        : <p>This cluster's manifest grants no namespace yet{admin ? '. Regenerate it below and apply it.' : '; ask an administrator to regenerate it.'}</p>)}
       <button disabled={busy || !cluster || !namespace}>Analyze</button>
       {message && <p role="alert">{message}</p>}
     </form>

@@ -63,6 +63,17 @@ it('offers an administrator the analysis of a Docker source and posts the cluste
   expect(JSON.parse(String(post?.[1]?.body))).toEqual({ destination_endpoint_id: 'ep_k', namespace: 'shop' });
 });
 
+it('explains a cluster whose manifest grants no namespace instead of an empty select', async () => {
+  const fetcher = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith('/migration') ? json({ error: 'not found' }, 404) : json([{ ...cluster, deploy_namespaces: [] }]));
+  vi.stubGlobal('fetch', fetcher);
+  render(<ApplicationMigration base="/app" org="a" env="e" instance={docker} admin onOpen={vi.fn()} />);
+  await screen.findByRole('option', { name: 'prod' });
+  fireEvent.change(screen.getByLabelText('Destination cluster'), { target: { value: 'ep_k' } });
+  expect(await screen.findByText("This cluster's manifest grants no namespace yet. Regenerate it below and apply it.")).toBeTruthy();
+  expect(screen.queryByLabelText('Destination namespace')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Analyze' }).hasAttribute('disabled')).toBe(true);
+});
+
 it('renders nothing for a response it cannot read', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json({ role: 'source', status: 'analyzed', report: '<b>secret-canary</b>' })));
   const { container } = render(<ApplicationMigration base="/app" org="a" env="e" instance={docker} admin onOpen={vi.fn()} />);
@@ -111,7 +122,11 @@ it('links the created destination, takes the confirmations with a note, and says
   document.cookie = 'ky_csrf=csrf';
   const open = vi.fn();
   const created = migration({ status: 'destination_created', ready: true, destination_application_id: 'dest', destination_application_name: 'shop on prod' });
-  const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'DELETE' ? json({ ...created, status: 'abandoned', destination_kept: true }) : json(created));
+  let abandoned = false;
+  const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'DELETE') { abandoned = true; return json({ ...created, status: 'abandoned', destination_kept: true }); }
+    return json(abandoned ? { ...created, status: 'abandoned' } : created);
+  });
   vi.stubGlobal('fetch', fetcher);
   vi.stubGlobal('confirm', () => true);
   render(<ApplicationMigration base="/app" org="a" env="e" instance={docker} admin onOpen={open} />);
@@ -126,6 +141,7 @@ it('links the created destination, takes the confirmations with a note, and says
   expect(JSON.parse(String(fetcher.mock.calls.find((c) => String(c[0]) === '/app/migration/validated')?.[1]?.body))).toEqual({ note: 'orders page answers' });
   fireEvent.click(await screen.findByRole('button', { name: 'Abandon migration' }));
   expect((await screen.findByRole('alert')).textContent).toContain('The destination application stays');
+  await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Abandon migration' })).toBeNull());
 });
 
 it('shows a destination where it came from', async () => {
