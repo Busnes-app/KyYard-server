@@ -202,6 +202,15 @@ func TestManifestOnARealCluster(t *testing.T) {
 	if res := c.Deploy(ctx, again, func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("second deploy as the agent: %+v", res)
 	}
+	// What a validation reads, as the agent: the settled Deployment available, its pod running.
+	watched := protocol.InspectionTarget{Workload: protocol.WorkloadRef{Namespace: deployNamespace, Name: "kind-idle", UID: res.Services[0].UID}}
+	in, err := c.Inspect(ctx, watched)
+	if err != nil || in.Validate(watched, time.Now(), false) != nil {
+		t.Fatalf("inspect as the agent: %+v %v", in, err)
+	}
+	if w := in.Workload; w.Missing || w.UID != res.Services[0].UID || w.ObservedGeneration < w.Generation || w.Desired != 1 || w.Available != 1 || w.Ready != 1 || len(w.Pods) != 1 || w.Pods[0].Containers[0].State != "running" {
+		t.Fatalf("workload status %+v", in.Workload)
+	}
 	removal := protocol.RemovalRequest{Deployment: "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_kind", Project: "kind", IssuedAt: time.Now(), Deadline: time.Now().Add(time.Minute),
 		Kubernetes: &protocol.KubernetesTarget{Namespace: target.Namespace, ApplicationID: target.ApplicationID, InstanceID: target.InstanceID, SpecDigest: target.SpecDigest}, Services: []string{"idle"}}
 	removed := c.Remove(ctx, removal, func() {})
