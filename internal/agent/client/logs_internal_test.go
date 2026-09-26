@@ -10,22 +10,19 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
-// A reader that is not keeping up must cost the agent a bounded amount of memory, and the
-// reader must be told what it missed: a log with a silent hole in it is worse than one that
-// says where the hole is.
-func TestASlowReaderGetsAGapRatherThanUnboundedMemory(t *testing.T) {
-	const queued = 2
-	out := make(chan outFrame, queued)
-	// Nothing is read until the container has finished writing, which is what a reader that
-	// has stalled looks like from here.
-	sunk := make(chan struct{})
+// A reader that is not keeping up slows the read instead of losing the log: the sink waits for
+// the queue, so every byte arrives in order, and memory stays bounded by the queue itself.
+func TestASlowReaderSlowsTheReadAndLosesNothing(t *testing.T) {
+	out := make(chan outFrame, 2)
+	var want strings.Builder
 	opts := &Options{Logs: func(ctx context.Context, req protocol.LogRequest, sink func([]byte) error) error {
 		for i := 0; i < 20; i++ {
-			if err := sink([]byte(strings.Repeat("x", 100))); err != nil {
+			line := strings.Repeat(string(rune('a'+i)), 99) + "\n"
+			want.WriteString(line)
+			if err := sink([]byte(line)); err != nil {
 				return err
 			}
 		}
-		close(sunk)
 		return nil
 	}}
 	done := make(chan struct{})
@@ -33,20 +30,19 @@ func TestASlowReaderGetsAGapRatherThanUnboundedMemory(t *testing.T) {
 		defer close(done)
 		readLog(context.Background(), protocol.LogRequest{Stream: "s1"}, opts, out)
 	}()
-	select {
-	case <-sunk:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the reader blocked on a queue nobody was draining")
-	}
 
-	var chunks []protocol.LogChunk
+	var got strings.Builder
 	var closed *protocol.LogClose
 	for closed == nil {
+		time.Sleep(5 * time.Millisecond) // a reader draining slower than the container writes
 		select {
 		case f := <-out:
 			switch payload := f.Payload.(type) {
 			case protocol.LogChunk:
-				chunks = append(chunks, payload)
+				if payload.Dropped != 0 {
+					t.Fatalf("the agent dropped %d bytes", payload.Dropped)
+				}
+				got.WriteString(payload.Data)
 			case protocol.LogClose:
 				closed = &payload
 			}
@@ -55,20 +51,45 @@ func TestASlowReaderGetsAGapRatherThanUnboundedMemory(t *testing.T) {
 		}
 	}
 	<-done
-	// What was held is the queue; everything else was dropped and counted.
-	if len(chunks) > queued+1 {
-		t.Fatalf("%d chunks were held for a reader that was not reading", len(chunks))
-	}
-	var dropped int64
-	for _, c := range chunks {
-		dropped += c.Dropped
-	}
-	if dropped == 0 {
-		t.Fatal("bytes were dropped for a slow reader without saying so")
+	if got.String() != want.String() {
+		t.Fatalf("%d of %d bytes arrived, or out of order", got.Len(), want.Len())
 	}
 	if closed.Failed {
 		t.Fatalf("a log that ended normally was reported as a failure: %+v", closed)
 	}
+}
+
+// A read waiting on a full queue ends when the stream is cancelled rather than holding the
+// host's log open for a reader that has gone.
+func TestACancelledStreamUnblocksAWaitingRead(t *testing.T) {
+	out := make(chan outFrame) // nobody drains
+	ended := make(chan error, 1)
+	opts := &Options{Logs: func(ctx context.Context, req protocol.LogRequest, sink func([]byte) error) error {
+		err := sink([]byte("waiting\n"))
+		ended <- err
+		return err
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		readLog(ctx, protocol.LogRequest{Stream: "s1"}, opts, out)
+	}()
+	select {
+	case err := <-ended:
+		t.Fatalf("the sink returned %v with nobody draining the queue", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-ended:
+		if err == nil {
+			t.Fatal("a cancelled sink reported success")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sink ignored the cancellation")
+	}
+	<-done
 }
 
 // A cancelled stream stops reading the host and says nothing more: the reader has gone, and

@@ -296,6 +296,41 @@ func TestFollowingSendsEventsAndMarksGaps(t *testing.T) {
 	}
 }
 
+// A history request arrives as a burst of small frames, one line each for a container without
+// a TTY. The reader gets every line and no gap: a burst is the ordinary case, not a slow reader.
+func TestABurstOfSmallChunksArrivesWhole(t *testing.T) {
+	s, st, httpSrv := logServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	ag := connectedAgentWithContainer(t, ctx, s, st, admin, httpSrv.URL)
+
+	const lines = 170
+	var want strings.Builder
+	for i := 1; i <= lines; i++ {
+		fmt.Fprintf(&want, "%d\n", i)
+	}
+	go func() {
+		req := awaitOpen(t, ctx, ag.conn)
+		for i := 1; i <= lines; i++ {
+			if err := writeChunk(ctx, ag.conn, req.Stream, fmt.Sprintf("%d\n", i)); err != nil {
+				t.Errorf("chunk %d: %v", i, err)
+				return
+			}
+		}
+		writeEnvelope(t, ctx, ag.conn, protocol.TypeLogClose, protocol.LogClose{Stream: req.Stream, Reason: "the log ended"})
+	}()
+
+	w := tenantRequest(s, admin, "GET", "/api/organizations/a/endpoints/"+ag.id+"/containers/web/logs?tail=200", "", false)
+	if w.Code != 200 {
+		t.Fatalf("logs: %d %s", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); body != want.String() {
+		t.Fatalf("%d of %d lines arrived: %q", strings.Count(body, "\n"), lines, body)
+	}
+}
+
 // When the reader goes, the agent is told to stop. Otherwise a closed browser tab would leave
 // a reader running on the host until its own budget expired.
 func TestAClosedReaderCancelsTheStreamOnTheEndpoint(t *testing.T) {

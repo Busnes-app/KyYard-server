@@ -14,9 +14,9 @@ const (
 	// rather than one of this package's own: the control plane hands out places against the
 	// same limit, and an agent that refused earlier would make that split meaningless.
 	maxLogStreams = protocol.MaxLogStreamsPerEndpoint
-	// logQueueDepth is how many chunks wait for the session loop before the agent starts
-	// dropping and reporting the gap. This is the agent's half of the bound: the control
-	// plane has its own, because a slow browser must not become memory on either side.
+	// logQueueDepth is how many frames wait for the session loop. A log reader that finds it
+	// full waits, which slows its read of the runtime; the control plane bounds a slow browser
+	// on its own side.
 	logQueueDepth = 8
 )
 
@@ -61,9 +61,8 @@ type outFrame struct {
 }
 
 // readLog streams one container's log to the session loop until it ends, the reader cancels,
-// or the runtime stops. It never blocks on a loop that is not draining: a chunk that cannot be
-// queued is dropped and counted, and the count travels with the next chunk so the reader is
-// told about the hole rather than shown a log that looks continuous.
+// or the runtime stops. A full queue makes it wait rather than drop: waiting slows the read of
+// the runtime, and the loop's heartbeats come from its own ticker, not from this goroutine.
 func readLog(ctx context.Context, req protocol.LogRequest, opts *Options, out chan<- outFrame) {
 	close := protocol.LogClose{Stream: req.Stream, Reason: "the log ended"}
 	if opts.Logs == nil {
@@ -71,7 +70,6 @@ func readLog(ctx context.Context, req protocol.LogRequest, opts *Options, out ch
 		deliverFrame(ctx, out, outFrame{protocol.TypeLogClose, close})
 		return
 	}
-	var dropped int64
 	sink := func(b []byte) error {
 		// Coerced to valid UTF-8 and no further: a log is the application's own bytes, and an
 		// agent that reformatted them would be lying about what the container printed. The
@@ -87,14 +85,9 @@ func readLog(ctx context.Context, req protocol.LogRequest, opts *Options, out ch
 			piece := text[:cutAtRune(text, protocol.MaxLogChunkBytes)]
 			text = text[len(piece):]
 			select {
-			case out <- (outFrame{protocol.TypeLogChunk, protocol.LogChunk{Stream: req.Stream, Data: piece, Dropped: dropped}}):
-				dropped = 0
+			case out <- outFrame{protocol.TypeLogChunk, protocol.LogChunk{Stream: req.Stream, Data: piece}}:
 			case <-ctx.Done():
 				return ctx.Err()
-			default:
-				// The loop is behind. Dropping is the bounded answer; the next chunk says how
-				// much was lost.
-				dropped += int64(len(piece))
 			}
 		}
 		return nil
@@ -105,11 +98,6 @@ func readLog(ctx context.Context, req protocol.LogRequest, opts *Options, out ch
 	if ctx.Err() != nil {
 		// Cancelled: the reader is gone, so there is no one to tell.
 		return
-	}
-	if dropped > 0 {
-		// Report the last gap even if nothing followed it, or a stream that ended while the
-		// loop was behind would look complete.
-		deliverFrame(ctx, out, outFrame{protocol.TypeLogChunk, protocol.LogChunk{Stream: req.Stream, Dropped: dropped}})
 	}
 	deliverFrame(ctx, out, outFrame{protocol.TypeLogClose, close})
 }

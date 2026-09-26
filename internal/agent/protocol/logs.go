@@ -53,9 +53,9 @@ type LogRequest struct {
 	Follow     bool       `json:"follow"`
 }
 
-// LogChunk is log text as the container wrote it, with the count of bytes the agent had to
-// drop before it. Dropped is the gap marker: the reader is told what it did not get rather
-// than shown a seamless log with a hole in it.
+// LogChunk is log text as the container wrote it. Dropped is what an older agent lost before
+// it when its queue was full; the control plane still reports it as a gap. The current agent
+// waits instead of dropping and never sets it.
 type LogChunk struct {
 	Stream  string `json:"stream"`
 	Data    string `json:"data"`
