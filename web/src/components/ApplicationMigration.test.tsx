@@ -127,6 +127,8 @@ it('names each destination and takes the acknowledgements with the storage choic
   const report = { version: 1, ready: false, services: [{ name: 'db', class: 'operator_choice_required', findings: [
     { axis: 'networking', class: 'operator_choice_required', code: 'network_references', detail: 'shop-on-prod-db' },
     { axis: 'ports', class: 'operator_choice_required', code: 'port_unpublished' },
+    { axis: 'probes', class: 'operator_choice_required', code: 'healthcheck_dropped' },
+    { axis: 'resources', class: 'operator_choice_required', code: 'resource_limits_dropped', detail: 'resource_limits' },
   ] }], checklist: [{ code: 'update_references', commands: ['db → shop-on-prod-db'] }], assumptions: [] };
   const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'PUT') return json(migration({ report }));
@@ -138,9 +140,12 @@ it('names each destination and takes the acknowledgements with the storage choic
   expect(screen.getByText('db → shop-on-prod-db')).toBeTruthy();
   expect(screen.queryByLabelText('StorageClass for data')).toBeNull();
   fireEvent.click(screen.getByLabelText(ACKNOWLEDGEMENTS.network_references));
+  fireEvent.click(screen.getByLabelText(ACKNOWLEDGEMENTS.healthcheck_dropped));
+  fireEvent.click(screen.getByLabelText(ACKNOWLEDGEMENTS.resource_limits_dropped));
+  expect(screen.queryByLabelText(ACKNOWLEDGEMENTS.read_only_rootfs)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Save choices' }));
   await vi.waitFor(() => expect(fetcher.mock.calls.some((c) => c[1]?.method === 'PUT')).toBe(true));
-  expect(JSON.parse(String(fetcher.mock.calls.find((c) => c[1]?.method === 'PUT')?.[1]?.body))).toEqual({ volumes: {}, acknowledged: ['network_references'] });
+  expect(JSON.parse(String(fetcher.mock.calls.find((c) => c[1]?.method === 'PUT')?.[1]?.body))).toEqual({ volumes: {}, acknowledged: ['network_references', 'healthcheck_dropped', 'resource_limits_dropped'] });
 });
 
 it('links the created destination, takes the confirmations with a note, and says an abandoned destination stays', async () => {

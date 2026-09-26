@@ -21,15 +21,15 @@ export const MIGRATION_CODES: Record<string, string> = {
   port_host_ip: 'A port bound to one host address has no Service equivalent; drop the address.',
   port_unpublished: 'Publishes no port, so it gets no Service and no other service on the cluster can reach it.',
   secrets_supported: "Environment values move into a Secret, copied from the source's encrypted values.",
-  healthcheck_dropped: "The container's healthcheck is not rendered as a probe; add one after cutover or rely on the rollout wait.",
+  healthcheck_dropped: "The container's healthcheck is not rendered as a probe; acknowledge the drop, then add a probe after cutover or rely on the rollout wait.",
   probes_supported: 'No healthcheck to carry over.',
-  resource_limits_dropped: 'Resource limits are not rendered; set them on the Deployment after cutover, or run without them.',
+  resource_limits_dropped: 'Resource limits are not rendered; acknowledge the drop, then set them on the Deployment after cutover or run without them.',
   resources_supported: 'No resource limits to carry over.',
   scheduling_blocked: 'Shares a host namespace or uses a runtime setting a Deployment does not express.',
   scheduling_supported: 'Nothing host-specific to schedule.',
   flag_blocked: "Runs with a host privilege or setting that Pod Security baseline refuses or KyYard does not carry.",
   restart_policy: 'A Deployment always restarts its pod; set the restart policy to always or unless-stopped first.',
-  read_only_rootfs: 'The root filesystem is read-only on the host; the destination runs it writable until you set readOnlyRootFilesystem.',
+  read_only_rootfs: 'The root filesystem is read-only on the host; the destination runs it writable until you set readOnlyRootFilesystem. Acknowledge the drop.',
   flags_supported: 'No privileged flags.',
   inspection_unavailable: 'The host answered no live inspection, so this is unknown; analyze again when the host is online.',
 };
@@ -63,6 +63,9 @@ export const MIGRATION_ERRORS: Record<string, string> = {
 export const ACKNOWLEDGEMENTS: Record<string, string> = {
   network_references: 'I will update every reference to the destination names in the checklist.',
   port_unpublished: 'I accept that a service publishing no port is unreachable from the others.',
+  healthcheck_dropped: 'I accept that the destination runs without the healthcheck.',
+  resource_limits_dropped: 'I accept that the destination runs without the resource limits.',
+  read_only_rootfs: 'I accept that the destination runs with a writable root filesystem.',
 };
 const CLASSES: Record<string, string> = { supported: 'Supported', operator_choice_required: 'Choice required', blocked: 'Blocked' };
 const STATUSES: Record<string, string> = { analyzed: 'Analyzed', destination_created: 'Destination created', validated: 'Validated', cutover_confirmed: 'Cutover confirmed', abandoned: 'Abandoned' };

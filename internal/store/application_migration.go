@@ -76,8 +76,9 @@ type MigrationChoices struct {
 
 // MigrationAcknowledgeable are the analyzer's codes an operator answers by acknowledging them:
 // in an application of several services, the names the others must use and a service no other
-// can reach. The analyzer owns the vocabulary; the store only bounds the request.
-var MigrationAcknowledgeable = []string{"network_references", "port_unpublished"}
+// can reach; and the settings the destination drops (a healthcheck, resource limits, a read-only
+// root). The analyzer owns the vocabulary; the store only bounds the request.
+var MigrationAcknowledgeable = []string{"network_references", "port_unpublished", "healthcheck_dropped", "resource_limits_dropped", "read_only_rootfs"}
 
 // MigrationStart names the cluster and namespace a migration targets.
 type MigrationStart struct {

@@ -144,6 +144,32 @@ func TestAnalyzeServiceReferences(t *testing.T) {
 	}
 }
 
+// A healthcheck, resource limits and a read-only root the destination drops are choices until
+// the operator acknowledges each drop; the acknowledged finding is supported and says so.
+func TestAnalyzeAcknowledgedDrops(t *testing.T) {
+	in := stateful(ackedData)
+	dropping := verified()
+	dropping.Health, dropping.Unsupported, dropping.ConfigurationVerified = "healthy", []string{"resource_limits", "read_only_rootfs"}, false
+	in.Inspections["db"] = dropping
+	for _, acknowledged := range [][]string{acknowledgedAll, append(slices.Clone(acknowledgedAll), "healthcheck_dropped"), append(slices.Clone(acknowledgedAll), "healthcheck_dropped", "resource_limits_dropped")} {
+		in.Choices.Acknowledged = acknowledged
+		if Analyze(in).Ready {
+			t.Fatalf("ready with %v acknowledged", acknowledged)
+		}
+	}
+	in.Choices.Acknowledged = append(slices.Clone(acknowledgedAll), "healthcheck_dropped", "resource_limits_dropped", "read_only_rootfs")
+	r := Analyze(in)
+	db := r.Services[0].Findings
+	for _, want := range []Finding{{AxisProbes, Supported, "healthcheck_dropped", "acknowledged"}, {AxisResources, Supported, "resource_limits_dropped", "resource_limits"}, {AxisFlags, Supported, "read_only_rootfs", "acknowledged"}} {
+		if !slices.Contains(db, want) {
+			t.Errorf("no %+v in %+v", want, db)
+		}
+	}
+	if !r.Ready {
+		t.Fatalf("every drop acknowledged: %+v", r)
+	}
+}
+
 // An agent without container.inspect.health answers no health: the probes axis is unknown, never
 // read as support. An image_config override still says the healthcheck is dropped.
 func TestAnalyzeUnknownHealth(t *testing.T) {

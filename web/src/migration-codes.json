@@ -1,7 +1,10 @@
 {
   "acknowledgeable": [
     "network_references",
-    "port_unpublished"
+    "port_unpublished",
+    "healthcheck_dropped",
+    "resource_limits_dropped",
+    "read_only_rootfs"
   ],
   "assumptions": [
     "volume_size_unknown"

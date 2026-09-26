@@ -92,8 +92,8 @@ type ServiceReport struct {
 }
 
 // Finding's Detail is its code's parameter: a volume name, a mount target, a port as
-// <published>/<protocol>, a restart policy, a code from protocol.UnsupportedCodes or a service's
-// destination name.
+// <published>/<protocol>, a restart policy, a code from protocol.UnsupportedCodes, a service's
+// destination name, or "acknowledged" on an acknowledged drop that has no parameter.
 type Finding struct {
 	Axis   string `json:"axis"`
 	Class  string `json:"class"`
@@ -137,6 +137,15 @@ func Analyze(in Input) Report {
 		}
 		return ChoiceRequired
 	}
+	// drop is a setting the destination does not carry: a choice until acknowledged, then
+	// supported, its detail recording the acknowledgement when it has no parameter of its own.
+	drop := func(axis, code, detail string) Finding {
+		class := acknowledged(code)
+		if class == Supported && detail == "" {
+			detail = "acknowledged"
+		}
+		return Finding{axis, class, code, detail}
+	}
 	for _, s := range in.Spec.Services {
 		inspection, inspected := in.Inspections[s.Name]
 		var f []Finding
@@ -150,7 +159,7 @@ func Analyze(in Input) Report {
 		f = append(f, network...)
 		f = append(f, ports(s, shared, acknowledged)...)
 		f = append(f, Finding{AxisSecrets, Supported, "secrets_supported", ""})
-		f = append(f, inspectedAxes(s, inspection, inspected)...)
+		f = append(f, inspectedAxes(s, inspection, inspected, drop)...)
 		sr := ServiceReport{Name: s.Name, Class: Supported, Findings: f}
 		for _, x := range f {
 			if severity[x.Class] > severity[sr.Class] {
@@ -248,7 +257,7 @@ func ports(s store.ApplicationService, shared bool, acknowledged func(string) st
 // inspectedAxes are probes, resources, scheduling and flags: each needs the inspection, so
 // without one each is inspection_unavailable rather than read as support. The restart policy is
 // the definition's and is judged either way.
-func inspectedAxes(s store.ApplicationService, in protocol.ContainerInspection, inspected bool) []Finding {
+func inspectedAxes(s store.ApplicationService, in protocol.ContainerInspection, inspected bool, drop func(axis, code, detail string) Finding) []Finding {
 	var out []Finding
 	restart := func() {
 		if s.Restart == "no" || s.Restart == "on-failure" {
@@ -265,7 +274,7 @@ func inspectedAxes(s store.ApplicationService, in protocol.ContainerInspection, 
 	// An agent without container.inspect.health answers no health: unknown, not "none".
 	switch {
 	case slices.ContainsFunc(in.Unsupported, func(c string) bool { return probeCodes[c] }) || (in.Health != "" && in.Health != "none"):
-		out = append(out, Finding{AxisProbes, ChoiceRequired, "healthcheck_dropped", ""})
+		out = append(out, drop(AxisProbes, "healthcheck_dropped", ""))
 	case in.Health == "":
 		out = append(out, Finding{AxisProbes, ChoiceRequired, "inspection_unavailable", ""})
 	default:
@@ -276,11 +285,11 @@ func inspectedAxes(s store.ApplicationService, in protocol.ContainerInspection, 
 		switch {
 		case probeCodes[c], networkCodes[c]:
 		case resourceCodes[c]:
-			resources = append(resources, Finding{AxisResources, ChoiceRequired, "resource_limits_dropped", c})
+			resources = append(resources, drop(AxisResources, "resource_limits_dropped", c))
 		case schedulingCodes[c]:
 			scheduling = append(scheduling, Finding{AxisScheduling, Blocked, "scheduling_blocked", c})
 		case c == "read_only_rootfs":
-			flags = append(flags, Finding{AxisFlags, ChoiceRequired, "read_only_rootfs", ""})
+			flags = append(flags, drop(AxisFlags, "read_only_rootfs", ""))
 		default:
 			flags = append(flags, Finding{AxisFlags, Blocked, "flag_blocked", c})
 		}

@@ -486,7 +486,7 @@ checklist; KyYard never stops, changes or removes the source for you:
 **Abandon migration** closes it and keeps a created destination. Claims survive the removal of
 their application; delete one deliberately with `kubectl -n <ns> delete pvc <name>` when its data
 is no longer needed. Health probes, resource limits and a read-only root filesystem are not
-carried over: add them to the Deployment after cutover.
+carried over: acknowledge each drop on the report, then add them to the Deployment after cutover.
 
 The destination application keeps its name after an abandoned migration: a new migration's
 destination creation answers `application_name_taken` until the old destination is removed.

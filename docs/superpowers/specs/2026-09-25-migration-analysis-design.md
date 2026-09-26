@@ -117,16 +117,17 @@ Codes, one sentence each in the UI (closed, tested):
   other services; `operator_choice_required` in an application of more than one service,
   `supported` in a single-service one.
 - secrets: `secrets_supported`.
-- probes: `healthcheck_dropped` (choice required: no probe is rendered; the operator adds one
-  after cutover or accepts the rollout wait) when the inspection's `Unsupported` names
-  `healthcheck` or `image_config`.
-- resources: `resource_limits_dropped` (choice required) when `Unsupported` names
-  `resource_limits` or `ulimits`.
+- probes: `healthcheck_dropped` (choice required: acknowledge the drop; no probe is rendered,
+  the operator adds one after cutover or accepts the rollout wait) when the inspection's
+  `Unsupported` names `image_config` or its health is other than `none`.
+- resources: `resource_limits_dropped` (choice required: acknowledge the drop) when
+  `Unsupported` names `resource_limits` or `ulimits`.
 - scheduling: `scheduling_blocked` with the `Unsupported` code as detail (`pid_mode`,
   `ipc_mode`, `cgroup_parent`, `userns_mode`, `runtime`).
 - flags: `flag_blocked` with the code as detail (`privileged`, `capabilities`, `security_opt`,
   `devices`, `user`); `restart_policy` blocked for `no`/`on-failure`; `read_only_rootfs`
-  supported (rendered as `readOnlyRootFilesystem`).
+  (choice required: acknowledge the drop; the definition cannot carry it, so the destination
+  runs writable).
 
 A service is `blocked` if any finding is; the report's `Ready` is true when no finding is
 `blocked` or `operator_choice_required`. When no inspection is available the probes, resources,
@@ -139,7 +140,11 @@ Amendment (controller, 2026-09-26): `network_references` and `port_unpublished` 
 record, so the operator answers them by acknowledging them. The choices carry
 `acknowledged: [code]`, distinct codes of `store.MigrationAcknowledgeable`
 (`network_references`, `port_unpublished`); an acknowledged finding is `supported` and keeps its
-code and detail, so the destination names stay on the report.
+code and detail, so the destination names stay on the report. Ruling (controller, 2026-09-26):
+`healthcheck_dropped`, `resource_limits_dropped` and `read_only_rootfs` are operator-acknowledged
+drops too and join the set; acknowledged, each is `supported` with detail `acknowledged` (or its
+own parameter, the `Unsupported` code, for `resource_limits_dropped`). A report is Ready once
+every choice is chosen or acknowledged; `inspection_unavailable` is never acknowledgeable.
 
 Checklist (fixed steps, each with a sentence and, where it applies, a command template with
 the real names filled in): label and grant the namespace (`kubectl label namespace …
