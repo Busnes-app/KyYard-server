@@ -146,9 +146,9 @@ func TestKubernetesApplicationOverTheClusterAgent(t *testing.T) {
 	if err := json.Unmarshal([]byte(h.do(t, "GET", app+"/deployments/"+planned.ID, "", 200)), &settled); err != nil || settled.State != protocol.OutcomeSucceeded || settled.Result.Services[0].Name != "shop-web" || strings.Contains(h.do(t, "GET", app+"/deployments/"+planned.ID, "", 200), canary) {
 		t.Fatalf("settled %+v %v", settled, err)
 	}
-	// A cluster agent cannot report container health, so the apply is not validated.
+	// This cluster agent does not advertise kubernetes.inspect, so the apply is not validated.
 	api.ValidationTickForTest(h.s, time.Now().Add(store.ValidationGrace+time.Minute))
-	if err := json.Unmarshal([]byte(h.do(t, "GET", app+"/deployments/"+planned.ID, "", 200)), &settled); err != nil || settled.Validation == nil || settled.Validation.Verdict != store.VerdictUnverifiable {
+	if err := json.Unmarshal([]byte(h.do(t, "GET", app+"/deployments/"+planned.ID, "", 200)), &settled); err != nil || settled.Validation == nil || settled.Validation.Verdict != store.VerdictUnverifiable || settled.Validation.Detail != store.ValidationDetailNoInspect {
 		t.Fatalf("validation %+v %v", settled.Validation, err)
 	}
 

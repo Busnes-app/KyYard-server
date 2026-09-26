@@ -137,6 +137,9 @@ func (s *Server) validate(ctx context.Context, p store.PendingValidation, now ti
 	// Past the window by a further grace with no complete observation: give up.
 	late := !now.Before(p.ObserveUntil.Add(store.ValidationGrace))
 	switch {
+	case !p.Health && p.Kubernetes:
+		s.finishValidation(ctx, p, store.VerdictUnverifiable, store.ValidationDetailNoInspect)
+		return
 	case !p.Health:
 		s.finishValidation(ctx, p, store.VerdictUnverifiable, store.ValidationDetailNoHealth)
 		return
@@ -183,15 +186,19 @@ func (s *Server) validate(ctx context.Context, p store.PendingValidation, now ti
 }
 
 // observeServices inspects every settled container the store has not already placed as gone or
-// replaced, one at a time under the plan's inspection budget. invalid: an answer failed validation.
+// replaced, or a cluster service's settled Deployment, one at a time under the plan's inspection
+// budget. invalid: an answer failed validation.
 func (s *Server) observeServices(ctx context.Context, p store.PendingValidation) (obs []store.Observation, invalid bool) {
 	ctx, cancel := context.WithTimeout(ctx, planInspectionBudget)
 	defer cancel()
 	for _, svc := range p.Services {
-		o := store.Observation{Service: svc.Service, Presence: svc.Presence}
+		o := store.Observation{Service: svc.Service, Presence: svc.Presence, Generation: svc.Generation}
 		// A spent budget sends no expired grant: the service stays unobserved this poll.
 		if (svc.Presence == store.PresencePresent || svc.Presence == store.PresenceUnknown) && ctx.Err() == nil {
 			target := protocol.InspectionTarget{ContainerID: svc.ContainerID, ImageID: svc.ImageID, CreatedUnix: svc.CreatedUnix}
+			if svc.Kind == protocol.KindDeployment {
+				target = protocol.InspectionTarget{Workload: protocol.WorkloadRef{Namespace: svc.Namespace, Name: svc.Name, UID: svc.UID}}
+			}
 			in, err := s.observe(ctx, p.EndpointID, validationActor, p.OrganizationID, target, true, func() bool { return true })
 			if errors.Is(err, errInspectionInvalid) {
 				return nil, true

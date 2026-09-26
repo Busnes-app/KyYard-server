@@ -73,6 +73,7 @@ const (
 	ValidationDetailUnobserved = "the host could not be observed"
 	ValidationDetailServerDown = "the server was not running during the window"
 	ValidationDetailNoHealth   = "the agent cannot report container health"
+	ValidationDetailNoInspect  = "the cluster agent cannot report workload status; upgrade the agent image"
 	ValidationDetailInvalid    = "an inspection failed validation"
 	ValidationDetailReleased   = "the application was released"
 
@@ -127,10 +128,12 @@ type Validation struct {
 	FinishedAt    *time.Time          `json:"finished_at"`
 }
 
-// ServiceBaseline is one service at the first observation after grace.
+// ServiceBaseline is one service at the first observation after grace. For a cluster,
+// RestartCount is the sum over its pods' containers and PodUIDs are the pods then running.
 type ServiceBaseline struct {
-	ContainerID  string `json:"container_id"`
-	RestartCount int    `json:"restart_count"`
+	ContainerID  string   `json:"container_id"`
+	RestartCount int      `json:"restart_count"`
+	PodUIDs      []string `json:"pod_uids,omitempty"`
 }
 
 // ObservedService is a settled identity and where it stands now.
@@ -145,8 +148,9 @@ type PendingValidation struct {
 	OrganizationID, EnvironmentID, ApplicationID, InstanceID, EndpointID string
 	Baseline                                                             map[string]ServiceBaseline
 	Services                                                             []ObservedService
-	// Health: the endpoint's agent advertises container.inspect.health.
-	Health bool
+	// Health: the endpoint's agent can report what validation reads, container.inspect.health
+	// on Docker and kubernetes.inspect on a cluster (Kubernetes).
+	Health, Kubernetes bool
 	// Released: the instance is gone.
 	Released bool
 	// PolicyID and CreatedBy name the automated run's policy; empty once it is deleted.
@@ -154,10 +158,12 @@ type PendingValidation struct {
 }
 
 // Observation is one service at one poll: its presence and, when one succeeded, its inspection.
+// Generation is a cluster service's settled Deployment generation.
 type Observation struct {
 	Service    string
 	Presence   string
 	Inspection *protocol.ContainerInspection
+	Generation int64
 }
 
 // unobserved marks a service one poll could not see.
@@ -172,13 +178,16 @@ var verdictRank = map[string]int{VerdictUnhealthy: 1, VerdictRestarting: 2, Verd
 func Judge(obs []Observation, baseline map[string]ServiceBaseline, final bool) (verdict, detail string) {
 	complete := true
 	for _, o := range obs {
-		v := judgeService(o, baseline[o.Service], final)
+		v, reason := judgeService(o, baseline[o.Service], final)
 		if v == unobserved {
 			complete = false
 			continue
 		}
 		if verdictRank[v] > verdictRank[verdict] {
 			verdict, detail = v, o.Service
+			if reason != "" {
+				detail += ":" + reason
+			}
 		}
 	}
 	if verdict == "" && final && complete {
@@ -187,33 +196,101 @@ func Judge(obs []Observation, baseline map[string]ServiceBaseline, final bool) (
 	return verdict, detail
 }
 
-func judgeService(o Observation, b ServiceBaseline, final bool) string {
+// judgeService is one service's verdict at one poll and, for a cluster service failed by a
+// waiting container, that container's reason.
+func judgeService(o Observation, b ServiceBaseline, final bool) (string, string) {
+	if o.Inspection != nil && o.Inspection.Workload != nil {
+		return judgeWorkload(o, b, final)
+	}
 	switch o.Presence {
 	case PresenceReplaced:
-		return VerdictChanged
+		return VerdictChanged, ""
 	case PresenceGone:
-		return VerdictExited
+		return VerdictExited, ""
 	}
 	in := o.Inspection
 	switch {
 	case in == nil:
-		return unobserved
+		return unobserved, ""
 	case in.State != "running" && in.State != "restarting":
-		return VerdictExited
+		return VerdictExited, ""
 	case in.State == "restarting" || in.RestartCount > b.RestartCount:
-		return VerdictRestarting
+		return VerdictRestarting, ""
 	case in.Health == "unhealthy", in.Health == "starting" && final:
-		return VerdictUnhealthy
+		return VerdictUnhealthy, ""
 	}
-	return ""
+	return "", ""
+}
+
+// failingWaits are the waiting reasons that fail a cluster service at once, naming the reason in
+// the detail as <service>:<reason>: the pod cannot start as applied, and waiting will not change it.
+var failingWaits = map[string]bool{"CrashLoopBackOff": true, "ImagePullBackOff": true, "ErrImagePull": true, "CreateContainerConfigError": true, "CreateContainerError": true}
+
+// judgeWorkload judges a cluster service from its Deployment's status: changed when the
+// Deployment is gone, recreated, edited past the settled generation, or its pods were all
+// replaced without a restart; then exited, restarting and unhealthy as for a container, where a
+// failing waiting reason is unhealthy at once and any shortfall only at the window's end.
+func judgeWorkload(o Observation, b ServiceBaseline, final bool) (string, string) {
+	w := o.Inspection.Workload
+	if w.Missing || w.UID != o.Inspection.Target.Workload.UID || w.Generation > o.Generation {
+		return VerdictChanged, ""
+	}
+	restarts, pods := workloadPods(w)
+	kept := slices.ContainsFunc(pods, func(uid string) bool { return slices.Contains(b.PodUIDs, uid) })
+	if len(b.PodUIDs) > 0 && len(pods) > 0 && !kept && restarts <= b.RestartCount {
+		return VerdictChanged, ""
+	}
+	waiting, terminated, reason := false, false, ""
+	for _, p := range w.Pods {
+		for _, c := range p.Containers {
+			switch c.State {
+			case "waiting":
+				waiting = true
+				if reason == "" && failingWaits[c.Reason] {
+					reason = c.Reason
+				}
+			case "terminated":
+				terminated = true
+			}
+		}
+	}
+	switch {
+	case terminated && !waiting && w.Available < w.Desired:
+		return VerdictExited, ""
+	case restarts > b.RestartCount:
+		return VerdictRestarting, ""
+	case reason != "":
+		return VerdictUnhealthy, reason
+	case final && (w.ObservedGeneration < w.Generation || w.Available < w.Desired || w.Ready < w.Desired || waiting):
+		return VerdictUnhealthy, ""
+	}
+	return "", ""
+}
+
+// workloadPods is the restart count summed over every pod's containers, and the pods' UIDs.
+func workloadPods(w *protocol.WorkloadStatus) (int, []string) {
+	restarts, uids := 0, []string{}
+	for _, p := range w.Pods {
+		uids = append(uids, p.UID)
+		for _, c := range p.Containers {
+			restarts += int(c.RestartCount)
+		}
+	}
+	return restarts, uids
 }
 
 // BaselineOf is the baseline a first observation gives, false unless every service was either
-// inspected or is known gone or replaced.
+// inspected or is known gone or replaced. A cluster service whose Deployment is already missing,
+// recreated or edited gives none: its next poll judges it changed.
 func BaselineOf(obs []Observation) (map[string]ServiceBaseline, bool) {
 	out := map[string]ServiceBaseline{}
 	for _, o := range obs {
 		switch {
+		case o.Inspection != nil && o.Inspection.Workload != nil:
+			if w := o.Inspection.Workload; !w.Missing && w.UID == o.Inspection.Target.Workload.UID && w.Generation <= o.Generation {
+				restarts, pods := workloadPods(w)
+				out[o.Service] = ServiceBaseline{RestartCount: restarts, PodUIDs: pods}
+			}
 		case o.Inspection != nil:
 			out[o.Service] = ServiceBaseline{ContainerID: o.Inspection.Target.ContainerID, RestartCount: o.Inspection.RestartCount}
 		case o.Presence != PresenceGone && o.Presence != PresenceReplaced:
@@ -348,9 +425,11 @@ func (t *tenancyStore) latestInventory(ctx context.Context, endpoint string) (*i
 
 // PendingValidations lists each organization's PendingValidationsPerOrg oldest validations that are
 // not done or owe a rollback decision, oldest first, each with its settled services
-// placed against the instance's resources and the endpoint's latest inventory.
+// placed against the instance's resources and the endpoint's latest inventory; a cluster service is
+// placed unknown, for its status read to decide. Health counts container.inspect.health or
+// kubernetes.inspect: CapabilitiesFit keeps each to its own runtime.
 func (t *tenancyStore) PendingValidations(ctx context.Context) ([]PendingValidation, error) {
-	rows, err := t.store.db.QueryContext(ctx, t.store.rebind(`SELECT `+validationColumns+`,v.organization_id,v.environment_id,v.application_id,v.instance_id,v.endpoint_id,v.baseline,d.result,COALESCE(p.id,''),COALESCE(p.created_by,''),(SELECT COUNT(*) FROM application_instances i WHERE i.id=v.instance_id),(SELECT COUNT(*) FROM endpoint_capabilities c WHERE c.endpoint_id=v.endpoint_id AND c.capability=?) FROM (SELECT v.deployment_id AS id,ROW_NUMBER() OVER (PARTITION BY v.organization_id ORDER BY v.started_at,v.deployment_id) AS n FROM deployment_validations v WHERE v.phase<>'done' OR `+awaitingRollback+`) k JOIN deployment_validations v ON v.deployment_id=k.id JOIN deployments d ON d.id=v.deployment_id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id LEFT JOIN policy_runs r ON r.id=v.policy_run_id LEFT JOIN update_policies p ON p.id=r.policy_id WHERE k.n<=? ORDER BY v.started_at,v.deployment_id LIMIT ?`), protocol.CapabilityContainerInspectHealth, PendingValidationsPerOrg, MaxPendingValidations)
+	rows, err := t.store.db.QueryContext(ctx, t.store.rebind(`SELECT `+validationColumns+`,v.organization_id,v.environment_id,v.application_id,v.instance_id,v.endpoint_id,v.baseline,d.result,COALESCE(p.id,''),COALESCE(p.created_by,''),(SELECT COUNT(*) FROM application_instances i WHERE i.id=v.instance_id),(SELECT COUNT(*) FROM endpoint_capabilities c WHERE c.endpoint_id=v.endpoint_id AND c.capability IN (?,?)),COALESCE((SELECT e.runtime FROM endpoints e WHERE e.id=v.endpoint_id),'') FROM (SELECT v.deployment_id AS id,ROW_NUMBER() OVER (PARTITION BY v.organization_id ORDER BY v.started_at,v.deployment_id) AS n FROM deployment_validations v WHERE v.phase<>'done' OR `+awaitingRollback+`) k JOIN deployment_validations v ON v.deployment_id=k.id JOIN deployments d ON d.id=v.deployment_id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id LEFT JOIN policy_runs r ON r.id=v.policy_run_id LEFT JOIN update_policies p ON p.id=r.policy_id WHERE k.n<=? ORDER BY v.started_at,v.deployment_id LIMIT ?`), protocol.CapabilityContainerInspectHealth, protocol.CapabilityKubernetesInspect, PendingValidationsPerOrg, MaxPendingValidations)
 	if err != nil {
 		return nil, err
 	}
@@ -358,14 +437,14 @@ func (t *tenancyStore) PendingValidations(ctx context.Context) ([]PendingValidat
 	for rows.Next() {
 		var s validationScan
 		var p PendingValidation
-		var baseline, result string
+		var baseline, result, runtime string
 		var instances, health int
-		if err := rows.Scan(append(s.dest(), &p.OrganizationID, &p.EnvironmentID, &p.ApplicationID, &p.InstanceID, &p.EndpointID, &baseline, &result, &p.PolicyID, &p.CreatedBy, &instances, &health)...); err != nil {
+		if err := rows.Scan(append(s.dest(), &p.OrganizationID, &p.EnvironmentID, &p.ApplicationID, &p.InstanceID, &p.EndpointID, &baseline, &result, &p.PolicyID, &p.CreatedBy, &instances, &health, &runtime)...); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		p.Validation = *s.validation()
-		p.Released, p.Health = instances == 0, health > 0
+		p.Released, p.Health, p.Kubernetes = instances == 0, health > 0, runtime == protocol.RuntimeKubernetes
 		var stored storedDeploymentResult
 		if json.Unmarshal([]byte(result), &stored) != nil || (baseline != "" && json.Unmarshal([]byte(baseline), &p.Baseline) != nil) {
 			rows.Close()
@@ -401,6 +480,11 @@ func (t *tenancyStore) PendingValidations(ctx context.Context) ([]PendingValidat
 			snap = &inv.snapshot
 		}
 		for j := range p.Services {
+			// A cluster settle binds no resource: the Deployment's status read decides.
+			if p.Services[j].Kind == protocol.KindDeployment {
+				p.Services[j].Presence = PresenceUnknown
+				continue
+			}
 			p.Services[j].Presence = presence(p.Services[j].DeploymentIdentity, bound, snap)
 		}
 	}

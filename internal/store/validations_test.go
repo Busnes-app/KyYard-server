@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -336,7 +337,7 @@ func TestJudge(t *testing.T) {
 func TestBaselineOf(t *testing.T) {
 	in := &protocol.ContainerInspection{Target: protocol.InspectionTarget{ContainerID: updatedID}, State: "running", Health: "healthy", RestartCount: 4}
 	got, ok := BaselineOf([]Observation{{Service: "web", Presence: PresencePresent, Inspection: in}, {Service: "db", Presence: PresenceGone}})
-	if !ok || len(got) != 1 || got["web"] != (ServiceBaseline{ContainerID: updatedID, RestartCount: 4}) {
+	if !ok || len(got) != 1 || !reflect.DeepEqual(got["web"], ServiceBaseline{ContainerID: updatedID, RestartCount: 4}) {
 		t.Fatalf("baseline: %+v %v", got, ok)
 	}
 	if _, ok := BaselineOf([]Observation{{Service: "web", Presence: PresenceUnknown}}); ok {
@@ -485,7 +486,7 @@ func TestBeginObservation(t *testing.T) {
 		t.Fatalf("phase: %+v %v", got.Validation, err)
 	}
 	pending, err := ts.PendingValidations(ctx)
-	if err != nil || len(pending) != 1 || pending[0].Baseline["web"] != baseline["web"] {
+	if err != nil || len(pending) != 1 || !reflect.DeepEqual(pending[0].Baseline["web"], baseline["web"]) {
 		t.Fatalf("baseline: %+v %v", pending, err)
 	}
 }
