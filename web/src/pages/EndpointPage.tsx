@@ -29,12 +29,15 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const ownership = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
   const samples = useTenantResource<Sample[]>(`${base}/samples`);
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
-  // The agent reports on its own schedule; poll while the page is mounted so the status line
-  // and usage column reflect newer generations without an operator clicking Refresh.
+  // The agent reports on its own schedule; poll while the page is mounted and visible so the
+  // status line and usage column follow newer generations. A denial or not-found stops the poll:
+  // every denied read writes an audit row.
+  const pollStopped = [inventory.state, samples.state].some((s) => s === 'denied' || s === 'notfound');
   useEffect(() => {
-    const t = window.setInterval(() => { inventory.reload(); samples.reload(); }, 30_000);
+    if (pollStopped) return;
+    const t = window.setInterval(() => { if (!document.hidden) { inventory.reload(); samples.reload(); } }, 30_000);
     return () => window.clearInterval(t);
-  }, [inventory.reload, samples.reload]);
+  }, [pollStopped, inventory.reload, samples.reload]);
   const role = (Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role;
   const exec = canExec(role);
   const latest = new Map((Array.isArray(samples.data) ? samples.data : []).map((s) => [s.container_id, s]));
@@ -94,6 +97,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
         <>
           <p role="status" style={{ color: stale ? 'var(--danger)' : 'var(--ink)', fontSize: 13 }}>
             Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
+            {inventory.refreshFailed || samples.refreshFailed ? ' Last refresh failed; showing the previous report.' : ''}
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
           {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
@@ -104,13 +108,13 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
           {shown === 'containers' && <div id="endpoint-containers" tabIndex={-1}>
           <div className="ky-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{visibleContainers.length} containers</span></div>
           {selectedProject !== null && <p>Showing containers for <strong style={{ overflowWrap: 'anywhere' }}><bdi>{selectedProject}</bdi></strong>. <button className="btn-secondary" onClick={() => setProjectFilter(null)}>Show all containers</button></p>}
-          <ResourceTable key={JSON.stringify([base, search, selectedProject])} title="Containers" rows={visibleContainers} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'Status', 'Usage', 'Actions']} render={(c) => [<div className="ky-resource-name"><strong>{displayName(c.name)}</strong><span title={c.image}>{displayName(c.image)}</span><ContainerPorts ports={c.ports} />{c.compose_project && <small>{displayName(c.compose_project)}</small>}</div>, <span className={`badge ${c.state === 'running' ? 'badge-success' : c.state === 'exited' || c.state === 'dead' ? 'badge-danger' : 'badge-secondary'}`} title={c.status}>{displayName(c.state)}</span>, usage(c), <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onRefresh={commands.reload} canExec={exec} />]} />
+          <ResourceTable key={JSON.stringify([base, search, selectedProject])} title="Containers" rows={visibleContainers} rowKey={(c) => c.id} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'Status', 'Usage', 'Actions']} render={(c) => [<div className="ky-resource-name"><strong>{displayName(c.name)}</strong><span title={c.image}>{displayName(c.image)}</span><ContainerPorts ports={c.ports} />{c.compose_project && <small>{displayName(c.compose_project)}</small>}</div>, <span className={`badge ${c.state === 'running' ? 'badge-success' : c.state === 'exited' || c.state === 'dead' ? 'badge-danger' : 'badge-secondary'}`} title={c.status}>{displayName(c.state)}</span>, usage(c), <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onRefresh={commands.reload} canExec={exec} />]} />
           </div>}
           {shown === 'images' && <><section className="panel"><h2>Pull an image</h2><ImageControls key={base} kind="pull" base={base} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onActivity={commands.reload} /><p>Use an explicit tag or digest. A pull downloads an image; it does not update running containers.</p></section>
-          <ResourceTable title="Images" rows={inv.snapshot.images} empty="No images on this host." head={['Tags', 'Size', 'ID', 'Actions']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), <span title={i.id}>{i.id.slice(0, 19)}</span>, <ImageControls key={`${base}/${i.id}`} kind="remove" imageID={i.id} base={base} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onActivity={commands.reload} />]} />
+          <ResourceTable title="Images" rows={inv.snapshot.images} rowKey={(i) => i.id} empty="No images on this host." head={['Tags', 'Size', 'ID', 'Actions']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), <span title={i.id}>{i.id.slice(0, 19)}</span>, <ImageControls key={`${base}/${i.id}`} kind="remove" imageID={i.id} base={base} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onActivity={commands.reload} />]} />
           </>}
-          {shown === 'networks' && <ResourceTable title="Networks" rows={inv.snapshot.networks} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />}
-          {shown === 'volumes' && <ResourceTable title="Volumes" rows={inv.snapshot.volumes} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [displayName(v.name), displayName(v.driver), displayName(v.mountpoint)]} />}
+          {shown === 'networks' && <ResourceTable title="Networks" rows={inv.snapshot.networks} rowKey={(n) => n.id} empty="No networks." head={['Name', 'Driver', 'Scope']} render={(n) => [displayName(n.name), displayName(n.driver), displayName(n.scope)]} />}
+          {shown === 'volumes' && <ResourceTable title="Volumes" rows={inv.snapshot.volumes} rowKey={(v) => v.name} empty="No volumes." head={['Name', 'Driver', 'Mountpoint']} render={(v) => [displayName(v.name), displayName(v.driver), displayName(v.mountpoint)]} />}
         </>
       )}
     </div>

@@ -81,33 +81,46 @@ export function stateFor(status: number): LoadState {
 }
 
 // refreshKey forces a re-read when context changes without the URL changing.
-export function useTenantResource<T>(url: string, refreshKey = ''): { state: LoadState; data: T | null; reload: () => void } {
+export function useTenantResource<T>(url: string, refreshKey = ''): { state: LoadState; data: T | null; refreshFailed: boolean; reload: () => void } {
   const [state, setState] = useState<LoadState>('loading');
   const [data, setData] = useState<T | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const [tick, setTick] = useState(0);
   // Only a url/refreshKey change means "new resource": reset to loading and drop stale data.
-  // A tick (reload() or a poll) refetches in place, keeping the current data and status on
-  // screen until the new response lands, so a mounted table does not flicker or unmount.
+  // A tick (reload() or a poll) refetches in place. With data on screen, a server error or
+  // network failure keeps it 'ready' and sets refreshFailed, so a mounted table (and an open
+  // terminal in it) survives; a denial or not-found drops the data.
   const identity = `${url}\u0000${refreshKey}`;
   const lastIdentity = useRef<string | null>(null);
+  const hasData = useRef(false);
   useEffect(() => {
     let live = true;
     if (lastIdentity.current !== identity) {
       lastIdentity.current = identity;
+      hasData.current = false;
       setState('loading');
       setData(null);
+      setRefreshFailed(false);
     }
+    const failed = (next: LoadState) => {
+      if (hasData.current && (next === 'error' || next === 'offline')) { setRefreshFailed(true); return; }
+      hasData.current = false;
+      setData(null);
+      setState(next);
+    };
     fetch(url).then(async (resp) => {
       if (!live) return;
-      if (!resp.ok) { setState(stateFor(resp.status)); return; }
+      if (!resp.ok) { failed(stateFor(resp.status)); return; }
       const payload = await resp.json() as T;
       if (!live) return;
+      hasData.current = true;
       setData(payload);
       setState('ready');
-    }).catch(() => { if (live) setState('offline'); });
+      setRefreshFailed(false);
+    }).catch(() => { if (live) failed('offline'); });
     return () => { live = false; };
   }, [url, refreshKey, tick]);
-  return { state, data, reload: useCallback(() => setTick((n) => n + 1), []) };
+  return { state, data, refreshFailed, reload: useCallback(() => setTick((n) => n + 1), []) };
 }
 
 // Platform administration (`/api/admin/*`), platform admin role only.

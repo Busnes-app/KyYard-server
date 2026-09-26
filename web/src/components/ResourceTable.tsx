@@ -2,8 +2,9 @@ import React from 'react';
 import { usePagination } from './Pagination';
 import { EmptyNotice } from './StateNotice';
 
-// A titled, paged resource table whose rows become labelled cards at mobile widths.
-export function ResourceTable<T>({ title, rows, empty, head, render }: { title: string; rows: T[]; empty: string; head: string[]; render: (r: T) => React.ReactNode[] }) {
+// A titled, paged resource table whose rows become labelled cards at mobile widths. rowKey keeps a
+// row's state (an open terminal or log viewer) when a refresh adds or removes rows ahead of it.
+export function ResourceTable<T>({ title, rows, empty, head, render, rowKey }: { title: string; rows: T[]; empty: string; head: string[]; render: (r: T) => React.ReactNode[]; rowKey?: (r: T) => string }) {
   const pagination = usePagination(rows, title);
   return (
     <section className="panel">
@@ -13,7 +14,7 @@ export function ResourceTable<T>({ title, rows, empty, head, render }: { title: 
         <div style={{ overflowX: 'auto' }}>
           <table className="ky-table ky-responsive-table">
             <thead><tr>{head.map((h) => <th key={h}>{h}</th>)}</tr></thead>
-            <tbody>{pagination.rows.map((r, i) => <tr key={i}>{render(r).map((cell, j) => <td key={j} data-label={head[j]}>{cell}</td>)}</tr>)}</tbody>
+            <tbody>{pagination.rows.map((r, i) => <tr key={rowKey ? rowKey(r) : i}>{render(r).map((cell, j) => <td key={j} data-label={head[j]}>{cell}</td>)}</tr>)}</tbody>
           </table>
         </div>
       )}

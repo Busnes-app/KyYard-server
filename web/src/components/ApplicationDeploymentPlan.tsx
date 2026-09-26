@@ -325,9 +325,8 @@ function PlanView({ base, instanceID, latestRevision, instance, onChanged }: Pro
   // interval (and its deadline math) on every unrelated parent render.
   const onChangedRef = useRef(onChanged);
   useEffect(() => { onChangedRef.current = onChanged; });
-  // Polls the row directly (never through deployments.reload(), which resets that resource to
-  // 'loading'/null and would unmount this whole section every tick). A held row keeps the panel
-  // mounted; only the explicit "Refresh" buttons touch the shared deployments resource.
+  // Polls the row directly, not through deployments.reload(): this loop owns its failure count,
+  // deadline and pause notice. Only the explicit "Refresh" buttons touch the shared resource.
   useEffect(() => {
     setPollPaused(false);
     if (!current || current.state !== 'applying') return;
