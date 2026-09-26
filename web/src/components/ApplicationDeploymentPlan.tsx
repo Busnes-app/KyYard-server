@@ -15,7 +15,7 @@ type DeployStep = { service: string; step: string; outcome: string; code?: strin
 // A Kubernetes identity names a Deployment (kind, namespace, name, uid) in place of a container.
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number; kind?: string; namespace?: string; name?: string; uid?: string };
 type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
-type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[]; namespace?: string; claims?: Claim[] }; validation?: Validation; migration_id?: string };
+type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[]; namespace?: string; claims?: Claim[] }; validation?: Validation; migration_id?: string; retained_claims?: string[] };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
 type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance; refreshKey?: number };
 
@@ -114,8 +114,11 @@ export function stepText(s: { step?: string; outcome?: string; code?: string; de
     case 'pod_security':
       return Object.hasOwn(POD_SECURITY, detail) ? POD_SECURITY[detail] ?? text : text;
     case 'rollout_timeout': {
-      const reasons = detail.split(',').filter((r) => ROLLOUT.test(r)).map((r) => r.replace('=', ' '));
-      return reasons.length ? `${text} (${reasons.join(', ')}).` : `${text}.`;
+      const parts = detail.split(',');
+      const reasons = parts.filter((r) => ROLLOUT.test(r)).map((r) => r.replace('=', ' '));
+      const claims = [...new Set(parts.filter((r) => Object.hasOwn(CLAIM_PHASES, r)))].map((r) => CLAIM_PHASES[r]);
+      const base = reasons.length ? `${text} (${reasons.join(', ')})` : text;
+      return claims.length ? `${base}; ${claims.join('; ')}.` : `${base}.`;
     }
   }
   return text;
@@ -125,6 +128,11 @@ const POD_SECURITY: Record<string, string> = {
   missing: 'The namespace has no Pod Security enforce label; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.',
   privileged: 'The namespace enforces Pod Security privileged, which lets a pod run privileged; set pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.',
   invalid: "The namespace's Pod Security enforce label is not a level Kubernetes knows; set pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.",
+};
+// A rollout_timeout's claim reasons: a planned claim the cluster has not bound.
+const CLAIM_PHASES: Record<string, string> = {
+  'claim=Pending': 'a volume claim is still Pending: no StorageClass provisioned it',
+  'claim=Lost': 'a volume claim is Lost: the volume behind it is gone',
 };
 // The closed detail shapes of the Kubernetes codes: Kind/name, and condition=Reason words.
 const OBJECT = /^(Deployment|Service|ConfigMap|Secret|PersistentVolumeClaim)\/[a-z0-9][-a-z0-9.]{0,252}$/;
@@ -206,8 +214,22 @@ function ResultSection({ current }: { current: Deployment }) {
         <td data-label="Outcome">{s.outcome}</td>
         <td data-label="Detail">{stepText(s)}</td>
       </tr>)}</tbody></table>
+      <KeptClaims d={current} />
       {current.result.services.length > 0 && <ul className="ky-list">{current.result.services.map(s => <li key={s.service} style={{ overflowWrap: 'anywhere' }}><strong>{s.service}</strong><br />{s.kind === 'Deployment' ? <><span>Deployment {s.namespace}/{s.name}</span><br /><span>{s.uid}</span></> : <><span>{s.container_id}</span><br /><span>{s.image_id}</span></>}</li>)}</ul>}
     </>}
+  </>;
+}
+// KeptClaims lists what a cluster removal left on the cluster: the claims the server can name, and
+// how many more the agent reported, with the command that lists them all.
+function KeptClaims({ d }: { d: Deployment }) {
+  if (d.kind !== 'remove' || !d.plan.namespace || !d.result) return null;
+  const kept = d.result.steps.filter(s => s.step === 'volume' && s.outcome === 'skipped' && s.detail === 'retained').length;
+  const named = d.retained_claims ?? [];
+  if (kept === 0) return null;
+  return <>
+    <h4>Kept on the cluster</h4>
+    {named.length > 0 && <ul className="ky-list">{named.map(c => <li key={c}>PersistentVolumeClaim {d.plan.namespace}/{c}</li>)}</ul>}
+    {kept > named.length && <p>{kept - named.length} more kept claim(s) are labelled for this instance: <code>kubectl -n {d.plan.namespace} get pvc -l kyyard.busnes.app/instance={d.instance_id}</code></p>}
   </>;
 }
 function PlanDetails({ d }: { d: Deployment }) {
