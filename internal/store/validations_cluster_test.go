@@ -54,7 +54,7 @@ func pod(uid, state, reason string, restarts int32) protocol.PodStatus {
 
 // Every cluster verdict, from a status read against the baseline and the settled generation.
 func TestJudgeCluster(t *testing.T) {
-	base := map[string]ServiceBaseline{"web": {RestartCount: 2, PodUIDs: []string{podA}}}
+	base := map[string]ServiceBaseline{"web": {PodRestarts: map[string]int{podA: 2}}}
 	web := func(in *protocol.ContainerInspection) []Observation {
 		return []Observation{{Service: "web", Presence: PresenceUnknown, Inspection: in, Generation: 1}}
 	}
@@ -83,6 +83,8 @@ func TestJudgeCluster(t *testing.T) {
 		{"terminated while a container waits goes on", web(workload(0, pod(podA, "terminated", "Error", 2), pod(podB, "waiting", "ContainerCreating", 0))), false, "", ""},
 		{"crash loop at once", web(workload(0, pod(podA, "waiting", "CrashLoopBackOff", 2))), false, VerdictUnhealthy, "web:CrashLoopBackOff"},
 		{"image pull back-off at once", web(workload(0, pod(podA, "waiting", "ImagePullBackOff", 2))), false, VerdictUnhealthy, "web:ImagePullBackOff"},
+		{"image pull error at once", web(workload(0, pod(podA, "waiting", "ErrImagePull", 2))), false, VerdictUnhealthy, "web:ErrImagePull"},
+		{"create error at once", web(workload(0, pod(podA, "waiting", "CreateContainerError", 2))), false, VerdictUnhealthy, "web:CreateContainerError"},
 		{"config error at once", web(workload(0, pod(podA, "waiting", "CreateContainerConfigError", 2))), false, VerdictUnhealthy, "web:CreateContainerConfigError"},
 		{"creating goes on", web(workload(0, pod(podA, "waiting", "ContainerCreating", 2))), false, "", ""},
 		{"creating at the end", web(workload(0, pod(podA, "waiting", "ContainerCreating", 2))), true, VerdictUnhealthy, "web"},
@@ -98,14 +100,44 @@ func TestJudgeCluster(t *testing.T) {
 			t.Errorf("%s: %q %q, want %q %q", tc.name, v, d, tc.verdict, tc.detail)
 		}
 	}
+	// Restarts count per pod against its own baseline, so a pod leaving the list hides none.
+	api := func(in *protocol.ContainerInspection) Observation {
+		return Observation{Service: "api", Presence: PresenceUnknown, Inspection: in, Generation: 1}
+	}
+	for _, tc := range []struct {
+		name            string
+		base            map[string]ServiceBaseline
+		obs             []Observation
+		verdict, detail string
+	}{
+		{"a new pod restarting after an old one left", map[string]ServiceBaseline{"web": {PodRestarts: map[string]int{podA: 4, podB: 0}}}, web(workload(1, pod(podB, "running", "", 3))), VerdictRestarting, "web"},
+		{"a replacement restarting after an evicted pod went", base, web(workload(1, pod(podB, "running", "", 1))), VerdictRestarting, "web"},
+		{"a restart outranks a crash loop, without its reason", map[string]ServiceBaseline{"web": base["web"], "api": {PodRestarts: map[string]int{podB: 0}}},
+			append(web(workload(1, pod(podA, "running", "", 3))), api(workload(0, pod(podB, "waiting", "CrashLoopBackOff", 0)))), VerdictRestarting, "web"},
+		{"a crash loop decides with its reason", map[string]ServiceBaseline{"web": base["web"], "api": {PodRestarts: map[string]int{podB: 0}}},
+			append(web(up()), api(workload(0, pod(podB, "waiting", "CrashLoopBackOff", 0)))), VerdictUnhealthy, "api:CrashLoopBackOff"},
+	} {
+		if v, d := Judge(tc.obs, tc.base, false); v != tc.verdict || d != tc.detail {
+			t.Errorf("%s: %q %q, want %q %q", tc.name, v, d, tc.verdict, tc.detail)
+		}
+	}
 }
 
-// A cluster baseline sums the restarts over every pod and keeps the pods' UIDs; a Deployment
-// already missing, recreated or edited gives none, so its first poll judges it changed.
+// A cluster baseline keeps each pod's restarts by UID; a Deployment already missing, recreated
+// or edited gives none, so its first poll judges it changed; one wanting pods but listing none
+// gives no baseline yet.
 func TestBaselineOfACluster(t *testing.T) {
 	got, ok := BaselineOf([]Observation{{Service: "web", Presence: PresenceUnknown, Generation: 1, Inspection: workload(1, pod(podA, "running", "", 2), pod(podB, "running", "", 3))}})
-	if !ok || !reflect.DeepEqual(got["web"], ServiceBaseline{RestartCount: 5, PodUIDs: []string{podA, podB}}) {
+	if !ok || !reflect.DeepEqual(got["web"], ServiceBaseline{PodRestarts: map[string]int{podA: 2, podB: 3}}) {
 		t.Fatalf("baseline: %+v %v", got, ok)
+	}
+	if got, ok := BaselineOf([]Observation{{Service: "web", Presence: PresenceUnknown, Generation: 1, Inspection: workload(0)}}); ok {
+		t.Fatalf("no pods listed yet gave a baseline: %+v", got)
+	}
+	scaledDown := workload(0)
+	scaledDown.Workload.Desired, scaledDown.Workload.Updated = 0, 0
+	if got, ok := BaselineOf([]Observation{{Service: "web", Presence: PresenceUnknown, Generation: 1, Inspection: scaledDown}}); !ok || len(got) != 1 {
+		t.Fatalf("a Deployment wanting no pods: %+v %v", got, ok)
 	}
 	recreated := workload(1, pod(podB, "running", "", 0))
 	recreated.Workload.UID = podB
@@ -161,8 +193,8 @@ func TestPendingValidationsOfACluster(t *testing.T) {
 	if p := find(); !p.Kubernetes || !p.Health {
 		t.Fatalf("with kubernetes.inspect: %+v", p)
 	}
-	// The baseline round-trips its pod UIDs through the column.
-	baseline := map[string]ServiceBaseline{"web": {RestartCount: 1, PodUIDs: []string{podA}}, "api": {PodUIDs: []string{podB}}}
+	// The baseline round-trips its per-pod restarts through the column.
+	baseline := map[string]ServiceBaseline{"web": {PodRestarts: map[string]int{podA: 1}}, "api": {PodRestarts: map[string]int{podB: 0}}}
 	if err := ts.BeginObservation(ctx, d.ID, baseline); err != nil {
 		t.Fatal(err)
 	}

@@ -128,12 +128,12 @@ type Validation struct {
 	FinishedAt    *time.Time          `json:"finished_at"`
 }
 
-// ServiceBaseline is one service at the first observation after grace. For a cluster,
-// RestartCount is the sum over its pods' containers and PodUIDs are the pods then running.
+// ServiceBaseline is one service at the first observation after grace. A cluster service keeps
+// PodRestarts instead: each listed pod's UID and its containers' summed restarts.
 type ServiceBaseline struct {
-	ContainerID  string   `json:"container_id"`
-	RestartCount int      `json:"restart_count"`
-	PodUIDs      []string `json:"pod_uids,omitempty"`
+	ContainerID  string         `json:"container_id"`
+	RestartCount int            `json:"restart_count"`
+	PodRestarts  map[string]int `json:"pod_restarts,omitempty"`
 }
 
 // ObservedService is a settled identity and where it stands now.
@@ -227,8 +227,9 @@ func judgeService(o Observation, b ServiceBaseline, final bool) (string, string)
 var failingWaits = map[string]bool{"CrashLoopBackOff": true, "ImagePullBackOff": true, "ErrImagePull": true, "CreateContainerConfigError": true, "CreateContainerError": true}
 
 // judgeWorkload judges a cluster service from its Deployment's status: changed when the
-// Deployment is gone, recreated, edited past the settled generation, or its pods were all
-// replaced without a restart; then exited (a terminated container in a pod not Failed or
+// Deployment is gone, recreated, edited past the settled generation, or its baseline pods are all
+// gone and no listed pod restarted; restarting when a listed pod restarted past its own baseline
+// (a pod new since counts from 0), so a pod leaving the list hides no restart; then exited (a terminated container in a pod not Failed or
 // Succeeded), restarting and unhealthy as for a container, where a failing waiting reason is
 // unhealthy at once and any shortfall only at the window's end.
 func judgeWorkload(o Observation, b ServiceBaseline, final bool) (string, string) {
@@ -236,9 +237,12 @@ func judgeWorkload(o Observation, b ServiceBaseline, final bool) (string, string
 	if w.Missing || w.UID != o.Inspection.Target.Workload.UID || w.Generation > o.Generation {
 		return VerdictChanged, ""
 	}
-	restarts, pods := workloadPods(w)
-	kept := slices.ContainsFunc(pods, func(uid string) bool { return slices.Contains(b.PodUIDs, uid) })
-	if len(b.PodUIDs) > 0 && len(pods) > 0 && !kept && restarts <= b.RestartCount {
+	kept, restarted := false, false
+	for uid, n := range workloadPods(w) {
+		base, ok := b.PodRestarts[uid]
+		kept, restarted = kept || ok, restarted || n > base
+	}
+	if len(b.PodRestarts) > 0 && len(w.Pods) > 0 && !kept && !restarted {
 		return VerdictChanged, ""
 	}
 	waiting, terminated, reason := false, false, ""
@@ -259,7 +263,7 @@ func judgeWorkload(o Observation, b ServiceBaseline, final bool) (string, string
 	switch {
 	case terminated && !waiting && w.Available < w.Desired:
 		return VerdictExited, ""
-	case restarts > b.RestartCount:
+	case restarted:
 		return VerdictRestarting, ""
 	case reason != "":
 		return VerdictUnhealthy, reason
@@ -269,29 +273,33 @@ func judgeWorkload(o Observation, b ServiceBaseline, final bool) (string, string
 	return "", ""
 }
 
-// workloadPods is the restart count summed over every pod's containers, and the pods' UIDs.
-func workloadPods(w *protocol.WorkloadStatus) (int, []string) {
-	restarts, uids := 0, []string{}
+// workloadPods is each listed pod's containers' restarts summed, by pod UID.
+func workloadPods(w *protocol.WorkloadStatus) map[string]int {
+	out := make(map[string]int, len(w.Pods))
 	for _, p := range w.Pods {
-		uids = append(uids, p.UID)
 		for _, c := range p.Containers {
-			restarts += int(c.RestartCount)
+			out[p.UID] += int(c.RestartCount)
 		}
 	}
-	return restarts, uids
+	return out
 }
 
 // BaselineOf is the baseline a first observation gives, false unless every service was either
 // inspected or is known gone or replaced. A cluster service whose Deployment is already missing,
-// recreated or edited gives none: its next poll judges it changed.
+// recreated or edited gives none: its next poll judges it changed. One wanting pods but listing
+// none gives no baseline yet: an empty PodRestarts could never judge its pods replaced.
 func BaselineOf(obs []Observation) (map[string]ServiceBaseline, bool) {
 	out := map[string]ServiceBaseline{}
 	for _, o := range obs {
 		switch {
 		case o.Inspection != nil && o.Inspection.Workload != nil:
-			if w := o.Inspection.Workload; !w.Missing && w.UID == o.Inspection.Target.Workload.UID && w.Generation <= o.Generation {
-				restarts, pods := workloadPods(w)
-				out[o.Service] = ServiceBaseline{RestartCount: restarts, PodUIDs: pods}
+			w := o.Inspection.Workload
+			switch {
+			case w.Missing || w.UID != o.Inspection.Target.Workload.UID || w.Generation > o.Generation:
+			case len(w.Pods) == 0 && w.Desired > 0:
+				return nil, false
+			default:
+				out[o.Service] = ServiceBaseline{PodRestarts: workloadPods(w)}
 			}
 		case o.Inspection != nil:
 			out[o.Service] = ServiceBaseline{ContainerID: o.Inspection.Target.ContainerID, RestartCount: o.Inspection.RestartCount}
