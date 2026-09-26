@@ -1,11 +1,11 @@
-import { ApplicationInspection, unsupportedNames, type InspectionTarget } from './ApplicationInspection';
+import { ApplicationInspection, K8S_VOLUME_CHOICE, unsupportedNames, type InspectionTarget } from './ApplicationInspection';
 import { useState } from 'react';
 import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
 type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'mounts_unreported' | 'mount_unsupported' | 'volume_missing'
-  | 'clock_skew' | 'inspection_unavailable' | 'replacement_identity_changed' | 'configuration_unsupported' | 'frame_too_large' | 'too_many_registry_hosts' | 'frame_invalid' | 'agent_deploy_unsupported' | 'agent_pull_unsupported' | 'agent_inspect_unsupported' | 'kubernetes_unsupported' | 'k8s_namespace';
+  | 'clock_skew' | 'inspection_unavailable' | 'replacement_identity_changed' | 'configuration_unsupported' | 'frame_too_large' | 'too_many_registry_hosts' | 'frame_invalid' | 'agent_deploy_unsupported' | 'agent_pull_unsupported' | 'agent_inspect_unsupported' | 'kubernetes_unsupported' | 'k8s_namespace' | 'agent_claims_unsupported' | 'storage_class_unknown';
 export const messages: Record<Blocker, string> = {
   mapping_requires_review: 'Review and save service mapping for the latest definition.',
   unassigned_adopted_containers: 'Some adopted containers are unassigned. Review service mapping before planning replacement.',
@@ -35,6 +35,8 @@ export const messages: Record<Blocker, string> = {
   agent_inspect_unsupported: 'Upgrade the host agent to enable live inspection, which planning requires.',
   kubernetes_unsupported: 'Some services cannot run as a Kubernetes Deployment yet; each is named below with the reason.',
   k8s_namespace: "The cluster's manifest no longer grants this namespace. Regenerate the manifest and apply it, or map the application to a granted namespace.",
+  agent_claims_unsupported: "The cluster agent must be upgraded before claims can be applied: set the agent Deployment's image to the current pinned digest, then plan again.",
+  storage_class_unknown: 'A claim names a StorageClass the cluster no longer reports, or the cluster default when no class is marked default, so it would never bind. Restore the StorageClass on the cluster, then plan again.',
 };
 // Definition volumes (named|bind) and runtime mounts (volume|bind); kinds render from this table only.
 export type Mount = { kind: string; source: string; target: string; read_only?: boolean };
@@ -56,10 +58,11 @@ export function serviceFindings(payload: unknown): string[] {
   const lines: string[] = [];
   for (const s of services) {
     if (!s || typeof s !== 'object') continue;
-    const { name, blockers, unsupported } = s as { name?: unknown; blockers?: unknown; unsupported?: unknown };
+    const { name, blockers, unsupported, details } = s as { name?: unknown; blockers?: unknown; unsupported?: unknown; details?: unknown };
     if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) continue;
     const codes = Array.isArray(unsupported) ? unsupported.filter((c): c is string => typeof c === 'string' && Object.hasOwn(unsupportedNames, c)) : [];
-    if (codes.length) lines.push(`${name}: ${codes.map(c => unsupportedNames[c]).join(', ')}`);
+    const choice = details !== null && typeof details === 'object' && (details as Record<string, unknown>).k8s_volume === 'choice_required';
+    if (codes.length) lines.push(`${name}: ${codes.map(c => c === 'k8s_volume' && choice ? K8S_VOLUME_CHOICE : unsupportedNames[c]).join(', ')}`);
     else if (Array.isArray(blockers) && blockers.includes('inspection_unavailable')) lines.push(`${name}: no live inspection answered`);
   }
   return lines;

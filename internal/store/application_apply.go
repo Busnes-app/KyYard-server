@@ -121,7 +121,8 @@ func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app,
 		if frameBlocker(frame, now, maxFrameBytes) != "" {
 			return ErrInvalid
 		}
-		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=?,policy_run_id=? WHERE id=? AND state='planned'`), a.ActorID, now, frame.Deadline, run, d.ID)
+		// An open migration's destination records the migration on every apply, as a policy run does.
+		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=?,policy_run_id=?,migration_id=(SELECT m.id FROM application_migrations m WHERE m.organization_id=? AND m.environment_id=? AND m.destination_application_id=? AND m.`+openMigration+`) WHERE id=? AND state='planned'`), a.ActorID, now, frame.Deadline, run, a.OrganizationID, a.EnvironmentID, d.ApplicationID, d.ID)
 		if err != nil {
 			return err
 		}
@@ -131,6 +132,9 @@ func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app,
 		}
 		if n != 1 {
 			return ErrAdoptionChanged
+		}
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COALESCE(migration_id,'') FROM deployments WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, d.ID).Scan(&d.MigrationID); err != nil {
+			return err
 		}
 		d.State, d.AppliedBy, d.AppliedAt, d.Deadline = "applying", a.ActorID, &now, &frame.Deadline
 		out, req = d, &frame
@@ -257,13 +261,13 @@ func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a Tenant
 		return protocol.DeploymentRequest{}, &PreflightBlockedError{Blockers: []string{"k8s_namespace"}}
 	}
 	req := protocol.DeploymentRequest{Deployment: d.ID, RequestID: d.CorrelationID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{},
-		Kubernetes: &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: d.ApplicationID, InstanceID: d.InstanceID, SpecDigest: d.SpecDigest}}
+		Kubernetes: &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: d.ApplicationID, InstanceID: d.InstanceID, SpecDigest: d.SpecDigest, Claims: d.Plan.Claims}}
 	hosts := map[string]bool{}
 	for i, ps := range d.Plan.Services {
 		if spec.Services[i].Name != ps.Name || ps.PullDigest == "" || ps.Object == nil {
 			return protocol.DeploymentRequest{}, ErrAdoptionChanged
 		}
-		svc := protocol.DeploymentService{Name: ps.Name, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: []protocol.Mount{}, Pull: &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}}
+		svc := protocol.DeploymentService{Name: ps.Name, Restart: ps.Restart, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: []protocol.Mount{}, Pull: &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}, Volumes: ps.ClaimMounts}
 		for _, p := range ps.Ports {
 			svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol})
 		}
@@ -587,11 +591,16 @@ func (t *tenancyStore) settleRemoval(ctx context.Context, tx *sql.Tx, endpointID
 	if len(res.Services) > 0 {
 		return ErrInvalid
 	}
-	// A cluster removal reports precondition and remove steps per service it found labelled;
-	// only a success releases the instance.
+	// A cluster removal reports precondition and remove steps per service it found labelled, and
+	// a skipped volume step per claim it kept, under the service that mounts it (the wire has no
+	// other way to name a claim). Retained-claim steps are informational: the cluster, not the
+	// revision history, knows which claims exist, so the store accepts any number of them and
+	// does not compare against the plan's ClaimMounts. A step that is none of these three kinds
+	// is refused at once, the way an unknown container is.
 	if plan.Namespace != "" {
 		for _, s := range res.Steps {
-			if s.Step != protocol.StepPrecondition && s.Step != protocol.StepRemove {
+			kept := s.Step == protocol.StepVolume && s.Outcome == protocol.OutcomeSkipped && s.Detail == protocol.DetailRetained
+			if s.Step != protocol.StepPrecondition && s.Step != protocol.StepRemove && !kept {
 				return ErrInvalid
 			}
 		}
@@ -768,6 +777,14 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		if r.Confirm != project {
 			return ErrInvalid
 		}
+		// The source of an open migration stays until the operator confirms cutover or abandons.
+		var migrating int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM application_migrations WHERE organization_id=? AND environment_id=? AND application_id=? AND `+openMigration), a.OrganizationID, a.EnvironmentID, appID.String()).Scan(&migrating); err != nil {
+			return err
+		}
+		if migrating > 0 {
+			return ErrMigrationOpen
+		}
 		if endpointState != "active" {
 			return ErrEndpointOffline
 		}
@@ -795,9 +812,13 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		req = &protocol.RemovalRequest{Deployment: id, RequestID: a.CorrelationID, Endpoint: endpoint, Project: project, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Containers: []protocol.RemovalTarget{}}
 		count, unit := 0, "containers"
 		if namespace != "" {
-			services, err := t.removalServices(ctx, tx, a, appID.String(), head, current)
+			services, claims, mounts, err := t.removalServices(ctx, tx, a, appID.String(), project, head, current)
 			if err != nil {
 				return err
+			}
+			plan.Claims = claims
+			for _, name := range services {
+				plan.Services = append(plan.Services, PlannedService{Name: name, ClaimMounts: mounts[name]})
 			}
 			req.Kubernetes = &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: appID.String(), InstanceID: instanceID.String(), SpecDigest: digest}
 			req.Services, count, unit = services, len(services), "services"
@@ -860,27 +881,46 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 }
 
 // removalServices names what a cluster removal deletes: the services of the latest revision and
-// of the one last applied (current, 0 when none). The agent finds each service's Deployment,
-// Service and ConfigMap by the instance label, and its Secret by the name the service gives it.
-func (t *tenancyStore) removalServices(ctx context.Context, tx *sql.Tx, a TenantAccess, app string, head, current int) ([]string, error) {
+// of the one last applied (current, 0 when none), and the claims either still mounts (a claim a
+// newer revision dropped is kept until an operator removes it by hand, so its mounting service
+// still reports it retained). The agent finds each service's Deployment, Service and ConfigMap
+// by the instance label, and its Secret by the name the service gives it.
+func (t *tenancyStore) removalServices(ctx context.Context, tx *sql.Tx, a TenantAccess, app, project string, head, current int) ([]string, []protocol.KubernetesClaim, map[string][]protocol.KubernetesMount, error) {
 	services := map[string]bool{}
+	claims := []protocol.KubernetesClaim{}
+	mounts := map[string][]protocol.KubernetesMount{}
+	seenClaim := map[string]bool{}
 	for _, number := range []int{head, current} {
 		if number == 0 {
 			continue
 		}
 		var raw, digest string
 		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT spec,digest FROM application_revisions WHERE organization_id=? AND environment_id=? AND application_id=? AND number=?`), a.OrganizationID, a.EnvironmentID, app, number).Scan(&raw, &digest); err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		var spec ApplicationSpec
 		if applicationSpecDigest([]byte(raw)) != digest || json.Unmarshal([]byte(raw), &spec) != nil {
-			return nil, ErrRevisionCorrupt
+			return nil, nil, nil, ErrRevisionCorrupt
 		}
 		for _, s := range spec.Services {
 			services[s.Name] = true
 		}
+		c, m := kubernetesClaims(project, spec)
+		for _, claim := range c {
+			if !seenClaim[claim.Name] {
+				seenClaim[claim.Name] = true
+				claims = append(claims, claim)
+			}
+		}
+		for service, list := range m {
+			for _, mount := range list {
+				if !slices.ContainsFunc(mounts[service], func(x protocol.KubernetesMount) bool { return x.Claim == mount.Claim }) {
+					mounts[service] = append(mounts[service], mount)
+				}
+			}
+		}
 	}
-	return slices.Sorted(maps.Keys(services)), nil
+	return slices.Sorted(maps.Keys(services)), claims, mounts, nil
 }
 
 // removalBlockers refuses a removal the host may not survive: a fresh inventory must show no

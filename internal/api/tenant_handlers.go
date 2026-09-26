@@ -97,6 +97,22 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Mode is apply or plan_only", "code": "invalid_mode"})
 	case errors.Is(err, store.ErrPolicyNotPaused):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The update policy is not paused", "code": "policy_not_paused"})
+	case errors.Is(err, store.ErrMigrationOpen):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The application has an open migration; confirm its cutover or abandon it first", "code": "migration_open"})
+	case errors.Is(err, store.ErrMigrationNotReady):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The migration report still has blocked findings or choices to make", "code": "migration_not_ready"})
+	case errors.Is(err, store.ErrMigrationState):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The migration's status does not allow this step", "code": "migration_state"})
+	case errors.Is(err, store.ErrMigrationStale):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The source definition changed since the analysis; analyze again", "code": "migration_stale"})
+	case errors.Is(err, store.ErrApplicationNameTaken):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "An application with the destination's name already exists", "code": "application_name_taken"})
+	case errors.Is(err, store.ErrStorageClassUnknown):
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "The cluster does not report that StorageClass", "code": "storage_class_unknown"})
+	case errors.Is(err, store.ErrSizeInvalid):
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "A size is a whole number of Mi, Gi or Ti from 1Mi to 16Ti", "code": "size_invalid"})
+	case errors.Is(err, store.ErrVolumeUnknown):
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "The source mounts no named volume by that name", "code": "volume_unknown"})
 	case errors.Is(err, store.ErrInvalid):
 		s.writeError(w, http.StatusBadRequest, "Invalid tenant input")
 	default:

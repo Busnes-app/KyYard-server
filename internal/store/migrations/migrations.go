@@ -1017,6 +1017,7 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// is a fact of the apply, so a run's plan applied by hand stays manual.
 	{Version: 33, Name: "deployment_policy_run", SQLite: `ALTER TABLE deployments ADD COLUMN policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL;`, Postgres: `ALTER TABLE deployments ADD COLUMN policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL;`},
 	{Version: 34, Name: "kubernetes_namespaces", SQLite: kubernetesNamespaces, Postgres: kubernetesNamespaces},
+	{Version: 35, Name: "application_migrations", SQLite: applicationMigrations, Postgres: strings.ReplaceAll(applicationMigrations, "DATETIME", "TIMESTAMPTZ")},
 }
 
 // kubernetesNamespaces stores the namespaces a cluster's manifest grants writes in (a JSON list,
@@ -1025,6 +1026,41 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 const kubernetesNamespaces = `ALTER TABLE agent_enrollment_tokens ADD COLUMN deploy_namespaces TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE endpoints ADD COLUMN deploy_namespaces TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE application_instances ADD COLUMN namespace TEXT NOT NULL DEFAULT '';
+`
+
+// applicationMigrations records a migration from a Docker source to a destination application on
+// a cluster: at most one open per source, the analyzed revision and report, the storage choices,
+// and who confirmed validation and cutover. The destination is referenced by ID alone, so its
+// deletion clears the link and leaves the tenant columns; every deployment of an open
+// migration's destination names it.
+const applicationMigrations = `CREATE TABLE application_migrations (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL,
+ environment_id TEXT NOT NULL,
+ application_id TEXT NOT NULL,
+ destination_application_id TEXT REFERENCES applications(id) ON DELETE SET NULL,
+ destination_endpoint_id TEXT NOT NULL,
+ namespace TEXT NOT NULL CHECK(length(namespace) BETWEEN 1 AND 63),
+ status TEXT NOT NULL CHECK(status IN ('analyzed','destination_created','validated','cutover_confirmed','abandoned')),
+ source_revision INTEGER NOT NULL CHECK(source_revision BETWEEN 1 AND 100),
+ ready INTEGER NOT NULL CHECK(ready IN (0,1)),
+ report TEXT NOT NULL CHECK(length(report) BETWEEN 2 AND 65536),
+ choices TEXT NOT NULL DEFAULT '{}' CHECK(length(choices)<=16384),
+ created_by TEXT NOT NULL CHECK(length(created_by) BETWEEN 1 AND 255),
+ created_at DATETIME NOT NULL,
+ updated_at DATETIME NOT NULL,
+ validated_by TEXT NOT NULL DEFAULT '' CHECK(length(validated_by)<=255),
+ validated_at DATETIME,
+ validated_note TEXT NOT NULL DEFAULT '' CHECK(length(validated_note)<=500),
+ confirmed_by TEXT NOT NULL DEFAULT '' CHECK(length(confirmed_by)<=255),
+ confirmed_at DATETIME,
+ cutover_note TEXT NOT NULL DEFAULT '' CHECK(length(cutover_note)<=500),
+ FOREIGN KEY(organization_id,environment_id,application_id) REFERENCES applications(organization_id,environment_id,id) ON DELETE CASCADE,
+ FOREIGN KEY(organization_id,environment_id,destination_endpoint_id) REFERENCES endpoints(organization_id,environment_id,id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX application_migrations_open ON application_migrations(application_id) WHERE status NOT IN ('cutover_confirmed','abandoned');
+CREATE INDEX idx_application_migrations_destination ON application_migrations(destination_application_id);
+ALTER TABLE deployments ADD COLUMN migration_id TEXT REFERENCES application_migrations(id) ON DELETE SET NULL;
 `
 
 // Latest returns the highest registered migration version: the schema this binary runs.

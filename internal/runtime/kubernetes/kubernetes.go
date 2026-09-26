@@ -20,6 +20,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/render"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -116,7 +117,7 @@ func (c *Client) Facts(ctx context.Context) map[string]string {
 // and named in Truncated, so one forbidden verb does not blank the whole endpoint; the error
 // return is only ever nil.
 func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
-	k := &protocol.KubernetesInventory{Nodes: []protocol.Node{}, Namespaces: []string{}, Pods: []protocol.Pod{}, Services: []protocol.Service{}, Claims: []protocol.Claim{}}
+	k := &protocol.KubernetesInventory{Nodes: []protocol.Node{}, Namespaces: []string{}, Pods: []protocol.Pod{}, Services: []protocol.Service{}, Claims: []protocol.Claim{}, StorageClasses: []protocol.StorageClass{}}
 	// Each read owns its slot; the three workload kinds are joined after the wait.
 	var deployments, statefulSets, daemonSets []protocol.Workload
 	lists := []struct {
@@ -131,6 +132,7 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		{"pods", reader(ctx, protocol.MaxPods, c.pods, pod, &k.Pods)},
 		{"services", reader(ctx, protocol.MaxServices, c.services, service, &k.Services)},
 		{"claims", reader(ctx, protocol.MaxClaims, c.claims, claim, &k.Claims)},
+		{"storage_classes", reader(ctx, protocol.MaxStorageClasses, c.storageClasses, storageClass, &k.StorageClasses)},
 	}
 	var (
 		engine    protocol.Engine
@@ -170,6 +172,7 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 	slices.SortFunc(k.Claims, func(a, b protocol.Claim) int {
 		return cmp.Or(strings.Compare(a.Namespace, b.Namespace), strings.Compare(a.Name, b.Name))
 	})
+	slices.SortFunc(k.StorageClasses, func(a, b protocol.StorageClass) int { return strings.Compare(a.Name, b.Name) })
 	for list := range truncated {
 		snap.Truncated = append(snap.Truncated, list)
 	}
@@ -278,6 +281,20 @@ func (c *Client) claims(ctx context.Context, o metav1.ListOptions) ([]corev1.Per
 		return nil, "", err
 	}
 	return l.Items, l.Continue, nil
+}
+
+func (c *Client) storageClasses(ctx context.Context, o metav1.ListOptions) ([]storagev1.StorageClass, string, error) {
+	l, err := c.cs.StorageV1().StorageClasses().List(ctx, o)
+	if err != nil {
+		return nil, "", err
+	}
+	return l.Items, l.Continue, nil
+}
+
+// storageClass is default when either the current or the beta is-default-class annotation is
+// "true", as the DefaultStorageClass admission plugin reads it.
+func storageClass(sc storagev1.StorageClass) protocol.StorageClass {
+	return protocol.StorageClass{Name: sc.Name, Default: sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" || sc.Annotations["storageclass.beta.kubernetes.io/is-default-class"] == "true"}
 }
 
 func namespace(ns corev1.Namespace) string { return ns.Name }

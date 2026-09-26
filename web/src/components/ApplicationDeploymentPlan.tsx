@@ -8,12 +8,14 @@ import { knownBlockers, messages, serviceFindings, MountList, type Mount } from 
 import { unsupportedNames } from './ApplicationInspection';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
-type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[]; object?: { namespace: string; name: string } };
+type ClaimMount = { claim: string; mount_path: string; read_only?: boolean };
+type Claim = { name: string; storage_class: string; size: string; access_mode: string };
+type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[]; object?: { namespace: string; name: string }; claim_mounts?: ClaimMount[] };
 type DeployStep = { service: string; step: string; outcome: string; code?: string; detail: string };
 // A Kubernetes identity names a Deployment (kind, namespace, name, uid) in place of a container.
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number; kind?: string; namespace?: string; name?: string; uid?: string };
 type RemovalTarget = { service: string; container_id: string; image_id: string; created_unix: number; name: string };
-type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[]; namespace?: string }; validation?: Validation };
+type Deployment = { id: string; instance_id: string; endpoint_id: string; endpoint_name?: string; kind?: string; applied_by?: string; state: string; revision: number; mapping_version: number; created_at: string; expires_at: string; expired: boolean; detail: string; correlation_id?: string; applied_at?: string | null; deadline?: string | null; settled_at?: string | null; result: { code?: string; steps: DeployStep[]; services: DeployedService[] } | null; plan: { project: string; services?: PlannedService[]; containers?: RemovalTarget[]; volumes?: string[]; namespace?: string; claims?: Claim[] }; validation?: Validation; migration_id?: string };
 type Mapping = { instance_id: string; version: number; preview: { revision: number; project: string } };
 type Props = { base: string; instanceID: string; latestRevision: number; instance: ApplicationInstance; refreshKey?: number };
 
@@ -61,8 +63,11 @@ export const STEP_CODES: Record<string, string> = {
   conflict: 'The object kept changing under the agent',
   pod_security: 'The namespace does not enforce Pod Security baseline; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.',
   admission_denied: "The cluster refused the object (quota or policy); check the namespace's quotas and admission policies",
+  claim_immutable: 'The claim exists with another StorageClass, size or access mode, and KyYard never changes a claim; delete it deliberately or choose its current settings',
   legacy: LEGACY_OUTCOME,
 };
+// CLAIM_RETAINED is a removal's skipped volume step with detail retained.
+export const CLAIM_RETAINED = 'The claim and its data were kept; delete the PersistentVolumeClaim with kubectl when you no longer need it.';
 export const RESULT_CODES: Record<string, string> = {
   step_failed: 'A step did not succeed; the steps say which.',
   clock_skew: 'The host clock differs from the server by more than five minutes; nothing ran.',
@@ -85,9 +90,9 @@ const SERVER_DETAILS = new Set([
 function codeText(table: Record<string, string>, code: string): string {
   return Object.hasOwn(table, code) ? table[code] ?? '' : `unrecognised outcome \`${code}\``;
 }
-export function stepText(s: { code?: string; detail?: string }): string {
+export function stepText(s: { step?: string; outcome?: string; code?: string; detail?: string }): string {
   const code = s.code ?? '';
-  if (!code) return '';
+  if (!code) return s.step === 'volume' && s.outcome === 'skipped' && s.detail === 'retained' ? CLAIM_RETAINED : '';
   const text = codeText(STEP_CODES, code);
   const detail = s.detail ?? '';
   switch (code) {
@@ -104,6 +109,7 @@ export function stepText(s: { code?: string; detail?: string }): string {
       return OBJECT.test(detail) ? `${text}. Object: ${detail}.` : `${text}.`;
     case 'name_taken':
     case 'conflict':
+    case 'claim_immutable':
       return OBJECT.test(detail) ? `${text}: ${detail}.` : `${text}.`;
     case 'rollout_timeout': {
       const reasons = detail.split(',').filter((r) => ROLLOUT.test(r)).map((r) => r.replace('=', ' '));
@@ -113,7 +119,7 @@ export function stepText(s: { code?: string; detail?: string }): string {
   return text;
 }
 // The closed detail shapes of the Kubernetes codes: Kind/name, and condition=Reason words.
-const OBJECT = /^(Deployment|Service|ConfigMap|Secret)\/[a-z0-9][-a-z0-9.]{0,252}$/;
+const OBJECT = /^(Deployment|Service|ConfigMap|Secret|PersistentVolumeClaim)\/[a-z0-9][-a-z0-9.]{0,252}$/;
 const ROLLOUT = /^(progressing|available|replicafailure|pod)=[A-Za-z]{1,64}$/;
 function isDeployment(x: unknown): x is Deployment {
   if (!x || typeof x !== 'object') return false;
@@ -192,7 +198,7 @@ function ResultSection({ current }: { current: Deployment }) {
 function PlanDetails({ d }: { d: Deployment }) {
   const services = usePagination(d.plan.services ?? [], `${d.id}-services`);
   const containers = usePagination(d.plan.containers ?? [], `${d.id}-containers`);
-  if (d.kind === 'remove' && d.plan.namespace) return <p>Deletes the objects labelled as this instance's in namespace {d.plan.namespace}.</p>;
+  if (d.kind === 'remove' && d.plan.namespace) return <p>Deletes the objects labelled as this instance's in namespace {d.plan.namespace}. Its PersistentVolumeClaims and their data are kept.</p>;
   if (d.kind === 'remove') return <>
     {containers.controls}
     <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Name</th><th>Container</th></tr></thead><tbody>{containers.rows.map(c => <tr key={c.container_id}>
@@ -203,12 +209,13 @@ function PlanDetails({ d }: { d: Deployment }) {
   </>;
   return <>
     {d.plan.volumes?.length ? <p>Volumes to ensure: {d.plan.volumes.join(', ')}</p> : null}
+    {d.plan.claims?.length ? <p>Claims to create when missing (never changed or deleted): {d.plan.claims.map(c => `${c.name} (${c.storage_class || 'cluster default'}, ${c.size})`).join(', ')}</p> : null}
     {services.controls}
     <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Pinned image</th><th>Replaces container</th><th>Mounts</th><th>Secrets</th></tr></thead><tbody>{services.rows.map(s => <tr key={s.name}>
       <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>
       <td data-label="Pinned image"><div className="ky-resource-name">{/^sha256:[0-9a-f]{64}$/.test(s.pull_digest ?? '') ? <span>pulls {s.pull_digest?.slice(7, 19)}</span> : <><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small></>}</div></td>
       <td data-label="Replaces container">{s.object ? <div className="ky-resource-name"><span>Deployment {s.object.namespace}/{s.object.name}</span><small>updated in place</small></div> : <div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div>}</td>
-      <td data-label="Mounts">{s.mounts?.length ? <MountList mounts={s.mounts} /> : 'None'}{s.dropped_mounts?.length ? <><p>Will be dropped by the recreate:</p><MountList mounts={s.dropped_mounts} /></> : null}</td>
+      <td data-label="Mounts">{s.mounts?.length ? <MountList mounts={s.mounts} /> : s.claim_mounts?.length ? <MountList mounts={s.claim_mounts.map(c => ({ kind: 'volume', source: c.claim, target: c.mount_path, read_only: c.read_only }))} /> : 'None'}{s.dropped_mounts?.length ? <><p>Will be dropped by the recreate:</p><MountList mounts={s.dropped_mounts} /></> : null}</td>
       <td data-label="Secrets">{s.secret_refs.length ? `${s.secret_refs.length} reference(s), values not shown` : 'None'}</td>
     </tr>)}</tbody></table>
   </>;
@@ -239,7 +246,7 @@ function History({ rows }: { rows: Deployment[] }) {
       {page.controls}
       <table className="ky-table ky-responsive-table"><thead><tr><th>Kind</th><th>Revision</th><th>State</th><th>Applied by</th><th>Applied</th><th>Settled</th><th>Steps</th></tr></thead><tbody>{page.rows.map(d => <Fragment key={d.id}>
         <tr>
-          <td data-label="Kind">{d.kind === 'remove' ? 'Removal' : 'Apply'}</td>
+          <td data-label="Kind">{d.kind === 'remove' ? 'Removal' : d.migration_id ? 'Apply (migration)' : 'Apply'}</td>
           <td data-label="Revision">{d.revision}</td>
           <td data-label="State">{d.state}</td>
           <td data-label="Applied by">{d.applied_by || '—'}</td>

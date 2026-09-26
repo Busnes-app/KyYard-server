@@ -47,6 +47,8 @@ type KubernetesInventory struct {
 	Pods       []Pod      `json:"pods"`
 	Services   []Service  `json:"services"`
 	Claims     []Claim    `json:"claims"`
+	// StorageClasses are what a migration's volume choices pick from.
+	StorageClasses []StorageClass `json:"storage_classes"`
 }
 
 type Node struct {
@@ -151,6 +153,7 @@ func decodeKubernetes(raw []byte) (*KubernetesInventory, []string, error) {
 		decodeField(fields, "pods", MaxPods, &k.Pods, &cut),
 		decodeField(fields, "services", MaxServices, &k.Services, &cut),
 		decodeField(fields, "claims", MaxClaims, &k.Claims, &cut),
+		decodeField(fields, "storage_classes", MaxStorageClasses, &k.StorageClasses, &cut),
 	)
 	if err != nil {
 		return nil, nil, err
@@ -236,6 +239,15 @@ func clampKubernetes(k *KubernetesInventory, truncated map[string]bool) {
 		c := &k.Claims[i]
 		c.Namespace, c.Name, c.Phase, c.StorageClass, c.Capacity = name(c.Namespace), name(c.Name), short(c.Phase), name(c.StorageClass), short(c.Capacity)
 	}
+	if len(k.StorageClasses) > MaxStorageClasses {
+		k.StorageClasses, truncated["storage_classes"] = k.StorageClasses[:MaxStorageClasses], true
+	}
+	for i := range k.StorageClasses {
+		k.StorageClasses[i].Name = name(k.StorageClasses[i].Name)
+	}
+	if k.StorageClasses == nil {
+		k.StorageClasses = []StorageClass{}
+	}
 	if k.Nodes == nil {
 		k.Nodes = []Node{}
 	}
@@ -265,6 +277,7 @@ func shrinkKubernetes(k *KubernetesInventory, truncated map[string]bool) bool {
 		{"workloads", len(k.Workloads), func() { k.Workloads = k.Workloads[:len(k.Workloads)*3/4] }},
 		{"services", len(k.Services), func() { k.Services = k.Services[:len(k.Services)*3/4] }},
 		{"claims", len(k.Claims), func() { k.Claims = k.Claims[:len(k.Claims)*3/4] }},
+		{"storage_classes", len(k.StorageClasses), func() { k.StorageClasses = k.StorageClasses[:len(k.StorageClasses)*3/4] }},
 		{"namespaces", len(k.Namespaces), func() { k.Namespaces = k.Namespaces[:len(k.Namespaces)*3/4] }},
 		{"nodes", len(k.Nodes), func() { k.Nodes = k.Nodes[:len(k.Nodes)*3/4] }},
 	}
@@ -301,7 +314,7 @@ func CheckRuntimeShape(runtime string, s *Snapshot) error {
 }
 
 // kubernetesCapabilities is everything a cluster agent may advertise.
-var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesRemove: true}
+var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesClaims: true, CapabilityKubernetesRemove: true}
 
 // CapabilitiesFit reports whether a hello's capabilities belong to the endpoint's runtime:
 // a cluster agent names only cluster capabilities, a Docker agent names none of them.

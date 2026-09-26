@@ -1,0 +1,48 @@
+{
+  "acknowledgeable": [
+    "network_references",
+    "port_unpublished",
+    "healthcheck_dropped",
+    "resource_limits_dropped",
+    "read_only_rootfs"
+  ],
+  "assumptions": [
+    "volume_size_unknown"
+  ],
+  "checklist": [
+    "grant_namespace",
+    "create_destination",
+    "update_references",
+    "copy_volume",
+    "validate_destination",
+    "switch_traffic",
+    "confirm_cutover"
+  ],
+  "codes": [
+    "volume_named",
+    "volume_named_shared",
+    "volume_bind",
+    "volume_external",
+    "volume_unverified",
+    "storage_supported",
+    "network_host",
+    "networks_multiple",
+    "network_references",
+    "networking_supported",
+    "port_published",
+    "port_host_ip",
+    "port_unpublished",
+    "secrets_supported",
+    "healthcheck_dropped",
+    "probes_supported",
+    "resource_limits_dropped",
+    "resources_supported",
+    "scheduling_blocked",
+    "scheduling_supported",
+    "flag_blocked",
+    "restart_policy",
+    "read_only_rootfs",
+    "flags_supported",
+    "inspection_unavailable"
+  ]
+}

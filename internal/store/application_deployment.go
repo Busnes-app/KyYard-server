@@ -56,6 +56,8 @@ type PlannedService struct {
 	// Object is the Deployment (and Service) a Kubernetes plan applies for this service; nil on
 	// Docker. Replaces, ImageID and Mounts are then empty and the service always pulls.
 	Object *KubernetesObject `json:"object,omitempty"`
+	// ClaimMounts mount the plan's claims into a Kubernetes service.
+	ClaimMounts []protocol.KubernetesMount `json:"claim_mounts,omitempty"`
 }
 
 // KubernetesObject names a service's objects: the Deployment and Service <name>, the
@@ -75,6 +77,8 @@ type DeploymentPlan struct {
 	Volumes []string `json:"volumes,omitempty"`
 	// Namespace is set exactly for a Kubernetes plan or removal.
 	Namespace string `json:"namespace,omitempty"`
+	// Claims are the PersistentVolumeClaims a Kubernetes apply ensures.
+	Claims []protocol.KubernetesClaim `json:"claims,omitempty"`
 }
 type RemovalPlanTarget struct {
 	Service     string `json:"service"`
@@ -110,6 +114,9 @@ type Deployment struct {
 	// Validation is the deployment's health validation: nil for a plan, a removal or an apply
 	// that did not succeed.
 	Validation *Validation `json:"validation,omitempty"`
+	// MigrationID names the open migration whose destination this apply deployed, set when the
+	// row turned applying.
+	MigrationID string `json:"migration_id,omitempty"`
 }
 
 // storedDeploymentResult is the shape kept in the result column: the result code and the
@@ -150,9 +157,10 @@ type PreflightBlockedError struct {
 // BlockedService names a service a refused plan blocked on: its own blockers and the codes a
 // live inspection reported, nothing else about it.
 type BlockedService struct {
-	Name        string   `json:"name"`
-	Blockers    []string `json:"blockers"`
-	Unsupported []string `json:"unsupported,omitempty"`
+	Name        string            `json:"name"`
+	Blockers    []string          `json:"blockers"`
+	Unsupported []string          `json:"unsupported,omitempty"`
+	Details     map[string]string `json:"details,omitempty"`
 }
 
 func (e *PreflightBlockedError) Error() string {
@@ -433,9 +441,12 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 	}
 	inspected := inspectsVerdicts(capabilities)
 	var objects map[string]string
+	var mounts map[string][]protocol.KubernetesMount
 	if m.Runtime == protocol.RuntimeKubernetes {
 		plan.Namespace = m.Namespace
 		objects = protocol.KubernetesNames(m.Preview.Project, spec.serviceNames())
+		plan.Claims, mounts = kubernetesClaims(m.Preview.Project, spec)
+		blockers = append(blockers, storageClassBlockers(plan.Namespace, plan.Claims, snapshot)...)
 	}
 	var refused []BlockedService
 	for i, s := range spec.Services {
@@ -447,7 +458,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 		}
 		blockers = append(blockers, row.Blockers...)
 		if len(row.Blockers) > 0 {
-			refused = append(refused, BlockedService{Name: row.Name, Blockers: row.Blockers, Unsupported: row.Unsupported})
+			refused = append(refused, BlockedService{Name: row.Name, Blockers: row.Blockers, Unsupported: row.Unsupported, Details: row.Details})
 		}
 		refs := make([]string, 0, len(s.Environment))
 		for _, ref := range s.Environment {
@@ -470,7 +481,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 			ps.Replaces = *row.InspectionTarget
 		}
 		if plan.Namespace != "" {
-			ps.Object = &KubernetesObject{Namespace: plan.Namespace, Name: objects[s.Name]}
+			ps.Object, ps.ClaimMounts = &KubernetesObject{Namespace: plan.Namespace, Name: objects[s.Name]}, mounts[s.Name]
 		}
 		plan.Services = append(plan.Services, ps)
 	}
@@ -505,15 +516,41 @@ func inspectsVerdicts(capabilities map[string]bool) bool {
 	return capabilities[protocol.CapabilityContainerInspect] && capabilities[protocol.CapabilityContainerInspectVerdict]
 }
 
+// storageClassBlockers refuses a claim whose StorageClass the cluster's fresh inventory does not
+// report ("" needs a default class): its PVC would stay Pending, and KyYard never changes a claim.
+// A claim the cluster already holds bound needs no class, and a cut list cannot prove absence.
+func storageClassBlockers(namespace string, claims []protocol.KubernetesClaim, s protocol.Snapshot) []string {
+	if s.Kubernetes == nil || slices.Contains(s.Truncated, "storage_classes") {
+		return nil
+	}
+	for _, c := range claims {
+		bound := slices.ContainsFunc(s.Kubernetes.Claims, func(k protocol.Claim) bool {
+			return k.Namespace == namespace && k.Name == c.Name && k.Phase == "Bound"
+		})
+		known := slices.ContainsFunc(s.Kubernetes.StorageClasses, func(sc protocol.StorageClass) bool {
+			return sc.Name == c.StorageClass || (c.StorageClass == "" && sc.Default)
+		})
+		if !bound && !known {
+			return []string{"storage_class_unknown"}
+		}
+	}
+	return nil
+}
+
 // capabilityBlockers refuses a plan the endpoint's agent could not run: no deployments, no live
 // inspection for the plan to check, or a pull without deployment.pull. Apply checks again. A
-// Kubernetes plan needs kubernetes.deploy only: the kubelet pulls, and nothing is inspected.
+// Kubernetes plan needs kubernetes.deploy, and kubernetes.claims when it carries claims: the
+// kubelet pulls, and nothing is inspected.
 func capabilityBlockers(capabilities map[string]bool, plan DeploymentPlan) []string {
 	if plan.Namespace != "" {
+		var out []string
 		if !capabilities[protocol.CapabilityKubernetesDeploy] {
-			return []string{"agent_deploy_unsupported"}
+			out = append(out, "agent_deploy_unsupported")
 		}
-		return nil
+		if len(plan.Claims) > 0 && !capabilities[protocol.CapabilityKubernetesClaims] {
+			out = append(out, "agent_claims_unsupported")
+		}
+		return out
 	}
 	var out []string
 	if !capabilities[protocol.CapabilityDeploymentApply] {
@@ -556,14 +593,14 @@ func (t *tenancyStore) insertPlan(ctx context.Context, tx *sql.Tx, a TenantAcces
 
 // selectDeployments reads rows aliased d with the endpoint's current name (empty once the
 // endpoint is gone) and the deployment's validation; the caller appends the WHERE clause.
-const selectDeployments = `SELECT d.id,d.application_id,d.instance_id,d.endpoint_id,COALESCE(e.name,''),d.kind,d.state,d.revision,d.spec_digest,d.mapping_version,d.plan,d.created_by,d.created_at,d.expires_at,d.applied_by,d.applied_at,d.deadline,d.settled_at,d.detail,d.result,d.correlation_id,` + validationColumns + ` FROM deployments d LEFT JOIN endpoints e ON e.id=d.endpoint_id LEFT JOIN deployment_validations v ON v.deployment_id=d.id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id `
+const selectDeployments = `SELECT d.id,d.application_id,d.instance_id,d.endpoint_id,COALESCE(e.name,''),d.kind,d.state,d.revision,d.spec_digest,d.mapping_version,d.plan,d.created_by,d.created_at,d.expires_at,d.applied_by,d.applied_at,d.deadline,d.settled_at,d.detail,d.result,d.correlation_id,COALESCE(d.migration_id,''),` + validationColumns + ` FROM deployments d LEFT JOIN endpoints e ON e.id=d.endpoint_id LEFT JOIN deployment_validations v ON v.deployment_id=d.id LEFT JOIN deployments rd ON rd.id=v.rollback_deployment_id `
 
 func scanDeployment(rows interface{ Scan(...any) error }) (*Deployment, error) {
 	var d Deployment
 	var raw, result string
 	var appliedAt, deadline, settledAt sql.NullTime
 	var vs validationScan
-	if err := rows.Scan(append([]any{&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.EndpointName, &d.Kind, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result, &d.CorrelationID}, vs.dest()...)...); err != nil {
+	if err := rows.Scan(append([]any{&d.ID, &d.ApplicationID, &d.InstanceID, &d.EndpointID, &d.EndpointName, &d.Kind, &d.State, &d.Revision, &d.SpecDigest, &d.MappingVersion, &raw, &d.CreatedBy, &d.CreatedAt, &d.ExpiresAt, &d.AppliedBy, &appliedAt, &deadline, &settledAt, &d.Detail, &result, &d.CorrelationID, &d.MigrationID}, vs.dest()...)...); err != nil {
 		return nil, err
 	}
 	d.Validation = vs.validation()

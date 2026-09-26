@@ -347,6 +347,10 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 		s.writeError(w, http.StatusNotImplemented, "Upgrade the host agent to enable deployments that pull images")
 		return
 	}
+	if kube && len(plan.Plan.Claims) > 0 && !slices.Contains(ep.Capabilities, protocol.CapabilityKubernetesClaims) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to apply claims")
+		return
+	}
 	if !s.Connected(plan.EndpointID) {
 		s.tenantError(w, store.ErrEndpointOffline)
 		return

@@ -88,12 +88,15 @@ func quote(s string) string {
 var manifestTemplate = template.Must(template.New("manifest").Funcs(template.FuncMap{"q": quote}).Parse(`# KyYard agent for endpoint {{q .Name}}.
 # Apply as cluster-admin: kubectl apply -f {{.File}}
 # The agent reads get/list on namespaces, nodes, pods, pod logs, events, services,
-# persistentvolumeclaims, deployments, statefulsets and daemonsets in every namespace. It cannot
-# read Secrets or ConfigMaps; in its own namespace it may read and write its identity Secret.
+# persistentvolumeclaims, deployments, statefulsets, daemonsets and storageclasses in every
+# namespace. It cannot read Secrets or ConfigMaps; in its own namespace it may read and write its
+# identity Secret.
 {{- if .Namespaces}}
 # In each namespace listed below (Role kyyard-agent-deploy) it may create, update and delete
-# Deployments, Services, ConfigMaps and Secrets; Secrets are read by name, never listed. Create
-# the namespaces first. A namespace dropped from a later manifest keeps its Role until you run
+# Deployments, Services, ConfigMaps and Secrets; Secrets are read by name, never listed. It may
+# create PersistentVolumeClaims but never update or delete one: a claim KyYard created stays
+# until you delete it. Create the namespaces first. A namespace dropped from a later manifest
+# keeps its Role until you run
 # kubectl -n <namespace> delete role,rolebinding kyyard-agent-deploy
 {{- end}}
 {{- if .Link}}
@@ -131,6 +134,10 @@ rules:
     verbs: [get, list]
   - apiGroups: [apps]
     resources: [deployments, statefulsets, daemonsets]
+    verbs: [get, list]
+  # A migration's storage choices pick from these.
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
     verbs: [get, list]
   # The agent asks the API server what it may do before every apply.
   - apiGroups: [authorization.k8s.io]
@@ -208,6 +215,10 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, create, update, patch, delete]
+  # Claims are created once and kept: no update, patch or delete.
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

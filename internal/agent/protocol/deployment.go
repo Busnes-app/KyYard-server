@@ -96,7 +96,7 @@ var stepCodes = map[string]detailRule{
 	"pull_digest_mismatch": detailNone, "cancelled": detailNone, "runtime_timeout": detailNone,
 	"runtime_error": detailNone, "runtime_status": detailStatus, CodeLegacy: detailNone,
 	"forbidden": detailNone, "rollout_timeout": detailRollout, "conflict": detailObject,
-	"pod_security": detailPodSecurity, "admission_denied": detailObject,
+	"pod_security": detailPodSecurity, "admission_denied": detailObject, "claim_immutable": detailObject,
 }
 
 var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
@@ -201,6 +201,8 @@ type DeploymentService struct {
 	// SecretKeys are the Env keys backed by a secret reference, sorted; Kubernetes only. The
 	// agent puts them in the service's Secret and the rest in its ConfigMap.
 	SecretKeys []string `json:"secret_keys,omitempty"`
+	// Volumes mount the request's claims; Kubernetes only.
+	Volumes []KubernetesMount `json:"volumes,omitempty"`
 }
 
 // ImagePull names an image by host, repository and the digest it must resolve to. Tag, when
@@ -346,7 +348,7 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 	names, containers, replaces, bindings, pulled, mounted := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}, map[string]bool{}, map[string]bool{}
 	for _, s := range r.Services {
 		image := (s.Pull == nil && fullImageID(s.ImageID)) || (s.Pull != nil && s.ImageID == "" && s.Pull.valid())
-		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 {
+		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 || len(s.Volumes) > 0 {
 			return errors.New("invalid deployment service")
 		}
 		names[s.Name], containers[s.ContainerName], replaces[s.Replaces.ContainerID] = true, true, true
@@ -434,10 +436,12 @@ func (r DeploymentResult) Validate() error {
 	}
 	for _, s := range r.Steps {
 		quiet := s.Outcome == OutcomeSucceeded || s.Outcome == OutcomeSkipped
+		// A cluster removal reports each claim it kept as a skipped volume step, detail retained.
+		retained := s.Outcome == OutcomeSkipped && s.Step == StepVolume && s.Code == "" && s.Detail == DetailRetained
 		if !deploymentService.MatchString(s.Service) || !deploymentSteps[s.Step] || !(resultOutcomes[s.Outcome] || s.Outcome == OutcomeSkipped) || len(s.Detail) > MaxDeploymentStepDetailBytes {
 			return errors.New("invalid deployment step")
 		}
-		if (quiet && (s.Code != "" || s.Detail != "")) || (!quiet && !validStepCode(s.Code, s.Detail)) {
+		if (quiet && !retained && (s.Code != "" || s.Detail != "")) || (!quiet && !validStepCode(s.Code, s.Detail)) {
 			return errors.New("invalid deployment step code")
 		}
 	}
@@ -481,7 +485,7 @@ func (r RemovalRequest) Validate(now time.Time) error {
 		return errors.New("invalid removal deadline")
 	}
 	if r.Kubernetes != nil {
-		if r.Kubernetes.Validate() != nil || len(r.Containers) > 0 || len(r.Services) == 0 || len(r.Services) > MaxRemovalTargets {
+		if r.Kubernetes.Validate() != nil || len(r.Kubernetes.Claims) > 0 || len(r.Containers) > 0 || len(r.Services) == 0 || len(r.Services) > MaxRemovalTargets {
 			return errors.New("invalid Kubernetes removal")
 		}
 		seen := map[string]bool{}

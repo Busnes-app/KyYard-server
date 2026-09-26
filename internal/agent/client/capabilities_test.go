@@ -9,7 +9,8 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
 
-// A cluster agent advertises cluster capabilities only, deploy and remove included when it can;
+// A cluster agent advertises cluster capabilities only, deploy (with claims) and remove included
+// when it can;
 // a Docker agent keeps deployment.apply, deployment.pull and deployment.remove.
 func TestHelloCapabilitiesPerRuntime(t *testing.T) {
 	deploy := func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult {
@@ -20,7 +21,7 @@ func TestHelloCapabilitiesPerRuntime(t *testing.T) {
 	}
 	logs := func(context.Context, protocol.LogRequest, func([]byte) error) error { return nil }
 	cluster := helloCapabilities(&Options{Kubernetes: true, Logs: logs, Deploy: deploy, Remove: remove})
-	if !slices.Equal(cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesRemove}) || !protocol.CapabilitiesFit(protocol.RuntimeKubernetes, cluster) {
+	if !slices.Equal(cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesClaims, protocol.CapabilityKubernetesRemove}) || !protocol.CapabilitiesFit(protocol.RuntimeKubernetes, cluster) {
 		t.Fatalf("cluster %v", cluster)
 	}
 	if readOnly := helloCapabilities(&Options{Kubernetes: true, Logs: logs}); !slices.Equal(readOnly, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs}) {

@@ -35,12 +35,15 @@ export const unsupportedNames: Record<string, string> = {
   links: 'uses container links',
   network: 'is on a network other than its project network',
   image_config: "overrides its image's command, entrypoint, healthcheck, working directory or stop signal",
-  k8s_volume: 'mounts a volume; Kubernetes deployment of stateful services arrives with the migration analyzer',
+  k8s_volume: 'mounts a host path, or more than eight named volumes; a Deployment takes named volumes only, as claims',
   k8s_host_ip: 'publishes a port on a host address; a Kubernetes Service has none, so drop the address',
   k8s_restart: 'sets a restart policy other than always or unless-stopped; a Deployment always restarts',
   k8s_name: 'has a name Kubernetes cannot use as a label; end it with a letter or digit',
   k8s_namespace: "is mapped to a namespace the cluster's manifest no longer grants",
+  k8s_volume_shared: 'mounts a named volume another service mounts too; a ReadWriteOnce claim serves one pod',
 };
+// K8S_VOLUME_CHOICE replaces k8s_volume's sentence when its detail is choice_required.
+export const K8S_VOLUME_CHOICE = "mounts a named volume with no storage choice. Each revision keeps the previous one's choices, and a volume newly declared on a destination cannot receive one in this release, so remove it from the definition";
 type Inspection = {
   observed_at: string; state: string; image_platform: { os: string; architecture: string; variant?: string };
   restart_policy: string; restart_retries: number; ports: Port[];

@@ -11,8 +11,11 @@ import (
 
 // Cluster deployment capabilities. A cluster agent advertises them when it can apply and remove
 // an application's objects; it never advertises deployment.pull, because the kubelet pulls.
+// kubernetes.claims says it applies KubernetesTarget.Claims and service volumes: an agent
+// without it decodes a frame leniently and would run the pod with no claim.
 const (
 	CapabilityKubernetesDeploy = "kubernetes.deploy"
+	CapabilityKubernetesClaims = "kubernetes.claims"
 	CapabilityKubernetesRemove = "kubernetes.remove"
 )
 
@@ -24,6 +27,8 @@ type KubernetesTarget struct {
 	ApplicationID string `json:"application_id"`
 	InstanceID    string `json:"instance_id"`
 	SpecDigest    string `json:"spec_digest"`
+	// Claims are the PersistentVolumeClaims an apply ensures; a removal carries none.
+	Claims []KubernetesClaim `json:"claims,omitempty"`
 }
 
 func (k KubernetesTarget) Validate() error {
@@ -89,8 +94,8 @@ func KubernetesNames(project string, services []string) map[string]string {
 var kubernetesRestart = map[string]bool{"": true, "always": true, "unless-stopped": true}
 
 // validateKubernetes is Validate for a cluster frame: no Docker field, every image pulled by
-// digest (the kubelet pulls, so no tag moves and no credential travels), and secret keys named
-// among the environment's.
+// digest (the kubelet pulls, so no tag moves and no credential travels), secret keys named
+// among the environment's, and claims each mounted by one service.
 func (r DeploymentRequest) validateKubernetes() error {
 	if r.Kubernetes.Validate() != nil || len(r.Volumes) > 0 || len(r.Registries) > 0 {
 		return errors.New("invalid Kubernetes deployment")
@@ -113,7 +118,7 @@ func (r DeploymentRequest) validateKubernetes() error {
 			}
 		}
 	}
-	return nil
+	return r.validClaims()
 }
 
 // ValidateFor is Validate holding the frame to the agent's runtime: a Kubernetes target exactly
@@ -143,8 +148,9 @@ func (id DeploymentIdentity) valid() bool {
 }
 
 var (
-	// kubeObject is a name_taken, conflict or admission_denied detail: the object's kind and name.
-	kubeObject = regexp.MustCompile(`^(Deployment|Service|ConfigMap|Secret)/[a-z0-9]([-a-z0-9.]{0,241}[a-z0-9])?$`)
+	// kubeObject is a name_taken, conflict, admission_denied or claim_immutable detail: the
+	// object's kind and name.
+	kubeObject = regexp.MustCompile(`^(Deployment|Service|ConfigMap|Secret|PersistentVolumeClaim)/[a-z0-9]([-a-z0-9.]{0,241}[a-z0-9])?$`)
 	// rolloutDetail is a rollout_timeout detail: up to three reasons, each a Kubernetes reason
 	// word under the condition or pod it came from.
 	rolloutDetail = regexp.MustCompile(`^((progressing|available|replicafailure|pod)=[A-Za-z]{1,64}(,(progressing|available|replicafailure|pod)=[A-Za-z]{1,64}){0,2})?$`)

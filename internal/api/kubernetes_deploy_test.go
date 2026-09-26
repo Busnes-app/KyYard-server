@@ -96,7 +96,7 @@ func (h clusterHost) importApp(t *testing.T, name, compose string) string {
 	return h.base + "/" + app.ID
 }
 
-var clusterCapabilities = []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesRemove}
+var clusterCapabilities = []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesClaims, protocol.CapabilityKubernetesRemove}
 
 // The stateless definition maps to a namespace of the cluster, plans with every image pinned at
 // the registry, applies through the cluster agent with its target and secret keys, settles with

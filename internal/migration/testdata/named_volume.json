@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "ready": false,
+  "services": [
+    {
+      "name": "db",
+      "class": "operator_choice_required",
+      "findings": [
+        {
+          "axis": "storage",
+          "class": "operator_choice_required",
+          "code": "volume_named",
+          "detail": "data"
+        },
+        {
+          "axis": "networking",
+          "class": "operator_choice_required",
+          "code": "network_references",
+          "detail": "shop-on-cluster-db"
+        },
+        {
+          "axis": "ports",
+          "class": "operator_choice_required",
+          "code": "port_unpublished"
+        },
+        {
+          "axis": "secrets",
+          "class": "supported",
+          "code": "secrets_supported"
+        },
+        {
+          "axis": "probes",
+          "class": "supported",
+          "code": "probes_supported"
+        },
+        {
+          "axis": "resources",
+          "class": "supported",
+          "code": "resources_supported"
+        },
+        {
+          "axis": "scheduling",
+          "class": "supported",
+          "code": "scheduling_supported"
+        },
+        {
+          "axis": "flags",
+          "class": "supported",
+          "code": "flags_supported"
+        }
+      ]
+    },
+    {
+      "name": "web",
+      "class": "operator_choice_required",
+      "findings": [
+        {
+          "axis": "storage",
+          "class": "supported",
+          "code": "storage_supported"
+        },
+        {
+          "axis": "networking",
+          "class": "operator_choice_required",
+          "code": "network_references",
+          "detail": "shop-on-cluster-web"
+        },
+        {
+          "axis": "ports",
+          "class": "supported",
+          "code": "port_published",
+          "detail": "8080/tcp"
+        },
+        {
+          "axis": "secrets",
+          "class": "supported",
+          "code": "secrets_supported"
+        },
+        {
+          "axis": "probes",
+          "class": "supported",
+          "code": "probes_supported"
+        },
+        {
+          "axis": "resources",
+          "class": "supported",
+          "code": "resources_supported"
+        },
+        {
+          "axis": "scheduling",
+          "class": "supported",
+          "code": "scheduling_supported"
+        },
+        {
+          "axis": "flags",
+          "class": "supported",
+          "code": "flags_supported"
+        }
+      ]
+    }
+  ],
+  "checklist": [
+    {
+      "code": "grant_namespace",
+      "commands": [
+        "kubectl label namespace shop pod-security.kubernetes.io/enforce=baseline"
+      ]
+    },
+    {
+      "code": "create_destination"
+    },
+    {
+      "code": "update_references",
+      "commands": [
+        "web → shop-on-cluster-web",
+        "db → shop-on-cluster-db"
+      ]
+    },
+    {
+      "code": "copy_volume",
+      "commands": [
+        "kubectl -n shop scale deploy/shop-on-cluster-db --replicas=0",
+        "kubectl -n shop wait --for=delete pod -l app.kubernetes.io/instance=shop-on-cluster,kyyard.busnes.app/service=db --timeout=5m",
+        "kubectl -n shop run shop-on-cluster-db-copy --image=\"$HELPER_IMAGE\" --restart=Never --override-type=strategic --overrides='{\"spec\":{\"containers\":[{\"name\":\"shop-on-cluster-db-copy\",\"volumeMounts\":[{\"name\":\"to\",\"mountPath\":\"/to\"}]}],\"volumes\":[{\"name\":\"to\",\"persistentVolumeClaim\":{\"claimName\":\"shop-on-cluster-data\"}}]}}' -- sleep infinity",
+        "kubectl -n shop wait --for=condition=Ready pod/shop-on-cluster-db-copy --timeout=5m",
+        "kubectl -n shop exec shop-on-cluster-db-copy -- sh -c 'rm -rf /to/* /to/..?* /to/.[!.]*'",
+        "docker run --rm -v 'shop_data:/from:ro' \"$HELPER_IMAGE\" tar -C /from -cf - . | kubectl -n shop exec -i shop-on-cluster-db-copy -- tar -C /to -xf -",
+        "kubectl -n shop delete pod shop-on-cluster-db-copy",
+        "kubectl -n shop scale deploy/shop-on-cluster-db --replicas=1"
+      ]
+    },
+    {
+      "code": "validate_destination"
+    },
+    {
+      "code": "switch_traffic"
+    },
+    {
+      "code": "confirm_cutover"
+    }
+  ],
+  "assumptions": [
+    "volume_size_unknown"
+  ]
+}

@@ -94,7 +94,7 @@ func TestManifestRBACIsReadOnlyWithoutSecrets(t *testing.T) {
 		}
 	}
 	slices.Sort(granted)
-	want := []string{"/events", "/namespaces", "/nodes", "/persistentvolumeclaims", "/pods", "/pods/log", "/services", "apps/daemonsets", "apps/deployments", "apps/statefulsets"}
+	want := []string{"/events", "/namespaces", "/nodes", "/persistentvolumeclaims", "/pods", "/pods/log", "/services", "apps/daemonsets", "apps/deployments", "apps/statefulsets", "storage.k8s.io/storageclasses"}
 	if !slices.Equal(granted, want) {
 		t.Fatalf("cluster role grants %v", granted)
 	}
@@ -185,7 +185,8 @@ func TestFileName(t *testing.T) {
 }
 
 // Each listed namespace gets the deploy Role, exactly: Deployments, Services and ConfigMaps
-// read and written, Secrets written and read by name but never listed, bound to the agent.
+// read and written, Secrets written and read by name but never listed, claims read and created
+// but never updated or deleted, bound to the agent.
 func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
 	doc, err := manifest.Render(manifest.Input{Image: image, Link: link, Name: name, Namespaces: []string{"billing", "shop"}})
 	if err != nil {
@@ -204,6 +205,7 @@ func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
 				{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "create", "update", "patch", "delete"}},
+				{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"get", "list", "create"}},
 			}
 			if !reflect.DeepEqual(o.Rules, want) {
 				t.Fatalf("deploy role in %s: %+v", o.Namespace, o.Rules)

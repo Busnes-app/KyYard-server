@@ -33,7 +33,7 @@ func activeCluster(t *testing.T, ts TenancyStore, a TenantAccess, namespaces []s
 	if err := ts.ApproveEndpoint(ctx, a, enrolled.ID, enrolled.Fingerprint); err != nil {
 		t.Fatal(err)
 	}
-	if err := ts.SetEndpointCapabilities(ctx, enrolled.ID, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesRemove}); err != nil {
+	if err := ts.SetEndpointCapabilities(ctx, enrolled.ID, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesClaims, protocol.CapabilityKubernetesRemove}); err != nil {
 		t.Fatal(err)
 	}
 	putClusterInventory(t, ts, enrolled.ID, workloads)
@@ -42,7 +42,8 @@ func activeCluster(t *testing.T, ts TenancyStore, a TenantAccess, namespaces []s
 
 var clusterGeneration atomic.Uint64
 
-// putClusterInventory reports a fresh cluster snapshot holding workloads.
+// putClusterInventory reports a fresh cluster snapshot holding workloads and the StorageClasses
+// standard (the default) and fast.
 func putClusterInventory(t *testing.T, ts TenancyStore, endpoint string, workloads []protocol.Workload) {
 	t.Helper()
 	if workloads == nil {
@@ -50,7 +51,7 @@ func putClusterInventory(t *testing.T, ts TenancyStore, endpoint string, workloa
 	}
 	snap := protocol.Snapshot{Engine: protocol.Engine{Runtime: protocol.RuntimeKubernetes, Version: "v1.31.0"},
 		Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
-		Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "n1", Ready: true}}, Namespaces: []string{"shop"}, Workloads: workloads, Pods: []protocol.Pod{}, Services: []protocol.Service{}, Claims: []protocol.Claim{}}}
+		Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "n1", Ready: true}}, Namespaces: []string{"shop"}, Workloads: workloads, Pods: []protocol.Pod{}, Services: []protocol.Service{}, Claims: []protocol.Claim{}, StorageClasses: []protocol.StorageClass{{Name: "standard", Default: true}, {Name: "fast"}}}}
 	raw, _ := json.Marshal(snap)
 	// Each report must raise the generation, and none may be ahead of the clock.
 	generation := uint64(time.Now().Unix()) - 1000 + clusterGeneration.Add(1)

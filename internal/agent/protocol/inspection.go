@@ -70,7 +70,7 @@ type MountCounts struct {
 // UnsupportedCodes is the closed vocabulary of ContainerInspection.Unsupported, in the order the
 // Docker adapter reports them, then the k8s_ codes a plan for a Kubernetes endpoint refuses. Each
 // is configuration the target runtime cannot take from the definition.
-var UnsupportedCodes = []string{"mount_type", "anonymous_volume", "volumes_from", "volume_driver", "mount_options", "tmpfs", "auto_remove", "read_only_rootfs", "privileged", "capabilities", "security_opt", "devices", "pid_mode", "ipc_mode", "user", "runtime", "resource_limits", "ulimits", "sysctls", "device_requests", "init", "userns_mode", "cgroup_parent", "group_add", "extra_hosts", "dns", "links", "network", "image_config", "k8s_volume", "k8s_host_ip", "k8s_restart", "k8s_name", "k8s_namespace"}
+var UnsupportedCodes = []string{"mount_type", "anonymous_volume", "volumes_from", "volume_driver", "mount_options", "tmpfs", "auto_remove", "read_only_rootfs", "privileged", "capabilities", "security_opt", "devices", "pid_mode", "ipc_mode", "user", "runtime", "resource_limits", "ulimits", "sysctls", "device_requests", "init", "userns_mode", "cgroup_parent", "group_add", "extra_hosts", "dns", "links", "network", "image_config", "k8s_volume", "k8s_host_ip", "k8s_restart", "k8s_name", "k8s_namespace", "k8s_volume_shared"}
 
 // knownCodes accepts at most MaxUnsupported distinct codes from UnsupportedCodes.
 func knownCodes(codes []string) bool {

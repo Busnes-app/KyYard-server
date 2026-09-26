@@ -407,8 +407,9 @@ A write the cluster refuses after the agent's grant allowed it (a quota, an admi
 with `admission_denied` and the object's name. The rendered pod has no resource requests or
 limits and no security context: the namespace must admit it, which Pod Security `baseline` does
 and `restricted` does not, and a ResourceQuota or policy that requires limits refuses it.
-Stateless only in this release: a service with a volume, a port bound to a host address, or a
-restart policy other than `always`/`unless-stopped` stops at the plan with the reason. The
+A service with a host path, a port bound to a host address, or a restart policy other than
+`always`/`unless-stopped` stops at the plan with the reason; a named volume needs a storage choice,
+which a migration (below) records. The
 kubelet pulls the images: for a private registry, give the namespace's `default` ServiceAccount
 an imagePullSecret. A Kubernetes apply is not health-validated and never rolls back
 automatically; plan and apply the earlier revision to go back. Removing the application
@@ -428,6 +429,69 @@ hello and loses even its inventory); then **Regenerate manifest** and `kubectl a
 The identity Secret survives the new pod, so no re-enrollment is needed. A new enrollment token
 mints a new enrollment link, which an already-enrolled identity refuses: to change namespaces,
 use **Regenerate manifest**, which carries no link.
+
+### Migrating a Docker application to a cluster
+
+An organization administrator opens an application adopted on a Docker host and, under
+**Migrate to a Kubernetes cluster**, picks a cluster and one of its namespaces and selects
+**Analyze**. KyYard reads the definition and a live inspection of each container and shows every
+service on every axis (storage, networking, ports, secrets, probes, resources, scheduling, flags)
+as supported, a choice to make, or blocked, each with its reason. Host paths, a volume two
+services share, a volume the running container does not mount (its data cannot be verified as
+the application's), host networking, host-bound ports, privileged and host-namespace settings, and a
+restart policy of `no` or `on-failure` are blocked: change the definition or the container, then
+**Analyze again**. For each named volume choose a StorageClass the cluster reports and a size
+(`Mi`, `Gi` or `Ti`; Docker reports no volume size); it becomes a `ReadWriteOnce`
+PersistentVolumeClaim named `<destination project>-<volume>` (for `shop on cluster-a`,
+`shop-on-cluster-a-data`; a long name is cut and suffixed with a hash). In an application of
+several services, each one is reached on the cluster only by its destination name
+(`<destination project>-<service>`, shown on the report) and only on the ports it publishes:
+acknowledge that you will update the references, and that a service publishing no port is
+unreachable from the others, before the report is ready. The destination keeps its storage
+choices when you edit its definition later; a volume it newly declares has none, so remove it or
+migrate again.
+
+When the report is ready, **Create destination** makes a new application, `<name> on <cluster>`,
+mapped to the namespace, with a copy of the source's environment values. Then follow the
+checklist; KyYard never stops, changes or removes the source for you:
+
+1. Label the namespace `pod-security.kubernetes.io/enforce=baseline`. The command has no
+   `--overwrite`, so it refuses to change an existing label; a namespace at `restricted` refuses
+   the destination's pods (above). Then apply the regenerated manifest, which adds
+   `persistentvolumeclaims` `get, list, create` to each namespace's Role and `storageclasses`
+   `get, list` to the ClusterRole, and upgrade the agent image
+   (`kubectl -n kyyard-agent set image deploy/kyyard-agent agent=ghcr.io/busnes-app/kyyard@sha256:<digest>`):
+   an agent from before this release reports no StorageClasses and cannot apply claims, and a
+   plan with claims is refused (`agent_claims_unsupported`) until it advertises
+   `kubernetes.claims`.
+2. Open the destination application, plan and apply it. The plan is refused
+   (`storage_class_unknown`) while a claim's StorageClass, or a default class for a claim on the
+   cluster default, is missing from the cluster's inventory.
+3. With more than one service, change every reference one service makes to another by its
+   Compose name (environment values, configuration) to the destination name the checklist lists,
+   save the destination's definition and apply it.
+4. Stop writes to the source, then copy each volume into its claim with the recipe the checklist
+   prints. First set `HELPER_IMAGE` to a digest-pinned image that has `sh` and `tar`
+   (`busybox@sha256:<digest>`); the source host and the cluster both run it. Per service the
+   recipe scales the Deployment to 0 and waits for its pod to go, runs a helper pod
+   (`<name>-copy`, sleeping until the recipe deletes it) that mounts the claim at `/to`, empties
+   `/to` (`rm -rf /to/* /to/..?* /to/.[!.]*`), streams
+   `docker run --rm -v <volume>:/from:ro "$HELPER_IMAGE" tar -C /from -cf - .` into
+   `kubectl exec -i <name>-copy -- tar -C /to -xf -`, deletes the helper and scales back to 1.
+   Emptying the claim removes what the destination wrote on its first start at step 2 (a
+   database initializes a directory), so the two datasets never mix.
+5. Validate the destination and select **Confirm validation** with a note.
+6. Point your DNS or Ingress at the destination.
+7. Select **Confirm cutover** with a note, then remove the source with KyYard's removal, which
+   is refused while the migration is open.
+
+**Abandon migration** closes it and keeps a created destination. Claims survive the removal of
+their application; delete one deliberately with `kubectl -n <ns> delete pvc <name>` when its data
+is no longer needed. Health probes, resource limits and a read-only root filesystem are not
+carried over: acknowledge each drop on the report, then add them to the Deployment after cutover.
+
+The destination application keeps its name after an abandoned migration: a new migration's
+destination creation answers `application_name_taken` until the old destination is removed.
 
 ## Persistent keys
 

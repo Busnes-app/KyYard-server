@@ -11,6 +11,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/render"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -145,6 +146,50 @@ func TestRenderNamesAreValid(t *testing.T) {
 	for _, v := range render.Labels(request("shop", svc("my_api")), "my_api") {
 		if errs := validation.IsValidLabelValue(v); len(errs) > 0 {
 			t.Fatalf("%q: %v", v, errs)
+		}
+	}
+}
+
+// A service mounting claims renders one ReadWriteOnce claim per name, labelled like its other
+// objects, in its StorageClass or none, mounted as a pod volume named after the claim.
+func TestRenderClaims(t *testing.T) {
+	db := api()
+	db.Name = "db"
+	db.Volumes = []protocol.KubernetesMount{{Claim: "shop-data", MountPath: "/var/lib/db"}, {Claim: "shop-data", MountPath: "/backup", ReadOnly: true}, {Claim: "shop-logs", MountPath: "/var/log/db"}}
+	req := request("shop", db, web())
+	req.Kubernetes.Claims = []protocol.KubernetesClaim{{Name: "shop-data", StorageClass: "fast", Size: "10Gi", AccessMode: protocol.AccessReadWriteOnce}, {Name: "shop-logs", Size: "512Mi", AccessMode: protocol.AccessReadWriteOnce}}
+	if err := req.ValidateFor(protocol.RuntimeKubernetes, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	sets := render.Request(req)
+	fast := "fast"
+	want := []*corev1.PersistentVolumeClaim{
+		{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}, ObjectMeta: sets[0].ConfigMap.ObjectMeta, Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, StorageClassName: &fast,
+			Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")}}}},
+		{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}, ObjectMeta: sets[0].ConfigMap.ObjectMeta, Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("512Mi")}}}},
+	}
+	want[0].ObjectMeta.Name, want[1].ObjectMeta.Name = "shop-data", "shop-logs"
+	if !reflect.DeepEqual(sets[0].Claims, want) || len(sets[1].Claims) != 0 {
+		got, _ := json.MarshalIndent(sets[0].Claims, "", "  ")
+		t.Fatalf("claims:\n%s", got)
+	}
+	pod := sets[0].Deployment.Spec.Template.Spec
+	volumes := []corev1.Volume{
+		{Name: "shop-data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "shop-data"}}},
+		{Name: "shop-logs", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "shop-logs"}}},
+	}
+	mounts := []corev1.VolumeMount{{Name: "shop-data", MountPath: "/var/lib/db"}, {Name: "shop-data", MountPath: "/backup", ReadOnly: true}, {Name: "shop-logs", MountPath: "/var/log/db"}}
+	if !reflect.DeepEqual(pod.Volumes, volumes) || !reflect.DeepEqual(pod.Containers[0].VolumeMounts, mounts) || len(sets[1].Deployment.Spec.Template.Spec.Volumes) != 0 {
+		t.Fatalf("pod %+v %+v", pod.Volumes, pod.Containers[0].VolumeMounts)
+	}
+	decoder := serializer.NewCodecFactory(scheme.Scheme, serializer.EnableStrict).UniversalDeserializer()
+	for _, obj := range []any{sets[0].Claims[0], sets[0].Claims[1], sets[0].Deployment} {
+		raw, _ := json.Marshal(obj)
+		if _, _, err := decoder.Decode(raw, nil, nil); err != nil {
+			t.Fatalf("%s: %v", raw, err)
 		}
 	}
 }

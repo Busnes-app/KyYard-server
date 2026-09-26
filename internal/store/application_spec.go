@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -19,7 +20,87 @@ type ApplicationSpec struct {
 	Kind     string               `json:"kind"`
 	Services []ApplicationService `json:"services"`
 	Volumes  []DeclaredVolume     `json:"volumes,omitempty"`
+	// Kubernetes holds what only a cluster needs: a migration's destination revision carries
+	// its storage choices. The Compose importer never sets it.
+	Kubernetes *KubernetesExtension `json:"kubernetes,omitempty"`
 }
+
+// KubernetesExtension carries a StorageClass and size per named volume, keyed by its declared
+// name. A chosen volume becomes a PersistentVolumeClaim on a cluster.
+type KubernetesExtension struct {
+	Volumes map[string]KubernetesVolume `json:"volumes"`
+}
+
+// KubernetesVolume is one volume's claim: StorageClass "" is the cluster default, Size a whole
+// number of Mi, Gi or Ti from 1Mi to 16Ti, AccessMode ReadWriteOnce.
+type KubernetesVolume struct {
+	StorageClass string `json:"storage_class"`
+	Size         string `json:"size"`
+	AccessMode   string `json:"access_mode"`
+}
+
+// volume is the choice for a declared volume, on a nil extension too.
+func (k *KubernetesExtension) volume(name string) (KubernetesVolume, bool) {
+	if k == nil {
+		return KubernetesVolume{}, false
+	}
+	v, ok := k.Volumes[name]
+	return v, ok
+}
+
+// kubernetesClaims turns spec's chosen named volumes into the claims <project>-<volume> (the
+// shared naming rule over the declared volumes) and each service's mounts of them, in mount
+// order. A volume with no choice, or one two services mount, gets no claim: the preflight
+// refused it already.
+func kubernetesClaims(project string, spec ApplicationSpec) ([]protocol.KubernetesClaim, map[string][]protocol.KubernetesMount) {
+	declared := make([]string, 0, len(spec.Volumes))
+	for _, v := range spec.Volumes {
+		declared = append(declared, v.Name)
+	}
+	names := protocol.KubernetesNames(project, declared)
+	users := volumeUsers(spec)
+	claims, mounts := []protocol.KubernetesClaim{}, map[string][]protocol.KubernetesMount{}
+	for _, s := range spec.Services {
+		for _, v := range s.Volumes {
+			choice, ok := spec.Kubernetes.volume(v.Source)
+			if v.Kind != "named" || !ok || users[v.Source] != 1 {
+				continue
+			}
+			claim := names[v.Source]
+			if !slices.ContainsFunc(claims, func(c protocol.KubernetesClaim) bool { return c.Name == claim }) {
+				claims = append(claims, protocol.KubernetesClaim{Name: claim, StorageClass: choice.StorageClass, Size: choice.Size, AccessMode: choice.AccessMode})
+			}
+			mounts[s.Name] = append(mounts[s.Name], protocol.KubernetesMount{Claim: claim, MountPath: v.Target, ReadOnly: v.ReadOnly})
+		}
+	}
+	return claims, mounts
+}
+
+// carried is k for a new revision spec that brings none: the choices of the volumes spec still
+// declares, nil when none remain. A Compose import never sets the extension, and a claim is
+// immutable, so the previous choice is what the cluster holds.
+func (k *KubernetesExtension) carried(spec ApplicationSpec) *KubernetesExtension {
+	if k == nil {
+		return nil
+	}
+	kept := map[string]KubernetesVolume{}
+	for _, v := range spec.Volumes {
+		if c, ok := k.Volumes[v.Name]; ok {
+			kept[v.Name] = c
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return &KubernetesExtension{Volumes: kept}
+}
+
+// Valid checks one choice's grammar; the destination inventory decides whether its class exists.
+func (v KubernetesVolume) Valid() bool {
+	_, size := protocol.StorageSizeBytes(v.Size)
+	return protocol.ValidStorageClass(v.StorageClass) && size && v.AccessMode == protocol.AccessReadWriteOnce
+}
+
 type ApplicationService struct {
 	Ports       []ApplicationPort               `json:"ports,omitempty"`
 	Restart     string                          `json:"restart,omitempty"`
@@ -54,6 +135,20 @@ func VolumeHostName(project string, v DeclaredVolume) string {
 		return v.Name
 	}
 	return project + "_" + v.Name
+}
+
+// namedVolumes lists the declared volumes some service mounts by name, in declared order: the
+// volumes a migration asks a storage choice for.
+func (spec ApplicationSpec) namedVolumes() []string {
+	out := []string{}
+	for _, v := range spec.Volumes {
+		if slices.ContainsFunc(spec.Services, func(s ApplicationService) bool {
+			return slices.ContainsFunc(s.Volumes, func(m ApplicationVolume) bool { return m.Kind == "named" && m.Source == v.Name })
+		}) {
+			out = append(out, v.Name)
+		}
+	}
+	return out
 }
 
 // serviceNames lists the spec's services in order.
@@ -142,6 +237,16 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 		}
 		for name, ref := range service.Environment {
 			if !applicationEnvName.MatchString(name) || !applicationSecretName.MatchString(ref.SecretRef) {
+				return nil, "", ErrInvalid
+			}
+		}
+	}
+	if k := spec.Kubernetes; k != nil {
+		if len(k.Volumes) == 0 || len(k.Volumes) > protocol.MaxKubernetesClaims {
+			return nil, "", ErrInvalid
+		}
+		for name, v := range k.Volumes {
+			if !declared[name] || !v.Valid() {
 				return nil, "", ErrInvalid
 			}
 		}
