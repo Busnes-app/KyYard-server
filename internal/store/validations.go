@@ -286,19 +286,14 @@ func workloadPods(w *protocol.WorkloadStatus) map[string]int {
 
 // BaselineOf is the baseline a first observation gives, false unless every service was either
 // inspected or is known gone or replaced. A cluster service whose Deployment is already missing,
-// recreated or edited gives none: its next poll judges it changed. One wanting pods but listing
-// none gives no baseline yet: an empty PodRestarts could never judge its pods replaced.
+// recreated or edited gives none: its next poll judges it changed. One listing no pods gets an
+// empty PodRestarts: the first pods to appear are the rollout's own, and their restarts count from 0.
 func BaselineOf(obs []Observation) (map[string]ServiceBaseline, bool) {
 	out := map[string]ServiceBaseline{}
 	for _, o := range obs {
 		switch {
 		case o.Inspection != nil && o.Inspection.Workload != nil:
-			w := o.Inspection.Workload
-			switch {
-			case w.Missing || w.UID != o.Inspection.Target.Workload.UID || w.Generation > o.Generation:
-			case len(w.Pods) == 0 && w.Desired > 0:
-				return nil, false
-			default:
+			if w := o.Inspection.Workload; !w.Missing && w.UID == o.Inspection.Target.Workload.UID && w.Generation <= o.Generation {
 				out[o.Service] = ServiceBaseline{PodRestarts: workloadPods(w)}
 			}
 		case o.Inspection != nil:

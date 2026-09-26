@@ -107,37 +107,40 @@ func TestJudgeCluster(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		base            map[string]ServiceBaseline
+		final           bool
 		obs             []Observation
 		verdict, detail string
 	}{
-		{"a new pod restarting after an old one left", map[string]ServiceBaseline{"web": {PodRestarts: map[string]int{podA: 4, podB: 0}}}, web(workload(1, pod(podB, "running", "", 3))), VerdictRestarting, "web"},
-		{"a replacement restarting after an evicted pod went", base, web(workload(1, pod(podB, "running", "", 1))), VerdictRestarting, "web"},
-		{"a restart outranks a crash loop, without its reason", map[string]ServiceBaseline{"web": base["web"], "api": {PodRestarts: map[string]int{podB: 0}}},
+		{"a new pod restarting after an old one left", map[string]ServiceBaseline{"web": {PodRestarts: map[string]int{podA: 4, podB: 0}}}, false, web(workload(1, pod(podB, "running", "", 3))), VerdictRestarting, "web"},
+		{"a replacement restarting after an evicted pod went", base, false, web(workload(1, pod(podB, "running", "", 1))), VerdictRestarting, "web"},
+		{"a restart outranks a crash loop, without its reason", map[string]ServiceBaseline{"web": base["web"], "api": {PodRestarts: map[string]int{podB: 0}}}, false,
 			append(web(workload(1, pod(podA, "running", "", 3))), api(workload(0, pod(podB, "waiting", "CrashLoopBackOff", 0)))), VerdictRestarting, "web"},
-		{"a crash loop decides with its reason", map[string]ServiceBaseline{"web": base["web"], "api": {PodRestarts: map[string]int{podB: 0}}},
+		{"a crash loop decides with its reason", map[string]ServiceBaseline{"web": base["web"], "api": {PodRestarts: map[string]int{podB: 0}}}, false,
 			append(web(up()), api(workload(0, pod(podB, "waiting", "CrashLoopBackOff", 0)))), VerdictUnhealthy, "api:CrashLoopBackOff"},
+		{"no pods listed all window", map[string]ServiceBaseline{"web": {}}, true, web(workload(0)), VerdictUnhealthy, "web"},
+		{"a crash loop beside a service listing no pods", map[string]ServiceBaseline{"web": {}, "api": {PodRestarts: map[string]int{podB: 0}}}, false,
+			append(web(workload(0)), api(workload(0, pod(podB, "waiting", "CrashLoopBackOff", 0)))), VerdictUnhealthy, "api:CrashLoopBackOff"},
 	} {
-		if v, d := Judge(tc.obs, tc.base, false); v != tc.verdict || d != tc.detail {
+		if v, d := Judge(tc.obs, tc.base, tc.final); v != tc.verdict || d != tc.detail {
 			t.Errorf("%s: %q %q, want %q %q", tc.name, v, d, tc.verdict, tc.detail)
 		}
 	}
 }
 
 // A cluster baseline keeps each pod's restarts by UID; a Deployment already missing, recreated
-// or edited gives none, so its first poll judges it changed; one wanting pods but listing none
-// gives no baseline yet.
+// or edited gives none, so its first poll judges it changed; one listing no pods, wanted or not,
+// gets an empty baseline.
 func TestBaselineOfACluster(t *testing.T) {
 	got, ok := BaselineOf([]Observation{{Service: "web", Presence: PresenceUnknown, Generation: 1, Inspection: workload(1, pod(podA, "running", "", 2), pod(podB, "running", "", 3))}})
 	if !ok || !reflect.DeepEqual(got["web"], ServiceBaseline{PodRestarts: map[string]int{podA: 2, podB: 3}}) {
 		t.Fatalf("baseline: %+v %v", got, ok)
 	}
-	if got, ok := BaselineOf([]Observation{{Service: "web", Presence: PresenceUnknown, Generation: 1, Inspection: workload(0)}}); ok {
-		t.Fatalf("no pods listed yet gave a baseline: %+v", got)
-	}
 	scaledDown := workload(0)
 	scaledDown.Workload.Desired, scaledDown.Workload.Updated = 0, 0
-	if got, ok := BaselineOf([]Observation{{Service: "web", Presence: PresenceUnknown, Generation: 1, Inspection: scaledDown}}); !ok || len(got) != 1 {
-		t.Fatalf("a Deployment wanting no pods: %+v %v", got, ok)
+	for name, in := range map[string]*protocol.ContainerInspection{"wanting a pod": workload(0), "wanting none": scaledDown} {
+		if got, ok := BaselineOf([]Observation{{Service: "web", Presence: PresenceUnknown, Generation: 1, Inspection: in}}); !ok || len(got) != 1 || len(got["web"].PodRestarts) != 0 {
+			t.Fatalf("no pods listed, %s: %+v %v", name, got, ok)
+		}
 	}
 	recreated := workload(1, pod(podB, "running", "", 0))
 	recreated.Workload.UID = podB
