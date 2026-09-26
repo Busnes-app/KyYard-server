@@ -268,8 +268,8 @@ func TestPruneKeepsADeploymentWhoseRollbackIsOpen(t *testing.T) {
 		}
 		return n == 1
 	}
-	if kept(prior.ID) {
-		t.Fatal("a manual, validated deployment outlived its retention")
+	if !kept(prior.ID) {
+		t.Fatal("pruned the instance's earlier apply while a rollback was open")
 	}
 	if !kept(updated.ID) {
 		t.Fatal("pruned a deployment while its validation was open")
@@ -289,7 +289,45 @@ func TestPruneKeepsADeploymentWhoseRollbackIsOpen(t *testing.T) {
 	if err := ts.MarkRollbackOutcome(ctx, updated.ID, RollbackFailed, RollbackNotSent); err != nil {
 		t.Fatal(err)
 	}
-	if kept(updated.ID) {
+	if kept(updated.ID) || kept(prior.ID) {
 		t.Fatal("an old, superseded deployment outlived its decided validation")
+	}
+}
+
+// While a validation of the instance may still roll back, no succeeded apply of the instance is
+// pruned: a cluster rollback returns to the previous one, which a later apply at the same revision
+// no longer keeps as its revision's newest. A failed apply still goes.
+func TestPruneKeepsTheInstanceAppliesWhileARollbackIsOpen(t *testing.T) {
+	st, _, _, _, _, _, prior, updated := validationFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	old := time.Now().UTC().Add(-DeploymentHistoryRetention - time.Hour)
+	mustExec(t, st, `UPDATE deployments SET settled_at=? WHERE id=?`, old, prior.ID)
+	failed := historyRow(t, st, prior.ID, 1, "failed", old)
+	exists := func(id string) bool {
+		t.Helper()
+		var n int
+		if err := st.db.QueryRowContext(ctx, st.rebind(`SELECT COUNT(*) FROM deployments WHERE id=?`), id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+	if _, err := ts.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if exists(failed) || !exists(prior.ID) || !exists(updated.ID) {
+		t.Fatalf("while open: failed %t prior %t updated %t", exists(failed), exists(prior.ID), exists(updated.ID))
+	}
+	if _, err := ts.FinishValidation(ctx, updated.ID, VerdictUnhealthy, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.MarkRollbackOutcome(ctx, updated.ID, RollbackFailed, RollbackNotSent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if exists(prior.ID) || !exists(updated.ID) {
+		t.Fatalf("once decided: prior %t updated %t", exists(prior.ID), exists(updated.ID))
 	}
 }
