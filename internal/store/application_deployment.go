@@ -117,6 +117,8 @@ type Deployment struct {
 	// MigrationID names the open migration whose destination this apply deployed, set when the
 	// row turned applying.
 	MigrationID string `json:"migration_id,omitempty"`
+	// RetainedClaims names the claims a settled cluster removal reported kept (retainedClaims).
+	RetainedClaims []string `json:"retained_claims,omitempty"`
 }
 
 // storedDeploymentResult is the shape kept in the result column: the result code and the
@@ -628,8 +630,34 @@ func scanDeployment(rows interface{ Scan(...any) error }) (*Deployment, error) {
 		res := legacyResult(protocol.DeploymentResult{Deployment: d.ID, Outcome: d.State, Code: stored.Code, Steps: stored.Steps, Services: stored.Services})
 		d.Result = &res
 	}
+	d.RetainedClaims = retainedClaims(&d)
 	d.Expired = !time.Now().Before(d.ExpiresAt)
 	return &d, nil
+}
+
+// retainedClaims names the claims a cluster removal reported kept, sorted. A retained step names
+// only its service, so a service's planned claim mounts are named when the agent reported exactly
+// that many; any other count cannot say which claims exist, and that service names none.
+func retainedClaims(d *Deployment) []string {
+	if d.Kind != "remove" || d.Plan.Namespace == "" || d.Result == nil {
+		return nil
+	}
+	kept := map[string]int{}
+	for _, s := range d.Result.Steps {
+		if s.Step == protocol.StepVolume && s.Outcome == protocol.OutcomeSkipped && s.Detail == protocol.DetailRetained {
+			kept[s.Service]++
+		}
+	}
+	var out []string
+	for _, ps := range d.Plan.Services {
+		if n := kept[ps.Name]; n > 0 && n == len(ps.ClaimMounts) {
+			for _, m := range ps.ClaimMounts {
+				out = append(out, m.Claim)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 func (t *tenancyStore) ReadDeployment(ctx context.Context, a TenantAccess, app, id string) (*Deployment, error) {

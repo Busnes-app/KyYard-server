@@ -407,7 +407,9 @@ name (`k8s_name_taken`), or when a service's name collides with a running one's 
 for each rollout until the pod has been available for 10 seconds; one the cluster reports as
 failed (a pod it refused to create, or the Deployment's own 9-minute progress deadline), or that
 does not finish before the apply's ten-minute deadline, stops with the reason the cluster gives
-(`FailedCreate`, `ImagePullBackOff`, `CrashLoopBackOff`, ...) and leaves the objects as applied.
+(`FailedCreate`, `ImagePullBackOff`, `CrashLoopBackOff`, ..., or a volume claim still `Pending`
+because no StorageClass has provisioned it, or, with a `WaitForFirstConsumer` class, its pod has
+not been scheduled) and leaves the objects as applied.
 A write the cluster refuses after the agent's grant allowed it (a quota, an admission policy) stops
 with `admission_denied` and the object's name; a write the agent's Role does not grant (a manifest
 older than the agent) stops with `forbidden`: apply the regenerated manifest. The rendered pod has no resource requests or
@@ -463,7 +465,9 @@ several services, each one is reached on the cluster only by its destination nam
 acknowledge that you will update the references, and that a service publishing no port is
 unreachable from the others, before the report is ready. The destination keeps its storage
 choices when you edit its definition later; a volume it newly declares has none, so remove it or
-migrate again.
+migrate again. Analysis and choices read the cluster's inventory only while the destination is
+connected and its inventory is fresh (received in the last three minutes, observed in the last
+five); otherwise they answer `inventory_stale`.
 
 When the report is ready, **Create destination** makes a new application, `<name> on <cluster>`,
 mapped to the namespace, with a copy of the source's environment values. Then follow the
@@ -501,11 +505,13 @@ checklist; KyYard never stops, changes or removes the source for you:
 
 **Abandon migration** closes it and keeps a created destination. Claims survive the removal of
 their application; delete one deliberately with `kubectl -n <ns> delete pvc <name>` when its data
-is no longer needed. Health probes, resource limits and a read-only root filesystem are not
+is no longer needed; the removal's result lists them under **Kept on the cluster**. Health probes, resource limits and a read-only root filesystem are not
 carried over: acknowledge each drop on the report, then add them to the Deployment after cutover.
 
-The destination application keeps its name after an abandoned migration: a new migration's
-destination creation answers `application_name_taken` until the old destination is removed.
+An abandoned migration's destination stays under its name; a new migration names its destination
+`<name> on <cluster> (2)`, then `(3)`, up to `(9)`, and answers `application_name_taken` past that
+(remove or discard an old destination). A destination name longer than 255 bytes is refused
+(`destination_name_too_long`): rename the cluster.
 
 ## Persistent keys
 

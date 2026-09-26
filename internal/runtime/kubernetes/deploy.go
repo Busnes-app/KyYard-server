@@ -554,7 +554,8 @@ func failed(d *appsv1.Deployment) bool {
 var reasonWord = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
 
 // stalled says why a rollout did not finish: the Deployment's Progressing reason, its Available
-// reason when unavailable, its ReplicaFailure reason when pods could not be created, and the
+// reason when unavailable, its ReplicaFailure reason when pods could not be created, the phase of
+// each planned claim still Pending or Lost (a pod whose claim is unbound never schedules), and the
 // newest pod's waiting reason, as far as each can be read in a few seconds past the deadline.
 func (r *run) stalled(set render.Set, d *appsv1.Deployment) string {
 	var parts []string
@@ -572,6 +573,12 @@ func (r *run) stalled(set render.Set, d *appsv1.Deployment) string {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.parent), 5*time.Second)
 	defer cancel()
+	for _, want := range set.Claims {
+		pvc, err := r.c.cs.CoreV1().PersistentVolumeClaims(r.namespace).Get(ctx, want.Name, metav1.GetOptions{})
+		if err == nil && (pvc.Status.Phase == corev1.ClaimPending || pvc.Status.Phase == corev1.ClaimLost) {
+			parts = append(parts, "claim="+string(pvc.Status.Phase))
+		}
+	}
 	pods, err := r.c.cs.CoreV1().Pods(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: labels.SelectorFromSet(render.Selector(r.instance, set.Service)).String()})
 	if err == nil && len(pods.Items) > 0 {
 		newest := slices.MaxFunc(pods.Items, func(a, b corev1.Pod) int {

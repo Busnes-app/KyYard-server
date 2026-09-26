@@ -168,3 +168,13 @@ func TestStorageClassesInventory(t *testing.T) {
 		t.Fatal("a nil storage class list")
 	}
 }
+
+// Clamp keeps storage_classes in Truncated: the store reads it as "the list cannot prove a class
+// absent", on the agent's snapshot and again on the server's copy.
+func TestClampKeepsTheStorageClassCut(t *testing.T) {
+	s := Snapshot{Truncated: []string{"storage_classes"}, Kubernetes: &KubernetesInventory{}}
+	Clamp(&s)
+	if !slices.Equal(s.Truncated, []string{"storage_classes"}) {
+		t.Fatalf("truncated %v", s.Truncated)
+	}
+}

@@ -510,8 +510,8 @@ it('names an immutable claim, shows the claims a plan creates, and says a remova
       { service: 'web', step: 'precondition', outcome: 'denied', code: 'claim_immutable', detail: 'PersistentVolumeClaim/shop-data' },
       { service: 'web', step: 'precondition', outcome: 'denied', code: 'name_taken', detail: 'PersistentVolumeClaim/shop-data' },
     ], services: [] } };
-  const removal = { ...plan, id: 'd2', kind: 'remove', state: 'succeeded', plan: { project: 'shop', namespace: 'shop' },
-    result: { steps: [{ service: 'web', step: 'remove', outcome: 'succeeded', detail: '' }, { service: 'web', step: 'volume', outcome: 'skipped', detail: 'retained' }], services: [] } };
+  const removal = { ...plan, id: 'd2', kind: 'remove', state: 'succeeded', plan: { project: 'shop', namespace: 'shop' }, retained_claims: ['shop-data'],
+    result: { steps: [{ service: 'web', step: 'remove', outcome: 'succeeded', detail: '' }, { service: 'web', step: 'volume', outcome: 'skipped', detail: 'retained' }, { service: 'api', step: 'volume', outcome: 'skipped', detail: 'retained' }], services: [] } };
   vi.stubGlobal('fetch', stubFetch([kube, removal]));
   render(<ApplicationDeploymentPlan {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
@@ -522,8 +522,19 @@ it('names an immutable claim, shows the claims a plan creates, and says a remova
   expect(screen.getByText('Apply (migration)')).toBeTruthy();
   const rows = screen.getAllByRole('button', { name: 'Show steps' });
   fireEvent.click(rows[rows.length - 1]);
-  expect(await screen.findByText(CLAIM_RETAINED)).toBeTruthy();
+  expect((await screen.findAllByText(CLAIM_RETAINED)).length).toBe(2);
   expect(screen.getByText(/Its PersistentVolumeClaims and their data are kept/)).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Kept on the cluster' })).toBeTruthy();
+  expect(screen.getByText('PersistentVolumeClaim shop/shop-data')).toBeTruthy();
+  expect(screen.getByText(/1 more kept claim\(s\) are labelled for this instance/)).toBeTruthy();
+  expect(screen.getByText('kubectl -n shop get pvc -l kyyard.busnes.app/instance=i')).toBeTruthy();
+});
+it('names an unbound claim in a rollout timeout and drops anything else', () => {
+  const text = STEP_CODES.rollout_timeout;
+  expect(stepText({ code: 'rollout_timeout', detail: 'progressing=ReplicaSetUpdated,available=MinimumReplicasUnavailable,claim=Pending' }))
+    .toBe(`${text} (progressing ReplicaSetUpdated, available MinimumReplicasUnavailable); a volume claim is still Pending: no StorageClass has provisioned it, or (with a WaitForFirstConsumer class) its pod has not been scheduled.`);
+  expect(stepText({ code: 'rollout_timeout', detail: 'claim=Lost' })).toBe(`${text}; a volume claim is Lost: the volume behind it is gone.`);
+  expect(stepText({ code: 'rollout_timeout', detail: 'claim=Bound,claim=<b>x</b>' })).toBe(`${text}.`);
 });
 
 it('says whether the plan is open', () => {

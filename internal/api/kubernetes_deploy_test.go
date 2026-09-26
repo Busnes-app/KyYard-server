@@ -249,6 +249,10 @@ func TestRuntimeGateMatrix(t *testing.T) {
 		}
 	}
 	h.do(t, "PUT", app+"/mapping", `{"endpoint_id":"`+h.ag.id+`","namespace":"shop"}`, 204)
+	// A migration's source must be on Docker: an application mapped to the cluster cannot start one.
+	if w := tenantRequest(h.s, h.admin, "POST", app+"/migration", `{"destination_endpoint_id":"`+h.ag.id+`","namespace":"shop"}`, true); w.Code != 409 || !strings.Contains(w.Body.String(), "runtime_unsupported") {
+		t.Errorf("migration of a cluster application: %d %s", w.Code, w.Body.String())
+	}
 	var mapped store.ApplicationMapping
 	_ = json.Unmarshal([]byte(h.do(t, "GET", app+"/mapping", "", 200)), &mapped)
 	planBody, _ := json.Marshal(store.PlanRequest{InstanceID: mapped.InstanceID, MappingVersion: mapped.Version, Revision: 1, Confirm: "shop"})

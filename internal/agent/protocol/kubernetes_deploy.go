@@ -147,13 +147,16 @@ func (id DeploymentIdentity) valid() bool {
 	return id.Kind == KindDeployment && id.ContainerID == "" && id.ImageID == "" && id.CreatedUnix == 0 && ValidDNSLabel(id.Namespace) && ValidDNSLabel(id.Name) && deploymentUUID.MatchString(id.UID) && id.Generation >= 1 && imageID.MatchString(id.ImageDigest)
 }
 
+// rolloutReason is one reason of a rollout_timeout detail.
+const rolloutReason = `((progressing|available|replicafailure|pod)=[A-Za-z]{1,64}|claim=(Pending|Lost))`
+
 var (
 	// kubeObject is a name_taken, conflict, admission_denied or claim_immutable detail: the
 	// object's kind and name.
 	kubeObject = regexp.MustCompile(`^(Deployment|Service|ConfigMap|Secret|PersistentVolumeClaim)/[a-z0-9]([-a-z0-9.]{0,241}[a-z0-9])?$`)
 	// rolloutDetail is a rollout_timeout detail: up to three reasons, each a Kubernetes reason
-	// word under the condition or pod it came from.
-	rolloutDetail = regexp.MustCompile(`^((progressing|available|replicafailure|pod)=[A-Za-z]{1,64}(,(progressing|available|replicafailure|pod)=[A-Za-z]{1,64}){0,2})?$`)
+	// word under the condition or pod it came from, or a planned claim's phase while unbound.
+	rolloutDetail = regexp.MustCompile(`^(` + rolloutReason + `(,` + rolloutReason + `){0,2})?$`)
 	// podSecurityDetail is a pod_security detail: the namespace's enforce label is absent,
 	// privileged, or not a level at all.
 	podSecurityDetail = map[string]bool{"": true, "missing": true, "privileged": true, "invalid": true}

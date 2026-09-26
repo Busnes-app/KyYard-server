@@ -36,7 +36,7 @@ it('has a sentence for every generated code, and no other', () => {
   expect(messages.storage_class_unknown).toBeTruthy();
   expect(sorted(Object.keys(STEP_CODES))).toEqual(sorted(protocolCodes.step_codes));
   expect(sorted(Object.keys(unsupportedNames))).toEqual(sorted(protocolCodes.unsupported_codes));
-  for (const code of ['namespace_unknown', 'runtime_unsupported', 'migration_open', 'storage_class_unknown', 'size_invalid', 'volume_unknown', 'application_name_taken', 'migration_not_ready', 'migration_state', 'migration_stale']) {
+  for (const code of ['namespace_unknown', 'runtime_unsupported', 'migration_open', 'storage_class_unknown', 'size_invalid', 'volume_unknown', 'application_name_taken', 'destination_name_too_long', 'inventory_stale', 'migration_not_ready', 'migration_state', 'migration_stale']) {
     expect(MIGRATION_ERRORS[code]).toBeTruthy();
   }
 });

@@ -549,6 +549,11 @@ func TestRemoveKubernetesRetainsClaims(t *testing.T) {
 	if err := ts.SettleDeployment(ctx, cluster, result(steps...)); err != nil {
 		t.Fatalf("a claim count and service the plan does not expect: %v", err)
 	}
+	// db reported as many kept claims as it mounts, so they are named; web mounts none and cache
+	// is not planned, so theirs cannot be.
+	if read, err := ts.ReadDeployment(ctx, a, app.ID, d.ID); err != nil || !slices.Equal(read.RetainedClaims, []string{"shop-front-data", "shop-front-logs"}) {
+		t.Fatalf("retained claims %+v %v", read, err)
+	}
 	if _, err := ts.ReadApplicationInstance(ctx, a, app.ID, m.InstanceID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("instance kept: %v", err)
 	}
@@ -605,5 +610,23 @@ func TestKubernetesPlanRefusesNameCollisions(t *testing.T) {
 	}
 	if len(resolver.called()) != 0 {
 		t.Fatal("a blocked plan asked the registry")
+	}
+}
+
+// A service's planned claims are named only when the agent reported exactly that many kept: fewer
+// (a claim the head revision added that nobody applied) or more (one an older revision left)
+// cannot say which exist.
+func TestRetainedClaimsNameOnlyAnExactCount(t *testing.T) {
+	kept := protocol.DeploymentStep{Service: "db", Step: protocol.StepVolume, Outcome: protocol.OutcomeSkipped, Detail: protocol.DetailRetained}
+	plan := DeploymentPlan{Namespace: "shop", Services: []PlannedService{{Name: "db", ClaimMounts: []protocol.KubernetesMount{{Claim: "shop-logs"}, {Claim: "shop-data"}}}}}
+	for n, want := range map[int][]string{0: nil, 1: nil, 2: {"shop-data", "shop-logs"}, 3: nil} {
+		d := Deployment{Kind: "remove", Plan: plan, Result: &protocol.DeploymentResult{Steps: slices.Repeat([]protocol.DeploymentStep{kept}, n)}}
+		if got := retainedClaims(&d); !slices.Equal(got, want) {
+			t.Errorf("%d kept: %v", n, got)
+		}
+	}
+	docker := Deployment{Kind: "remove", Plan: DeploymentPlan{Services: plan.Services}, Result: &protocol.DeploymentResult{Steps: []protocol.DeploymentStep{kept, kept}}}
+	if got := retainedClaims(&docker); got != nil {
+		t.Fatalf("a Docker removal: %v", got)
 	}
 }

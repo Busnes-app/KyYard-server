@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -198,6 +199,15 @@ func TestMigrationOverTheAPI(t *testing.T) {
 	if strings.Contains(h.do(t, "GET", app+"/migration", "", 200), migrationCanary) || strings.Contains(h.do(t, "GET", dest+"/deployments", "", 200), migrationCanary) {
 		t.Fatal("a secret value reached a response")
 	}
+	records, _, err := h.st.Audit().ListAuditRecords(context.Background(), 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range records {
+		if strings.Contains(row.Resource, migrationCanary) || strings.Contains(row.Details, migrationCanary) {
+			t.Fatalf("a secret value reached the audit trail: %+v", row)
+		}
+	}
 
 	if body := h.do(t, "POST", app+"/migration/cutover", `{"note":"early"}`, 409); !strings.Contains(body, "migration_state") {
 		t.Fatalf("cutover before validation: %s", body)
@@ -271,5 +281,117 @@ func TestMigrationRolesAndRuntimes(t *testing.T) {
 	draft := h.importApp(t, "draft", "services: {web: {image: ghcr.io/org/web:1}}")
 	if body := h.do(t, "POST", draft+"/migration", string(body), 409); !strings.Contains(body, "mapping_required") {
 		t.Fatalf("an unadopted source: %s", body)
+	}
+}
+
+// countInspections replaces the fleet's plan-time inspector with one that counts its calls.
+func countInspections(h clusterHost) func() int {
+	var mu sync.Mutex
+	calls := 0
+	api.SetPlanInspectorForTest(h.s, func(_ context.Context, target protocol.InspectionTarget) (protocol.ContainerInspection, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		o := verifiedObservation(target)
+		o.Health = "none"
+		return o, nil
+	})
+	return func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls
+	}
+}
+
+// A refusal the migration's state or the request itself decides costs no inspection: a second
+// start while one is open, invalid choices, and analyze or choices once the destination exists.
+func TestMigrationRefusesBeforeInspecting(t *testing.T) {
+	h, app, _ := migrationFleet(t)
+	inspected := countInspections(h)
+	body, _ := json.Marshal(store.MigrationStart{DestinationEndpointID: h.ag.id, Namespace: "shop"})
+	h.do(t, "POST", app+"/migration", string(body), 201)
+	before := inspected()
+	if before != 2 {
+		t.Fatalf("the analysis inspected %d containers", before)
+	}
+	if b := h.do(t, "POST", app+"/migration", string(body), 409); !strings.Contains(b, "migration_open") {
+		t.Fatalf("a second start: %s", b)
+	}
+	for choice, code := range map[string]string{
+		`{"volumes":{"data":{"storage_class":"gold","size":"1Gi","access_mode":"ReadWriteOnce"}}}`:     "storage_class_unknown",
+		`{"volumes":{"data":{"storage_class":"standard","size":"1G","access_mode":"ReadWriteOnce"}}}`:  "size_invalid",
+		`{"volumes":{"logs":{"storage_class":"standard","size":"1Gi","access_mode":"ReadWriteOnce"}}}`: "volume_unknown",
+	} {
+		if b := h.do(t, "PUT", app+"/migration/choices", choice, 400); !strings.Contains(b, code) {
+			t.Errorf("%s: %s", code, b)
+		}
+	}
+	h.do(t, "PUT", app+"/migration/choices", `{"volumes":{},"acknowledged":["volume_named"]}`, 400)
+	if inspected() != before {
+		t.Fatalf("a refused request inspected: %d", inspected()-before)
+	}
+	h.do(t, "PUT", app+"/migration/choices", `{"volumes":{"data":{"storage_class":"","size":"1Gi","access_mode":"ReadWriteOnce"}},"acknowledged":["network_references","port_unpublished"]}`, 200)
+	h.do(t, "POST", app+"/migration/destination", "", 201)
+	before = inspected()
+	if b := h.do(t, "POST", app+"/migration/analyze", "", 409); !strings.Contains(b, "migration_state") {
+		t.Fatalf("analyze after the destination: %s", b)
+	}
+	if b := h.do(t, "PUT", app+"/migration/choices", `{"volumes":{}}`, 409); !strings.Contains(b, "migration_state") {
+		t.Fatalf("choices after the destination: %s", b)
+	}
+	if inspected() != before {
+		t.Fatal("a refused state inspected")
+	}
+}
+
+// A member who may not migrate is refused 403, with a denied application.migrate row, on choices
+// and analyze whether or not the application has a migration: never told 404 first.
+func TestMigrationMutationsCheckPermissionFirst(t *testing.T) {
+	h, app, _ := migrationFleet(t)
+	envAdmin := loginAs(t, h.s, h.st, "envadmin", "user")
+	if err := h.st.Tenancy().SetMembership(context.Background(), &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleEnvironmentAdmin, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []struct{ method, path, body string }{
+		{"PUT", app + "/migration/choices", `{"volumes":{}}`},
+		{"POST", app + "/migration/analyze", ""},
+	} {
+		if w := tenantRequest(h.s, envAdmin, route.method, route.path, route.body, true); w.Code != 403 {
+			t.Errorf("%s %s with no migration: %d %s", route.method, route.path, w.Code, w.Body.String())
+		}
+	}
+	records, _, err := h.st.Audit().ListAuditRecords(context.Background(), 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := 0
+	for _, row := range records {
+		if row.UserID == "usr_envadmin" && row.Action == "application.migrate" && row.Result == "denied" {
+			denied++
+		}
+	}
+	if denied != 2 {
+		t.Fatalf("denied application.migrate rows: %d", denied)
+	}
+}
+
+// An analysis past the actor's inspection budget inspects nothing and reports the probes and
+// flags axes unknown (inspection_unavailable); it is never an extra inspection.
+func TestMigrationAnalysisRespectsTheInspectionBudget(t *testing.T) {
+	h, app, _ := migrationFleet(t)
+	inspected := countInspections(h)
+	for range 30 {
+		api.AllowAttemptForTest(h.s, "inspection:usr_deployer", 30, time.Minute)
+	}
+	body, _ := json.Marshal(store.MigrationStart{DestinationEndpointID: h.ag.id, Namespace: "shop"})
+	var m store.ApplicationMigration
+	if err := json.Unmarshal([]byte(h.do(t, "POST", app+"/migration", string(body), 201)), &m); err != nil {
+		t.Fatal(err)
+	}
+	if inspected() != 0 {
+		t.Fatalf("an analysis over the budget inspected %d containers", inspected())
+	}
+	if !slices.ContainsFunc(readReport(t, m).Services[0].Findings, func(f migration.Finding) bool { return f.Code == "inspection_unavailable" }) {
+		t.Fatalf("report %+v", readReport(t, m))
 	}
 }
