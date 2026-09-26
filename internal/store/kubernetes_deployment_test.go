@@ -444,9 +444,12 @@ func TestKubernetesPlanVolumeBlockers(t *testing.T) {
 }
 
 // A cluster removal reports each kept claim as a skipped volume step with detail retained, under
-// the service that mounts it; a step for a service with no claim left to keep, or naming more of
-// them than it mounts, is refused, and a success settles only once every claim is reported
-// exactly once.
+// the service that mounts it. The store is informational about these: it does not compare their
+// count or service against the plan's ClaimMounts, because the cluster, not the revision
+// history, knows which claims exist -- so a step naming a service that mounts none, a service
+// missing entirely, or a service outside the plan altogether all settle. A step that is not one
+// of precondition, remove or a well-formed retained-volume step is still refused, and a
+// malformed service name is refused earlier, by protocol.Validate itself.
 func TestRemoveKubernetesRetainsClaims(t *testing.T) {
 	st, a, app, cluster, m := kubernetesPlanFixture(t, claimSpec(bothChosen), nil)
 	ctx := context.Background()
@@ -475,16 +478,13 @@ func TestRemoveKubernetesRetainsClaims(t *testing.T) {
 	if err := ts.SettleDeployment(ctx, cluster, notKept); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a volume step that is not a kept claim: %v", err)
 	}
-	unknown := result(append(retained("db", 2), retained("web", 1)...)...)
-	if err := ts.SettleDeployment(ctx, cluster, unknown); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("a claim reported for a service that mounts none: %v", err)
-	}
-	missing := result(retained("db", 1)...)
-	if err := ts.SettleDeployment(ctx, cluster, missing); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("a success missing a claim: %v", err)
-	}
-	if err := ts.SettleDeployment(ctx, cluster, result(retained("db", 2)...)); err != nil {
-		t.Fatal(err)
+	// A claim count that does not match the plan's ClaimMounts (too many for db, one for web
+	// which mounts none) and a claim for a service outside the plan's services altogether
+	// ("cache") are all still just informational: the removal settles regardless.
+	steps := append(retained("db", 2), retained("web", 1)...)
+	steps = append(steps, retained("cache", 1)...)
+	if err := ts.SettleDeployment(ctx, cluster, result(steps...)); err != nil {
+		t.Fatalf("a claim count and service the plan does not expect: %v", err)
 	}
 	if _, err := ts.ReadApplicationInstance(ctx, a, app.ID, m.InstanceID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("instance kept: %v", err)

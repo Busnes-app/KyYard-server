@@ -154,16 +154,34 @@ func (r *run) find(ctx context.Context, req protocol.RemovalRequest, found map[s
 			}
 		}
 	}
-	// Claims are listed only to be reported kept, under the service that mounts them, at most
-	// one volume step per possible volume.
-	claims, err := core.PersistentVolumeClaims(r.namespace).List(ctx, selector)
+	// Claims are listed only to be reported kept, under the service that mounts them, paged like
+	// the inventory lists rather than read whole. At most MaxDeploymentVolumes are ever emitted
+	// as steps (the result has no room for more); past that the rest are left off and logged,
+	// not failed, since every one of them still exists in the cluster and this run's job is
+	// reporting, not accounting.
+	claims, err := listAll(ctx, protocol.MaxDeploymentVolumes, func(ctx context.Context, o metav1.ListOptions) ([]corev1.PersistentVolumeClaim, string, error) {
+		o.LabelSelector = selector.LabelSelector
+		l, err := core.PersistentVolumeClaims(r.namespace).List(ctx, o)
+		if err != nil {
+			return nil, "", err
+		}
+		return l.Items, l.Continue, nil
+	})
 	if err != nil {
 		return r.failure(ctx, err)
 	}
-	for i, c := range claims.Items {
-		if s := c.Labels[render.LabelService]; protocol.ValidServiceName(s) && i < protocol.MaxDeploymentVolumes {
-			kept[s] = append(kept[s], c.Name)
+	emitted := 0
+	for _, c := range claims {
+		s := c.Labels[render.LabelService]
+		if !protocol.ValidServiceName(s) {
+			continue
 		}
+		if emitted >= protocol.MaxDeploymentVolumes {
+			r.c.log.Printf("kubernetes: removal: more than %d claims labelled instance %s in %s; the rest are not reported", protocol.MaxDeploymentVolumes, r.instance, r.namespace)
+			break
+		}
+		kept[s] = append(kept[s], c.Name)
+		emitted++
 	}
 	// Fallback for a named service whose Deployment is already gone: the name this removal
 	// request would itself compute.

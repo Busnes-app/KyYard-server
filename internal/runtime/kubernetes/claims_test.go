@@ -144,15 +144,29 @@ func TestDeployClaimRace(t *testing.T) {
 
 // Removal keeps every claim of the instance, deletes none, and reports each as a skipped
 // volume step with detail retained under its service; another's claim is not even reported.
+// A claim labelled for a service outside the removal's own list is still reported, under a
+// service step of its own.
 func TestRemoveRetainsClaims(t *testing.T) {
-	foreign := ownedClaim(ptr("fast"), "1Gi")
-	foreign.Name, foreign.Labels = "shop-other", map[string]string{render.LabelInstance: "99999999-7777-4888-9999-aaaaaaaaaaaa", render.LabelService: "web"}
-	d := &appsv1.Deployment{ObjectMeta: owned("web")}
-	d.Name = "shop-web"
-	c, cs := deployCluster(t, true, false, d, ownedClaim(ptr("fast"), "10Gi"), foreign)
+	claim := func(service, name, size string) *corev1.PersistentVolumeClaim {
+		m := owned(service)
+		m.Name = name
+		fast := "fast"
+		return &corev1.PersistentVolumeClaim{ObjectMeta: m, Spec: corev1.PersistentVolumeClaimSpec{StorageClassName: &fast, AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(size)}}}}
+	}
+	foreign := claim("web", "shop-other", "1Gi")
+	foreign.Labels = map[string]string{render.LabelInstance: "99999999-7777-4888-9999-aaaaaaaaaaaa", render.LabelService: "web"}
+	web := &appsv1.Deployment{ObjectMeta: owned("web")}
+	web.Name = "shop-web"
+	api := &appsv1.Deployment{ObjectMeta: owned("api")}
+	api.Name = "shop-api"
+	c, cs := deployCluster(t, true, false, web, api, foreign,
+		claim("web", "shop-data", "10Gi"), claim("web", "shop-logs", "1Gi"),
+		claim("api", "shop-cache", "10Gi"), claim("api", "shop-tmp", "1Gi"),
+		claim("worker", "shop-worker-data", "10Gi"))
 	now := time.Now()
 	req := protocol.RemovalRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1", Project: "shop", IssuedAt: now, Deadline: now.Add(time.Minute),
-		Kubernetes: &protocol.KubernetesTarget{Namespace: "shop", ApplicationID: testApp, InstanceID: testInstance, SpecDigest: testSpec}, Services: []string{"web"}}
+		Kubernetes: &protocol.KubernetesTarget{Namespace: "shop", ApplicationID: testApp, InstanceID: testInstance, SpecDigest: testSpec}, Services: []string{"web", "api"}}
 	res := c.Remove(context.Background(), req, func() {})
 	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
 		t.Fatalf("result %+v %v", res, res.Validate())
@@ -161,7 +175,12 @@ func TestRemoveRetainsClaims(t *testing.T) {
 	for _, s := range res.Steps {
 		steps = append(steps, s.Service+" "+s.Step+" "+s.Outcome+" "+s.Detail)
 	}
-	if !slices.Equal(steps, []string{"web precondition succeeded ", "web remove succeeded ", "web volume skipped retained"}) {
+	want := []string{
+		"web precondition succeeded ", "web remove succeeded ", "web volume skipped retained", "web volume skipped retained",
+		"api precondition succeeded ", "api remove succeeded ", "api volume skipped retained", "api volume skipped retained",
+		"worker precondition succeeded ", "worker remove skipped ", "worker volume skipped retained",
+	}
+	if !slices.Equal(steps, want) {
 		t.Fatalf("steps %q", steps)
 	}
 	for _, a := range cs.Actions() {
@@ -169,8 +188,10 @@ func TestRemoveRetainsClaims(t *testing.T) {
 			t.Fatal("a claim was deleted")
 		}
 	}
-	if _, err := cs.CoreV1().PersistentVolumeClaims("shop").Get(context.Background(), "shop-data", metav1.GetOptions{}); err != nil {
-		t.Fatalf("the claim is gone: %v", err)
+	for _, name := range []string{"shop-data", "shop-logs", "shop-cache", "shop-tmp", "shop-worker-data"} {
+		if _, err := cs.CoreV1().PersistentVolumeClaims("shop").Get(context.Background(), name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("the claim %s is gone: %v", name, err)
+		}
 	}
 }
 

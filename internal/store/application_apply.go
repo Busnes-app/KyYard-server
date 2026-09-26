@@ -593,34 +593,19 @@ func (t *tenancyStore) settleRemoval(ctx context.Context, tx *sql.Tx, endpointID
 	}
 	// A cluster removal reports precondition and remove steps per service it found labelled, and
 	// a skipped volume step per claim it kept, under the service that mounts it (the wire has no
-	// other way to name a claim). A step for a service with no claim left to keep, or more of
-	// them than it mounts, is refused at once, the way an unknown container is; a success must
-	// then account for every claim exactly once.
+	// other way to name a claim). Retained-claim steps are informational: the cluster, not the
+	// revision history, knows which claims exist, so the store accepts any number of them and
+	// does not compare against the plan's ClaimMounts. A step that is none of these three kinds
+	// is refused at once, the way an unknown container is.
 	if plan.Namespace != "" {
-		claimed := map[string]int{}
-		for _, ps := range plan.Services {
-			claimed[ps.Name] = len(ps.ClaimMounts)
-		}
-		retained := map[string]int{}
 		for _, s := range res.Steps {
 			kept := s.Step == protocol.StepVolume && s.Outcome == protocol.OutcomeSkipped && s.Detail == protocol.DetailRetained
 			if s.Step != protocol.StepPrecondition && s.Step != protocol.StepRemove && !kept {
 				return ErrInvalid
 			}
-			if kept {
-				retained[s.Service]++
-				if retained[s.Service] > claimed[s.Service] {
-					return ErrInvalid
-				}
-			}
 		}
 		if res.Outcome != protocol.OutcomeSucceeded {
 			return nil
-		}
-		for name, n := range claimed {
-			if retained[name] != n {
-				return ErrInvalid
-			}
 		}
 		return t.releaseRemoved(ctx, tx, appID, instance)
 	}
