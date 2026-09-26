@@ -195,11 +195,15 @@ func (t *tenancyStore) decorate(ctx context.Context, tx *sql.Tx, e *Endpoint) er
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err == nil {
-			var s protocol.Snapshot
-			if json.Unmarshal([]byte(raw), &s) == nil {
-				snap = &s
-			}
+		// Health needs the nodes and the cut lists only: decode nothing else of the snapshot.
+		var s struct {
+			Kubernetes *struct {
+				Nodes []protocol.Node `json:"nodes"`
+			} `json:"kubernetes"`
+			Truncated []string `json:"truncated"`
+		}
+		if err == nil && json.Unmarshal([]byte(raw), &s) == nil && s.Kubernetes != nil {
+			snap = &protocol.Snapshot{Truncated: s.Truncated, Kubernetes: &protocol.KubernetesInventory{Nodes: s.Kubernetes.Nodes}}
 		}
 		e.ClusterHealth = protocol.ClusterHealth(e.State == "active", snap)
 	}

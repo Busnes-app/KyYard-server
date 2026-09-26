@@ -206,3 +206,27 @@ func TestKubernetesProject(t *testing.T) {
 		}
 	}
 }
+
+// cluster_health reads only the nodes and the cut lists of the stored snapshot: a list it does
+// not need, even one that would not decode, does not blank the health of every endpoint read.
+func TestClusterHealthReadsOnlyNodes(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	cluster := activeCluster(t, ts, a, nil, nil)
+	for raw, want := range map[string]string{
+		`{"kubernetes":{"nodes":[{"name":"n1","ready":true}],"pods":"not a list"},"containers":7}`: protocol.HealthHealthy,
+		`{"kubernetes":{"nodes":[{"name":"n1","ready":false}]}}`:                                   protocol.HealthDegraded,
+		`{"kubernetes":{"nodes":[{"name":"n1","ready":true}]},"truncated":["nodes"]}`:              protocol.HealthUnknown,
+		`{"containers":[]}`: protocol.HealthUnknown,
+		`not json`:          protocol.HealthUnknown,
+	} {
+		if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE endpoint_inventory SET snapshot=? WHERE endpoint_id=?`), raw, cluster); err != nil {
+			t.Fatal(err)
+		}
+		e, err := ts.ReadEndpoint(ctx, a, cluster)
+		if err != nil || e.ClusterHealth != want {
+			t.Errorf("%s: %q %v", raw, e.ClusterHealth, err)
+		}
+	}
+}

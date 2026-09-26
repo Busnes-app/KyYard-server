@@ -473,7 +473,7 @@ it('renders a Kubernetes plan, its step codes and Deployment identities', async 
 it('names each service a Kubernetes plan refuses, with the fix', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
-    if (init?.method === 'POST') return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['kubernetes_unsupported', 'k8s_namespace'], services: [{ name: 'db', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume'], details: { k8s_volume: 'choice_required' } }, { name: 'web', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_host_ip', 'k8s_restart'] }, { name: 'cache', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume', 'k8s_volume_shared'] }] }), { status: 409 });
+    if (init?.method === 'POST') return new Response(JSON.stringify({ code: 'preflight_blocked', blockers: ['kubernetes_unsupported', 'k8s_namespace'], services: [{ name: 'db', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume'], details: { k8s_volume: 'choice_required' } }, { name: 'web', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_host_ip', 'k8s_restart'] }, { name: 'cache', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_volume', 'k8s_volume_shared'] }, { name: 'api', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_name_taken'] }, { name: 'a_b', blockers: ['kubernetes_unsupported'], unsupported: ['k8s_service_renamed'] }] }), { status: 409 });
     return new Response('[]');
   }));
   render(<ApplicationDeploymentPlan {...props} />);
@@ -487,6 +487,8 @@ it('names each service a Kubernetes plan refuses, with the fix', async () => {
   expect(alert.textContent).toContain(`db: ${K8S_VOLUME_CHOICE}`);
   expect(alert.textContent).toContain(`cache: ${unsupportedNames.k8s_volume}, ${unsupportedNames.k8s_volume_shared}`);
   expect(alert.textContent).toContain('web: publishes a port on a host address');
+  expect(alert.textContent).toContain('api: plans a Deployment name another application or tool already uses in the namespace');
+  expect(alert.textContent).toContain('a_b: shares its Kubernetes object name with another service');
 });
 it('names a namespace revoked between plan and apply', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {

@@ -460,7 +460,7 @@ func TestDeploymentStepCodeDetails(t *testing.T) {
 		{"unsupported", "privileged, devices", false},
 		{"unsupported", "made_up", false},
 		{"unsupported", "privileged,", false},
-		{"unsupported", strings.Join(UnsupportedCodes, ","), false}, // 311 bytes: past the step bound
+		{"unsupported", strings.Join(UnsupportedCodes, ","), false}, // 422 bytes: past the step bound
 		{"identity_unreadable", "", false},
 		{"identity_unverified", strings.Repeat("C", 64), false},
 		{"identity_unverified", id[:63], false},

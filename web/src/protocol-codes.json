@@ -72,6 +72,8 @@
     "k8s_restart",
     "k8s_name",
     "k8s_namespace",
-    "k8s_volume_shared"
+    "k8s_volume_shared",
+    "k8s_name_taken",
+    "k8s_service_renamed"
   ]
 }

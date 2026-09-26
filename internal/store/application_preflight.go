@@ -92,9 +92,9 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 		chosen, args = "?", []any{revision, a.OrganizationID, a.EnvironmentID, app}
 	}
 	var raw, specRaw, digest, instance, state string
-	var version, head, number int
+	var version, head, number, applied int
 	var received, observed time.Time
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.id,i.mapping_version,a.latest_revision,r.number,r.spec,r.digest,e.state,v.snapshot,v.received_at,v.observed_at FROM applications a JOIN application_instances i ON i.application_id=a.id JOIN application_revisions r ON r.application_id=a.id AND r.number=`+chosen+` JOIN endpoints e ON e.id=i.endpoint_id JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE a.organization_id=? AND a.environment_id=? AND a.id=?`), args...).Scan(&instance, &version, &head, &number, &specRaw, &digest, &state, &raw, &received, &observed)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.id,i.mapping_version,i.current_revision,a.latest_revision,r.number,r.spec,r.digest,e.state,v.snapshot,v.received_at,v.observed_at FROM applications a JOIN application_instances i ON i.application_id=a.id JOIN application_revisions r ON r.application_id=a.id AND r.number=`+chosen+` JOIN endpoints e ON e.id=i.endpoint_id JOIN endpoint_inventory v ON v.endpoint_id=e.id WHERE a.organization_id=? AND a.environment_id=? AND a.id=?`), args...).Scan(&instance, &version, &applied, &head, &number, &specRaw, &digest, &state, &raw, &received, &observed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", ErrAdoptionChanged
 	}
@@ -120,7 +120,11 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 	}
 	var out *DeploymentPreflight
 	if m.Runtime == protocol.RuntimeKubernetes {
-		out = buildKubernetesPreflight(m, spec)
+		was, _, _, err := t.revisionServices(ctx, tx, a, app, m.Preview.Project, applied)
+		if err != nil {
+			return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
+		}
+		out = buildKubernetesPreflight(m, spec, snapshot, was)
 	} else {
 		out = buildDeploymentPreflight(m, spec, snapshot, number == head, pins)
 	}
@@ -333,9 +337,10 @@ var kubernetesRestart = map[string]bool{"": true, "always": true, "unless-stoppe
 
 // buildKubernetesPreflight checks spec against a Kubernetes mapping: the namespace is still one
 // the manifest grants (k8s_namespace), and each service is stateless and expressible, else it
-// carries kubernetes_unsupported with the k8s_ codes that say why. Images need a tag or digest;
-// the plan resolves them at the registry.
-func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec) *DeploymentPreflight {
+// carries kubernetes_unsupported with the k8s_ codes that say why. applied are the services of
+// the instance's last-applied revision, snapshot the cluster's inventory. Images need a tag or
+// digest; the plan resolves them at the registry.
+func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec, snapshot protocol.Snapshot, applied []string) *DeploymentPreflight {
 	out := &DeploymentPreflight{InstanceID: m.InstanceID, EndpointID: m.Preview.EndpointID, EndpointName: m.Preview.EndpointName, Revision: m.Preview.Revision, MappingVersion: m.Version, Blockers: []string{}, Services: []PreflightService{}}
 	if !slices.Contains(m.DeployNamespaces, m.Namespace) {
 		out.Blockers = append(out.Blockers, "k8s_namespace")
@@ -346,6 +351,24 @@ func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec) *Depl
 		named[n]++
 	}
 	users := volumeUsers(spec)
+	// A Deployment in the namespace that is not this instance's (another application's, another
+	// tool's) holds its name; the agent would refuse it at apply with name_taken.
+	held := map[string]bool{}
+	if snapshot.Kubernetes != nil {
+		for _, w := range snapshot.Kubernetes.Workloads {
+			if w.Kind == protocol.KindDeployment && w.Namespace == m.Namespace && w.Instance != m.InstanceID {
+				held[w.Name] = true
+			}
+		}
+	}
+	// A service slug collision moves an applied service's objects: renamed, the old Deployment
+	// would keep running beside the new one; taken over by another service, the API server would
+	// refuse the Deployment's changed selector at apply.
+	was := protocol.KubernetesNames(m.Preview.Project, applied)
+	appliedBy := map[string]string{}
+	for service, name := range was {
+		appliedBy[name] = service
+	}
 	blocked := false
 	for _, s := range spec.Services {
 		row := PreflightService{Name: s.Name, Reference: s.Image, Blockers: []string{}, Mounts: []protocol.Mount{}, DroppedBinds: []protocol.Mount{}, DroppedMounts: []protocol.Mount{}, UnsupportedMounts: []protocol.Mount{}}
@@ -358,6 +381,12 @@ func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec) *Depl
 		}
 		if named[objects[s.Name]] > 1 || !protocol.ValidLabelValue(s.Name) || !protocol.ValidLabelValue(m.Preview.Project) {
 			codes = append(codes, "k8s_name")
+		}
+		if held[objects[s.Name]] {
+			codes = append(codes, "k8s_name_taken")
+		}
+		if old, ok := was[s.Name]; ok && old != objects[s.Name] || appliedBy[objects[s.Name]] != "" && appliedBy[objects[s.Name]] != s.Name {
+			codes = append(codes, "k8s_service_renamed")
 		}
 		if len(codes) > 0 {
 			row.Blockers, row.Unsupported, row.Details = append(row.Blockers, "kubernetes_unsupported"), codes, details

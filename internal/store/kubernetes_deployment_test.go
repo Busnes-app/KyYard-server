@@ -553,3 +553,57 @@ func TestRemoveKubernetesRetainsClaims(t *testing.T) {
 		t.Fatalf("instance kept: %v", err)
 	}
 }
+
+// A plan stops, before the registry is asked, on a Deployment name another instance or tool
+// already holds in the namespace (k8s_name_taken; the agent would refuse it at apply), and on a
+// service slug collision with the applied revision (k8s_service_renamed): a new service beside
+// a_b renames a_b's objects, and a_b renamed to a-b would take them over.
+func TestKubernetesPlanRefusesNameCollisions(t *testing.T) {
+	spec := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "a_b", Image: "ghcr.io/org/ab:1"}, {Name: "web", Image: "ghcr.io/org/web:1"}}}
+	st, a, app, cluster, m := kubernetesPlanFixture(t, spec, nil)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	putClusterInventory(t, ts, cluster, []protocol.Workload{
+		{Kind: "Deployment", Namespace: "shop", Name: "shop-front-web", Instance: "99999999-7777-4888-9999-aaaaaaaaaaaa"},
+		{Kind: "Deployment", Namespace: "other", Name: "shop-front-a-b"},
+		{Kind: "Deployment", Namespace: "shop", Name: "shop-front-a-b", Instance: m.InstanceID},
+	})
+	resolver := &fakeResolver{reply: map[string]fakeReply{}}
+	_, err := ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	var blocked *PreflightBlockedError
+	if !errors.As(err, &blocked) || len(blocked.Services) != 1 || blocked.Services[0].Name != "web" || !slices.Equal(blocked.Services[0].Unsupported, []string{"k8s_name_taken"}) {
+		t.Fatalf("a held name: %v %+v", err, blocked)
+	}
+
+	// The instance applied revision 1 ({a_b, web}); revision 2 adds a-b, which shares a_b's slug.
+	putClusterInventory(t, ts, cluster, nil)
+	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE application_instances SET current_revision=1 WHERE id=?`), m.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	spec.Services = append(spec.Services, ApplicationService{Name: "a-b", Image: "ghcr.io/org/ab:1"})
+	if _, err := ts.AppendApplicationRevision(ctx, a, app.ID, 1, spec); err != nil {
+		t.Fatal(err)
+	}
+	m, err = ts.ReadApplicationMapping(ctx, a, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if !errors.As(err, &blocked) || len(blocked.Services) != 1 || blocked.Services[0].Name != "a_b" || !slices.Equal(blocked.Services[0].Unsupported, []string{"k8s_service_renamed"}) {
+		t.Fatalf("a renamed service: %v %+v", err, blocked)
+	}
+	spec.Services = []ApplicationService{{Name: "a-b", Image: "ghcr.io/org/ab:1"}, {Name: "web", Image: "ghcr.io/org/web:1"}}
+	if _, err := ts.AppendApplicationRevision(ctx, a, app.ID, 2, spec); err != nil {
+		t.Fatal(err)
+	}
+	if m, err = ts.ReadApplicationMapping(ctx, a, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ts.PlanDeployment(ctx, a, app.ID, kubePlanRequest(m), resolver, imageCheckKey, false)
+	if !errors.As(err, &blocked) || len(blocked.Services) != 1 || blocked.Services[0].Name != "a-b" || !slices.Equal(blocked.Services[0].Unsupported, []string{"k8s_service_renamed"}) {
+		t.Fatalf("a service taking over another's objects: %v %+v", err, blocked)
+	}
+	if len(resolver.called()) != 0 {
+		t.Fatal("a blocked plan asked the registry")
+	}
+}
