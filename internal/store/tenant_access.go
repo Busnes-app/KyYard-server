@@ -54,13 +54,13 @@ func (t *tenancyStore) readTenant(ctx context.Context, a TenantAccess, action pe
 // run audits target as the resource when set; op may rewrite it, for an operation that learns
 // its row only inside the transaction.
 func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, target *string, details *string, lock bool, op func(*sql.Tx) error) error {
-	if a.ActorID == "" || a.OrganizationID == "" {
+	if (a.ActorID == "" && a.ServiceTokenID == "") || a.OrganizationID == "" {
 		return ErrForbidden
 	}
 	if a.CorrelationID == "" {
 		a.CorrelationID = uuid.NewString()
 	}
-	record := &AuditRecord{UserID: a.ActorID, Action: string(action), Resource: a.OrganizationID, IPAddress: a.IPAddress, Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, CorrelationID: a.CorrelationID, CreatedAt: time.Now().UTC()}
+	record := &AuditRecord{UserID: a.actor(), Action: string(action), Resource: a.OrganizationID, IPAddress: a.IPAddress, Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, CorrelationID: a.CorrelationID, CreatedAt: time.Now().UTC()}
 	if a.EnvironmentID != "" {
 		record.Resource = a.EnvironmentID
 	}
@@ -75,23 +75,14 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 		return err
 	}
 	defer tx.Rollback()
-	query := `SELECT u.status,u.must_change_password,m.status,m.role FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=? AND m.organization_id=?`
-	if lock && t.store.driver == "postgres" {
-		query += " FOR UPDATE"
-	} else if lock {
-		if _, err = tx.ExecContext(ctx, t.store.rebind(`UPDATE organization_memberships SET status=status WHERE organization_id=? AND user_id=?`), a.OrganizationID, a.ActorID); err != nil {
-			return err
-		}
-	}
-	var status, memberStatus, role string
-	var restricted bool
-	err = tx.QueryRowContext(ctx, t.store.rebind(query), a.ActorID, a.OrganizationID).Scan(&status, &restricted, &memberStatus, &role)
-	if errors.Is(err, sql.ErrNoRows) {
-		// The URL scope is unverified for a non-member: no tenant audit row, or any caller
-		// could write into another organization's history without bound.
+	role, err := t.principalRole(ctx, tx, a, lock)
+	if errors.Is(err, errNoPrincipal) {
+		// The URL scope is unverified for a non-member or an unknown/foreign-organization
+		// service token: no tenant audit row, or any caller could write into another
+		// organization's history without bound.
 		return ErrForbidden
 	}
-	if err == nil && (status != "active" || restricted || memberStatus != "active" || !permissions.Allows(role, action)) {
+	if err == nil && !permissions.Allows(role, action) {
 		err = ErrForbidden
 	}
 	if err == nil && a.EnvironmentID != "" && action != permissions.EnvironmentCreate {
@@ -124,7 +115,9 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 		}
 		return err
 	}
-	if !lock && !auditedReads[action] {
+	// A service principal's reads are summarised hourly, not recorded one by one
+	// (docs/authorization-matrix.md, Service tokens).
+	if !lock && (!auditedReads[action] || a.ServiceTokenID != "") {
 		return tx.Commit()
 	}
 	record.Result = "success"
@@ -137,6 +130,64 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 		return err
 	}
 	return tx.Commit()
+}
+
+// actor names the principal an audit row is about: a user id, or service:<token id>.
+func (a TenantAccess) actor() string {
+	if a.ServiceTokenID != "" {
+		return "service:" + a.ServiceTokenID
+	}
+	return a.ActorID
+}
+
+// errNoPrincipal marks principalRole's "no such row" outcome: an unknown member or an
+// unknown/foreign-organization service token. run treats it as ErrForbidden with no tenant
+// audit row, distinct from a row found but refused (bad status, revoked), which is audited.
+var errNoPrincipal = errors.New("no principal row")
+
+// principalRole is the live role of the caller inside the transaction: the membership row
+// for a user (locked for a mutation), the token row for a service, whose role is fixed. No
+// row means the URL scope is unverified: errNoPrincipal and no tenant audit row.
+func (t *tenancyStore) principalRole(ctx context.Context, tx *sql.Tx, a TenantAccess, lock bool) (string, error) {
+	if a.ServiceTokenID != "" {
+		var revoked sql.NullTime
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT revoked_at FROM service_tokens WHERE id=? AND organization_id=?`), a.ServiceTokenID, a.OrganizationID).Scan(&revoked)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errNoPrincipal
+		}
+		if err != nil {
+			return "", err
+		}
+		if revoked.Valid {
+			return "", ErrForbidden
+		}
+		return permissions.RolePulseReader, nil
+	}
+	query := `SELECT u.status,u.must_change_password,m.status,m.role FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=? AND m.organization_id=?`
+	if lock && t.store.driver == "postgres" {
+		query += " FOR UPDATE"
+	} else if lock {
+		// SQLite has a single writer, so a no-op write on the membership row takes the
+		// RESERVED lock before the read: a deferred read-then-write transaction would
+		// otherwise lose to a concurrent revocation and fail with BUSY_SNAPSHOT instead of
+		// waiting behind it.
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE organization_memberships SET status=status WHERE organization_id=? AND user_id=?`), a.OrganizationID, a.ActorID); err != nil {
+			return "", err
+		}
+	}
+	var status, memberStatus, role string
+	var restricted bool
+	err := tx.QueryRowContext(ctx, t.store.rebind(query), a.ActorID, a.OrganizationID).Scan(&status, &restricted, &memberStatus, &role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errNoPrincipal
+	}
+	if err != nil {
+		return "", err
+	}
+	if status != "active" || restricted || memberStatus != "active" {
+		return "", ErrForbidden
+	}
+	return role, nil
 }
 
 func (t *tenancyStore) ReadOrganization(ctx context.Context, a TenantAccess) (*Organization, error) {

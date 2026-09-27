@@ -262,6 +262,16 @@ type TenancyStore interface {
 	ListMembers(ctx context.Context, access TenantAccess, offset, limit int) ([]OrganizationMember, error)
 	PutMembership(ctx context.Context, access TenantAccess, userID string, role TenantRole, status string) error
 	RemoveMembership(ctx context.Context, access TenantAccess, userID string) error
+	CreateServicePairing(ctx context.Context, access TenantAccess) (*ServicePairing, error)
+	ClaimServiceToken(ctx context.Context, code, serviceName, ip string) (*ServiceTokenIssue, error)
+	AuthenticateServiceToken(ctx context.Context, token, ip string) (*ServiceToken, error)
+	ListServiceTokens(ctx context.Context, access TenantAccess) ([]ServiceToken, error)
+	RevokeServiceToken(ctx context.Context, access TenantAccess, id string) error
+	// DenyService writes a denied audit row for a refusal the API decides itself (a service
+	// token asking to follow a log); the store's own checks audit their denials in run.
+	DenyService(ctx context.Context, access TenantAccess, action permissions.Action, detail string) error
+	// RecordServiceTokenReads writes the hourly summary row for one token.
+	RecordServiceTokenReads(ctx context.Context, organizationID, tokenID string, reads int) error
 	ListRegistries(ctx context.Context, access TenantAccess) ([]Registry, error)
 	PutRegistry(ctx context.Context, access TenantAccess, in RegistryInput, key []byte, privateAllowed bool) (*Registry, error)
 	DeleteRegistry(ctx context.Context, access TenantAccess, id string) error

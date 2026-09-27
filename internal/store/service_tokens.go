@@ -1,0 +1,185 @@
+package store
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"math/big"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
+	"github.com/google/uuid"
+)
+
+const (
+	serviceTokenBytes = 32
+	// lastUsedEvery bounds the write a read costs: last_used_at and last_ip are stamped at
+	// most once a minute per token, or when the address changes.
+	lastUsedEvery = time.Minute
+)
+
+// pairingLife is a variable so a test can mint an already-expired code.
+var pairingLife = 15 * time.Minute
+
+// pairingCode draws six digits; a test may pin it.
+var pairingCode = func() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", n.Int64()), nil
+}
+
+var serviceNameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+
+func validServiceName(s string) bool { return serviceNameRe.MatchString(s) }
+
+func (t *tenancyStore) CreateServicePairing(ctx context.Context, a TenantAccess) (*ServicePairing, error) {
+	code, err := pairingCode()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	p := &ServicePairing{ID: uuid.NewString(), Code: code, ExpiresAt: now.Add(pairingLife)}
+	err = t.withTenantTarget(ctx, a, permissions.ServiceTokensManage, p.ID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO service_token_pairings (id,organization_id,code_hash,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?)`), p.ID, a.OrganizationID, crypto.SHA256Hex([]byte(code)), a.ActorID, now, p.ExpiresAt)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// ClaimServiceToken consumes exactly one live pairing, the oldest that matches, and mints
+// that organization's token. Every refusal is ErrForbidden: the caller is unauthenticated and
+// learns nothing about why. A code that names no live pairing writes no tenant row, because
+// there is no organization to attribute it to; the API rate-limits and logs the attempt.
+func (t *tenancyStore) ClaimServiceToken(ctx context.Context, code, serviceName, ip string) (*ServiceTokenIssue, error) {
+	if len(code) != 6 || !validServiceName(serviceName) {
+		return nil, ErrForbidden
+	}
+	now := time.Now().UTC()
+	tx, err := t.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var pairingID, orgID, orgName string
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT p.id,p.organization_id,o.name FROM service_token_pairings p JOIN organizations o ON o.id=p.organization_id WHERE p.code_hash=? AND p.consumed_at IS NULL AND p.expires_at>? ORDER BY p.created_at,p.id LIMIT 1`), crypto.SHA256Hex([]byte(code)), now).Scan(&pairingID, &orgID, &orgName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrForbidden
+	}
+	if err != nil {
+		return nil, err
+	}
+	// The conditional UPDATE is the lock: two claims of one code commit one token.
+	res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE service_token_pairings SET consumed_at=? WHERE id=? AND consumed_at IS NULL`), now, pairingID)
+	if err != nil {
+		return nil, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return nil, ErrForbidden
+	}
+	secret := make([]byte, serviceTokenBytes)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, err
+	}
+	id := "svc_" + crypto.RandomHex(12)
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO service_tokens (id,organization_id,name,token_hash,created_by,created_at) VALUES (?,?,?,?,?,?)`), id, orgID, serviceName, crypto.SHA256Hex(secret), "pairing:"+pairingID, now); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?,?)`), "service:"+id, "service_token.claim", id, "service="+serviceName, ip, now, "organization", orgID, "", uuid.NewString(), "success"); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &ServiceTokenIssue{Token: hex.EncodeToString(secret), Organization: Organization{ID: orgID, Name: orgName}}, nil
+}
+
+// AuthenticateServiceToken resolves a bearer to its live token. A revoked or unknown token is
+// ErrForbidden; the API answers 401 either way.
+func (t *tenancyStore) AuthenticateServiceToken(ctx context.Context, token, ip string) (*ServiceToken, error) {
+	raw, err := hex.DecodeString(strings.TrimSpace(token))
+	if err != nil || len(raw) != serviceTokenBytes {
+		return nil, ErrForbidden
+	}
+	var tok ServiceToken
+	var lastUsed, revoked sql.NullTime
+	err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip,revoked_at FROM service_tokens WHERE token_hash=?`), crypto.SHA256Hex(raw)).Scan(&tok.ID, &tok.OrganizationID, &tok.Name, &tok.CreatedBy, &tok.CreatedAt, &lastUsed, &tok.LastIP, &revoked)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && revoked.Valid) {
+		return nil, ErrForbidden
+	}
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if !lastUsed.Valid || now.Sub(lastUsed.Time) > lastUsedEvery || tok.LastIP != ip {
+		if _, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE service_tokens SET last_used_at=?, last_ip=? WHERE id=? AND revoked_at IS NULL`), now, ip, tok.ID); err != nil {
+			return nil, err
+		}
+		lastUsed = sql.NullTime{Time: now, Valid: true}
+		tok.LastIP = ip
+	}
+	tok.LastUsedAt = &lastUsed.Time
+	return &tok, nil
+}
+
+func (t *tenancyStore) ListServiceTokens(ctx context.Context, a TenantAccess) ([]ServiceToken, error) {
+	out := []ServiceToken{}
+	err := t.readTenant(ctx, a, permissions.ServiceTokensManage, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip,revoked_at FROM service_tokens WHERE organization_id=? ORDER BY created_at DESC LIMIT 200`), a.OrganizationID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var tok ServiceToken
+			var lastUsed, revoked sql.NullTime
+			if err := rows.Scan(&tok.ID, &tok.OrganizationID, &tok.Name, &tok.CreatedBy, &tok.CreatedAt, &lastUsed, &tok.LastIP, &revoked); err != nil {
+				return err
+			}
+			if lastUsed.Valid {
+				tok.LastUsedAt = &lastUsed.Time
+			}
+			if revoked.Valid {
+				tok.RevokedAt = &revoked.Time
+			}
+			out = append(out, tok)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (t *tenancyStore) RevokeServiceToken(ctx context.Context, a TenantAccess, id string) error {
+	now := time.Now().UTC()
+	return t.withTenantTarget(ctx, a, permissions.ServiceTokensManage, id, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE service_tokens SET revoked_at=?, revoked_by=? WHERE id=? AND organization_id=? AND revoked_at IS NULL`), now, a.ActorID, id, a.OrganizationID)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (t *tenancyStore) DenyService(ctx context.Context, a TenantAccess, action permissions.Action, detail string) error {
+	return t.store.Audit().LogAudit(ctx, &AuditRecord{UserID: a.actor(), Action: string(action), Resource: a.OrganizationID, Details: detail, IPAddress: a.IPAddress, Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, CorrelationID: a.CorrelationID, Result: "denied", CreatedAt: time.Now().UTC()})
+}
+
+func (t *tenancyStore) RecordServiceTokenReads(ctx context.Context, organizationID, tokenID string, reads int) error {
+	return t.store.Audit().LogAudit(ctx, &AuditRecord{UserID: "service:" + tokenID, Action: "service_token.reads", Resource: tokenID, Details: fmt.Sprintf("reads=%d", reads), Scope: "organization", OrganizationID: organizationID, CorrelationID: uuid.NewString(), Result: "success", CreatedAt: time.Now().UTC()})
+}
