@@ -167,10 +167,7 @@ func (t *tenancyStore) principalRole(ctx context.Context, tx *sql.Tx, a TenantAc
 	if lock && t.store.driver == "postgres" {
 		query += " FOR UPDATE"
 	} else if lock {
-		// SQLite has a single writer, so a no-op write on the membership row takes the
-		// RESERVED lock before the read: a deferred read-then-write transaction would
-		// otherwise lose to a concurrent revocation and fail with BUSY_SNAPSHOT instead of
-		// waiting behind it.
+		// See withTenant: the RESERVED-lock no-op write.
 		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE organization_memberships SET status=status WHERE organization_id=? AND user_id=?`), a.OrganizationID, a.ActorID); err != nil {
 			return "", err
 		}

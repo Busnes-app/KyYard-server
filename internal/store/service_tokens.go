@@ -40,16 +40,36 @@ var serviceNameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 func validServiceName(s string) bool { return serviceNameRe.MatchString(s) }
 
+// maxPairingCodeDraws bounds the redraw loop: two organizations may hold the same live code
+// only by drawing it independently, so a collision redraws rather than letting "oldest wins"
+// hand one organization's claim to another's token (docs/authorization-matrix.md).
+const maxPairingCodeDraws = 20
+
 func (t *tenancyStore) CreateServicePairing(ctx context.Context, a TenantAccess) (*ServicePairing, error) {
-	code, err := pairingCode()
-	if err != nil {
-		return nil, err
-	}
 	now := time.Now().UTC()
-	p := &ServicePairing{ID: uuid.NewString(), Code: code, ExpiresAt: now.Add(pairingLife)}
-	err = t.withTenantTarget(ctx, a, permissions.ServiceTokensManage, p.ID, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO service_token_pairings (id,organization_id,code_hash,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?)`), p.ID, a.OrganizationID, crypto.SHA256Hex([]byte(code)), a.ActorID, now, p.ExpiresAt)
-		return err
+	p := &ServicePairing{ID: uuid.NewString(), ExpiresAt: now.Add(pairingLife)}
+	err := t.withTenantTarget(ctx, a, permissions.ServiceTokensManage, p.ID, func(tx *sql.Tx) error {
+		for i := 0; i < maxPairingCodeDraws; i++ {
+			code, err := pairingCode()
+			if err != nil {
+				return err
+			}
+			hash := crypto.SHA256Hex([]byte(code))
+			var exists int
+			err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM service_token_pairings WHERE code_hash=? AND consumed_at IS NULL AND expires_at>?`), hash, now).Scan(&exists)
+			if err == nil {
+				continue // another organization's code is still live: redraw
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO service_token_pairings (id,organization_id,code_hash,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?)`), p.ID, a.OrganizationID, hash, a.ActorID, now, p.ExpiresAt); err != nil {
+				return err
+			}
+			p.Code = code
+			return nil
+		}
+		return ErrPairingCodesExhausted
 	})
 	if err != nil {
 		return nil, err
@@ -57,10 +77,12 @@ func (t *tenancyStore) CreateServicePairing(ctx context.Context, a TenantAccess)
 	return p, nil
 }
 
-// ClaimServiceToken consumes exactly one live pairing, the oldest that matches, and mints
-// that organization's token. Every refusal is ErrForbidden: the caller is unauthenticated and
-// learns nothing about why. A code that names no live pairing writes no tenant row, because
-// there is no organization to attribute it to; the API rate-limits and logs the attempt.
+// ClaimServiceToken consumes exactly one live pairing and mints that organization's token.
+// CreateServicePairing redraws on a collision, so at most one organization ever holds a given
+// code live at once; the ORDER BY is a tie-breaker, not a selection rule. Every refusal is
+// ErrForbidden: the caller is unauthenticated and learns nothing about why. A code that names
+// no live pairing writes no tenant row, because there is no organization to attribute it to;
+// the API rate-limits and logs the attempt.
 func (t *tenancyStore) ClaimServiceToken(ctx context.Context, code, serviceName, ip string) (*ServiceTokenIssue, error) {
 	if len(code) != 6 || !validServiceName(serviceName) {
 		return nil, ErrForbidden
@@ -176,10 +198,50 @@ func (t *tenancyStore) RevokeServiceToken(ctx context.Context, a TenantAccess, i
 	})
 }
 
+// tokenInOrganization reports whether tokenID names a service_tokens row of organizationID,
+// so a caller cannot plant an audit row in an organization its token does not belong to.
+func (t *tenancyStore) tokenInOrganization(ctx context.Context, tokenID, organizationID string) (bool, error) {
+	var exists int
+	err := t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM service_tokens WHERE id=? AND organization_id=?`), tokenID, organizationID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// DenyService writes a denied audit row for an API-level refusal. a.ServiceTokenID must name
+// a token of a.OrganizationID, or the caller could plant a row in an organization it holds no
+// token for; that case is ErrForbidden and writes nothing.
 func (t *tenancyStore) DenyService(ctx context.Context, a TenantAccess, action permissions.Action, detail string) error {
+	if a.ServiceTokenID == "" {
+		return ErrForbidden
+	}
+	ok, err := t.tokenInOrganization(ctx, a.ServiceTokenID, a.OrganizationID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrForbidden
+	}
 	return t.store.Audit().LogAudit(ctx, &AuditRecord{UserID: a.actor(), Action: string(action), Resource: a.OrganizationID, Details: detail, IPAddress: a.IPAddress, Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, CorrelationID: a.CorrelationID, Result: "denied", CreatedAt: time.Now().UTC()})
 }
 
+// RecordServiceTokenReads writes the hourly summary row for one token, only when tokenID
+// names a token of organizationID. A stale counter for a token that has moved on (revoked,
+// or never that organization's) is not an error: it writes nothing.
 func (t *tenancyStore) RecordServiceTokenReads(ctx context.Context, organizationID, tokenID string, reads int) error {
+	if tokenID == "" {
+		return nil
+	}
+	ok, err := t.tokenInOrganization(ctx, tokenID, organizationID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
 	return t.store.Audit().LogAudit(ctx, &AuditRecord{UserID: "service:" + tokenID, Action: "service_token.reads", Resource: tokenID, Details: fmt.Sprintf("reads=%d", reads), Scope: "organization", OrganizationID: organizationID, CorrelationID: uuid.NewString(), Result: "success", CreatedAt: time.Now().UTC()})
 }

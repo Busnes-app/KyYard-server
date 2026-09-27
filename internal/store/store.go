@@ -47,6 +47,9 @@ var (
 	ErrUnreadableResult = errors.New("unreadable deployment result")
 	// ErrNamespaceUnknown is a mapping to a namespace the cluster's manifest does not list.
 	ErrNamespaceUnknown = errors.New("the namespace is not one the cluster's manifest grants")
+	// ErrPairingCodesExhausted says every draw within the retry budget collided with another
+	// organization's still-live code; the caller may simply try again.
+	ErrPairingCodesExhausted = errors.New("could not mint a unique pairing code")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
