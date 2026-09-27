@@ -92,30 +92,47 @@ func (t *tenancyStore) OpenPodLogTarget(ctx context.Context, a TenantAccess, end
 
 // StillAllowed re-checks a live authorization without writing an audit row. It exists for work
 // that outlives the request that started it: a stream is authorized when it opens, and a
-// membership removed, a role narrowed or an account disabled while it runs must end it.
+// membership removed, a role narrowed, an account disabled or a service token revoked while it
+// runs must end it.
 //
 // No audit row, because this asks the same question every few seconds; the session that
 // answered it the first time is what the trail records.
 func (t *tenancyStore) StillAllowed(ctx context.Context, a TenantAccess, action permissions.Action, endpointID string) error {
-	if a.ActorID == "" || a.OrganizationID == "" {
+	if a.OrganizationID == "" {
 		return ErrForbidden
 	}
-	var status, memberStatus, role string
-	var restricted bool
-	err := t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT u.status,u.must_change_password,m.status,m.role FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=? AND m.organization_id=?`), a.ActorID, a.OrganizationID).
-		Scan(&status, &restricted, &memberStatus, &role)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrForbidden
-	}
-	if err != nil {
-		return err
-	}
-	if status != "active" || restricted || memberStatus != "active" || !permissions.Allows(role, action) {
-		return ErrForbidden
+	if a.ServiceTokenID != "" {
+		role, err := t.serviceRole(ctx, t.store.db, a)
+		if errors.Is(err, errNoPrincipal) {
+			return ErrForbidden
+		}
+		if err != nil {
+			return err
+		}
+		if !permissions.Allows(role, action) {
+			return ErrForbidden
+		}
+	} else {
+		if a.ActorID == "" {
+			return ErrForbidden
+		}
+		var status, memberStatus, role string
+		var restricted bool
+		err := t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT u.status,u.must_change_password,m.status,m.role FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=? AND m.organization_id=?`), a.ActorID, a.OrganizationID).
+			Scan(&status, &restricted, &memberStatus, &role)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrForbidden
+		}
+		if err != nil {
+			return err
+		}
+		if status != "active" || restricted || memberStatus != "active" || !permissions.Allows(role, action) {
+			return ErrForbidden
+		}
 	}
 	if endpointID != "" {
 		var state string
-		err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT state FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
+		err := t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT state FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`),
 			endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID).Scan(&state)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound

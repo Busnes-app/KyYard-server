@@ -1018,7 +1018,35 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	{Version: 33, Name: "deployment_policy_run", SQLite: `ALTER TABLE deployments ADD COLUMN policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL;`, Postgres: `ALTER TABLE deployments ADD COLUMN policy_run_id TEXT REFERENCES policy_runs(id) ON DELETE SET NULL;`},
 	{Version: 34, Name: "kubernetes_namespaces", SQLite: kubernetesNamespaces, Postgres: kubernetesNamespaces},
 	{Version: 35, Name: "application_migrations", SQLite: applicationMigrations, Postgres: strings.ReplaceAll(applicationMigrations, "DATETIME", "TIMESTAMPTZ")},
+	{Version: 36, Name: "service_tokens", SQLite: serviceTokens, Postgres: strings.ReplaceAll(serviceTokens, "DATETIME", "TIMESTAMPTZ")},
 }
+
+// serviceTokens holds another Ky product's read-only credential for one organization, and
+// the single-use six-digit pairing codes that mint them. Only hashes are stored.
+const serviceTokens = `CREATE TABLE service_tokens (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 64),
+ token_hash TEXT NOT NULL UNIQUE,
+ created_by TEXT NOT NULL DEFAULT '',
+ created_at DATETIME NOT NULL,
+ last_used_at DATETIME,
+ last_ip TEXT NOT NULL DEFAULT '',
+ revoked_at DATETIME,
+ revoked_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_service_tokens_org ON service_tokens(organization_id);
+CREATE TABLE service_token_pairings (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ code_hash TEXT NOT NULL,
+ created_by TEXT NOT NULL,
+ created_at DATETIME NOT NULL,
+ expires_at DATETIME NOT NULL,
+ consumed_at DATETIME
+);
+CREATE INDEX idx_service_token_pairings_code ON service_token_pairings(code_hash);
+`
 
 // kubernetesNamespaces stores the namespaces a cluster's manifest grants writes in (a JSON list,
 // on the token until enrollment copies it to the endpoint) and the namespace an instance maps to,

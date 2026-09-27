@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
@@ -19,6 +20,10 @@ func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.Te
 		correlation := crypto.RandomHex(16)
 		w.Header().Set("X-Request-ID", correlation)
 		w.Header().Set("Cache-Control", "no-store")
+		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+			s.serviceRoute(w, r, correlation, token, h)
+			return
+		}
 		user, _, err := s.sessions.AuthenticateRequest(r)
 		if err != nil {
 			if errors.Is(err, auth.ErrPasswordChangeRequired) {
@@ -34,6 +39,76 @@ func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.Te
 			return
 		}
 		h(w, r, store.TenantAccess{ActorID: user.ID, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: s.requestIP(r)})
+	}
+}
+
+// serviceRoute is tenantRoute for a service token: the token names the organization it may
+// read, so a URL naming another one is refused here (no tenant row: unverified scope, like a
+// non-member). The store's run applies the pulse_reader role to whatever the handler asks.
+// Only a successful (2xx) answer counts toward the hourly read summary: a 403 or 404 is not a
+// read this organization's audit should account for.
+func (s *Server) serviceRoute(w http.ResponseWriter, r *http.Request, correlation, token string, h func(http.ResponseWriter, *http.Request, store.TenantAccess)) {
+	ip := s.requestIP(r)
+	tok, err := s.store.Tenancy().AuthenticateServiceToken(r.Context(), token, ip)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+	org, env := r.PathValue("organization"), r.PathValue("environment")
+	if org == "" || len(org) > 64 || len(env) > 64 {
+		s.writeError(w, http.StatusBadRequest, "Invalid tenant scope")
+		return
+	}
+	if org != tok.OrganizationID {
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Tenant access denied", "code": "tenant_access_denied"})
+		return
+	}
+	rec := &statusRecorder{ResponseWriter: w}
+	h(rec, r, store.TenantAccess{ServiceTokenID: tok.ID, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: ip})
+	if rec.status >= 200 && rec.status < 300 {
+		s.serviceReads.add(tok.OrganizationID, tok.ID)
+	}
+}
+
+// statusRecorder captures the status a handler answers with, so serviceRoute can count a
+// service token's read only when it actually succeeded. Embedding alone would hide the
+// underlying writer from http.Flusher's type assertion and from http.ResponseController
+// (SetWriteDeadline): a service token's bounded log read streams through both, so Unwrap and
+// Flush forward to what this wraps rather than only satisfying the two methods below.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+// WriteHeader records the first status only; net/http ignores a later one.
+func (r *statusRecorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// Write defaults the recorded status to 200 on an implicit-WriteHeader response, as
+// net/http itself does.
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController (SetWriteDeadline and friends) reach the writer this
+// wraps instead of stopping at this type.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Flush satisfies http.Flusher by forwarding to the wrapped writer's, when it has one, so a
+// streamed response still flushes per chunk through this wrapper.
+func (r *statusRecorder) Flush() {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
 }
 func (s *Server) tenantError(w http.ResponseWriter, err error) {

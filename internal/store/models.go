@@ -210,6 +210,44 @@ type TenantAccess struct {
 	EnvironmentID  string
 	CorrelationID  string
 	IPAddress      string
+	// ServiceTokenID is set instead of ActorID for a service token; run resolves its fixed role.
+	ServiceTokenID string
+}
+
+// Principal names the caller for a per-caller key: rate limits, stream slots, agent grants and
+// audit rows. A service token has no ActorID, so keying on it alone would collapse every
+// service token into one shared bucket.
+func (a TenantAccess) Principal() string {
+	if a.ServiceTokenID != "" {
+		return "service:" + a.ServiceTokenID
+	}
+	return a.ActorID
+}
+
+// ServiceToken is another Ky product's read-only credential for one organization. The
+// secret is never stored: token_hash is its SHA-256.
+type ServiceToken struct {
+	ID             string     `json:"id"`
+	OrganizationID string     `json:"organization_id"`
+	Name           string     `json:"name"`
+	CreatedBy      string     `json:"created_by"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
+	LastIP         string     `json:"last_ip,omitempty"`
+	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
+}
+
+// ServicePairing is a six-digit code shown once to an organization administrator.
+type ServicePairing struct {
+	ID        string    `json:"id"`
+	Code      string    `json:"code"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// ServiceTokenIssue is the claim response: the token, once, and the organization it reads.
+type ServiceTokenIssue struct {
+	Token        string       `json:"token"`
+	Organization Organization `json:"organization"`
 }
 
 // Registry is a per-organization registry entry. The credential is write-only: rows report

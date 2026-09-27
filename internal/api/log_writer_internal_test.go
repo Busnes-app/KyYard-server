@@ -114,3 +114,23 @@ func TestAnEvictedSocketLeavesTheSuccessorsReadersAlone(t *testing.T) {
 		t.Fatal("the successor was removed by another socket's unwind")
 	}
 }
+
+// serviceRoute wraps every handler's http.ResponseWriter in a statusRecorder so it can count a
+// service token's read only on success. A bounded log read streams through logWriter, which
+// asserts http.Flusher directly and reaches a write deadline through http.ResponseController;
+// wrapping must not hide either from the writer statusRecorder wraps.
+func TestStatusRecorderStillFlushesAndSetsDeadlinesForALogStream(t *testing.T) {
+	dw := &deadlineWriter{ResponseRecorder: httptest.NewRecorder()}
+	rec := &statusRecorder{ResponseWriter: dw, status: http.StatusOK}
+	if _, ok := any(rec).(http.Flusher); !ok {
+		t.Fatal("statusRecorder does not satisfy http.Flusher")
+	}
+	l := newLogWriter(rec, false, false, "web")
+	l.head(historyBudget)
+	if len(dw.deadlines) == 0 {
+		t.Fatal("SetWriteDeadline never reached the writer statusRecorder wraps")
+	}
+	if !dw.Flushed {
+		t.Fatal("Flush never reached the writer statusRecorder wraps")
+	}
+}

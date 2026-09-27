@@ -12,6 +12,7 @@
 | Operator | organization | day-to-day operations: restart, logs, stats, host image pulls without credentials; no deploy (so no application updates), no exec, no secrets |
 | Developer | organization | deploy applications and read logs; no host-level or destructive actions, no exec |
 | Read Only | organization | read everything non-secret |
+| Pulse reader (service token) | organization | read-only: organization, environments, endpoints, inventory, samples, container logs without follow, audit feed; no mutation, no exec, no secrets |
 
 The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing account's password; neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
 
@@ -61,6 +62,14 @@ Today `environment.delete` is unconditional. From M3 it refuses (*planned*, 409)
 | `endpoint.rotate` | agent only, authenticated by its current key | | | | | no | success/failure, both fingerprints |
 
 Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.event`, `agent.metrics`, `agent.result`) are authenticated by the endpoint identity and authorized by endpoint state and tenant binding only; they carry no user role. Enrollment and connection outcomes are audited in organization scope with the endpoint as target; inventory, events, metrics and results are not audited.
+
+### Service tokens (*implemented*)
+
+| Action | OA | EA | Op | Dev | RO | Secret | Audit |
+|---|---|---|---|---|---|---|---|
+| `organization.service_tokens.manage` | ✓ | – | – | – | – | the six-digit pairing code, once; the token only in the claim response | success/denied, target = pairing or token id |
+
+A service token authenticates as `service:<id>` with the fixed role `pulse_reader`; its successful reads are not audited (one `service_token.reads` row per token per hour instead), its denials and every claim and revocation are. A refused claim names no organization, so it writes a platform-scope denied row without the code.
 
 ### Containers, images, networks, volumes (M4–M5)
 
@@ -128,9 +137,10 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Developer scope | deploy plus logs, no exec, no destructive | proposed |
 | Exec | organization administrators only in 0.1; the UI offers Terminal only to them | implemented |
 | Per-environment grants | not in 0.1 | proposed |
+| Read-only service tokens | 6-digit pairing code, 15 min, single use, unauthenticated claim rate-limited 5/min/IP and 30/min; fixed pulse_reader role; hourly read summary | implemented |
 
 Application persistence implements `application.read`, `application.import`, `application.edit` and `application.destroy` through authorized store operations. Import creates an application and first revision; edit appends a revision using the expected head. `application.destroy` covers two operations: discarding an undeployed draft (and a removed application's history) at the expected head, which releases quota, and `RemoveApplication`, which stops and removes an adopted application's containers through `deployment.remove` and keeps its data. HTTP import/list/read/discard/removal routes are implemented; explicit adoption/release are implemented. Internal `secret.reveal` permits organization administrators only, commits audit before returning values and has no HTTP endpoint. Every operation requires explicit environment scope; successful edits audit the revision target without configuration.
 
 ### Live redacted container inspection
 
-The inspection GET uses implemented endpoint.read for every active membership role. It exposes bounded operational facts/counts, not environment values, labels, argv, mount paths or network names. Session and tenant access are rechecked while pending and at publication; runtime identity comes from fresh scoped inventory. No successful-read audit or deployment/secret authority is granted. Bounds and wire lifecycle are in agent-protocol.md, Container inspection.
+The inspection GET uses implemented endpoint.read for every active membership role. It exposes bounded operational facts/counts, not environment values, labels, argv, mount paths or network names. Session (or service token) and tenant access are rechecked while pending and at publication; runtime identity comes from fresh scoped inventory. No successful-read audit or deployment/secret authority is granted. Bounds and wire lifecycle are in agent-protocol.md, Container inspection.

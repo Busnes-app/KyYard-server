@@ -38,6 +38,18 @@ const (
 	deadlineSlack = 2 * accessRecheck
 )
 
+// refuseServiceFollow refuses follow=1 for a service principal, before any endpoint lookup: a
+// service token reads a bounded slice of a log; an open stream is a session, and a session
+// belongs to a person. Reports whether it wrote a response.
+func (s *Server) refuseServiceFollow(w http.ResponseWriter, r *http.Request, a store.TenantAccess, follow bool) bool {
+	if a.ServiceTokenID == "" || !follow {
+		return false
+	}
+	_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.ContainerLogs, "follow")
+	s.tenantError(w, store.ErrForbidden)
+	return true
+}
+
 // handleContainerLogs streams one container's log, named as the operator sees it and resolved
 // to the ID the endpoint last reported.
 func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
@@ -46,12 +58,15 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	if !s.runtimeGate(w, r, a, id, dockerRoute) {
-		return
-	}
 	q, err := parseLogQuery(r)
 	if err != nil {
 		s.tenantError(w, err)
+		return
+	}
+	if s.refuseServiceFollow(w, r, a, q.follow) {
+		return
+	}
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	// Authorization, the audit row, and the resolution of the name the operator used into the
@@ -81,6 +96,9 @@ func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request, a store.T
 	q, err := parseLogQuery(r)
 	if err != nil {
 		s.tenantError(w, err)
+		return
+	}
+	if s.refuseServiceFollow(w, r, a, q.follow) {
 		return
 	}
 	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, id)
@@ -149,7 +167,7 @@ func parseLogQuery(r *http.Request) (logQuery, error) {
 // keep up gets a gap marker naming the bytes dropped rather than a log that looks continuous,
 // and an endpoint serves only so many streams at once.
 func (s *Server) streamLog(w http.ResponseWriter, r *http.Request, a store.TenantAccess, id string, q logQuery, name string, request protocol.LogRequest) {
-	stream, refusal := s.logs.open(id, a.ActorID)
+	stream, refusal := s.logs.open(id, a.Principal())
 	if refusal != "" {
 		s.writeError(w, http.StatusTooManyRequests, refusal)
 		return
@@ -463,12 +481,24 @@ func downloadName(name string) string {
 	return fmt.Sprintf("%s-%s.log", safe, time.Now().UTC().Format("20060102-150405"))
 }
 
-// stillAllowed asks again whether this reader may hold this stream: the session must still be
-// valid, and the membership behind it must still carry container.logs on this endpoint.
+// stillAllowed asks again whether this reader may hold this stream: the caller must still
+// authenticate, and its membership or token must still carry container.logs on this endpoint.
 // Neither is something that was settled when the stream opened.
 func (s *Server) stillAllowed(r *http.Request, a store.TenantAccess, endpointID string) bool {
-	if _, _, err := s.sessions.AuthenticateRequest(r); err != nil {
+	return s.stillAuthenticated(r, a) && s.store.Tenancy().StillAllowed(r.Context(), a, permissions.ContainerLogs, endpointID) == nil
+}
+
+// stillAuthenticated re-authenticates the request that started long-running work: the session
+// for a user, the same live bearer for a service token. It writes nothing.
+func (s *Server) stillAuthenticated(r *http.Request, a store.TenantAccess) bool {
+	if a.ServiceTokenID == "" {
+		_, _, err := s.sessions.AuthenticateRequest(r)
+		return err == nil
+	}
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
 		return false
 	}
-	return s.store.Tenancy().StillAllowed(r.Context(), a, permissions.ContainerLogs, endpointID) == nil
+	tok, err := s.store.Tenancy().LookupServiceToken(r.Context(), token)
+	return err == nil && tok.ID == a.ServiceTokenID
 }

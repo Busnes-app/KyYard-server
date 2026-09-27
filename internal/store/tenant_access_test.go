@@ -178,3 +178,23 @@ func TestNonMemberDenialLeavesNoTenantAudit(t *testing.T) {
 		t.Fatal("member denial not audited")
 	}
 }
+
+// Principal is the per-caller key for rate limits, stream slots and agent grants. A service
+// token has no ActorID, so two distinct tokens must not collapse into the same key.
+func TestPrincipalKeysAServiceTokenSeparatelyFromAUser(t *testing.T) {
+	user := store.TenantAccess{ActorID: "usr_alice"}
+	if got := user.Principal(); got != "usr_alice" {
+		t.Fatalf("user principal = %q", got)
+	}
+	tokenA := store.TenantAccess{ServiceTokenID: "svc_a"}
+	tokenB := store.TenantAccess{ServiceTokenID: "svc_b"}
+	if got := tokenA.Principal(); got != "service:svc_a" {
+		t.Fatalf("token principal = %q", got)
+	}
+	if tokenA.Principal() == tokenB.Principal() {
+		t.Fatal("two distinct service tokens share one principal key")
+	}
+	if tokenA.Principal() == user.Principal() {
+		t.Fatal("a service token's principal collides with a user's ActorID")
+	}
+}

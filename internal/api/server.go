@@ -6,11 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/health"
+	"github.com/Busnes-app/ky-primitives/logging"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
@@ -41,6 +44,9 @@ type Server struct {
 	mux         *http.ServeMux
 	attemptsMu  sync.Mutex
 	attempts    map[string]attemptWindow
+	// claimGlobal is the service-claim bound across every address. It lives outside attempts
+	// so makeRoom cannot evict it; guarded by attemptsMu.
+	claimGlobal attemptWindow
 	// detached counts the requests running on a context deliberately separated from their
 	// connection. http.Server.Shutdown does not know about them, so runServer waits on this
 	// before the store closes.
@@ -67,6 +73,10 @@ type Server struct {
 	policies policyScheduler
 	// validations is the health-validation loop's in-memory state (validations.go).
 	validations validationLoop
+	// serviceReads counts reads per service token between hourly summaries (service_reads.go).
+	serviceReads serviceReadCounter
+	// health serves the suite health contract at /healthz.
+	health *logging.Logger
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -157,6 +167,10 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 	kysignon := sso.NewKySignOnClient(cfg.SSO, st)
 	saml := sso.NewSAMLServiceProvider(cfg.SSO.SAMLEntityID, cfg.Server.AppURL+"/saml/acs")
 	recovery := recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery})
+	healthLog, err := logging.New(logging.Config{App: "kyyard", Out: os.Stderr})
+	if err != nil {
+		panic(err)
+	}
 
 	s := &Server{
 		config:   cfg,
@@ -168,6 +182,7 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		mux:      http.NewServeMux(),
 		logs:     newLogRegistry(),
 		attempts: make(map[string]attemptWindow),
+		health:   healthLog,
 		// Each check or update plan may hold a registry connection per service for up to
 		// store.ImageCheckDeadline.
 		registrySlots: make(chan struct{}, registrySlotsTotal),
@@ -206,6 +221,14 @@ func (s *Server) makeRoom(now time.Time) {
 			break
 		}
 	}
+}
+
+// allowGlobalClaim bumps the claim window shared by every caller.
+func (s *Server) allowGlobalClaim(limit int, window time.Duration) bool {
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	s.claimGlobal = bumpWindow(s.claimGlobal, time.Now(), window)
+	return s.claimGlobal.count <= limit
 }
 
 func bumpWindow(entry attemptWindow, now time.Time, window time.Duration) attemptWindow {
@@ -267,6 +290,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/organizations/{organization}/environments/{environment}", s.tenantRoute(s.handleRemoveEnvironment))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/audit", s.tenantRoute(s.handleTenantAudit))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/audit", s.tenantRoute(s.handleTenantAudit))
+	s.mux.HandleFunc("POST /api/service-tokens/claim", s.handleClaimServiceToken)
+	s.mux.HandleFunc("POST /api/organizations/{organization}/service-tokens/pairings", s.tenantRoute(s.handleCreateServicePairing))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/service-tokens", s.tenantRoute(s.handleServiceTokens))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/service-tokens/{token}", s.tenantRoute(s.handleRevokeServiceToken))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/members", s.tenantRoute(s.handleTenantMembers))
 	s.mux.HandleFunc("PUT /api/organizations/{organization}/members/{user}", s.tenantRoute(s.handlePutMembership))
 	s.mux.HandleFunc("DELETE /api/organizations/{organization}/members/{user}", s.tenantRoute(s.handleRemoveMembership))
@@ -311,6 +338,9 @@ func (s *Server) routes() {
 	// Public, secret-free probes; readiness includes the database.
 	s.mux.HandleFunc("/health/live", s.handleHealth)
 	s.mux.HandleFunc("/health/ready", s.handleHealth)
+	// The suite health contract (ky.health/1) for kyPulse; /health/live and /health/ready
+	// stay for compose and the binary healthcheck.
+	s.mux.Handle("GET /healthz", health.Handler("kyyard", s.health, health.Check{Name: "database", Run: s.store.Ping}))
 
 	// Auth
 	s.mux.HandleFunc("/api/auth/pow-challenge", s.handlePoWChallenge)
