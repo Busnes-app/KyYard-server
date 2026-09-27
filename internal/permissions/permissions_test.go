@@ -121,3 +121,20 @@ func TestMigrateIsOrganizationAdminOnly(t *testing.T) {
 		t.Fatal("the audit identifier changed")
 	}
 }
+
+func TestPulseReaderIsReadOnly(t *testing.T) {
+	allowed := []Action{OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, AuditRead}
+	for _, a := range allowed {
+		if !Allows(RolePulseReader, a) {
+			t.Errorf("pulse_reader must hold %s", a)
+		}
+	}
+	for _, a := range []Action{ApplicationRead, MembersManage, EnvironmentCreate, EndpointEnroll, ContainerOperate, ContainerExec, ImagePull, RegistryRead, ServiceTokensManage, ApplicationDeploy} {
+		if Allows(RolePulseReader, a) {
+			t.Errorf("pulse_reader must not hold %s", a)
+		}
+	}
+	if !Allows("organization_admin", ServiceTokensManage) || Allows("environment_admin", ServiceTokensManage) || Allows("operator", ServiceTokensManage) {
+		t.Fatal("service tokens are managed by organization administrators only")
+	}
+}

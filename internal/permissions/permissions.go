@@ -57,7 +57,15 @@ const (
 	// creates the destination application, copying the source's secret values into it. Only the
 	// organization administrator, who may reveal those values anyway, holds it.
 	ApplicationMigrate Action = "application.migrate"
+	// ServiceTokensManage mints pairing codes for, lists and revokes the organization's
+	// service tokens. A token reads the whole organization, so only its administrator
+	// hands one out.
+	ServiceTokensManage Action = "organization.service_tokens.manage"
 )
+
+// RolePulseReader is the fixed role of a service token: kyPulse reads inventory, samples,
+// logs and the audit feed of one organization and can change nothing.
+const RolePulseReader = "pulse_reader"
 
 func PlatformAllows(role string, action Action) bool {
 	return role == "admin" && action == PlatformAdmin
@@ -67,7 +75,7 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage:
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage, ServiceTokensManage:
 			return true
 		}
 	case "environment_admin":
@@ -87,6 +95,11 @@ func Allows(role string, action Action) bool {
 		// operation, destruction or exec authority.
 		switch action {
 		case ApplicationRead, ApplicationEdit, ApplicationDeploy, OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, RegistryRead:
+			return true
+		}
+	case RolePulseReader:
+		switch action {
+		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, AuditRead:
 			return true
 		}
 	case "read_only":

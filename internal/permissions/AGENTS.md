@@ -18,6 +18,7 @@ Owns the permission matrix; store owns live membership checks and transactional 
 - Organization administrators manage all implemented tenant actions, and are the only role holding `organization.members.manage`. Environment administrators read organization/environment data, manage environments, and hold `endpoint.enroll`, `endpoint.update` and `endpoint.revoke`, plus `container.operate`, `container.destroy`, `image.pull` and `image.destroy`. Every membership role holds `endpoint.read`. Operator, developer and read-only roles read organization/environment data; operators also hold `container.operate` and `image.pull`. Application, exec, log and registry actions are in the bullets of this file.
 - Every membership role holds `registry.read` (rows carry no secret); only organization administrators hold `registry.manage` (registries, credentials, anonymous-pull opt-in). `registry.read` never unlocks a credential: `store.ResolveRegistryAccess` runs under the using operation's action (`image.pull` or `application.deploy`) and refuses every other action.
 - Membership status and user status are database facts, not part of this pure mapping.
+- `organization.service_tokens.manage` (mint a pairing code, list, revoke) is organization-administrator-only. `pulse_reader` is the fixed role of a service token: `organization.read`, `environment.read`, `endpoint.read`, `container.logs` and `organization.audit.read`, nothing else; it is never assignable to a user.
 
 ## Work Guidance
 
