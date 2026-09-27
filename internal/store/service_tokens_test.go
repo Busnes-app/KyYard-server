@@ -3,7 +3,9 @@ package store_test
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -360,5 +362,79 @@ func TestAuthenticateStampRules(t *testing.T) {
 	}
 	if finalList[0].LastIP != "10.0.0.4" || !finalList[0].LastUsedAt.Equal(thirdStored) {
 		t.Fatalf("revoked token was re-stamped: %+v", finalList[0])
+	}
+}
+
+// TestConcurrentPairingMintsNeverCollide proves the fix round 2 ruling: on PostgreSQL, the
+// check-then-insert in CreateServicePairing is only safe because pg_advisory_xact_lock
+// serialises it across organizations. SQLite serialises writers on its own, so this needs a
+// real Postgres to mean anything.
+func TestConcurrentPairingMintsNeverCollide(t *testing.T) {
+	if os.Getenv("KY_TEST_POSTGRES_DSN") == "" {
+		t.Skip("advisory-lock serialization is PostgreSQL's; SQLite serializes writers")
+	}
+	st, a := orgAdmin(t)
+	ctx := context.Background()
+	b := newOrgAdmin(t, st, "org_b", "B", "usr_b")
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		access := a
+		if i%2 == 1 {
+			access = b
+		}
+		wg.Add(1)
+		go func(acc store.TenantAccess) {
+			defer wg.Done()
+			if _, err := st.Tenancy().CreateServicePairing(ctx, acc); err != nil {
+				errs <- err
+			}
+		}(access)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	hashes, err := store.LivePairingCodeHashes(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hashes) != n {
+		t.Fatalf("expected %d live pairings, got %d: %v", n, len(hashes), hashes)
+	}
+	seen := make(map[string]bool, n)
+	for _, h := range hashes {
+		if seen[h] {
+			t.Fatalf("two live pairings share a code_hash: %v", hashes)
+		}
+		seen[h] = true
+	}
+}
+
+func TestExpiredPairingIsDeletedByTheNextMint(t *testing.T) {
+	st, a := orgAdmin(t)
+	ctx := context.Background()
+	restoreLife := store.SetPairingLifeForTest(-time.Second)
+	p := mustPairing(t, st, a)
+	restoreLife()
+
+	exists, err := store.PairingRowExists(ctx, st, p.ID)
+	if err != nil || !exists {
+		t.Fatalf("expired pairing row missing before the sweep: exists=%v err=%v", exists, err)
+	}
+
+	// The next mint's DELETE sweeps expired, unconsumed rows.
+	mustPairing(t, st, a)
+
+	exists, err = store.PairingRowExists(ctx, st, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("expired pairing row survived the next mint")
 	}
 }

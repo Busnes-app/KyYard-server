@@ -40,15 +40,35 @@ var serviceNameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 func validServiceName(s string) bool { return serviceNameRe.MatchString(s) }
 
-// maxPairingCodeDraws bounds the redraw loop: two organizations may hold the same live code
-// only by drawing it independently, so a collision redraws rather than letting "oldest wins"
-// hand one organization's claim to another's token (docs/authorization-matrix.md).
-const maxPairingCodeDraws = 20
+// maxPairingCodeDraws bounds the redraw loop. pairingLockKey serialises the check-then-insert
+// across organizations on PostgreSQL (fix round 2: the check alone is not a critical section
+// under concurrent mints — two transactions can both see no live row for the same hash and
+// both insert it).
+const (
+	maxPairingCodeDraws       = 20
+	pairingLockKey      int64 = 7345102
+)
 
 func (t *tenancyStore) CreateServicePairing(ctx context.Context, a TenantAccess) (*ServicePairing, error) {
 	now := time.Now().UTC()
 	p := &ServicePairing{ID: uuid.NewString(), ExpiresAt: now.Add(pairingLife)}
 	err := t.withTenantTarget(ctx, a, permissions.ServiceTokensManage, p.ID, func(tx *sql.Tx) error {
+		if t.store.driver == "postgres" {
+			// Transaction-scoped: serialises pairing mints across organizations so the
+			// collision check and the insert are one critical section. SQLite needs none
+			// because a write transaction holds the database lock.
+			if _, err := tx.ExecContext(ctx, t.store.rebind(`SELECT pg_advisory_xact_lock(?)`), pairingLockKey); err != nil {
+				return err
+			}
+		}
+		// Expired, unconsumed rows must not keep their codes reserved.
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM service_token_pairings WHERE expires_at < ?`), now); err != nil {
+			return err
+		}
+		// The lock (postgres) or the single SQLite writer makes this check-then-insert safe:
+		// a collision here means another organization's code is genuinely still live, so
+		// redraw rather than letting "oldest wins" hand one organization's claim to
+		// another's token (docs/authorization-matrix.md).
 		for i := 0; i < maxPairingCodeDraws; i++ {
 			code, err := pairingCode()
 			if err != nil {
