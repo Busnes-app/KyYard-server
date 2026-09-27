@@ -158,6 +158,51 @@ func TestServiceTokenCannotFollowLogs(t *testing.T) {
 	}
 }
 
+func TestServiceTokenCannotExec(t *testing.T) {
+	srv, st, cookie, csrf, org := tenantAdminFixture(t)
+	token := pairAndClaim(t, srv, cookie, csrf, org)
+	w := bearer(srv, "GET", "/api/organizations/"+org+"/endpoints/ep_none/containers/c/exec", token)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("exec must be refused before any endpoint lookup: %d %s", w.Code, w.Body)
+	}
+	rows, _, _ := st.Audit().ListAuditRecords(context.Background(), 0, 50)
+	var denied bool
+	for _, r := range rows {
+		denied = denied || (r.Action == "container.exec" && r.Result == "denied" && strings.HasPrefix(r.UserID, "service:"))
+	}
+	if !denied {
+		t.Fatal("exec refusal must be audited")
+	}
+}
+
+// A service token's read summary counts only 2xx answers: a refused request is not a read the
+// organization's audit should account for.
+func TestServiceReadSummaryCountsOnlySuccess(t *testing.T) {
+	srv, st, cookie, csrf, org := tenantAdminFixture(t)
+	token := pairAndClaim(t, srv, cookie, csrf, org)
+	if w := bearer(srv, "GET", "/api/organizations/"+org, token); w.Code != http.StatusOK {
+		t.Fatalf("expected success: %d", w.Code)
+	}
+	if w := bearer(srv, "GET", "/api/organizations/"+org+"/members", token); w.Code != http.StatusForbidden {
+		t.Fatalf("expected refusal: %d", w.Code)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go srv.RunServiceReadSummaries(ctx, done)
+	cancel()
+	<-done
+	rows, _, _ := st.Audit().ListAuditRecords(context.Background(), 0, 50)
+	var reads string
+	for _, r := range rows {
+		if r.Action == "service_token.reads" {
+			reads = r.Details
+		}
+	}
+	if reads != "reads=1" {
+		t.Fatalf("reads = %q, want reads=1 (only the successful GET)", reads)
+	}
+}
+
 func TestClaimIsRateLimited(t *testing.T) {
 	srv, _, _, _, _ := tenantAdminFixture(t)
 	for i := 0; i < 5; i++ {

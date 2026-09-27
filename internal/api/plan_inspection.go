@@ -29,7 +29,7 @@ func (s *Server) planInspections(w http.ResponseWriter, r *http.Request, a store
 // admitted, and allowed re-checks the caller's authority during each inspection.
 func (s *Server) inspectForPlan(ctx context.Context, a store.TenantAccess, ep *store.Endpoint, pre *store.DeploymentPreflight, started func(), allowed func(context.Context) bool) map[string]protocol.ContainerInspection {
 	out := map[string]protocol.ContainerInspection{}
-	if !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspect) || !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectVerdict) || !s.allowAttempt("inspection:"+a.ActorID, 30, time.Minute) {
+	if !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspect) || !slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectVerdict) || !s.allowAttempt("inspection:"+a.Principal(), 30, time.Minute) {
 		return out
 	}
 	ctx, cancel := context.WithTimeout(ctx, planInspectionBudget)
@@ -43,7 +43,7 @@ func (s *Server) inspectForPlan(ctx context.Context, a store.TenantAccess, ep *s
 		if svc.InspectionTarget == nil {
 			continue
 		}
-		if in, err := s.observe(ctx, ep.ID, a.ActorID, a.OrganizationID, *svc.InspectionTarget, health, func() bool { return allowed(ctx) }); err == nil {
+		if in, err := s.observe(ctx, ep.ID, a.Principal(), a.OrganizationID, *svc.InspectionTarget, health, func() bool { return allowed(ctx) }); err == nil {
 			out[svc.InspectionTarget.ContainerID] = in
 		}
 	}

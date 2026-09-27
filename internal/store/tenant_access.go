@@ -134,10 +134,7 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 
 // actor names the principal an audit row is about: a user id, or service:<token id>.
 func (a TenantAccess) actor() string {
-	if a.ServiceTokenID != "" {
-		return "service:" + a.ServiceTokenID
-	}
-	return a.ActorID
+	return a.Principal()
 }
 
 // errNoPrincipal marks principalRole's "no such row" outcome: an unknown member or an

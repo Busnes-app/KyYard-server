@@ -45,6 +45,8 @@ func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.Te
 // serviceRoute is tenantRoute for a service token: the token names the organization it may
 // read, so a URL naming another one is refused here (no tenant row: unverified scope, like a
 // non-member). The store's run applies the pulse_reader role to whatever the handler asks.
+// Only a successful (2xx) answer counts toward the hourly read summary: a 403 or 404 is not a
+// read this organization's audit should account for.
 func (s *Server) serviceRoute(w http.ResponseWriter, r *http.Request, correlation, token string, h func(http.ResponseWriter, *http.Request, store.TenantAccess)) {
 	ip := s.requestIP(r)
 	tok, err := s.store.Tenancy().AuthenticateServiceToken(r.Context(), token, ip)
@@ -61,8 +63,23 @@ func (s *Server) serviceRoute(w http.ResponseWriter, r *http.Request, correlatio
 		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Tenant access denied", "code": "tenant_access_denied"})
 		return
 	}
-	s.serviceReads.add(tok.OrganizationID, tok.ID)
-	h(w, r, store.TenantAccess{ServiceTokenID: tok.ID, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: ip})
+	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	h(rec, r, store.TenantAccess{ServiceTokenID: tok.ID, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: ip})
+	if rec.status >= 200 && rec.status < 300 {
+		s.serviceReads.add(tok.OrganizationID, tok.ID)
+	}
+}
+
+// statusRecorder captures the status a handler answers with, so serviceRoute can count a
+// service token's read only when it actually succeeded.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
 }
 func (s *Server) tenantError(w http.ResponseWriter, err error) {
 	var blocked *store.PreflightBlockedError

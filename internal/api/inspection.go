@@ -198,7 +198,7 @@ func (s *Server) handleContainerInspection(w http.ResponseWriter, r *http.Reques
 		s.tenantError(w, err)
 		return
 	}
-	if !s.allowAttempt("inspection:"+a.ActorID, 30, time.Minute) {
+	if !s.allowAttempt("inspection:"+a.Principal(), 30, time.Minute) {
 		s.writeError(w, 429, "Too many inspection requests")
 		return
 	}
@@ -228,7 +228,7 @@ func (s *Server) handleContainerInspection(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(protocol.InspectionLifetime + 2*time.Second))
-	result, err := s.inspect(r.Context(), agent, a.ActorID, a.OrganizationID, target, slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectHealth), func() bool { return s.inspectionAllowed(r, a, endpoint) })
+	result, err := s.inspect(r.Context(), agent, a.Principal(), a.OrganizationID, target, slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectHealth), func() bool { return s.inspectionAllowed(r, a, endpoint) })
 	switch err {
 	case nil, errInspectionBusy, errInspectionUnavailable, errInspectionInvalid:
 		// The agent answered: the answer counts only for the target still recorded.

@@ -214,6 +214,16 @@ type TenantAccess struct {
 	ServiceTokenID string
 }
 
+// Principal names the caller for a per-caller key: rate limits, stream slots, agent grants and
+// audit rows. A service token has no ActorID, so keying on it alone would collapse every
+// service token into one shared bucket.
+func (a TenantAccess) Principal() string {
+	if a.ServiceTokenID != "" {
+		return "service:" + a.ServiceTokenID
+	}
+	return a.ActorID
+}
+
 // ServiceToken is another Ky product's read-only credential for one organization. The
 // secret is never stored: token_hash is its SHA-256.
 type ServiceToken struct {

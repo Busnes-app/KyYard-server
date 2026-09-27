@@ -48,6 +48,13 @@ func (s *Server) execAllowed(r *http.Request, a store.TenantAccess, endpoint str
 	return s.store.Tenancy().StillAllowed(ctx, a, permissions.ContainerExec, endpoint) == nil
 }
 func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	// An exec is an interactive session, not a bounded read; a service token never gets one.
+	// Refused first, before Origin is checked or the rate bucket is spent.
+	if a.ServiceTokenID != "" {
+		_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.ContainerExec, "bearer")
+		s.tenantError(w, store.ErrForbidden)
+		return
+	}
 	// Unlike ordinary API requests, a browser WebSocket must always carry Origin.
 	if r.Header.Get("Origin") == "" || !sameOrigin(r.Header.Get("Origin"), s.config.Server.AppURL) {
 		s.writeError(w, http.StatusForbidden, "Terminal origin refused")
@@ -58,7 +65,7 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	if !s.allowAttempt("exec:"+a.ActorID, 10, time.Minute) {
+	if !s.allowAttempt("exec:"+a.Principal(), 10, time.Minute) {
 		s.writeError(w, 429, "Too many terminal attempts")
 		return
 	}
@@ -78,7 +85,7 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), protocol.ExecAbsoluteTimeout)
 	defer cancel()
-	stream := s.execs.open(agent, a.ActorID, a.OrganizationID, cancel)
+	stream := s.execs.open(agent, a.Principal(), a.OrganizationID, cancel)
 	if stream == nil {
 		s.writeError(w, 429, "Terminal capacity reached")
 		return

@@ -38,6 +38,18 @@ const (
 	deadlineSlack = 2 * accessRecheck
 )
 
+// refuseServiceFollow refuses follow=1 for a service principal, before any endpoint lookup: a
+// service token reads a bounded slice of a log; an open stream is a session, and a session
+// belongs to a person. Reports whether it wrote a response.
+func (s *Server) refuseServiceFollow(w http.ResponseWriter, r *http.Request, a store.TenantAccess, follow bool) bool {
+	if a.ServiceTokenID == "" || !follow {
+		return false
+	}
+	_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.ContainerLogs, "follow")
+	s.tenantError(w, store.ErrForbidden)
+	return true
+}
+
 // handleContainerLogs streams one container's log, named as the operator sees it and resolved
 // to the ID the endpoint last reported.
 func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
@@ -51,12 +63,7 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	if a.ServiceTokenID != "" && q.follow {
-		// A service token reads a bounded slice of a log; an open stream is a session, and a
-		// session belongs to a person. Refused before any endpoint lookup: what an endpoint is
-		// or holds is not the question a service principal gets to ask by way of follow.
-		_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.ContainerLogs, "follow")
-		s.tenantError(w, store.ErrForbidden)
+	if s.refuseServiceFollow(w, r, a, q.follow) {
 		return
 	}
 	if !s.runtimeGate(w, r, a, id, dockerRoute) {
@@ -91,11 +98,7 @@ func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request, a store.T
 		s.tenantError(w, err)
 		return
 	}
-	if a.ServiceTokenID != "" && q.follow {
-		// A service token reads a bounded slice of a log; an open stream is a session, and a
-		// session belongs to a person.
-		_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.ContainerLogs, "follow")
-		s.tenantError(w, store.ErrForbidden)
+	if s.refuseServiceFollow(w, r, a, q.follow) {
 		return
 	}
 	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, id)
@@ -164,7 +167,7 @@ func parseLogQuery(r *http.Request) (logQuery, error) {
 // keep up gets a gap marker naming the bytes dropped rather than a log that looks continuous,
 // and an endpoint serves only so many streams at once.
 func (s *Server) streamLog(w http.ResponseWriter, r *http.Request, a store.TenantAccess, id string, q logQuery, name string, request protocol.LogRequest) {
-	stream, refusal := s.logs.open(id, a.ActorID)
+	stream, refusal := s.logs.open(id, a.Principal())
 	if refusal != "" {
 		s.writeError(w, http.StatusTooManyRequests, refusal)
 		return
