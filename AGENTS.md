@@ -159,6 +159,9 @@ waits on it inside the same handler wait (a run's worst case is under 3 minutes,
 unchanged). `api.Server.RunValidations`, the health-validation loop, starts beside it and closes
 its `done` only between ticks, a rollback in flight included (under `context.WithoutCancel`);
 `runServer` waits on it in the same handler wait (`TestServerRunsAndAwaitsTheValidationLoop`).
+`api.Server.RunServiceReadSummaries`, the service-token read-summary loop, starts beside it and
+closes its `done` only after a final flush on a context detached from the loop; `runServer`
+waits on it in the same handler wait (`TestServerRunsAndAwaitsTheServiceReadSummaryLoop`).
 `main.go` blank-imports `time/tzdata` so policy zones load the same on every host
 (`TestServerEmbedsTheTimeZoneDatabase`). Nothing writes into a closed store. Both waits run under
 one `backupWaitTimeout`

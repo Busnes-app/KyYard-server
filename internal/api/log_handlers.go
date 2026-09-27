@@ -46,12 +46,20 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	if !s.runtimeGate(w, r, a, id, dockerRoute) {
-		return
-	}
 	q, err := parseLogQuery(r)
 	if err != nil {
 		s.tenantError(w, err)
+		return
+	}
+	if a.ServiceTokenID != "" && q.follow {
+		// A service token reads a bounded slice of a log; an open stream is a session, and a
+		// session belongs to a person. Refused before any endpoint lookup: what an endpoint is
+		// or holds is not the question a service principal gets to ask by way of follow.
+		_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.ContainerLogs, "follow")
+		s.tenantError(w, store.ErrForbidden)
+		return
+	}
+	if !s.runtimeGate(w, r, a, id, dockerRoute) {
 		return
 	}
 	// Authorization, the audit row, and the resolution of the name the operator used into the
@@ -81,6 +89,13 @@ func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request, a store.T
 	q, err := parseLogQuery(r)
 	if err != nil {
 		s.tenantError(w, err)
+		return
+	}
+	if a.ServiceTokenID != "" && q.follow {
+		// A service token reads a bounded slice of a log; an open stream is a session, and a
+		// session belongs to a person.
+		_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.ContainerLogs, "follow")
+		s.tenantError(w, store.ErrForbidden)
 		return
 	}
 	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, id)

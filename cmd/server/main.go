@@ -141,6 +141,8 @@ func runServer() {
 	go srv.RunPolicies(ctx, policiesDone)
 	validationsDone := make(chan struct{})
 	go srv.RunValidations(ctx, validationsDone)
+	serviceReadsDone := make(chan struct{})
+	go srv.RunServiceReadSummaries(ctx, serviceReadsDone)
 	go pruneLoop(ctx, st)
 
 	addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
@@ -178,7 +180,7 @@ func runServer() {
 	// A policy run and a validation tick in flight finish before the store closes: each records
 	// its apply before the frame leaves. A run's worst case (under 3 minutes) and a tick's (its
 	// rollback's inspections, plan and apply: seconds) fit the same budget.
-	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; <-policiesDone; <-validationsDone; srv.WaitDetached() })
+	waitForBackupWork(waitCtx, backupDone, func() { <-localDone; <-policiesDone; <-validationsDone; <-serviceReadsDone; srv.WaitDetached() })
 	log.Println("[KYYARD] Server stopped")
 }
 

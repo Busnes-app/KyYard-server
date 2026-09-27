@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
@@ -19,6 +20,10 @@ func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.Te
 		correlation := crypto.RandomHex(16)
 		w.Header().Set("X-Request-ID", correlation)
 		w.Header().Set("Cache-Control", "no-store")
+		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+			s.serviceRoute(w, r, correlation, token, h)
+			return
+		}
 		user, _, err := s.sessions.AuthenticateRequest(r)
 		if err != nil {
 			if errors.Is(err, auth.ErrPasswordChangeRequired) {
@@ -35,6 +40,29 @@ func (s *Server) tenantRoute(h func(http.ResponseWriter, *http.Request, store.Te
 		}
 		h(w, r, store.TenantAccess{ActorID: user.ID, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: s.requestIP(r)})
 	}
+}
+
+// serviceRoute is tenantRoute for a service token: the token names the organization it may
+// read, so a URL naming another one is refused here (no tenant row: unverified scope, like a
+// non-member). The store's run applies the pulse_reader role to whatever the handler asks.
+func (s *Server) serviceRoute(w http.ResponseWriter, r *http.Request, correlation, token string, h func(http.ResponseWriter, *http.Request, store.TenantAccess)) {
+	ip := s.requestIP(r)
+	tok, err := s.store.Tenancy().AuthenticateServiceToken(r.Context(), token, ip)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+	org, env := r.PathValue("organization"), r.PathValue("environment")
+	if org == "" || len(org) > 64 || len(env) > 64 {
+		s.writeError(w, http.StatusBadRequest, "Invalid tenant scope")
+		return
+	}
+	if org != tok.OrganizationID {
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Tenant access denied", "code": "tenant_access_denied"})
+		return
+	}
+	s.serviceReads.add(tok.OrganizationID, tok.ID)
+	h(w, r, store.TenantAccess{ServiceTokenID: tok.ID, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: ip})
 }
 func (s *Server) tenantError(w http.ResponseWriter, err error) {
 	var blocked *store.PreflightBlockedError
