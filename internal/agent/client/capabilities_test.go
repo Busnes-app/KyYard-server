@@ -21,7 +21,7 @@ func TestHelloCapabilitiesPerRuntime(t *testing.T) {
 	}
 	logs := func(context.Context, protocol.LogRequest, func([]byte) error) error { return nil }
 	cluster := helloCapabilities(&Options{Kubernetes: true, Logs: logs, Deploy: deploy, Remove: remove})
-	if !slices.Equal(cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesClaims, protocol.CapabilityKubernetesRemove}) || !protocol.CapabilitiesFit(protocol.RuntimeKubernetes, cluster) {
+	if !slices.Equal(cluster, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesClaims, protocol.CapabilityKubernetesServiceIPs, protocol.CapabilityKubernetesRemove}) || !protocol.CapabilitiesFit(protocol.RuntimeKubernetes, cluster) {
 		t.Fatalf("cluster %v", cluster)
 	}
 	if readOnly := helloCapabilities(&Options{Kubernetes: true, Logs: logs}); !slices.Equal(readOnly, []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityPodLogs}) {

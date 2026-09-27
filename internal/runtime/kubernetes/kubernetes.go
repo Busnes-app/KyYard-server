@@ -399,6 +399,7 @@ func owner(p corev1.Pod) (kind, name string) {
 
 func service(s corev1.Service) protocol.Service {
 	out := protocol.Service{Namespace: s.Namespace, Name: s.Name, Type: string(s.Spec.Type), ClusterIP: s.Spec.ClusterIP, Ports: []string{}}
+	out.Instance, out.Service = s.Labels[render.LabelInstance], s.Labels[render.LabelService]
 	for _, p := range s.Spec.Ports {
 		port := strconv.Itoa(int(p.Port))
 		if p.NodePort != 0 {

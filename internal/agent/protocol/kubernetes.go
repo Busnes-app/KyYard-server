@@ -108,6 +108,8 @@ type Service struct {
 	Type      string   `json:"type"`
 	ClusterIP string   `json:"cluster_ip"`
 	Ports     []string `json:"ports"`
+	Instance  string   `json:"instance,omitempty"`
+	Service   string   `json:"service,omitempty"`
 }
 
 // Claim is a PersistentVolumeClaim.
@@ -230,6 +232,7 @@ func clampKubernetes(k *KubernetesInventory, truncated map[string]bool) {
 	for i := range k.Services {
 		s := &k.Services[i]
 		s.Namespace, s.Name, s.Type, s.ClusterIP = name(s.Namespace), name(s.Name), short(s.Type), short(s.ClusterIP)
+		s.Instance, s.Service = short(s.Instance), short(s.Service)
 		s.Ports = cleanList(s.Ports, MaxServicePorts, MaxKubeShortBytes)
 	}
 	if len(k.Claims) > MaxClaims {
@@ -314,7 +317,7 @@ func CheckRuntimeShape(runtime string, s *Snapshot) error {
 }
 
 // kubernetesCapabilities is everything a cluster agent may advertise.
-var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesClaims: true, CapabilityKubernetesRemove: true, CapabilityKubernetesInspect: true}
+var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesClaims: true, CapabilityKubernetesServiceIPs: true, CapabilityKubernetesRemove: true, CapabilityKubernetesInspect: true}
 
 // CapabilitiesFit reports whether a hello's capabilities belong to the endpoint's runtime:
 // a cluster agent names only cluster capabilities, a Docker agent names none of them.

@@ -97,6 +97,7 @@ var stepCodes = map[string]detailRule{
 	"runtime_error": detailNone, "runtime_status": detailStatus, CodeLegacy: detailNone,
 	"forbidden": detailNone, "rollout_timeout": detailRollout, "conflict": detailObject,
 	"pod_security": detailPodSecurity, "admission_denied": detailObject, "claim_immutable": detailObject,
+	"service_ip_immutable": detailObject, "service_ip_unavailable": detailObject,
 }
 
 var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
@@ -203,6 +204,8 @@ type DeploymentService struct {
 	SecretKeys []string `json:"secret_keys,omitempty"`
 	// Volumes mount the request's claims; Kubernetes only.
 	Volumes []KubernetesMount `json:"volumes,omitempty"`
+	// ClusterIP requests a static internal Service address; Kubernetes only.
+	ClusterIP string `json:"cluster_ip,omitempty"`
 }
 
 // ImagePull names an image by host, repository and the digest it must resolve to. Tag, when
@@ -348,7 +351,7 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 	names, containers, replaces, bindings, pulled, mounted := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}, map[string]bool{}, map[string]bool{}
 	for _, s := range r.Services {
 		image := (s.Pull == nil && fullImageID(s.ImageID)) || (s.Pull != nil && s.ImageID == "" && s.Pull.valid())
-		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 || len(s.Volumes) > 0 {
+		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 || len(s.Volumes) > 0 || s.ClusterIP != "" {
 			return errors.New("invalid deployment service")
 		}
 		names[s.Name], containers[s.ContainerName], replaces[s.Replaces.ContainerID] = true, true, true

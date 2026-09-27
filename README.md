@@ -454,6 +454,28 @@ The identity Secret survives the new pod, so no re-enrollment is needed. A new e
 mints a new enrollment link, which an already-enrolled identity refuses: to change namespaces,
 use **Regenerate manifest**, which carries no link.
 
+### Static internal IPs for proxy backends
+
+After mapping an application to a Kubernetes namespace, open its **Internal networking** panel.
+Enter an unused address from your cluster's **Service IP range** for each service you want to
+pin (IPv4 or canonical IPv6). Each service needs a published port in its definition. Save the
+networking revision, then plan and apply it. Saving preserves the encrypted environment values
+and makes no runtime changes. Upgrade the cluster agent first: static IPs require its
+`kubernetes.service_ips` capability.
+
+Blank means automatic allocation for a newly created Service. Existing Services always keep
+their assigned IP; to pin one, enter that existing address. KyYard refuses a different requested
+IP rather than replacing the Service. Kubernetes rejects occupied or out-of-range addresses
+when the Service is created, before that service's workload is changed. A plan does not reserve
+an address. Removing the Service (including by removing its last published port or the
+application) releases the address.
+
+The panel shows the last-reported backend address and ports for Nginx or cloudflared running
+**inside the same cluster**, for example `http://10.96.10.10:8080`; use `https://` when the backend
+itself serves TLS. Refresh backend addresses after deployment. The proxy continues to use the
+same Service IP across pod restarts and application updates. Proxy configuration and access
+restrictions remain the operator's responsibility; this does not publish a LAN or public IP.
+
 ### Migrating a Docker application to a cluster
 
 An organization administrator opens an application adopted on a Docker host and, under

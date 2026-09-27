@@ -5,8 +5,12 @@ import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
 type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'mounts_unreported' | 'mount_unsupported' | 'volume_missing'
-  | 'clock_skew' | 'inspection_unavailable' | 'replacement_identity_changed' | 'configuration_unsupported' | 'frame_too_large' | 'too_many_registry_hosts' | 'frame_invalid' | 'agent_deploy_unsupported' | 'agent_pull_unsupported' | 'agent_inspect_unsupported' | 'kubernetes_unsupported' | 'k8s_namespace' | 'agent_claims_unsupported' | 'storage_class_unknown';
+  | 'clock_skew' | 'inspection_unavailable' | 'replacement_identity_changed' | 'configuration_unsupported' | 'frame_too_large' | 'too_many_registry_hosts' | 'frame_invalid' | 'agent_deploy_unsupported' | 'agent_pull_unsupported' | 'agent_inspect_unsupported' | 'kubernetes_unsupported' | 'k8s_namespace' | 'agent_claims_unsupported' | 'storage_class_unknown' | 'agent_service_ips_unsupported' | 'service_ip_in_use' | 'service_ip_immutable';
 export const messages: Record<Blocker, string> = {
+  agent_service_ips_unsupported: 'Upgrade the cluster agent before deploying static internal IPs.',
+  service_ip_in_use: 'The requested internal IP is already assigned to another Service. Choose a different IP.',
+  service_ip_immutable: 'This Service already has a different internal IP. Use its assigned IP; KyYard does not replace a Service to change its address.',
+
   mapping_requires_review: 'Review and save service mapping for the latest definition.',
   unassigned_adopted_containers: 'Some adopted containers are unassigned. Review service mapping before planning replacement.',
   image_inventory_incomplete: 'Image inventory is incomplete; image IDs cannot be resolved safely.',

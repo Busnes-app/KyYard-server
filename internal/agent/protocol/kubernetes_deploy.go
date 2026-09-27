@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
@@ -14,9 +15,10 @@ import (
 // kubernetes.claims says it applies KubernetesTarget.Claims and service volumes: an agent
 // without it decodes a frame leniently and would run the pod with no claim.
 const (
-	CapabilityKubernetesDeploy = "kubernetes.deploy"
-	CapabilityKubernetesClaims = "kubernetes.claims"
-	CapabilityKubernetesRemove = "kubernetes.remove"
+	CapabilityKubernetesDeploy     = "kubernetes.deploy"
+	CapabilityKubernetesClaims     = "kubernetes.claims"
+	CapabilityKubernetesServiceIPs = "kubernetes.service_ips"
+	CapabilityKubernetesRemove     = "kubernetes.remove"
 )
 
 // KubernetesTarget is where a cluster agent applies or removes an instance's objects, and what
@@ -93,6 +95,13 @@ func KubernetesNames(project string, services []string) map[string]string {
 
 var kubernetesRestart = map[string]bool{"": true, "always": true, "unless-stopped": true}
 
+// ValidClusterIP checks a canonical unicast address. The Kubernetes API server owns
+// service-range and allocation checks; neither inventory nor a local pool is authoritative.
+func ValidClusterIP(s string) bool {
+	ip, err := netip.ParseAddr(s)
+	return err == nil && ip.Zone() == "" && !ip.Is4In6() && ip.IsGlobalUnicast() && ip.String() == s
+}
+
 // validateKubernetes is Validate for a cluster frame: no Docker field, every image pulled by
 // digest (the kubelet pulls, so no tag moves and no credential travels), secret keys named
 // among the environment's, and claims each mounted by one service.
@@ -100,12 +109,18 @@ func (r DeploymentRequest) validateKubernetes() error {
 	if r.Kubernetes.Validate() != nil || len(r.Volumes) > 0 || len(r.Registries) > 0 {
 		return errors.New("invalid Kubernetes deployment")
 	}
-	names := map[string]bool{}
+	names, ips := map[string]bool{}, map[string]bool{}
 	for _, s := range r.Services {
 		if !deploymentService.MatchString(s.Name) || names[s.Name] || s.ContainerName != "" || s.ImageID != "" || s.Pull == nil || !s.Pull.valid() || s.Pull.Tag != "" || s.Replaces != (InspectionTarget{}) || len(s.Mounts) > 0 || !kubernetesRestart[s.Restart] {
 			return errors.New("invalid Kubernetes service")
 		}
 		names[s.Name] = true
+		if s.ClusterIP != "" {
+			if !ValidClusterIP(s.ClusterIP) || len(s.Ports) == 0 || ips[s.ClusterIP] {
+				return errors.New("invalid or duplicate Service IP")
+			}
+			ips[s.ClusterIP] = true
+		}
 		if err := validPorts(s.Ports, map[binding]bool{}, false); err != nil {
 			return err
 		}

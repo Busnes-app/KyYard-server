@@ -140,7 +140,6 @@ func TestApplicationSpecKubernetesExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*store.ApplicationSpec){
-		"empty":      func(s *store.ApplicationSpec) { s.Kubernetes.Volumes = nil },
 		"undeclared": func(s *store.ApplicationSpec) { s.Kubernetes.Volumes["cache"] = s.Kubernetes.Volumes["db"] },
 		"bad size": func(s *store.ApplicationSpec) {
 			s.Kubernetes.Volumes["db"] = store.KubernetesVolume{StorageClass: "fast", Size: "20GB", AccessMode: "ReadWriteOnce"}

@@ -236,6 +236,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/mapping", s.tenantRoute(s.handleApplicationMapping))
 	s.mux.HandleFunc("PUT /api/organizations/{organization}/environments/{environment}/applications/{application}/mapping", s.tenantRoute(s.handleSetApplicationMapping))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/revisions", s.tenantRoute(s.handleReplaceApplicationRevision))
+	s.mux.HandleFunc("PUT /api/organizations/{organization}/environments/{environment}/applications/{application}/networking", s.tenantRoute(s.handleApplicationServiceIPs))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/comparison", s.tenantRoute(s.handleApplicationComparison))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/applications/{application}/updates", s.tenantRoute(s.handleImageChecks))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/environments/{environment}/applications/{application}/updates/check", s.tenantRoute(s.handleCheckImageUpdates))

@@ -10,7 +10,7 @@ import type { ApplicationInstance } from './ApplicationAdoption';
 
 type ClaimMount = { claim: string; mount_path: string; read_only?: boolean };
 type Claim = { name: string; storage_class: string; size: string; access_mode: string };
-type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[]; object?: { namespace: string; name: string }; claim_mounts?: ClaimMount[] };
+type PlannedService = { name: string; reference: string; image_id: string; image_digest: string; container_id: string; replaces: { container_id: string; image_id: string; created_unix: number }; restart: string; ports: { target: number; published: number; protocol: string; host_ip: string }[]; secret_refs: string[]; pull_reference?: string; pull_digest?: string; mounts?: Mount[]; dropped_mounts?: Mount[]; object?: { namespace: string; name: string }; claim_mounts?: ClaimMount[]; cluster_ip?: string };
 type DeployStep = { service: string; step: string; outcome: string; code?: string; detail: string };
 // A Kubernetes identity names a Deployment (kind, namespace, name, uid) in place of a container.
 type DeployedService = { service: string; container_id: string; image_id: string; created_unix: number; kind?: string; namespace?: string; name?: string; uid?: string };
@@ -65,6 +65,8 @@ export const STEP_CODES: Record<string, string> = {
   conflict: 'The object kept changing under the agent',
   pod_security: 'The namespace does not enforce Pod Security baseline; label it pod-security.kubernetes.io/enforce=baseline (or restricted) and apply again.',
   admission_denied: "The cluster refused the object (quota or policy); check the namespace's quotas and admission policies",
+  service_ip_immutable: 'The Service already has another internal IP; use its assigned address',
+  service_ip_unavailable: 'Kubernetes refused the internal IP: it may be outside the service range or already allocated; choose an available address in the cluster service range',
   claim_immutable: 'The claim exists with another StorageClass, size or access mode, and KyYard never changes a claim; delete it deliberately or choose its current settings',
   legacy: LEGACY_OUTCOME,
 };
@@ -111,6 +113,8 @@ export function stepText(s: { step?: string; outcome?: string; code?: string; de
       return OBJECT.test(detail) ? `${text}. Object: ${detail}.` : `${text}.`;
     case 'name_taken':
     case 'conflict':
+    case 'service_ip_immutable':
+    case 'service_ip_unavailable':
     case 'claim_immutable':
       return OBJECT.test(detail) ? `${text}: ${detail}.` : `${text}.`;
     case 'pod_security':
@@ -253,7 +257,7 @@ function PlanDetails({ d }: { d: Deployment }) {
     <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Pinned image</th><th>Replaces container</th><th>Mounts</th><th>Secrets</th></tr></thead><tbody>{services.rows.map(s => <tr key={s.name}>
       <td data-label="Service"><div className="ky-resource-name"><strong>{s.name}</strong><small>{s.reference} · restart {s.restart || 'default'}</small></div></td>
       <td data-label="Pinned image"><div className="ky-resource-name">{/^sha256:[0-9a-f]{64}$/.test(s.pull_digest ?? '') ? <span>pulls {s.pull_digest?.slice(7, 19)}</span> : <><span>{s.image_id}</span><small>{s.image_digest || 'No repository digest reported'}</small></>}</div></td>
-      <td data-label="Replaces container">{s.object ? <div className="ky-resource-name"><span>Deployment {s.object.namespace}/{s.object.name}</span><small>updated in place</small></div> : <div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div>}</td>
+      <td data-label="Replaces container">{s.object ? <div className="ky-resource-name"><span>Deployment {s.object.namespace}/{s.object.name}</span><small>updated in place</small>{s.cluster_ip && <small>Requested internal IP: {s.cluster_ip}</small>}</div> : <div className="ky-resource-name"><span>{s.container_id}</span><small>image {s.replaces.image_id}</small></div>}</td>
       <td data-label="Mounts">{s.mounts?.length ? <MountList mounts={s.mounts} /> : s.claim_mounts?.length ? <MountList mounts={s.claim_mounts.map(c => ({ kind: 'volume', source: c.claim, target: c.mount_path, read_only: c.read_only }))} /> : 'None'}{s.dropped_mounts?.length ? <><p>Will be dropped by the recreate:</p><MountList mounts={s.dropped_mounts} /></> : null}</td>
       <td data-label="Secrets">{s.secret_refs.length ? `${s.secret_refs.length} reference(s), values not shown` : 'None'}</td>
     </tr>)}</tbody></table>

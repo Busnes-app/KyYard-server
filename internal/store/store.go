@@ -176,6 +176,7 @@ type TenancyStore interface {
 	ReadApplicationInstance(ctx context.Context, access TenantAccess, applicationID, id string) (*ApplicationInstance, error)
 
 	ReplaceApplicationRevision(ctx context.Context, access TenantAccess, id string, expected int, spec ApplicationSpec, values map[string]string, key []byte) (int, error)
+	SetApplicationServiceIPs(ctx context.Context, access TenantAccess, id string, expected int, ips map[string]string, key []byte) (int, error)
 	ImportApplication(ctx context.Context, access TenantAccess, name string, spec ApplicationSpec, values map[string]string, key []byte) (*Application, error)
 	ResolveApplicationSecrets(ctx context.Context, access TenantAccess, applicationID string, number int, key []byte) (map[string]string, error)
 	DiscardApplication(ctx context.Context, access TenantAccess, applicationID string, expectedRevision int) error
