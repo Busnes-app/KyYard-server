@@ -29,8 +29,8 @@ const rolloutPoll = 2 * time.Second
 // namespace, forbidden when denied), the namespace's Pod Security level (pod_security unless it
 // enforces baseline or restricted), then each planned object read by name, refused name_taken
 // when one exists without this instance's label, and each claim, refused claim_immutable when
-// this instance's differs from the plan. Then per service create (missing claims, ConfigMap, Secret,
-// Deployment, Service, each updated when it exists and is owned, created otherwise; one conflict
+// this instance's differs from the plan. Then per service create (Service, missing claims, ConfigMap,
+// Secret, Deployment, each updated when it exists and is owned, created otherwise; one conflict
 // is re-read and retried; a refused write is forbidden without the verb, admission_denied with
 // it) and start (the rollout, polled until available, a failure the cluster reports, or the
 // deadline: rollout_timeout). The first step that is not a success ends the run and every later
@@ -196,6 +196,16 @@ var kindResource = map[string][2]string{"ConfigMap": {"", "configmaps"}, "Secret
 // name); an access review for the failing write tells them apart. A review the API server could
 // not answer is not itself an admission decision: it is classified like any other failed call.
 func (r *run) refusedWrite(ctx context.Context, err error, verb, kind, name string) (string, string, string) {
+	if kind == "Service" && apierrors.IsInvalid(err) {
+		var status apierrors.APIStatus
+		if errors.As(err, &status) && status.Status().Details != nil {
+			for _, cause := range status.Status().Details.Causes {
+				if cause.Field == "spec.clusterIP" || strings.HasPrefix(cause.Field, "spec.clusterIPs") {
+					return protocol.OutcomeDenied, "service_ip_unavailable", "Service/" + name
+				}
+			}
+		}
+	}
 	if !apierrors.IsForbidden(err) {
 		return r.failure(ctx, err)
 	}
@@ -340,6 +350,9 @@ func (r *run) read(ctx context.Context, set render.Set) (existing, string, strin
 		if o, code, detail := check("Service", set.Name, s, found, err); o != protocol.OutcomeSucceeded {
 			return e, o, code, detail
 		} else if found {
+			if set.Endpoint.Spec.ClusterIP != "" && s.Spec.ClusterIP != set.Endpoint.Spec.ClusterIP {
+				return e, protocol.OutcomeDenied, "service_ip_immutable", "Service/" + set.Name
+			}
 			e.service = s
 		}
 	case err != nil:
@@ -359,6 +372,22 @@ func (r *run) read(ctx context.Context, set render.Set) (existing, string, strin
 // precondition must be this instance's and as planned.
 func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.Deployment, string, string, string) {
 	core, apps := r.c.cs.CoreV1(), r.c.cs.AppsV1()
+	// Allocate/update the Service before touching this service's workload. A lost
+	// allocation race must not replace a running application. Keep the original
+	// requested IP across conflict retries, rather than overwriting it with have's.
+	if set.Endpoint != nil {
+		requested := set.Endpoint.Spec.ClusterIP
+		keep := func(want, have *corev1.Service) (string, string, string) {
+			if requested != "" && requested != have.Spec.ClusterIP {
+				return protocol.OutcomeDenied, "service_ip_immutable", "Service/" + want.Name
+			}
+			want.Spec.ClusterIP, want.Spec.ClusterIPs, want.Spec.IPFamilies, want.Spec.IPFamilyPolicy = have.Spec.ClusterIP, have.Spec.ClusterIPs, have.Spec.IPFamilies, have.Spec.IPFamilyPolicy
+			return succeeded()
+		}
+		if _, o, code, detail := upsert(ctx, r, "Service", core.Services(r.namespace), set.Endpoint, e.service, keep); o != protocol.OutcomeSucceeded {
+			return nil, o, code, detail
+		}
+	}
 	for _, want := range set.Claims {
 		if e.claims[want.Name] {
 			continue
@@ -392,15 +421,7 @@ func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.De
 	if o != protocol.OutcomeSucceeded {
 		return nil, o, code, detail
 	}
-	if set.Endpoint != nil {
-		// A Service's cluster IP is immutable: an update keeps the one it was given.
-		keep := func(want, have *corev1.Service) {
-			want.Spec.ClusterIP, want.Spec.ClusterIPs, want.Spec.IPFamilies, want.Spec.IPFamilyPolicy = have.Spec.ClusterIP, have.Spec.ClusterIPs, have.Spec.IPFamilies, have.Spec.IPFamilyPolicy
-		}
-		if _, o, code, detail := upsert(ctx, r, "Service", core.Services(r.namespace), set.Endpoint, e.service, keep); o != protocol.OutcomeSucceeded {
-			return nil, o, code, detail
-		}
-	} else if e.service != nil {
+	if set.Endpoint == nil && e.service != nil {
 		// The service published its last port: the stale Service must not keep it open.
 		if o, code, detail := r.drop(ctx, "Service", core.Services(r.namespace).Delete, e.service); o != protocol.OutcomeSucceeded {
 			return nil, o, code, detail
@@ -427,7 +448,7 @@ func (r *run) drop(ctx context.Context, kind string, remove func(context.Context
 func upsert[T interface {
 	metav1.Object
 	comparable
-}](ctx context.Context, r *run, kind string, api objectAPI[T], want, have T, keep func(want, have T)) (T, string, string, string) {
+}](ctx context.Context, r *run, kind string, api objectAPI[T], want, have T, keep func(want, have T) (string, string, string)) (T, string, string, string) {
 	var zero T
 	conflicts := 0
 	for {
@@ -441,7 +462,9 @@ func upsert[T interface {
 		} else {
 			want.SetResourceVersion(have.GetResourceVersion())
 			if keep != nil {
-				keep(want, have)
+				if o, code, detail := keep(want, have); o != protocol.OutcomeSucceeded {
+					return zero, o, code, detail
+				}
 			}
 			got, err = api.Update(ctx, want, metav1.UpdateOptions{})
 		}

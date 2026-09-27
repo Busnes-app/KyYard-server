@@ -60,6 +60,7 @@ type PlannedService struct {
 	Object *KubernetesObject `json:"object,omitempty"`
 	// ClaimMounts mount the plan's claims into a Kubernetes service.
 	ClaimMounts []protocol.KubernetesMount `json:"claim_mounts,omitempty"`
+	ClusterIP   string                     `json:"cluster_ip,omitempty"`
 }
 
 // KubernetesObject names a service's objects: the Deployment and Service <name>, the
@@ -507,6 +508,7 @@ func (t *tenancyStore) draftPlan(ctx context.Context, tx *sql.Tx, a TenantAccess
 			ps.Replaces = *row.InspectionTarget
 		}
 		if plan.Namespace != "" {
+			ps.ClusterIP = spec.Kubernetes.serviceIP(s.Name)
 			ps.Object, ps.ClaimMounts = &KubernetesObject{Namespace: plan.Namespace, Name: objects[s.Name]}, mounts[s.Name]
 		}
 		plan.Services = append(plan.Services, ps)
@@ -575,6 +577,9 @@ func capabilityBlockers(capabilities map[string]bool, plan DeploymentPlan) []str
 		}
 		if len(plan.Claims) > 0 && !capabilities[protocol.CapabilityKubernetesClaims] {
 			out = append(out, "agent_claims_unsupported")
+		}
+		if !capabilities[protocol.CapabilityKubernetesServiceIPs] && slices.ContainsFunc(plan.Services, func(s PlannedService) bool { return s.ClusterIP != "" }) {
+			out = append(out, "agent_service_ips_unsupported")
 		}
 		return out
 	}

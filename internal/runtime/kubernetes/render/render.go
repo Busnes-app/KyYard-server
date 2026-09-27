@@ -143,9 +143,10 @@ func service(req protocol.DeploymentRequest, s protocol.DeploymentService, name 
 		i := slices.IndexFunc(k.Claims, func(c protocol.KubernetesClaim) bool { return c.Name == m.Claim })
 		set.Claims = append(set.Claims, claim(k.Claims[i], meta(m.Claim)))
 	}
+	// docs/application-schema.md, Static Service IPs: the Service owns the stable backend.
 	if len(servicePorts) > 0 {
 		set.Endpoint = &corev1.Service{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"}, ObjectMeta: meta(name), Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeClusterIP, Selector: Selector(k.InstanceID, s.Name), Ports: servicePorts,
+			Type: corev1.ServiceTypeClusterIP, ClusterIP: s.ClusterIP, Selector: Selector(k.InstanceID, s.Name), Ports: servicePorts,
 		}}
 	}
 	return set

@@ -92,7 +92,7 @@ func helloCapabilities(opts *Options) []string {
 			capabilities = append(capabilities, protocol.CapabilityPodLogs)
 		}
 		if opts.Deploy != nil {
-			capabilities = append(capabilities, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesClaims)
+			capabilities = append(capabilities, protocol.CapabilityKubernetesDeploy, protocol.CapabilityKubernetesClaims, protocol.CapabilityKubernetesServiceIPs)
 		}
 		if opts.Remove != nil {
 			capabilities = append(capabilities, protocol.CapabilityKubernetesRemove)

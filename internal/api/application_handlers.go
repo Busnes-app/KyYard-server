@@ -183,6 +183,23 @@ func (s *Server) handleReplaceApplicationRevision(w http.ResponseWriter, r *http
 	s.writeJSON(w, http.StatusCreated, map[string]int{"revision": number})
 }
 
+func (s *Server) handleApplicationServiceIPs(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	var input struct {
+		ExpectedRevision int               `json:"expected_revision"`
+		ServiceIPs       map[string]string `json:"service_ips"`
+	}
+	if strictJSON(r, &input) != nil || input.ServiceIPs == nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	number, err := s.store.Tenancy().SetApplicationServiceIPs(r.Context(), a, r.PathValue("application"), input.ExpectedRevision, input.ServiceIPs, s.config.Security.EncryptionKey)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, map[string]int{"revision": number})
+}
+
 func (s *Server) handleApplicationMapping(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	result, err := s.store.Tenancy().ReadApplicationMapping(r.Context(), a, r.PathValue("application"))
 	if err != nil {
@@ -352,6 +369,10 @@ func (s *Server) handleApplyDeployment(w http.ResponseWriter, r *http.Request, a
 	}
 	if kube && len(plan.Plan.Claims) > 0 && !slices.Contains(ep.Capabilities, protocol.CapabilityKubernetesClaims) {
 		s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to apply claims")
+		return
+	}
+	if kube && slices.ContainsFunc(plan.Plan.Services, func(ps store.PlannedService) bool { return ps.ClusterIP != "" }) && !slices.Contains(ep.Capabilities, protocol.CapabilityKubernetesServiceIPs) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to apply static Service IPs")
 		return
 	}
 	if !s.Connected(plan.EndpointID) {

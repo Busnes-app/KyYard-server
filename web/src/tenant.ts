@@ -23,7 +23,7 @@ export interface KubeNode { name: string; kubelet_version: string; os: string; a
 export interface Workload { kind: string; namespace: string; name: string; desired: number; ready: number; updated: number; images: string[]; paused: boolean; application?: string; instance?: string }
 export interface PodContainer { name: string; image: string; image_id: string; state: string; reason: string; ready: boolean; restart_count: number }
 export interface Pod { namespace: string; name: string; phase: string; node: string; owner_kind: string; owner_name: string; started_at: string; containers: PodContainer[] }
-export interface KubeService { namespace: string; name: string; type: string; cluster_ip: string; ports: string[] }
+export interface KubeService { namespace: string; name: string; type: string; cluster_ip: string; ports: string[]; instance?: string; service?: string }
 export interface Claim { namespace: string; name: string; phase: string; storage_class: string; capacity: string }
 // default is the cluster's is-default-class annotation; a migration's storage choices pick from these.
 export interface StorageClass { name: string; default: boolean }

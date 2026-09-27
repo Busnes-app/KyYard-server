@@ -107,52 +107,7 @@ func (t *tenancyStore) appendApplicationRevision(ctx context.Context, a TenantAc
 	id = parsed.String()
 	next := expected + 1
 	err = t.withTenantTarget(ctx, a, permissions.ApplicationEdit, id+"/revisions/"+strconv.Itoa(next), func(tx *sql.Tx) error {
-		if a.EnvironmentID == "" || expected < 1 || expected > MaxApplicationRevisions {
-			return ErrInvalid
-		}
-		if _, _, err := encodeApplicationSpec(spec); err != nil {
-			return err
-		}
-		result, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE applications SET latest_revision=latest_revision+1 WHERE organization_id=? AND environment_id=? AND id=? AND latest_revision=? AND latest_revision<?`), a.OrganizationID, a.EnvironmentID, id, expected, MaxApplicationRevisions)
-		if err != nil {
-			return err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if changed == 0 {
-			var current int
-			err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT latest_revision FROM applications WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, id).Scan(&current)
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
-			}
-			if err != nil {
-				return err
-			}
-			if current >= MaxApplicationRevisions {
-				return ErrApplicationLimit
-			}
-			return ErrRevisionConflict
-		}
-		if spec.Kubernetes == nil {
-			previous, err := t.revisionSpec(ctx, tx, a, id, expected)
-			if err != nil {
-				return err
-			}
-			spec.Kubernetes = previous.Kubernetes.carried(spec)
-		}
-		raw, digest, err := encodeApplicationSpec(spec)
-		if err != nil {
-			return err
-		}
-		if err := t.insertApplicationRevision(ctx, tx, a, id, next, raw, digest, time.Now().UTC()); err != nil {
-			return err
-		}
-		if values != nil {
-			return t.sealApplicationValues(ctx, tx, a, id, next, spec, digest, values, key)
-		}
-		return nil
+		return t.appendApplicationRevisionTx(ctx, tx, a, id, expected, spec, values, key)
 	})
 	if err != nil {
 		return 0, err
@@ -253,4 +208,55 @@ func (t *tenancyStore) DiscardApplication(ctx context.Context, a TenantAccess, i
 		_, err = tx.ExecContext(ctx, t.store.rebind(`DELETE FROM applications WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, id)
 		return err
 	})
+}
+
+// appendApplicationRevisionTx shares the expected-head write and sealing with network-only edits.
+func (t *tenancyStore) appendApplicationRevisionTx(ctx context.Context, tx *sql.Tx, a TenantAccess, id string, expected int, spec ApplicationSpec, values map[string]string, key []byte) error {
+	next := expected + 1
+	if a.EnvironmentID == "" || expected < 1 || expected > MaxApplicationRevisions {
+		return ErrInvalid
+	}
+	if _, _, err := encodeApplicationSpec(spec); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE applications SET latest_revision=latest_revision+1 WHERE organization_id=? AND environment_id=? AND id=? AND latest_revision=? AND latest_revision<?`), a.OrganizationID, a.EnvironmentID, id, expected, MaxApplicationRevisions)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		var current int
+		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT latest_revision FROM applications WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, id).Scan(&current)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if current >= MaxApplicationRevisions {
+			return ErrApplicationLimit
+		}
+		return ErrRevisionConflict
+	}
+	if spec.Kubernetes == nil {
+		previous, err := t.revisionSpec(ctx, tx, a, id, expected)
+		if err != nil {
+			return err
+		}
+		spec.Kubernetes = previous.Kubernetes.carried(spec)
+	}
+	raw, digest, err := encodeApplicationSpec(spec)
+	if err != nil {
+		return err
+	}
+	if err := t.insertApplicationRevision(ctx, tx, a, id, next, raw, digest, time.Now().UTC()); err != nil {
+		return err
+	}
+	if values != nil {
+		return t.sealApplicationValues(ctx, tx, a, id, next, spec, digest, values, key)
+	}
+	return nil
 }

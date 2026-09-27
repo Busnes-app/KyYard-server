@@ -49,7 +49,7 @@ func removalRequest(services ...string) protocol.RemovalRequest {
 		Kubernetes: &protocol.KubernetesTarget{Namespace: "shop", ApplicationID: testApp, InstanceID: testInstance, SpecDigest: testSpec}, Services: services}
 }
 
-// A first apply creates the claim before the service's other objects and mounts it; a second
+// A first apply creates the claim after the Service and before the workload and mounts it; a second
 // apply finds it owned and unchanged and writes nothing to it.
 func TestDeployCreatesAClaimOnce(t *testing.T) {
 	c, cs := deployCluster(t, true, false)
@@ -57,7 +57,7 @@ func TestDeployCreatesAClaimOnce(t *testing.T) {
 	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
 		t.Fatalf("result %+v", res)
 	}
-	if !slices.Equal(writes(cs), []string{"create persistentvolumeclaims", "create configmaps", "create secrets", "create deployments", "create services", "create configmaps", "create deployments"}) {
+	if !slices.Equal(writes(cs), []string{"create services", "create persistentvolumeclaims", "create configmaps", "create secrets", "create deployments", "create configmaps", "create deployments"}) {
 		t.Fatalf("writes %v", writes(cs))
 	}
 	pvc, err := cs.CoreV1().PersistentVolumeClaims("shop").Get(context.Background(), "shop-data", metav1.GetOptions{})

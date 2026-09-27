@@ -156,7 +156,7 @@ func TestDeployCreatesThenUpdatesOwnedObjects(t *testing.T) {
 	if !slices.Equal(startedAt, []int{0}) {
 		t.Fatalf("started at %v", startedAt)
 	}
-	if !slices.Equal(writes(cs), []string{"create configmaps", "create secrets", "create deployments", "create services", "create configmaps", "create deployments"}) {
+	if !slices.Equal(writes(cs), []string{"create services", "create configmaps", "create secrets", "create deployments", "create configmaps", "create deployments"}) {
 		t.Fatalf("writes %v", writes(cs))
 	}
 	if len(res.Services) != 2 || res.Services[0] != (protocol.DeploymentIdentity{Service: "web", Kind: protocol.KindDeployment, Namespace: "shop", Name: "shop-web", UID: testUID, Generation: 1, ImageDigest: testDigest}) {
@@ -180,7 +180,7 @@ func TestDeployCreatesThenUpdatesOwnedObjects(t *testing.T) {
 	if res.Outcome != protocol.OutcomeSucceeded || res.Services[0].Generation != 2 {
 		t.Fatalf("update %+v", res)
 	}
-	if !slices.Equal(writes(cs), []string{"update configmaps", "update secrets", "update deployments", "update services", "update configmaps", "update deployments"}) {
+	if !slices.Equal(writes(cs), []string{"update services", "update configmaps", "update secrets", "update deployments", "update configmaps", "update deployments"}) {
 		t.Fatalf("writes %v", writes(cs))
 	}
 	cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{})
@@ -739,7 +739,7 @@ func TestDeployReapplyIsIdempotent(t *testing.T) {
 	if res.Outcome != protocol.OutcomeSucceeded || len(res.Services) != 2 || res.Services[0].UID != testUID {
 		t.Fatalf("re-apply %+v", res)
 	}
-	if !slices.Equal(writes(cs), []string{"update configmaps", "update secrets", "update deployments", "update services", "update configmaps", "update deployments"}) {
+	if !slices.Equal(writes(cs), []string{"update services", "update configmaps", "update secrets", "update deployments", "update configmaps", "update deployments"}) {
 		t.Fatalf("writes %v", writes(cs))
 	}
 	cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{})

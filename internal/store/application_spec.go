@@ -21,14 +21,22 @@ type ApplicationSpec struct {
 	Services []ApplicationService `json:"services"`
 	Volumes  []DeclaredVolume     `json:"volumes,omitempty"`
 	// Kubernetes holds what only a cluster needs: a migration's destination revision carries
-	// its storage choices. The Compose importer never sets it.
+	// storage and networking choices. The Compose importer never sets it.
 	Kubernetes *KubernetesExtension `json:"kubernetes,omitempty"`
 }
 
-// KubernetesExtension carries a StorageClass and size per named volume, keyed by its declared
-// name. A chosen volume becomes a PersistentVolumeClaim on a cluster.
+// KubernetesExtension carries storage choices per named volume and optional Service IPs.
+// A chosen volume becomes a PersistentVolumeClaim on a cluster.
 type KubernetesExtension struct {
-	Volumes map[string]KubernetesVolume `json:"volumes"`
+	Volumes    map[string]KubernetesVolume `json:"volumes"`
+	ServiceIPs map[string]string           `json:"service_ips,omitempty"`
+}
+
+func (k *KubernetesExtension) serviceIP(name string) string {
+	if k == nil {
+		return ""
+	}
+	return k.ServiceIPs[name]
 }
 
 // KubernetesVolume is one volume's claim: StorageClass "" is the cluster default, Size a whole
@@ -89,10 +97,16 @@ func (k *KubernetesExtension) carried(spec ApplicationSpec) *KubernetesExtension
 			kept[v.Name] = c
 		}
 	}
-	if len(kept) == 0 {
+	ips := map[string]string{}
+	for _, s := range spec.Services {
+		if ip := k.ServiceIPs[s.Name]; ip != "" && len(s.Ports) > 0 {
+			ips[s.Name] = ip
+		}
+	}
+	if len(kept) == 0 && len(ips) == 0 {
 		return nil
 	}
-	return &KubernetesExtension{Volumes: kept}
+	return &KubernetesExtension{Volumes: kept, ServiceIPs: ips}
 }
 
 // Valid checks one choice's grammar; the destination inventory decides whether its class exists.
@@ -242,13 +256,20 @@ func encodeApplicationSpec(spec ApplicationSpec) ([]byte, string, error) {
 		}
 	}
 	if k := spec.Kubernetes; k != nil {
-		if len(k.Volumes) == 0 || len(k.Volumes) > protocol.MaxKubernetesClaims {
+		if len(k.Volumes) > protocol.MaxKubernetesClaims || len(k.ServiceIPs) > protocol.MaxDeploymentServices {
 			return nil, "", ErrInvalid
 		}
 		for name, v := range k.Volumes {
 			if !declared[name] || !v.Valid() {
 				return nil, "", ErrInvalid
 			}
+		}
+		ips := map[string]bool{}
+		for name, ip := range k.ServiceIPs {
+			if !names[name] || !protocol.ValidClusterIP(ip) || ips[ip] || !slices.ContainsFunc(spec.Services, func(s ApplicationService) bool { return s.Name == name && len(s.Ports) > 0 }) {
+				return nil, "", ErrInvalid
+			}
+			ips[ip] = true
 		}
 	}
 	raw, err := json.Marshal(spec)

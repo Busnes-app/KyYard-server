@@ -245,8 +245,17 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 // exactly as the Docker frame checks, because the reference the kubelet is handed may no longer
 // resolve anonymously by apply time.
 func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a TenantAccess, d *Deployment, spec ApplicationSpec, values map[string]string, key []byte, now time.Time) (protocol.DeploymentRequest, error) {
+	// Policy applies use this path too: never let an older agent silently ignore
+	// a requested IP after its capabilities changed between plan and apply.
+	capabilities, err := t.endpointCapabilities(ctx, tx, d.EndpointID)
+	if err != nil {
+		return protocol.DeploymentRequest{}, err
+	}
+	if blockers := capabilityBlockers(capabilities, d.Plan); len(blockers) > 0 {
+		return protocol.DeploymentRequest{}, &PreflightBlockedError{Blockers: blockers}
+	}
 	var namespace, deployNamespaces string
-	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.namespace,e.deploy_namespaces FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND i.environment_id=? AND i.id=? AND i.endpoint_id=?`), a.OrganizationID, a.EnvironmentID, d.InstanceID, d.EndpointID).Scan(&namespace, &deployNamespaces)
+	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT i.namespace,e.deploy_namespaces FROM application_instances i JOIN endpoints e ON e.id=i.endpoint_id WHERE i.organization_id=? AND i.environment_id=? AND i.id=? AND i.endpoint_id=?`), a.OrganizationID, a.EnvironmentID, d.InstanceID, d.EndpointID).Scan(&namespace, &deployNamespaces)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && namespace != d.Plan.Namespace) {
 		return protocol.DeploymentRequest{}, ErrAdoptionChanged
 	}
@@ -261,10 +270,11 @@ func (t *tenancyStore) kubernetesFrame(ctx context.Context, tx *sql.Tx, a Tenant
 		Kubernetes: &protocol.KubernetesTarget{Namespace: namespace, ApplicationID: d.ApplicationID, InstanceID: d.InstanceID, SpecDigest: d.SpecDigest, Claims: d.Plan.Claims}}
 	hosts := map[string]bool{}
 	for i, ps := range d.Plan.Services {
-		if spec.Services[i].Name != ps.Name || ps.PullDigest == "" || ps.Object == nil {
+		if spec.Services[i].Name != ps.Name || ps.PullDigest == "" || ps.Object == nil || ps.ClusterIP != spec.Kubernetes.serviceIP(ps.Name) {
 			return protocol.DeploymentRequest{}, ErrAdoptionChanged
 		}
 		svc := protocol.DeploymentService{Name: ps.Name, Restart: ps.Restart, Ports: []protocol.Port{}, Env: serviceEnv(spec.Services[i], values), Mounts: []protocol.Mount{}, Pull: &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}, Volumes: ps.ClaimMounts}
+		svc.ClusterIP = ps.ClusterIP
 		for _, p := range ps.Ports {
 			svc.Ports = append(svc.Ports, protocol.Port{Container: p.Target, Host: p.Published, Protocol: p.Protocol})
 		}

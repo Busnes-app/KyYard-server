@@ -183,6 +183,35 @@ func TestManifestOnARealCluster(t *testing.T) {
 	req := protocol.DeploymentRequest{Deployment: "3f2b1c9e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_kind", Project: "kind", Revision: 1, IssuedAt: now, Deadline: now.Add(2 * time.Minute), Kubernetes: target,
 		Services: []protocol.DeploymentService{{Name: "idle", Pull: &protocol.ImagePull{Reference: image, Digest: digest}, Ports: []protocol.Port{{Container: 8080, Host: 80, Protocol: "tcp"}}, Env: map[string]string{"TOKEN": "x"}, SecretKeys: []string{"TOKEN"}, Mounts: []protocol.Mount{},
 			Volumes: []protocol.KubernetesMount{{Claim: "kind-data", MountPath: "/data"}}}}}
+	// Exercise the real allocator as the agent. Kubernetes dry-run does not check
+	// allocation conflicts, so Service creation must precede workload writes.
+	apiService, err := cs.CoreV1().Services("default").Get(ctx, "kubernetes", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{apiService.Spec.ClusterIP, "203.0.113.42"} {
+		req.Services[0].ClusterIP = ip
+		refused := c.Deploy(ctx, req, func() {})
+		if refused.Outcome != protocol.OutcomeDenied || !slices.ContainsFunc(refused.Steps, func(s protocol.DeploymentStep) bool { return s.Code == "service_ip_unavailable" }) {
+			t.Fatalf("unavailable IP %s: %+v", ip, refused)
+		}
+		if _, err := cs.AppsV1().Deployments(deployNamespace).Get(ctx, "kind-idle", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("workload written for refused IP: %v", err)
+		}
+		if _, err := cs.CoreV1().PersistentVolumeClaims(deployNamespace).Get(ctx, "kind-data", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("claim written for refused IP: %v", err)
+		}
+	}
+	// Obtain an address in this cluster's range without assuming its CIDR, then
+	// release it and deploy with that exact static address.
+	candidate, err := cs.CoreV1().Services(deployNamespace).Create(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "static-ip-candidate"}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}}}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.CoreV1().Services(deployNamespace).Delete(ctx, candidate.Name, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	req.Services[0].ClusterIP = candidate.Spec.ClusterIP
 	res := c.Deploy(ctx, req, func() {})
 	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
 		t.Fatalf("deploy as the agent: %+v", res)
@@ -201,6 +230,10 @@ func TestManifestOnARealCluster(t *testing.T) {
 	again.Deployment, again.Revision, again.IssuedAt, again.Deadline = "5b4c3d2e-8d4a-4e6f-9a0b-1c2d3e4f5a6b", 2, time.Now(), time.Now().Add(2*time.Minute)
 	if res := c.Deploy(ctx, again, func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("second deploy as the agent: %+v", res)
+	}
+	service, err := cs.CoreV1().Services(deployNamespace).Get(ctx, "kind-idle", metav1.GetOptions{})
+	if err != nil || service.Spec.ClusterIP != candidate.Spec.ClusterIP {
+		t.Fatalf("static IP changed: %+v %v", service, err)
 	}
 	// What a validation reads, as the agent: the settled Deployment available, its pod running.
 	watched := protocol.InspectionTarget{Workload: protocol.WorkloadRef{Namespace: deployNamespace, Name: "kind-idle", UID: res.Services[0].UID}}

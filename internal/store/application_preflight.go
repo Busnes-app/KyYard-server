@@ -372,6 +372,17 @@ func buildKubernetesPreflight(m *ApplicationMapping, spec ApplicationSpec, snaps
 	blocked := false
 	for _, s := range spec.Services {
 		row := PreflightService{Name: s.Name, Reference: s.Image, Blockers: []string{}, Mounts: []protocol.Mount{}, DroppedBinds: []protocol.Mount{}, DroppedMounts: []protocol.Mount{}, UnsupportedMounts: []protocol.Mount{}}
+		if ip := spec.Kubernetes.serviceIP(s.Name); ip != "" && snapshot.Kubernetes != nil {
+			for _, have := range snapshot.Kubernetes.Services {
+				own := have.Namespace == m.Namespace && have.Name == objects[s.Name] && have.Instance == m.InstanceID
+				if have.ClusterIP == ip && !own {
+					row.Blockers = append(row.Blockers, "service_ip_in_use")
+				}
+				if own && have.ClusterIP != ip {
+					row.Blockers = append(row.Blockers, "service_ip_immutable")
+				}
+			}
+		}
 		codes, details := kubernetesVolumeCodes(s, spec.Kubernetes, users)
 		if slices.ContainsFunc(s.Ports, func(p ApplicationPort) bool { return p.HostIP != "" }) {
 			codes = append(codes, "k8s_host_ip")

@@ -31,6 +31,8 @@
     "runtime_status",
     "runtime_timeout",
     "runtime_unreadable",
+    "service_ip_immutable",
+    "service_ip_unavailable",
     "unsupported",
     "volume_create_failed",
     "volume_missing",

@@ -86,7 +86,7 @@ Unmanaged containers: lifecycle actions above apply by permission; configuration
 | `application.read` (desired state, revisions, previews) | ✓ | ✓ | ✓ | ✓ | ✓ | secret references only, never values | – |
 | `application.release` (release recorded ownership only) | ✓ | ✓ | – | – | – | no | success, exact instance |
 | `application.adopt` / `import` | ✓ | ✓ | – | – | – | no | success |
-| `application.edit` (create a new revision from desired configuration) | ✓ | ✓ | – | ✓ | – | secret references only | success, target = revision |
+| `application.edit` (create a new revision from desired configuration, including static Service IPs) | ✓ | ✓ | – | ✓ | – | secret references only | success, target = revision |
 | `application.deploy` (preview, plan and apply an approved revision; implemented) | ✓ | ✓ | – | ✓ | – | no | audited by `SettleDeployment` in the settle transaction, result mapped to success/denied/failure/unknown |
 | `application.deploy` — checks image updates (`CheckImageUpdateAccess`/`CheckImageUpdates`, target `<app>/updates`; implemented) | ✓ | ✓ | – | ✓ | – | registry credential used internally, never returned | denials and failures on `<app>/updates`; one success row per completed check, details `services=N updates=N errors=N` |
 | `application.deploy` — manual image update (plan with `update`, then apply; implemented) | ✓ | ✓ | – | ✓ | – | registry credential decrypted at plan (`Head`) and at apply (frame assembly), never returned or stored | plan success row on `<app>/deployments/<id>` with `pulls=N`; apply audited by `SettleDeployment` |
