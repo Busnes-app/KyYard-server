@@ -2,13 +2,16 @@ import React, { useState } from 'react';
 import { Users } from 'lucide-react';
 import { Link } from '../components/Link';
 import { Registries } from '../components/Registries';
+import { ServiceTokens } from '../components/ServiceTokens';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { orgPath } from '../router';
-import { tenantRoles, tenantWrite, useTenantResource, type Member } from '../tenant';
+import { canManageServiceTokens, tenantRoles, tenantWrite, useTenantResource, type Member, type MemberOrganization } from '../tenant';
 
 export const Members: React.FC<{ org: string }> = ({ org }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/members`;
   const members = useTenantResource<Member[]>(base);
+  const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  const callerRole = (Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role;
   const [userID, setUserID] = useState('');
   const [role, setRole] = useState<string>('read_only');
   const [message, setMessage] = useState('');
@@ -75,6 +78,7 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
         )}
         {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
       </section>
+      {canManageServiceTokens(callerRole) && <ServiceTokens org={org} />}
       <Registries org={org} />
     </div>
   );

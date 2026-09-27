@@ -262,6 +262,25 @@ if [ -x "$AGENT" ]; then
 else
   echo "  [skip] kyyard-agent not built; agent lifecycle not exercised"
 fi
+echo "==> Service tokens"
+CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
+PAIR="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/organizations/org_initial/service-tokens/pairings")"
+contains "pairing code is six digits" "$(echo "$PAIR" | grep -o '"code":"[0-9]\{6\}"')" '"code":"'
+CODE="$(echo "$PAIR" | sed -n 's/.*"code":"\([0-9]\{6\}\)".*/\1/p')"
+CLAIM="$(curl -s -X POST -H 'Content-Type: application/json' -d '{"pairing_code":"'"$CODE"'","service_name":"kypulse"}' "$BASE/api/service-tokens/claim")"
+contains "claim returns a token" "$CLAIM" '"token":"'
+TOKEN="$(echo "$CLAIM" | sed -n 's/.*"token":"\([0-9a-f]\{64\}\)".*/\1/p')"
+check "second claim is refused" "$(status -X POST -H 'Content-Type: application/json' -d '{"pairing_code":"'"$CODE"'","service_name":"kypulse"}' "$BASE/api/service-tokens/claim")" "403"
+check "bearer reads the organization" "$(status -H "Authorization: Bearer $TOKEN" "$BASE/api/organizations/org_initial")" "200"
+check "bearer reads the audit feed" "$(status -H "Authorization: Bearer $TOKEN" "$BASE/api/organizations/org_initial/audit")" "200"
+check "bearer cannot list members" "$(status -H "Authorization: Bearer $TOKEN" "$BASE/api/organizations/org_initial/members")" "403"
+check "bearer cannot create an environment" "$(status -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"name":"x"}' "$BASE/api/organizations/org_initial/environments")" "403"
+check "bearer cannot follow a log" "$(status -H "Authorization: Bearer $TOKEN" "$BASE/api/organizations/org_initial/endpoints/ep_none/containers/c/logs?follow=1")" "403"
+TOKENS="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/service-tokens")"
+TOKEN_ID="$(echo "$TOKENS" | sed -n 's/.*"id":"\(svc_[0-9a-f]*\)".*/\1/p' | head -1)"
+check "admin revokes the token" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X DELETE "$BASE/api/organizations/org_initial/service-tokens/$TOKEN_ID")" "204"
+check "revoked bearer is 401" "$(status -H "Authorization: Bearer $TOKEN" "$BASE/api/organizations/org_initial")" "401"
+contains "healthz serves ky.health/1" "$(curl -s "$BASE/healthz")" '"schema":"ky.health/1"'
 check "logout succeeds" "$(status -b "$WORK/cookies" -c "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/auth/logout")" "200"
 contains "session dead after logout" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":false' 
 stop_server

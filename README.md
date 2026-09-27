@@ -185,6 +185,16 @@ after that is in the UI: **Settings → Administration**, shown to platform admi
 Both creations are recorded in platform audit (`organization.create`, `user.create`), which has
 no screen yet. Accounts and organizations cannot be disabled or deleted from the UI yet.
 
+### Pair kyPulse
+
+An organization administrator can let kyPulse read the organization's health: endpoints,
+inventory, samples, container logs and the audit feed. It can change nothing. On the
+organization's **Members** page, under **Service tokens**, **Pair kyPulse** mints a six-digit
+code shown once; enter it into kyPulse within 15 minutes to complete the pairing. Revoking a
+token here stops it immediately, but that is only one side: unpair it in kyPulse as well, so
+each product's own admin makes their own half of the change. `GET /healthz` reports the suite
+health contract (`ky.health/1`) for external monitors, unrelated to a kyPulse pairing.
+
 ### Tenant API
 
 Use `/api/organizations/{organization}` (`org_initial` for the default organization):

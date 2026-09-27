@@ -31,6 +31,11 @@ export interface KubernetesInventory { nodes: KubeNode[]; namespaces: string[]; 
 export interface Sample { container_id: string; observed_at: string; cpu_percent: number; memory_bytes: number; memory_limit: number; rx_bytes: number; tx_bytes: number; pids: number; restart_count?: number }
 export interface Inventory { endpoint_id: string; state: string; generation: number; observed_at: string; received_at: string; snapshot: Snapshot }
 export interface AuditRecord { id: number; user_id: string; action: string; resource: string; environment_id: string; correlation_id: string; result: string; created_at: string }
+export interface ServiceToken { id: string; organization_id: string; name: string; created_by: string; created_at: string; last_used_at?: string; last_ip?: string; revoked_at?: string }
+export interface ServicePairing { id: string; code: string; expires_at: string; disclosure: string }
+// Mirrors permissions.Allows(role, ServiceTokensManage): a token reads the whole organization,
+// so only its administrator hands one out.
+export const canManageServiceTokens = (role: string | undefined) => role === 'organization_admin';
 
 export interface Registry { id: string; host: string; name: string; username: string; has_credential: boolean; allow_private: boolean }
 // private_registries_enabled is the operator's KY_REGISTRY_ALLOW_PRIVATE, read-only here.
