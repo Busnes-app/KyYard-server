@@ -22,7 +22,7 @@ func (t *tenancyStore) InitializeLocalDocker(ctx context.Context, publicKey []by
 	if len(publicKey) != ed25519.PublicKeySize {
 		return 0, ErrInvalid
 	}
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return 0, err
 	}

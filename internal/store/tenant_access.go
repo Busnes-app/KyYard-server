@@ -43,7 +43,8 @@ var auditedReads = map[permissions.Action]bool{
 	permissions.ContainerLogs: true,
 }
 
-// readTenant checks the same live authorization without locks; reads use a snapshot. A
+// readTenant checks live authorization without authority row locks. Audited user
+// reads take the audit writer lock before reading; other reads use a snapshot. A
 // successful read writes no audit row unless its action is in auditedReads: inventory and
 // list reads arrive every few seconds per endpoint and would be the audit-growth threat
 // themselves.
@@ -70,7 +71,7 @@ func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissio
 		}
 		return protocol.CleanText(record.Resource, 255)
 	}
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, lock || (auditedReads[action] && a.ServiceTokenID == ""))
 	if err != nil {
 		return err
 	}
@@ -328,12 +329,30 @@ func tenantChangeResult(result sql.Result, err error) error {
 	return nil
 }
 func (t *tenancyStore) ReadAudit(ctx context.Context, a TenantAccess, offset, limit int) ([]AuditRecord, error) {
+	return t.readAudit(ctx, a, offset, 0, limit, false)
+}
+
+// ReadAuditAfter returns a bounded ascending page in committed audit ID order.
+func (t *tenancyStore) ReadAuditAfter(ctx context.Context, a TenantAccess, afterID int64, limit int) ([]AuditRecord, error) {
+	return t.readAudit(ctx, a, 0, afterID, limit, true)
+}
+
+func (t *tenancyStore) readAudit(ctx context.Context, a TenantAccess, offset int, afterID int64, limit int, cursor bool) ([]AuditRecord, error) {
 	records := []AuditRecord{}
 	err := t.readTenant(ctx, a, permissions.AuditRead, func(tx *sql.Tx) error {
-		if offset < 0 || limit < 1 || limit > 200 {
+		if offset < 0 || afterID < 0 || limit < 1 || limit > 200 {
 			return ErrInvalid
 		}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,user_id,action,resource,details,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result FROM audit_records WHERE scope='organization' AND organization_id=? AND (?='' OR environment_id=?) ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`), a.OrganizationID, a.EnvironmentID, a.EnvironmentID, limit, offset)
+		query := `SELECT id,user_id,action,resource,details,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result FROM audit_records WHERE scope='organization' AND organization_id=? AND (?='' OR environment_id=?)`
+		args := []any{a.OrganizationID, a.EnvironmentID, a.EnvironmentID}
+		if cursor {
+			query += ` AND id>? ORDER BY id ASC LIMIT ?`
+			args = append(args, afterID, limit)
+		} else {
+			query += ` ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`
+			args = append(args, limit, offset)
+		}
+		rows, err := tx.QueryContext(ctx, t.store.rebind(query), args...)
 		if err != nil {
 			return err
 		}

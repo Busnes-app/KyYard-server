@@ -262,6 +262,7 @@ type TenancyStore interface {
 	UpdateEnvironment(ctx context.Context, access TenantAccess, name string) error
 	RemoveEnvironment(ctx context.Context, access TenantAccess) error
 	ReadAudit(ctx context.Context, access TenantAccess, offset, limit int) ([]AuditRecord, error)
+	ReadAuditAfter(ctx context.Context, access TenantAccess, afterID int64, limit int) ([]AuditRecord, error)
 	ListMembers(ctx context.Context, access TenantAccess, offset, limit int) ([]OrganizationMember, error)
 	PutMembership(ctx context.Context, access TenantAccess, userID string, role TenantRole, status string) error
 	RemoveMembership(ctx context.Context, access TenantAccess, userID string) error

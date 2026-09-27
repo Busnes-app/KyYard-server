@@ -223,7 +223,7 @@ func (t *tenancyStore) FinishPolicyRun(ctx context.Context, run, outcome, deploy
 	if _, ok := policyResults[outcome]; !ok {
 		return ErrInvalid
 	}
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -239,7 +239,7 @@ func (t *tenancyStore) SkipPolicyWindow(ctx context.Context, policy string, occu
 	if outcome != RunSkippedMissed && outcome != RunSkippedBusy {
 		return ErrInvalid
 	}
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}

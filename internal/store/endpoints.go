@@ -111,7 +111,7 @@ func (t *tenancyStore) Enroll(ctx context.Context, req EnrollmentRequest) (*Endp
 		return nil, ErrForbidden
 	}
 	now := time.Now().UTC()
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return nil, err
 	}
