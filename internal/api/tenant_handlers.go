@@ -71,7 +71,10 @@ func (s *Server) serviceRoute(w http.ResponseWriter, r *http.Request, correlatio
 }
 
 // statusRecorder captures the status a handler answers with, so serviceRoute can count a
-// service token's read only when it actually succeeded.
+// service token's read only when it actually succeeded. Embedding alone would hide the
+// underlying writer from http.Flusher's type assertion and from http.ResponseController
+// (SetWriteDeadline): a service token's bounded log read streams through both, so Unwrap and
+// Flush forward to what this wraps rather than only satisfying the two methods below.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -80,6 +83,30 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(status int) {
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
+}
+
+// Write defaults the recorded status to 200 on an implicit-WriteHeader response, as
+// net/http itself does.
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController (SetWriteDeadline and friends) reach the writer this
+// wraps instead of stopping at this type.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Flush satisfies http.Flusher by forwarding to the wrapped writer's, when it has one, so a
+// streamed response still flushes per chunk through this wrapper.
+func (r *statusRecorder) Flush() {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 func (s *Server) tenantError(w http.ResponseWriter, err error) {
 	var blocked *store.PreflightBlockedError
