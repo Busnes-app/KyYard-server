@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,10 +96,7 @@ func (s *Server) inspectionAgentCurrent(c *agentConn) bool {
 func (s *Server) inspectionAllowed(r *http.Request, a store.TenantAccess, endpoint string) bool {
 	ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
 	defer cancel()
-	if _, _, err := s.sessions.AuthenticateRequest(r.WithContext(ctx)); err != nil {
-		return false
-	}
-	return s.store.Tenancy().StillAllowed(ctx, a, permissions.EndpointRead, endpoint) == nil
+	return s.stillAuthenticated(r.WithContext(ctx), a) && s.store.Tenancy().StillAllowed(ctx, a, permissions.EndpointRead, endpoint) == nil
 }
 
 // Why an inspection ended without a result; handleContainerInspection maps each to one status
@@ -139,7 +137,8 @@ func (s *Server) inspect(ctx context.Context, agent *agentConn, actor, org strin
 	if !s.inspectionAgentCurrent(agent) || !allowed() {
 		return none, errInspectionForbidden
 	}
-	grant := protocol.InspectionOpen{Request: p.id, Endpoint: agent.endpointID, Actor: actor, Connection: agent.nonce, Expires: expires, Target: target}
+	// Agents accept [a-zA-Z0-9_-] only; a service principal's "service:" becomes "service-".
+	grant := protocol.InspectionOpen{Request: p.id, Endpoint: agent.endpointID, Actor: strings.Replace(actor, ":", "-", 1), Connection: agent.nonce, Expires: expires, Target: target}
 	select {
 	case agent.send <- envelope(protocol.TypeInspectionOpen, grant):
 	default:

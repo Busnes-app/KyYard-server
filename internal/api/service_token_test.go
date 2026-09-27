@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/ky-primitives/password"
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -204,7 +207,7 @@ func TestServiceReadSummaryCountsOnlySuccess(t *testing.T) {
 }
 
 func TestClaimIsRateLimited(t *testing.T) {
-	srv, _, _, _, _ := tenantAdminFixture(t)
+	srv, st, _, _, _ := tenantAdminFixture(t)
 	for i := 0; i < 5; i++ {
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/service-tokens/claim", strings.NewReader(`{"pairing_code":"000000","service_name":"kypulse"}`)))
@@ -216,6 +219,16 @@ func TestClaimIsRateLimited(t *testing.T) {
 	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/service-tokens/claim", strings.NewReader(`{"pairing_code":"000000","service_name":"kypulse"}`)))
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("sixth attempt from one address: %d", w.Code)
+	}
+	rows, _, _ := st.Audit().ListAuditRecords(context.Background(), 0, 50)
+	claims := 0
+	for _, r := range rows {
+		if r.Action == "service_token.claim" {
+			claims++
+		}
+	}
+	if claims != 5 {
+		t.Fatalf("claim rows = %d, want 5 (the 429 is not audited)", claims)
 	}
 }
 
@@ -260,5 +273,117 @@ func TestHealthzOnTheContract(t *testing.T) {
 	}
 	if body.Schema != "ky.health/1" || body.Service != "kyyard" || body.Status != "ok" || len(body.Checks) != 1 || body.Checks[0].Name != "database" {
 		t.Fatalf("body: %+v", body)
+	}
+}
+
+func claimFrom(srv *api.Server, addr, code string) int {
+	req := httptest.NewRequest("POST", "/api/service-tokens/claim", strings.NewReader(`{"pairing_code":"`+code+`","service_name":"kypulse"}`))
+	req.RemoteAddr = addr
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w.Code
+}
+
+// The global claim bound holds across addresses and survives the limiter map filling up:
+// eviction of per-key windows must never reset it.
+func TestClaimGlobalLimitAcrossAddresses(t *testing.T) {
+	srv, _, _, _, _ := tenantAdminFixture(t)
+	addr := func(i int) string { return fmt.Sprintf("10.9.%d.%d:1", i/250, i%250) }
+	for i := 0; i < 30; i++ {
+		if code := claimFrom(srv, addr(i), "000000"); code != http.StatusForbidden {
+			t.Fatalf("claim %d: %d", i, code)
+		}
+	}
+	if code := claimFrom(srv, addr(30), "000000"); code != http.StatusTooManyRequests {
+		t.Fatalf("31st claim across addresses: %d", code)
+	}
+	// Random eviction makes the fill alone a weak probe, so also pin that the global window
+	// is not one of the evictable keys.
+	for _, k := range api.AttemptKeysForTest(srv) {
+		if k == "service-claim" {
+			t.Fatalf("global claim window is an evictable limiter key: %q", k)
+		}
+	}
+	for i := 0; i <= api.AttemptsCapForTest; i++ {
+		api.AllowAttemptForTest(srv, fmt.Sprintf("filler:%d", i), 1, time.Minute)
+	}
+	if code := claimFrom(srv, addr(31), "000000"); code != http.StatusTooManyRequests {
+		t.Fatalf("32nd claim after the limiter map filled: %d", code)
+	}
+}
+
+// A refused claim leaves a platform-scope denied row that never carries the code.
+func TestRefusedClaimIsAudited(t *testing.T) {
+	srv, st, _, _, _ := tenantAdminFixture(t)
+	if code := claimFrom(srv, "10.8.0.1:1", "123456"); code != http.StatusForbidden {
+		t.Fatalf("claim: %d", code)
+	}
+	rows, _, _ := st.Audit().ListAuditRecords(context.Background(), 0, 50)
+	var found []*store.AuditRecord
+	for _, r := range rows {
+		if r.Action == "service_token.claim" {
+			found = append(found, r)
+		}
+	}
+	if len(found) != 1 || found[0].Scope != "platform" || found[0].Result != "denied" || found[0].Details != "service=kypulse" || found[0].IPAddress != "10.8.0.1" {
+		t.Fatalf("claim rows: %+v", found)
+	}
+	if strings.Contains(found[0].Details, "123456") || strings.Contains(found[0].Resource, "123456") {
+		t.Fatal("the refused code reached the audit row")
+	}
+}
+
+// serviceAccess claims a token for organization "a" of a terminal fixture and returns the
+// bearer and its TenantAccess.
+func serviceAccess(t *testing.T, f terminalFixture) (string, store.TenantAccess) {
+	t.Helper()
+	p, err := f.st.Tenancy().CreateServicePairing(f.ctx, store.TenantAccess{ActorID: "usr_execadmin", OrganizationID: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err := f.st.Tenancy().ClaimServiceToken(f.ctx, p.Code, "kypulse", "10.0.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := f.st.Tenancy().LookupServiceToken(f.ctx, issue.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return issue.Token, store.TenantAccess{ServiceTokenID: tok.ID, OrganizationID: "a"}
+}
+
+func TestServiceTokenBoundedLogReadSurvivesRecheck(t *testing.T) {
+	f := newTerminalFixture(t)
+	token, a := serviceAccess(t, f)
+	req := httptest.NewRequest("GET", "/api/organizations/a/endpoints/"+f.ag.id+"/containers/web/logs", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	if !api.StillAllowedForTest(f.s, req, a, f.ag.id) {
+		t.Fatal("a live service token failed the log re-check")
+	}
+	other := a
+	other.ServiceTokenID = "svc_other"
+	if api.StillAllowedForTest(f.s, req, other, f.ag.id) {
+		t.Fatal("a bearer passed the re-check for a different token")
+	}
+	if err := f.st.Tenancy().RevokeServiceToken(f.ctx, store.TenantAccess{ActorID: "usr_execadmin", OrganizationID: "a"}, a.ServiceTokenID); err != nil {
+		t.Fatal(err)
+	}
+	if api.StillAllowedForTest(f.s, req, a, f.ag.id) {
+		t.Fatal("a revoked service token passed the log re-check")
+	}
+}
+
+// Inspection is an endpoint.read route; its in-flight re-check must accept a live bearer.
+func TestServiceTokenInspectionIsAllowedOrDenied(t *testing.T) {
+	f := inspectionFixture(t)
+	token, _ := serviceAccess(t, f)
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response <- bearer(f.s, "GET", strings.TrimSuffix(f.path(), "exec")+"inspection", token)
+	}()
+	req := inspectionGrant(t, f)
+	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeInspectionResult, inspectionReply(req))
+	if w := <-response; w.Code != http.StatusOK {
+		t.Fatalf("service inspection: %d %s", w.Code, w.Body)
 	}
 }

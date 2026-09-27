@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -21,7 +24,7 @@ const (
 func (s *Server) handleClaimServiceToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	ip := s.requestIP(r)
-	if !s.allowAttempt("service-claim:"+ip, claimPerIP, claimWindow) || !s.allowAttempt("service-claim", claimGlobal, claimWindow) {
+	if !s.allowAttempt("service-claim:"+ip, claimPerIP, claimWindow) || !s.allowGlobalClaim(claimGlobal, claimWindow) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many pairing attempts; wait a minute")
 		return
 	}
@@ -34,6 +37,15 @@ func (s *Server) handleClaimServiceToken(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	issue, err := s.store.Tenancy().ClaimServiceToken(r.Context(), req.PairingCode, req.ServiceName, ip)
+	if errors.Is(err, store.ErrForbidden) {
+		// No organization to attribute a refused code to, so the trace is platform-scoped.
+		// The code itself is never recorded.
+		if aerr := s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: "anonymous", Action: "service_token.claim", Details: "service=" + protocol.CleanText(req.ServiceName, 64), IPAddress: ip, Scope: "platform", Result: "denied"}); aerr != nil {
+			log.Printf("[SERVICE] claim audit failed for %s: %v", ip, aerr)
+		}
+	} else if err != nil {
+		log.Printf("[SERVICE] claim failed for %s: %v", ip, err)
+	}
 	if err != nil {
 		s.writeError(w, http.StatusForbidden, "Pairing refused")
 		return

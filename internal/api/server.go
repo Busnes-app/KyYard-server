@@ -44,6 +44,9 @@ type Server struct {
 	mux         *http.ServeMux
 	attemptsMu  sync.Mutex
 	attempts    map[string]attemptWindow
+	// claimGlobal is the service-claim bound across every address. It lives outside attempts
+	// so makeRoom cannot evict it; guarded by attemptsMu.
+	claimGlobal attemptWindow
 	// detached counts the requests running on a context deliberately separated from their
 	// connection. http.Server.Shutdown does not know about them, so runServer waits on this
 	// before the store closes.
@@ -218,6 +221,14 @@ func (s *Server) makeRoom(now time.Time) {
 			break
 		}
 	}
+}
+
+// allowGlobalClaim bumps the claim window shared by every caller.
+func (s *Server) allowGlobalClaim(limit int, window time.Duration) bool {
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	s.claimGlobal = bumpWindow(s.claimGlobal, time.Now(), window)
+	return s.claimGlobal.count <= limit
 }
 
 func bumpWindow(entry attemptWindow, now time.Time, window time.Duration) attemptWindow {

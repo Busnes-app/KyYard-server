@@ -3,12 +3,14 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busnes-app/kyyard-server/internal/testdb"
@@ -136,7 +138,12 @@ func TestClaimConsumesOneLivePairing(t *testing.T) {
 	st, a := orgAdmin(t)
 	ctx := context.Background()
 	b := newOrgAdmin(t, st, "org_b", "B", "usr_b")
-	restore := store.SetPairingCodesForTest("424242", "424242", "777777")
+	codes := []string{"424242", "424242", "777777"}
+	restore := store.SetPairingCodeSourceForTest(func() string {
+		c := codes[0]
+		codes = codes[1:]
+		return c
+	})
 	defer restore()
 	pa, err := st.Tenancy().CreateServicePairing(ctx, a)
 	if err != nil || pa.Code != "424242" {
@@ -312,7 +319,7 @@ func TestRecordServiceTokenReads(t *testing.T) {
 }
 
 // TestAuthenticateStampRules covers the write AuthenticateServiceToken spends on a read: at
-// most once a minute, always on an IP change, and never for a revoked token.
+// most once a minute whatever the address, and never for a revoked token.
 func TestAuthenticateStampRules(t *testing.T) {
 	st, a := orgAdmin(t)
 	ctx := context.Background()
@@ -336,17 +343,11 @@ func TestAuthenticateStampRules(t *testing.T) {
 		t.Fatalf("same IP within a minute restamped: stored=%v second=%v", stored, second.LastUsedAt)
 	}
 
-	// A different IP restamps even within the minute.
+	// A different IP within the minute does not restamp either.
 	third := mustAuthenticate(t, st, issue.Token, "10.0.0.4")
-	if third.LastUsedAt == nil || third.LastUsedAt.Equal(stored) || third.LastIP != "10.0.0.4" {
-		t.Fatalf("IP change did not restamp: stored=%v third=%+v", stored, third)
+	if third.LastUsedAt == nil || !third.LastUsedAt.Equal(stored) || third.LastIP != "10.0.0.3" {
+		t.Fatalf("IP change within a minute restamped: stored=%v third=%+v", stored, third)
 	}
-	// Read back the post-restamp stamp too, for the same precision reason as `stored`.
-	afterThird, err := st.Tenancy().ListServiceTokens(ctx, a)
-	if err != nil || len(afterThird) != 1 || afterThird[0].LastUsedAt == nil {
-		t.Fatalf("list after third authenticate: %+v %v", afterThird, err)
-	}
-	thirdStored := *afterThird[0].LastUsedAt
 
 	// A revoked token is never re-stamped: authentication itself is refused, and the stored
 	// stamp is unchanged.
@@ -360,15 +361,16 @@ func TestAuthenticateStampRules(t *testing.T) {
 	if err != nil || len(finalList) != 1 || finalList[0].LastUsedAt == nil {
 		t.Fatalf("list after revoke: %+v %v", finalList, err)
 	}
-	if finalList[0].LastIP != "10.0.0.4" || !finalList[0].LastUsedAt.Equal(thirdStored) {
-		t.Fatalf("revoked token was re-stamped: %+v", finalList[0])
+	if finalList[0].LastIP != "10.0.0.3" || !finalList[0].LastUsedAt.Equal(stored) {
+		t.Fatalf("stamp changed: %+v", finalList[0])
 	}
 }
 
 // TestConcurrentPairingMintsNeverCollide proves the fix round 2 ruling: on PostgreSQL, the
 // check-then-insert in CreateServicePairing is only safe because pg_advisory_xact_lock
 // serialises it across organizations. SQLite serialises writers on its own, so this needs a
-// real Postgres to mean anything.
+// real Postgres to mean anything. The first n draws all return one code, so every mint's
+// first draw collides with whichever mint committed it first.
 func TestConcurrentPairingMintsNeverCollide(t *testing.T) {
 	if os.Getenv("KY_TEST_POSTGRES_DSN") == "" {
 		t.Skip("advisory-lock serialization is PostgreSQL's; SQLite serializes writers")
@@ -378,6 +380,16 @@ func TestConcurrentPairingMintsNeverCollide(t *testing.T) {
 	b := newOrgAdmin(t, st, "org_b", "B", "usr_b")
 
 	const n = 8
+	draws := 0
+	restore := store.SetPairingCodeSourceForTest(func() string {
+		draws++
+		if draws <= n {
+			return "424242"
+		}
+		return fmt.Sprintf("%06d", draws)
+	})
+	defer restore()
+
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 	for i := 0; i < n; i++ {
@@ -412,6 +424,43 @@ func TestConcurrentPairingMintsNeverCollide(t *testing.T) {
 			t.Fatalf("two live pairings share a code_hash: %v", hashes)
 		}
 		seen[h] = true
+	}
+	if !seen[crypto.SHA256Hex([]byte("424242"))] {
+		t.Fatal("no live pairing holds the colliding code")
+	}
+}
+
+// TestConcurrentClaimsOfOneCode races claims of one code: exactly one mints a token.
+func TestConcurrentClaimsOfOneCode(t *testing.T) {
+	st, a := orgAdmin(t)
+	p := mustPairing(t, st, a)
+	const n = 8
+	var wg sync.WaitGroup
+	results := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := st.Tenancy().ClaimServiceToken(context.Background(), p.Code, "kypulse", "10.0.0.2")
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	won := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			won++
+		case !errors.Is(err, store.ErrForbidden):
+			t.Fatalf("losing claim must be ErrForbidden: %v", err)
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d claims succeeded, want exactly 1", won)
+	}
+	if rows := auditRows(t, st, "service_token.claim"); len(rows) != 1 {
+		t.Fatalf("claim rows: %d, want 1", len(rows))
 	}
 }
 

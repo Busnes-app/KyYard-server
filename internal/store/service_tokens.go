@@ -20,7 +20,7 @@ import (
 const (
 	serviceTokenBytes = 32
 	// lastUsedEvery bounds the write a read costs: last_used_at and last_ip are stamped at
-	// most once a minute per token, or when the address changes.
+	// most once a minute per token.
 	lastUsedEvery = time.Minute
 )
 
@@ -102,7 +102,7 @@ func (t *tenancyStore) CreateServicePairing(ctx context.Context, a TenantAccess)
 // code live at once; the ORDER BY is a tie-breaker, not a selection rule. Every refusal is
 // ErrForbidden: the caller is unauthenticated and learns nothing about why. A code that names
 // no live pairing writes no tenant row, because there is no organization to attribute it to;
-// the API rate-limits and logs the attempt.
+// the API writes a platform-scope denied row for it, without the code.
 func (t *tenancyStore) ClaimServiceToken(ctx context.Context, code, serviceName, ip string) (*ServiceTokenIssue, error) {
 	if len(code) != 6 || !validServiceName(serviceName) {
 		return nil, ErrForbidden
@@ -146,9 +146,9 @@ func (t *tenancyStore) ClaimServiceToken(ctx context.Context, code, serviceName,
 	return &ServiceTokenIssue{Token: hex.EncodeToString(secret), Organization: Organization{ID: orgID, Name: orgName}}, nil
 }
 
-// AuthenticateServiceToken resolves a bearer to its live token. A revoked or unknown token is
-// ErrForbidden; the API answers 401 either way.
-func (t *tenancyStore) AuthenticateServiceToken(ctx context.Context, token, ip string) (*ServiceToken, error) {
+// LookupServiceToken resolves a bearer to its live token without writing. A revoked or
+// unknown token is ErrForbidden.
+func (t *tenancyStore) LookupServiceToken(ctx context.Context, token string) (*ServiceToken, error) {
 	raw, err := hex.DecodeString(strings.TrimSpace(token))
 	if err != nil || len(raw) != serviceTokenBytes {
 		return nil, ErrForbidden
@@ -162,16 +162,27 @@ func (t *tenancyStore) AuthenticateServiceToken(ctx context.Context, token, ip s
 	if err != nil {
 		return nil, err
 	}
+	if lastUsed.Valid {
+		tok.LastUsedAt = &lastUsed.Time
+	}
+	return &tok, nil
+}
+
+// AuthenticateServiceToken is LookupServiceToken for a request: it also stamps last_used_at
+// and last_ip, at most once per lastUsedEvery. The API answers 401 to any error.
+func (t *tenancyStore) AuthenticateServiceToken(ctx context.Context, token, ip string) (*ServiceToken, error) {
+	tok, err := t.LookupServiceToken(ctx, token)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
-	if !lastUsed.Valid || now.Sub(lastUsed.Time) > lastUsedEvery || tok.LastIP != ip {
+	if tok.LastUsedAt == nil || now.Sub(*tok.LastUsedAt) > lastUsedEvery {
 		if _, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE service_tokens SET last_used_at=?, last_ip=? WHERE id=? AND revoked_at IS NULL`), now, ip, tok.ID); err != nil {
 			return nil, err
 		}
-		lastUsed = sql.NullTime{Time: now, Valid: true}
-		tok.LastIP = ip
+		tok.LastUsedAt, tok.LastIP = &now, ip
 	}
-	tok.LastUsedAt = &lastUsed.Time
-	return &tok, nil
+	return tok, nil
 }
 
 func (t *tenancyStore) ListServiceTokens(ctx context.Context, a TenantAccess) ([]ServiceToken, error) {
@@ -250,8 +261,8 @@ func (t *tenancyStore) DenyService(ctx context.Context, a TenantAccess, action p
 }
 
 // RecordServiceTokenReads writes the hourly summary row for one token, only when tokenID
-// names a token of organizationID. A stale counter for a token that has moved on (revoked,
-// or never that organization's) is not an error: it writes nothing.
+// names a token of organizationID. Revoked tokens still get their row: the reads happened.
+// A counter naming a token that is not that organization's writes nothing.
 func (t *tenancyStore) RecordServiceTokenReads(ctx context.Context, organizationID, tokenID string, reads int) error {
 	if tokenID == "" {
 		return nil

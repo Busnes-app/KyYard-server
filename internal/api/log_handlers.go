@@ -481,12 +481,24 @@ func downloadName(name string) string {
 	return fmt.Sprintf("%s-%s.log", safe, time.Now().UTC().Format("20060102-150405"))
 }
 
-// stillAllowed asks again whether this reader may hold this stream: the session must still be
-// valid, and the membership behind it must still carry container.logs on this endpoint.
+// stillAllowed asks again whether this reader may hold this stream: the caller must still
+// authenticate, and its membership or token must still carry container.logs on this endpoint.
 // Neither is something that was settled when the stream opened.
 func (s *Server) stillAllowed(r *http.Request, a store.TenantAccess, endpointID string) bool {
-	if _, _, err := s.sessions.AuthenticateRequest(r); err != nil {
+	return s.stillAuthenticated(r, a) && s.store.Tenancy().StillAllowed(r.Context(), a, permissions.ContainerLogs, endpointID) == nil
+}
+
+// stillAuthenticated re-authenticates the request that started long-running work: the session
+// for a user, the same live bearer for a service token. It writes nothing.
+func (s *Server) stillAuthenticated(r *http.Request, a store.TenantAccess) bool {
+	if a.ServiceTokenID == "" {
+		_, _, err := s.sessions.AuthenticateRequest(r)
+		return err == nil
+	}
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
 		return false
 	}
-	return s.store.Tenancy().StillAllowed(r.Context(), a, permissions.ContainerLogs, endpointID) == nil
+	tok, err := s.store.Tenancy().LookupServiceToken(r.Context(), token)
+	return err == nil && tok.ID == a.ServiceTokenID
 }

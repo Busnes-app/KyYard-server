@@ -147,18 +147,7 @@ var errNoPrincipal = errors.New("no principal row")
 // row means the URL scope is unverified: errNoPrincipal and no tenant audit row.
 func (t *tenancyStore) principalRole(ctx context.Context, tx *sql.Tx, a TenantAccess, lock bool) (string, error) {
 	if a.ServiceTokenID != "" {
-		var revoked sql.NullTime
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT revoked_at FROM service_tokens WHERE id=? AND organization_id=?`), a.ServiceTokenID, a.OrganizationID).Scan(&revoked)
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", errNoPrincipal
-		}
-		if err != nil {
-			return "", err
-		}
-		if revoked.Valid {
-			return "", ErrForbidden
-		}
-		return permissions.RolePulseReader, nil
+		return t.serviceRole(ctx, tx, a)
 	}
 	query := `SELECT u.status,u.must_change_password,m.status,m.role FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=? AND m.organization_id=?`
 	if lock && t.store.driver == "postgres" {
@@ -182,6 +171,27 @@ func (t *tenancyStore) principalRole(ctx context.Context, tx *sql.Tx, a TenantAc
 		return "", ErrForbidden
 	}
 	return role, nil
+}
+
+// dbtx is what serviceRole reads through: a transaction or the database itself.
+type dbtx interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// serviceRole is the fixed role of a live, unrevoked token of a.OrganizationID.
+func (t *tenancyStore) serviceRole(ctx context.Context, q dbtx, a TenantAccess) (string, error) {
+	var revoked sql.NullTime
+	err := q.QueryRowContext(ctx, t.store.rebind(`SELECT revoked_at FROM service_tokens WHERE id=? AND organization_id=?`), a.ServiceTokenID, a.OrganizationID).Scan(&revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errNoPrincipal
+	}
+	if err != nil {
+		return "", err
+	}
+	if revoked.Valid {
+		return "", ErrForbidden
+	}
+	return permissions.RolePulseReader, nil
 }
 
 func (t *tenancyStore) ReadOrganization(ctx context.Context, a TenantAccess) (*Organization, error) {

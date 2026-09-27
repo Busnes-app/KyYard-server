@@ -69,7 +69,7 @@ Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.e
 |---|---|---|---|---|---|---|---|
 | `organization.service_tokens.manage` | ✓ | – | – | – | – | the six-digit pairing code, once; the token only in the claim response | success/denied, target = pairing or token id |
 
-A service token authenticates as `service:<id>` with the fixed role `pulse_reader`; its successful reads are not audited (one `service_token.reads` row per token per hour instead), its denials and every claim and revocation are.
+A service token authenticates as `service:<id>` with the fixed role `pulse_reader`; its successful reads are not audited (one `service_token.reads` row per token per hour instead), its denials and every claim and revocation are. A refused claim names no organization, so it writes a platform-scope denied row without the code.
 
 ### Containers, images, networks, volumes (M4–M5)
 
@@ -143,4 +143,4 @@ Application persistence implements `application.read`, `application.import`, `ap
 
 ### Live redacted container inspection
 
-The inspection GET uses implemented endpoint.read for every active membership role. It exposes bounded operational facts/counts, not environment values, labels, argv, mount paths or network names. Session and tenant access are rechecked while pending and at publication; runtime identity comes from fresh scoped inventory. No successful-read audit or deployment/secret authority is granted. Bounds and wire lifecycle are in agent-protocol.md, Container inspection.
+The inspection GET uses implemented endpoint.read for every active membership role. It exposes bounded operational facts/counts, not environment values, labels, argv, mount paths or network names. Session (or service token) and tenant access are rechecked while pending and at publication; runtime identity comes from fresh scoped inventory. No successful-read audit or deployment/secret authority is granted. Bounds and wire lifecycle are in agent-protocol.md, Container inspection.

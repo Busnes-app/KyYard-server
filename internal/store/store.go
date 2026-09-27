@@ -268,6 +268,8 @@ type TenancyStore interface {
 	CreateServicePairing(ctx context.Context, access TenantAccess) (*ServicePairing, error)
 	ClaimServiceToken(ctx context.Context, code, serviceName, ip string) (*ServiceTokenIssue, error)
 	AuthenticateServiceToken(ctx context.Context, token, ip string) (*ServiceToken, error)
+	// LookupServiceToken is AuthenticateServiceToken without the last-used stamp, for re-checks.
+	LookupServiceToken(ctx context.Context, token string) (*ServiceToken, error)
 	ListServiceTokens(ctx context.Context, access TenantAccess) ([]ServiceToken, error)
 	RevokeServiceToken(ctx context.Context, access TenantAccess, id string) error
 	// DenyService writes a denied audit row for a refusal the API decides itself (a service

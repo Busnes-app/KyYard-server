@@ -63,7 +63,7 @@ func (s *Server) serviceRoute(w http.ResponseWriter, r *http.Request, correlatio
 		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Tenant access denied", "code": "tenant_access_denied"})
 		return
 	}
-	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	rec := &statusRecorder{ResponseWriter: w}
 	h(rec, r, store.TenantAccess{ServiceTokenID: tok.ID, OrganizationID: org, EnvironmentID: env, CorrelationID: correlation, IPAddress: ip})
 	if rec.status >= 200 && rec.status < 300 {
 		s.serviceReads.add(tok.OrganizationID, tok.ID)
@@ -80,8 +80,11 @@ type statusRecorder struct {
 	status int
 }
 
+// WriteHeader records the first status only; net/http ignores a later one.
 func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
+	if r.status == 0 {
+		r.status = status
+	}
 	r.ResponseWriter.WriteHeader(status)
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -85,3 +86,8 @@ func SetValidationClockForTest(s *Server, interval time.Duration, clock func() t
 
 // ErrInspectionInvalidForTest is what an inspection that failed validation returns.
 var ErrInspectionInvalidForTest = errInspectionInvalid
+
+// StillAllowedForTest runs a log stream's periodic re-check. Test-only.
+func StillAllowedForTest(s *Server, r *http.Request, a store.TenantAccess, endpointID string) bool {
+	return s.stillAllowed(r, a, endpointID)
+}
