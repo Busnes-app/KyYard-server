@@ -36,4 +36,29 @@ describe('ServiceTokens', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'DELETE')).toBe(true));
   });
+
+  it('reloads the list when the code is dismissed', async () => {
+    const fetchMock = stub([[/^POST \/api\/organizations\/org_a\/service-tokens\/pairings$/, { id: 'p2', code: '123456', expires_at: new Date(Date.now() + 900_000).toISOString(), disclosure: 'Shown once.' }, 201]]);
+    render(<ServiceTokens org="org_a" />);
+    await screen.findByText('kypulse');
+    fireEvent.click(screen.getByRole('button', { name: 'Pair kyPulse' }));
+    await screen.findByText('123456');
+    const lists = () => fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/service-tokens') && !(init as RequestInit)?.method).length;
+    const before = lists();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(lists()).toBeGreaterThan(before));
+    expect(screen.queryByText('123456')).toBeNull();
+  });
+
+  it('drops the code and reloads the list when it expires', async () => {
+    const fetchMock = stub([[/^POST \/api\/organizations\/org_a\/service-tokens\/pairings$/, { id: 'p2', code: '123456', expires_at: new Date(Date.now() + 50).toISOString(), disclosure: 'Shown once.' }, 201]]);
+    render(<ServiceTokens org="org_a" />);
+    await screen.findByText('kypulse');
+    fireEvent.click(screen.getByRole('button', { name: 'Pair kyPulse' }));
+    await screen.findByText('123456');
+    const lists = () => fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/service-tokens') && !(init as RequestInit)?.method).length;
+    const before = lists();
+    await waitFor(() => expect(screen.queryByText('123456')).toBeNull());
+    await waitFor(() => expect(lists()).toBeGreaterThan(before));
+  });
 });

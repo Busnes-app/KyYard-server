@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { tenantWrite, useTenantResource, type ServicePairing, type ServiceToken } from '../tenant';
 import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
@@ -9,6 +9,14 @@ export function ServiceTokens({ org }: { org: string }) {
   const [pairing, setPairing] = useState<ServicePairing | null>(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const dismiss = () => { setPairing(null); tokens.reload(); };
+  // A code that expires unused is gone; one claimed meanwhile shows up as a token.
+  useEffect(() => {
+    if (!pairing) return;
+    const timer = setTimeout(dismiss, Math.max(0, new Date(pairing.expires_at).getTime() - Date.now()));
+    return () => clearTimeout(timer);
+  }, [pairing]);
 
   const pair = async () => {
     setBusy(true);
@@ -40,27 +48,29 @@ export function ServiceTokens({ org }: { org: string }) {
           <p>Enter this code in kyPulse before {new Date(pairing.expires_at).toLocaleTimeString()}:</p>
           <pre className="font-mono" style={{ fontSize: 24, letterSpacing: 4 }}>{pairing.code}</pre>
           <p>{pairing.disclosure}</p>
-          <button className="btn-secondary" onClick={() => setPairing(null)}>Dismiss</button>
+          <button className="btn-secondary" onClick={dismiss}>Dismiss</button>
         </div>
       )}
       {message && <p role="alert">{message}</p>}
       <StateNotice state={tokens.state} onRetry={tokens.reload} />
       {tokens.state === 'ready' && tokens.data && (tokens.data.length === 0 ? <p>No service tokens. Pair kyPulse to create one.</p> : (
-        <table>
-          <thead><tr><th>Service</th><th>Created</th><th>Last used</th><th>From</th><th>Status</th><th /></tr></thead>
-          <tbody>
-            {tokens.data.map((t) => (
-              <tr key={t.id}>
-                <td>{t.name}</td>
-                <td>{new Date(t.created_at).toLocaleString()}</td>
-                <td>{t.last_used_at ? new Date(t.last_used_at).toLocaleString() : 'never'}</td>
-                <td className="font-mono">{t.last_ip ?? ''}</td>
-                <td>{t.revoked_at ? 'revoked' : 'active'}</td>
-                <td>{!t.revoked_at && <button className="btn-secondary" disabled={busy} onClick={() => void revoke(t)}>Revoke</button>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="ky-table ky-responsive-table">
+            <thead><tr><th>Service</th><th>Created</th><th>Last used</th><th>From</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead>
+            <tbody>
+              {tokens.data.map((t) => (
+                <tr key={t.id}>
+                  <td data-label="Service">{t.name}</td>
+                  <td data-label="Created">{new Date(t.created_at).toLocaleString()}</td>
+                  <td data-label="Last used">{t.last_used_at ? new Date(t.last_used_at).toLocaleString() : 'never'}</td>
+                  <td data-label="From" className="font-mono">{t.last_ip ?? ''}</td>
+                  <td data-label="Status">{t.revoked_at ? 'revoked' : 'active'}</td>
+                  <td data-label="Actions">{!t.revoked_at && <button className="btn-secondary" disabled={busy} onClick={() => void revoke(t)}>Revoke</button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ))}
     </section>
   );
