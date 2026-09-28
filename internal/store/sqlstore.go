@@ -362,6 +362,26 @@ func (u *userStore) CountUsers(ctx context.Context) (int, error) {
 }
 
 // ---------------------------------------------------------------------
+// beginTx takes the audit lock before any domain lock in a transaction that may
+// append audit records. PostgreSQL sequences alone do not order commits: a cursor
+// could otherwise advance past an allocated but uncommitted ID. SQLite retains
+// its existing single-writer discipline.
+// ponytail: one writer per audit table; replace the ID cursor protocol if
+// audit throughput requires concurrent writers with independent commit order.
+func (s *SQLStore) beginTx(ctx context.Context, audited bool) (*sql.Tx, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	if audited && s.driver == "postgres" {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(7345103, 'audit_records'::regclass::oid::int)`); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+	}
+	return tx, nil
+}
+
 // Session Store
 // ---------------------------------------------------------------------
 
@@ -371,8 +391,8 @@ type sessionStore struct {
 
 // withPassword serializes credential-derived grants with password replacement.
 // Updating the same user row takes a write lock on both supported databases.
-func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string, apply func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string, audited bool, apply func(*sql.Tx) error) error {
+	tx, err := s.beginTx(ctx, audited)
 	if err != nil {
 		return err
 	}
@@ -395,14 +415,14 @@ func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string
 }
 
 func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expectedPasswordHash string) error {
-	return s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
+	return s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, false, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt)
 		return err
 	})
 }
 
 func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error {
-	return u.store.withPassword(ctx, userID, oldHash, func(tx *sql.Tx) error {
+	return u.store.withPassword(ctx, userID, oldHash, true, func(tx *sql.Tx) error {
 		now := time.Now().UTC()
 		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND must_change_password = ? AND sso_provider = 'local'`), newHash, false, now, userID, true)
 		if err != nil {
@@ -421,7 +441,7 @@ func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash,
 
 // ResetAdminPassword is the operator recovery path, including disabled local accounts.
 func (u *userStore) ResetAdminPassword(ctx context.Context, userID, newHash string) error {
-	tx, err := u.store.db.BeginTx(ctx, nil)
+	tx, err := u.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -496,7 +516,7 @@ func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {
 }
 
 func (s *sessionStore) CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error {
-	return s.store.withPassword(ctx, challenge.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
+	return s.store.withPassword(ctx, challenge.UserID, expectedPasswordHash, false, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at, password_hash) VALUES (?, ?, ?, ?)"), challenge.TokenHash, challenge.UserID, challenge.ExpiresAt, expectedPasswordHash)
 		return err
 	})
@@ -830,8 +850,16 @@ func (a *auditStore) LogAudit(ctx context.Context, r *AuditRecord) error {
 INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at, scope, organization_id, environment_id, correlation_id, result)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
-	_, err := a.store.db.ExecContext(ctx, q, r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt, r.Scope, r.OrganizationID, r.EnvironmentID, r.CorrelationID, r.Result)
-	return err
+	tx, err := a.store.beginTx(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, q, r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt, r.Scope, r.OrganizationID, r.EnvironmentID, r.CorrelationID, r.Result)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *auditStore) ListAuditRecords(ctx context.Context, offset, limit int) ([]*AuditRecord, int, error) {

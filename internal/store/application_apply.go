@@ -353,7 +353,7 @@ func (t *tenancyStore) FailDeployment(ctx context.Context, id, detail string) er
 // the system actor (a removal's under application.destroy). It selects first and updates each
 // row under the same filter, so a row a concurrent settle took is neither changed nor audited.
 func (t *tenancyStore) systemTransition(ctx context.Context, filter string, arg any, set string, setArgs []any, outcome, result string) (int64, error) {
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return 0, err
 	}
@@ -449,7 +449,7 @@ func (t *tenancyStore) SettleDeployment(ctx context.Context, endpointID string, 
 	if err != nil || len(raw) > MaxDeploymentResultStoredBytes {
 		return ErrInvalid
 	}
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -688,7 +688,7 @@ func (t *tenancyStore) auditDeployment(ctx context.Context, tx *sql.Tx, user str
 // It selects rows as SettleDeployment does, and a repeat (already unknown with this detail)
 // changes nothing and writes no audit row, so an agent re-sending the result cannot grow the log.
 func (t *tenancyStore) RefuseDeploymentResult(ctx context.Context, endpointID, id, detail string) error {
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}

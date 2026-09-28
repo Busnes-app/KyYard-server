@@ -15,7 +15,7 @@ type tenancyStore struct{ store *SQLStore }
 // Claiming the marker before reading users serializes concurrent initializers. The claim,
 // membership and audit commit together; a crash rolls them all back.
 func (t *tenancyStore) Initialize(ctx context.Context) error {
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}

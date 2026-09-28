@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -302,6 +303,43 @@ func (s *Server) handleRemoveEnvironment(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) handleTenantAudit(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	for _, values := range query {
+		if len(values) != 1 {
+			s.tenantError(w, store.ErrInvalid)
+			return
+		}
+	}
+	if query.Has("after_id") {
+		afterID, err := strconv.ParseInt(query.Get("after_id"), 10, 64)
+		if err != nil || afterID < 0 || query.Has("offset") {
+			s.tenantError(w, store.ErrInvalid)
+			return
+		}
+		_, limit, err := tenantPage(r)
+		if err != nil {
+			s.tenantError(w, err)
+			return
+		}
+		rows, err := s.store.Tenancy().ReadAuditAfter(r.Context(), a, afterID, limit)
+		if err != nil {
+			s.tenantError(w, err)
+			return
+		}
+		if len(rows) > 0 {
+			afterID = rows[len(rows)-1].ID
+		}
+		s.writeJSON(w, http.StatusOK, struct {
+			Items       []store.AuditRecord `json:"items"`
+			NextAfterID int64               `json:"next_after_id"`
+		}{rows, afterID})
+		return
+	}
+
 	offset, limit, err := tenantPage(r)
 	if err != nil {
 		s.tenantError(w, err)

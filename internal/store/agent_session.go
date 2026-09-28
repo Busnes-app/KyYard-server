@@ -84,8 +84,7 @@ func (t *tenancyStore) RecordAgentConnect(ctx context.Context, e *Endpoint, ip, 
 	if !displaySafe(details) {
 		details = ""
 	}
-	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result,details) VALUES (?,?,?,?,?,?,?,?,?,?,?)`), "agent:"+e.ID, "agent.connect", e.ID, ip, time.Now().UTC(), "organization", e.OrganizationID, e.EnvironmentID, uuid.NewString(), result, details)
-	return err
+	return t.store.Audit().LogAudit(ctx, &AuditRecord{UserID: "agent:" + e.ID, Action: "agent.connect", Resource: e.ID, IPAddress: ip, CreatedAt: time.Now().UTC(), Scope: "organization", OrganizationID: e.OrganizationID, EnvironmentID: e.EnvironmentID, CorrelationID: uuid.NewString(), Result: result, Details: details})
 }
 
 // TouchEndpoint records a heartbeat. It never changes state.

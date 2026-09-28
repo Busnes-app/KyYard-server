@@ -24,7 +24,7 @@ func (t *tenancyStore) RotateEndpointKey(ctx context.Context, endpointID string,
 		return "", ErrInvalid
 	}
 	now := time.Now().UTC()
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return "", err
 	}

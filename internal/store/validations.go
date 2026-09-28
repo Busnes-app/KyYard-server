@@ -535,7 +535,7 @@ func (t *tenancyStore) FinishValidation(ctx context.Context, deployment, verdict
 	if _, ok := validationResults[verdict]; !ok {
 		return false, ErrInvalid
 	}
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return false, err
 	}
@@ -600,7 +600,7 @@ func (t *tenancyStore) MarkRollbackOutcome(ctx context.Context, deployment, outc
 	default:
 		return ErrInvalid
 	}
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -681,7 +681,7 @@ func (t *tenancyStore) reconcileValidations(ctx context.Context, tx *sql.Tx) err
 // DecideNamedRollbacks decides every named, undecided rollback from its deployment's state, for
 // the live loop: one whose outcome write failed would otherwise leave its policy active.
 func (t *tenancyStore) DecideNamedRollbacks(ctx context.Context) error {
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}

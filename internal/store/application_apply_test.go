@@ -576,12 +576,16 @@ func TestConcurrentSettlesCommitOnce(t *testing.T) {
 	results := []protocol.DeploymentResult{settledResult(d, protocol.OutcomeSucceeded, strings.Repeat("e", 64)), settledResult(d, protocol.OutcomeFailed, "")}
 	// Hold the row so both settles are in flight and queued before either can commit; otherwise
 	// the first usually finishes before the second starts and the race never runs. The first
-	// waits on the deployment row, the second on the application row the first holds.
+	// waits on the deployment row, the second on the audit lock the first holds.
 	holder, err := st.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
+	var holderPID int
+	if err := holder.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatal(err)
+	}
 	var held string
 	if err := holder.QueryRowContext(ctx, st.rebind(`SELECT id FROM deployments WHERE id=? FOR UPDATE`), d.ID).Scan(&held); err != nil {
 		t.Fatal(err)
@@ -592,14 +596,18 @@ func TestConcurrentSettlesCommitOnce(t *testing.T) {
 	}
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		var waiting int
-		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND (query LIKE '%FROM deployments%' OR query LIKE '%FROM applications%')`).Scan(&waiting); err != nil {
+		if err := st.db.QueryRow(`WITH RECURSIVE blocked(pid) AS (
+ SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))
+ UNION
+ SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid))
+) SELECT COUNT(*) FROM blocked`, holderPID).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("settles never queued on the row: %d waiting", waiting)
+			t.Fatalf("settles never queued behind the held transaction: %d waiting", waiting)
 		}
 		runtime.Gosched()
 	}

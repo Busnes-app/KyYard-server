@@ -21,7 +21,7 @@ const reconcileDetail = "the server restarted before a result arrived"
 // and a named, undecided rollback is decided by the live loop's rule (decideNamedRollbacks),
 // pausing its policy, in the same transaction.
 func (t *tenancyStore) ReconcileAfterStart(ctx context.Context) (int64, error) {
-	tx, err := t.store.db.BeginTx(ctx, nil)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return 0, err
 	}
