@@ -193,7 +193,11 @@ jobs:
 
       - run: shellcheck scripts/*.sh
       - run: make build
+      # The edit and run block needs the image present; without it the script fails here.
+      - run: docker pull alpine:3.24
       - run: scripts/smoke-test.sh
+        env:
+          KY_SMOKE_REQUIRE_EDIT: "1"
 
   docker:
     name: Docker image build & run

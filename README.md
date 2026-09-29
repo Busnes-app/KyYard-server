@@ -638,6 +638,7 @@ refused deposit does not remove the local copy.
 | `KY_BACKUP_DEPOSIT_INTERVAL` | `24h` | Default schedule only. The admin screen's setting wins; `0` is off; 15 minutes to 366 days otherwise. |
 | `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on an RFC1918 or CGNAT address behind your own TLS proxy. Loopback, link-local and other reserved ranges stay refused; HTTPS stays required. Logged at startup and on the pairing audit row. |
 | `KY_REGISTRY_ALLOW_PRIVATE` | `false` | Let organization administrators mark a registry `allow_private`, admitting RFC1918 and CGNAT registry addresses. Off, the server refuses the flag, so a tenant cannot aim the server at your network. Loopback and link-local stay refused. Logged at startup. |
+| `KY_CONTAINER_ALLOW_PRIVILEGED` | `false` | Let a container edit or run set host-level settings: privileged, devices, security options, capabilities beyond Docker's defaults, host or `container:` network mode, or a bind of `/`, `/etc`, the Docker socket, `/proc`, `/sys`, `/dev`, `/boot`, `/root`, `/var/lib/docker` or a parent of one. Off, those are refused. On, every organization administrator is root on every Docker host; the bind acknowledgement then guards against mistakes, not attackers. Logged at startup. |
 | `KY_DNS` | unset | Only in `docker-compose.lan-dns.yml`: the container's resolver, for names that exist only on your LAN. |
 
 Reach a KyRecovery that only your LAN's DNS knows:
@@ -741,8 +742,13 @@ An organization administrator edits a container that no application owns on its
 included (masked until **Reveal**), and **Save and recreate** replaces the container with the
 edited copy after you type its name. The host agent must advertise `container.configure`.
 Settings KyYard cannot read (listed on the tab) block saving, so a recreate never drops them
-silently. A new host path bind needs its own acknowledgement. A container whose start fails is
-rolled back to the old one. **Run a container** on a Docker host's page creates a new one the
+silently. A new host path bind needs its own acknowledgement. Host-level settings (privileged,
+devices, extra capabilities, host networking, system path binds) are refused unless
+`KY_CONTAINER_ALLOW_PRIVILEGED` is on. A container whose start fails, or that stops within five
+seconds, is rolled back to the old one. Environment, labels and command a container inherited
+from its image are kept as they were read, even when you change the image. Do not recreate the
+KyYard server's own container, or a host agent's, through KyYard: stopping it stops the agent
+doing the recreate. **Run a container** on a Docker host's page creates a new one the
 same way. A container an adopted application owns is edited through that application.
 Environment values travel only inside the agent's TLS session and the HTTPS response and are
 never stored, audited or logged; audit records who read or changed which container and the

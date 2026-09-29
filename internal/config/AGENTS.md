@@ -21,6 +21,7 @@ Owns environment variable parsing, configuration validation, default fallbacks, 
 
 - `KY_BACKUP_DEPOSIT_INTERVAL` is a Go duration (default `24h`), only the default for the schedule the admin screen stores; `0` is off, anything else below `MinDepositInterval` (15m) or negative fails startup. `KY_BACKUP_DIR` (default empty, off) is the sealed local-copy directory and `KY_BACKUP_KEEP` (default 7) how many to retain; below 1 fails startup because the lib refuses it at write time. `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` (default false) admits RFC1918 and CGNAT KyRecovery destinations only.
 - `KY_REGISTRY_ALLOW_PRIVATE` (default false, `Registry.AllowPrivate`) lets organization admins set a registry's `allow_private`; off, the store refuses it. Logged at startup when on.
+- `KY_CONTAINER_ALLOW_PRIVILEGED` (default false, `Container.AllowPrivileged`) lets a container recreate or run set host-level settings; off, the store refuses them `privileged_disabled`. On, `container.configure` is root on the host. Logged at startup when on.
 
 - Shared-bridge guidance requires certificate-verified PostgreSQL TLS and a host-service/host-network proxy with stable gateway peer trust; never treat recycled container IPs as stable identities. The PostgreSQL overlay requires operator-provided TLS files.
 

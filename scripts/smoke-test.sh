@@ -260,10 +260,13 @@ print("ok" if ok else "bad")')" "ok"
   check "inventory never carries container environment" \
     "$(if printf '%s' "$INV" | grep -qi '"env"'; then echo leaked; else echo clean; fi)" "clean"
   # Edit and run against the real agent and Docker. The spec names the host's own image ID, so no
-  # registry is contacted. KY_SMOKE_IMAGE lets a run prove the skip path.
+  # registry is contacted. KY_SMOKE_IMAGE lets a run prove the skip path; KY_SMOKE_REQUIRE_EDIT=1
+  # (CI) makes a missing image a failure instead.
   SMOKE_IMAGE="${KY_SMOKE_IMAGE:-alpine:3.24}"
   SMOKE_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$SMOKE_IMAGE" 2>/dev/null || :)"
-  if [ -z "$SMOKE_IMAGE_ID" ]; then
+  if [ -z "$SMOKE_IMAGE_ID" ] && [ "${KY_SMOKE_REQUIRE_EDIT:-}" = 1 ]; then
+    fail "edit and run: $SMOKE_IMAGE not present and KY_SMOKE_REQUIRE_EDIT=1"
+  elif [ -z "$SMOKE_IMAGE_ID" ]; then
     pass "skipped: $SMOKE_IMAGE not present"
   else
     EP_URL="$BASE/api/organizations/org_initial/endpoints/$EP_ID"
@@ -347,6 +350,8 @@ print(json.dumps({"expects": {"image_id": t["image_id"], "created_unix": t["crea
   check "agent exits on revocation" "$AGENT_EXIT" "2"
   contains "agent log names the revocation" "$(cat "$WORK/agent.log")" "revoked"
   contains "audit records the agent connection" "$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/audit")" '"action":"agent.connect"'
+elif [ "${KY_SMOKE_REQUIRE_EDIT:-}" = 1 ]; then
+  fail "kyyard-agent not built and KY_SMOKE_REQUIRE_EDIT=1"
 else
   echo "  [skip] kyyard-agent not built; agent lifecycle not exercised"
 fi

@@ -24,6 +24,13 @@ in the results table.
   which account from the prerequisites for step 8.
 - Container command results (restart, start, stop, remove) are not audited as results; the
   audit row is the request, under its permission.
+- A container edit keeps the environment, labels and command the old image gave the container:
+  the read cannot tell them from the operator's, so after an image change they are pinned to
+  the old image's values.
+- Recreating the KyYard server container, or a host agent's own container, through KyYard is
+  unsupported: the stop step stops the agent running the recreate.
+- A recreate waits five seconds for the new container to keep running; a healthcheck that
+  fails later is not awaited.
 - A source build (`docker-compose.build.yml`) shows an enrollment token and a "Source
   installation" note instead of the one-line command: the image has no published digest to
   pin. Set `KY_AGENT_IMAGE` (README) or compose the `docker run` by hand from the token.
