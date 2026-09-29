@@ -278,3 +278,27 @@ it('renders a Kubernetes cluster, its mapped applications, filters by namespace 
   expect(logURL?.startsWith('/api/organizations/a/endpoints/ep_1/pods/shop/web-7c9/logs?container=web&tail=200')).toBe(true);
   Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
 });
+
+it('lists uptime, IP and health and links each container to its page', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-29T10:00:00Z'));
+  const now = '2026-09-29T09:59:00Z';
+  const id = 'd'.repeat(64);
+  const containers = [
+    { id, name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', started_at: '2026-09-29T07:30:00Z', health: 'unhealthy', ports: [], labels: {}, networks: [{ name: 'bridge', ip: '172.17.0.5' }] },
+    { id: 'e'.repeat(64), name: 'old', image: 'redis:7', image_id: 'j', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: ['bridge'] },
+  ];
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => { const url = String(input); if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role: 'operator' }]); if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, observed_at: now, engine: { runtime: 'docker', version: '29', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers, images: [], networks: [], volumes: [] } }); return url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications') ? json([]) : json(endpoint); });
+  vi.stubGlobal('fetch', fetcher);
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  const table = await screen.findByRole('table');
+  const head = within(table).getAllByRole('columnheader').map((h) => h.textContent);
+  expect(head).toEqual(['Container', 'Status', 'Uptime', 'IP', 'Usage', 'Actions']);
+  const [web, old] = within(table).getAllByRole('row').slice(1);
+  expect(within(web).getByRole('link', { name: 'web' }).getAttribute('href')).toBe(`/organizations/a/endpoints/ep_1/containers/${id}`);
+  expect(web.textContent).toContain('2h 30m');
+  expect(web.textContent).toContain('172.17.0.5');
+  expect(within(web).getByText('unhealthy')).toBeTruthy();
+  expect(old.querySelectorAll('td')[2].textContent?.replace('Uptime', '').trim()).toBe('—');
+  expect(old.querySelectorAll('td')[3].textContent?.replace('IP', '').trim()).toBe('—');
+});

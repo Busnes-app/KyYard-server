@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react';
 import type { Container, NetworkAttachment } from '../tenant';
 
-export const attachments = (c: Pick<Container, 'networks'>): NetworkAttachment[] => c.networks.map((n) => typeof n === 'string' ? { name: n } : n);
+// networks is absent from reports of older agents.
+export const attachments = (c: Pick<Container, 'networks'>): NetworkAttachment[] => (c.networks ?? []).map((n) => typeof n === 'string' ? { name: n } : n);
 export const primaryIP = (c: Pick<Container, 'networks'>): string => attachments(c).find((n) => n.ip)?.ip ?? '';
 
 // A zero time (year 1) is the agent saying "unknown"; it is never an uptime.
@@ -23,3 +25,10 @@ export const stateBadge = (state: string): string => `badge ${state === 'running
 
 export const bytes = (n: number): string => n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GiB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(0)} MiB` : `${n} B`;
 export const ago = (iso: string, now = Date.now()): string => { const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000)); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
+
+// Ticks once a second while mounted so uptime is live; the value is the clock, not the row.
+export function useNow(): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(t); }, []);
+  return now;
+}

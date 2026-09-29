@@ -56,7 +56,7 @@ it('reports status through onStatus instead of inline when given', async () => {
   const onStatus = vi.fn();
   render(<ContainerControls {...props} canExec={false} onStatus={onStatus} />);
   fireEvent.click(screen.getByRole('button', { name: 'Stop web' }));
-  await waitFor(() => expect(onStatus).toHaveBeenCalledWith('container.stop: succeeded'));
+  await waitFor(() => expect(onStatus).toHaveBeenCalledWith('web · container.stop: succeeded'));
   expect(screen.queryByRole('status')).toBeNull();
 });
 

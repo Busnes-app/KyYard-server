@@ -4,13 +4,15 @@ import { Link } from './Link';
 import { containerPath } from '../router';
 import { secureFetch } from '../api';
 import type { Container } from '../tenant';
+import { displayName } from './Endpoints';
 
 interface Command { id: string; action: string; outcome: string; detail?: string }
 export function ContainerControls({ base, container, active, scope, onRefresh, canExec, org, endpoint, onStatus }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void; canExec: boolean; org: string; endpoint: string; onStatus?: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [inline, setInline] = useState('');
   const [command, setCommand] = useState<Command | null>(null);
-  const setMessage = (text: string) => { if (onStatus) onStatus(text); else setInline(text); };
+  // The shared status line serves a whole table, so it names the container.
+  const setMessage = (text: string) => { if (onStatus) onStatus(text ? `${displayName(container.name)} · ${text}` : ''); else setInline(text); };
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {

@@ -5,7 +5,9 @@ import { displayName } from '../components/Endpoints';
 import { ContainerControls } from '../components/ContainerControls';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
-import { endpointPath, orgPath } from '../router';
+import { IPCell, StateCell } from '../components/ContainerCells';
+import { uptime, useNow } from '../components/containerFacts';
+import { containerPath, endpointPath, orgPath } from '../router';
 import { canExec, useTenantResource, type MemberOrganization, type Endpoint, type Inventory } from '../tenant';
 
 export function Dashboard({ mode = 'containers' }: { mode?: 'containers' | 'endpoints' }) {
@@ -52,6 +54,7 @@ function HostContainers({ org, endpoint, hostName, active, exec }: { org: string
   const inventory = useTenantResource<Inventory>(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}/inventory`);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
+  const now = useNow();
   const inv = inventory.data;
   const rows = inv?.snapshot.containers.filter((c) => `${c.name} ${c.image}`.toLowerCase().includes(search.toLowerCase())) ?? [];
   const pagination = usePagination(rows, search);
@@ -63,7 +66,7 @@ function HostContainers({ org, endpoint, hostName, active, exec }: { org: string
       <div className="ky-toolbar"><input aria-label="Find containers on this host" type="search" placeholder="Find by container name or image…" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{rows.length} containers</span></div>
       {pagination.controls}
       {status && <p role="status">{status}</p>}
-      {rows.length ? <div style={{ overflowX: 'auto' }}><table className="ky-table ky-responsive-table"><thead><tr><th>Container</th><th>State</th><th>Ports</th><th>Actions</th></tr></thead><tbody>{pagination.rows.map((c) => <tr key={c.id}><td data-label="Container"><div className="ky-resource-name"><strong>{c.name}</strong><span>{c.image}</span></div></td><td data-label="State"><span className={`badge ${c.state === 'running' ? 'badge-success' : c.state === 'exited' || c.state === 'dead' ? 'badge-danger' : 'badge-secondary'}`}>{c.state}</span></td><td data-label="Ports"><ContainerPorts ports={c.ports} /></td><td data-label="Actions"><ContainerControls key={c.id} base={`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`} container={c} active={active} scope={`Host ${displayName(hostName)} · Endpoint ${endpoint}`} onRefresh={inventory.reload} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} /></td></tr>)}</tbody></table></div> : <EmptyNotice>{search ? 'No matching containers on this host.' : inv.snapshot.engine && !inv.snapshot.engine.version ? 'Docker is unavailable. Check the host’s Docker service and socket access.' : 'No containers on this host.'}</EmptyNotice>}
+      {rows.length ? <div style={{ overflowX: 'auto' }}><table className="ky-table ky-responsive-table"><thead><tr><th>Container</th><th>Status</th><th>Uptime</th><th>IP</th><th>Ports</th><th>Actions</th></tr></thead><tbody>{pagination.rows.map((c) => <tr key={c.id}><td data-label="Container"><div className="ky-resource-name"><strong><Link to={containerPath(org, endpoint, c.id)}>{c.name}</Link></strong><span>{c.image}</span></div></td><td data-label="Status"><StateCell c={c} /></td><td data-label="Uptime">{uptime(c.started_at, now) || '—'}</td><td data-label="IP"><IPCell c={c} /></td><td data-label="Ports"><ContainerPorts ports={c.ports} /></td><td data-label="Actions"><ContainerControls key={c.id} base={`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`} container={c} active={active} scope={`Host ${displayName(hostName)} · Endpoint ${endpoint}`} onRefresh={inventory.reload} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} /></td></tr>)}</tbody></table></div> : <EmptyNotice>{search ? 'No matching containers on this host.' : inv.snapshot.engine && !inv.snapshot.engine.version ? 'Docker is unavailable. Check the host’s Docker service and socket access.' : 'No containers on this host.'}</EmptyNotice>}
     </>}
   </>;
 }

@@ -5,7 +5,7 @@ import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { ContainerControls, ContainerLogs } from '../components/ContainerControls';
 import { displayName } from '../components/Endpoints';
 import { ContainerPorts } from '../components/ContainerPorts';
-import { ago, attachments, bytes, healthBadge, stateBadge, uptime } from '../components/containerFacts';
+import { ago, attachments, bytes, healthBadge, stateBadge, uptime, useNow } from '../components/containerFacts';
 import { parseInspection, type Inspection } from '../components/ApplicationInspection';
 import { containerPath, endpointPath, navigate, useSearchParam } from '../router';
 import { canExec, useTenantResource, type Container, type Endpoint, type Inventory, type MemberOrganization } from '../tenant';
@@ -15,13 +15,6 @@ const TABS = ['overview', 'configuration', 'logs', 'terminal', 'activity'] as co
 type Tab = typeof TABS[number];
 interface Command { id: string; action: string; outcome: string; detail?: string; created_at: string }
 interface Rollup { hour: string; samples: number; cpu_avg: number; cpu_max: number; memory_avg: number; memory_max: number; rx_bytes: number; tx_bytes: number; pids_max: number; restart_count: number }
-
-// Ticks once a second while mounted so uptime is live; the value is the clock, not the row.
-function useNow() {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => { const t = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(t); }, []);
-  return now;
-}
 
 // Folds every hourly row: averages weighted by samples, peaks as maxima, traffic summed.
 function aggregate(rows: Rollup[]): Rollup | null {
