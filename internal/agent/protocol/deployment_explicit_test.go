@@ -94,7 +94,11 @@ func TestExplicitDeploymentRequest(t *testing.T) {
 		"relative acknowledged bind":  {func(r *DeploymentRequest) { r.Services[0].Explicit.AcknowledgedBinds = []string{"srv/data"} }, false},
 		"unclean acknowledged bind":   {func(r *DeploymentRequest) { r.Services[0].Explicit.AcknowledgedBinds = []string{"/srv/../data"} }, false},
 		"too many acknowledged binds": {func(r *DeploymentRequest) { r.Services[0].Explicit.AcknowledgedBinds = manyBinds(MaxMounts + 1) }, false},
-		"negative retries":            {func(r *DeploymentRequest) { r.Services[0].Explicit.RestartRetries = -1 }, false},
+		"retries with always":         {func(r *DeploymentRequest) { r.Services[0].Restart, r.Services[0].Explicit.RestartRetries = "always", 2 }, false},
+		"retries with on-failure": {func(r *DeploymentRequest) {
+			r.Services[0].Restart, r.Services[0].Explicit.RestartRetries = "on-failure", 2
+		}, true},
+		"negative retries": {func(r *DeploymentRequest) { r.Services[0].Explicit.RestartRetries = -1 }, false},
 		"bad device permissions": {func(r *DeploymentRequest) {
 			r.Services[0].Explicit.Devices = []Device{{Host: "/d", Container: "/d", Permissions: "x"}}
 		}, false},

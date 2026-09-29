@@ -251,7 +251,8 @@ type ExplicitService struct {
 	AcknowledgedBinds []string                `json:"acknowledged_binds"` // host paths the operator confirmed
 }
 
-// valid bounds an explicit service with the same rules as ContainerConfiguration.Validate.
+// valid bounds an explicit service. Paired with ContainerConfiguration.Validate in
+// configuration.go: the two check the same fields, so change them together.
 func (e ExplicitService) valid() bool {
 	if !rawArgv(e.Command) || !rawArgv(e.Entrypoint) || !text(e.User, 256) || !text(e.WorkingDir, MaxMountPathBytes) || !text(e.Hostname, 256) || !text(e.NetworkMode, 256) || !text(e.StopSignal, 32) ||
 		(e.StopTimeout != nil && (*e.StopTimeout < 0 || *e.StopTimeout > 3600)) || e.RestartRetries < 0 || e.RestartRetries > MaxRestartCount ||
@@ -454,7 +455,7 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 	names, containers, replaces, bindings, pulled, mounted := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}, map[string]bool{}, map[string]bool{}
 	for _, s := range r.Services {
 		image := (s.Pull == nil && fullImageID(s.ImageID)) || (s.Pull != nil && s.ImageID == "" && s.Pull.valid())
-		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || (s.Replaces.Validate() != nil && !(r.Explicit && s.Replaces == InspectionTarget{})) || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 || len(s.Volumes) > 0 || s.ClusterIP != "" || (s.Explicit != nil) != r.Explicit || (s.Explicit != nil && !s.Explicit.valid()) {
+		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || (s.Replaces.Validate() != nil && !(r.Explicit && s.Replaces == InspectionTarget{})) || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 || len(s.Volumes) > 0 || s.ClusterIP != "" || (s.Explicit != nil) != r.Explicit || (s.Explicit != nil && (!s.Explicit.valid() || (s.Explicit.RestartRetries > 0 && s.Restart != "on-failure"))) {
 			return errors.New("invalid deployment service")
 		}
 		names[s.Name], containers[s.ContainerName], replaces[s.Replaces.ContainerID] = true, true, true
