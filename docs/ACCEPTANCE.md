@@ -18,8 +18,6 @@ Found while writing this runbook against the current UI. Each one the operator r
 in the results table.
 
 - Registry access (needed for update checks) is set on the Members page, not near Updates.
-- Live container configuration is shown only through Deployment preflight's "Inspect live
-  container", so only for adopted, mapped containers.
 - Platform audit (sign-in, password change, backup, `organization.create`, `user.create`) has
   no screen; only tenant audit does.
 - The audit Actor column shows user IDs (`usr_…`), not names. Keep the list of which ID is
@@ -29,8 +27,6 @@ in the results table.
 - A source build (`docker-compose.build.yml`) shows an enrollment token and a "Source
   installation" note instead of the one-line command: the image has no published digest to
   pin. Set `KY_AGENT_IMAGE` (README) or compose the `docker run` by hand from the token.
-- Per-row container actions sit inside a collapsed "Actions" disclosure; Logs, Restart and
-  Terminal are inside it.
 - Approve, Restart, Revoke, Save revision, Pin key and "Allow anonymous pulls" use the
   browser's native confirm dialog; the fingerprint to compare is in that dialog's text.
 - After "Adopt reviewed containers" and after "Save revision N" the configuration view
@@ -171,11 +167,14 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 ### 3. Containers, logs, terminal
 
 - Endpoint page, Containers tab, or Containers in the header. Search box: "Search containers
-  or images". The Usage column shows CPU, memory and restarts. Configuration: see Known gaps;
-  the operator may find Deployment preflight's Inspect live container after step 5.
-- Actions, Logs: Search log text, Load logs, Follow / Stop following, Download.
-- Actions, Restart: confirm; the row reports `container.restart: succeeded`.
-- Actions, Terminal (offered only to organization administrators, so admin sees it): Container
+  or images". The Usage column shows CPU, memory and restarts; Status, Uptime and IP columns
+  are beside it.
+- Open a container from the list; confirm uptime ticks, the IP matches `docker inspect`, and
+  Logs and Terminal tabs work.
+- Row icon Logs (a link to the Logs tab): Search log text, Load logs, Follow / Stop following,
+  Download.
+- Row icon Restart: confirm; the status line above the table reports `container.restart: succeeded`.
+- Terminal (offered only to organization administrators, so admin sees it): Container
   user, Shell executable, Confirm container name (type it), then "Open terminal as …". Expect
   "Connected. Terminal contents are not recorded." Type `exit`.
 - Pass: logs load, follow and download; the restart succeeds; the terminal opens and closes
@@ -185,7 +184,7 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 ### 4. Read-only and cross-tenant
 
 - As reader: Restart answers "You do not have permission for this action."; Logs answers "You
-  do not have permission to read logs."; Actions has no Terminal button, because Terminal is
+  do not have permission to read logs."; the row has no Terminal icon, because Terminal is
   offered only to organization administrators. Pass for Terminal: no Terminal button on any
   container. No exec request is made, so step 8 has no `container.exec` row for reader; that
   absence is expected, not a gap.
