@@ -174,7 +174,7 @@ func TestRestorePreservesKeysAndRevokesOnlySnapshotGrants(t *testing.T) {
 	if err := st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{TokenHash: "challenge", UserID: user.ID, ExpiresAt: now.Add(time.Hour)}, user.PasswordHash); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Devices().CreatePairing(ctx, &store.DevicePairing{Secret: "pair", Code: "123456", UserID: user.ID, Status: "pending", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+	if err := st.Devices().CreatePairing(ctx, &store.DevicePairing{Secret: "pair", UserID: user.ID, Status: "pending", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := backup.Collect(ctx, cfg, "test")

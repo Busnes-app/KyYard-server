@@ -505,6 +505,14 @@ func TestRetiredIdentityRoutes(t *testing.T) {
 			t.Fatalf("%s: %d", path, w.Code)
 		}
 	}
+	// The anonymous verify that once took a six-digit code stays gone for POST too.
+	r := httptest.NewRequest("POST", "/api/devices/pair/verify", strings.NewReader(`{"secret":"123456","device_name":"x","platform":"pwa"}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != 404 || len(w.Result().Cookies()) != 0 {
+		t.Fatalf("POST pair/verify: %d, cookies %v", w.Code, w.Result().Cookies())
+	}
 }
 
 func TestFullLimiterStillThrottlesLogin(t *testing.T) {
