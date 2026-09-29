@@ -3,6 +3,7 @@ import { ContainerLogs } from './ContainerControls';
 import { displayName, healthBadge } from './Endpoints';
 import { ResourceTable } from './ResourceTable';
 import { ManifestRegeneration } from './KubernetesManifest';
+import { uptime, useNow } from './containerFacts';
 import type { ApplicationInstance } from './ApplicationAdoption';
 import type { Endpoint, KubernetesInventory, Pod, PodContainer } from '../tenant';
 
@@ -14,6 +15,7 @@ const stateBadge: Record<string, string> = { running: 'badge-success', terminate
 export function KubernetesCluster({ org, base, endpoint, inventory, instances, admin, onChanged }: { org: string; base: string; endpoint: Endpoint; inventory: KubernetesInventory; instances: ApplicationInstance[] | null; admin: boolean; onChanged: () => void }) {
   const [namespace, setNamespace] = useState('');
   const [logs, setLogs] = useState<{ pod: Pod; container: PodContainer } | null>(null);
+  const now = useNow();
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (logs) dialog.current?.showModal(); }, [logs]);
   const health = endpoint.cluster_health ?? 'unknown';
@@ -42,9 +44,9 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
     <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images']} render={(w) => [
       qualified(w), w.kind, `${w.ready}/${w.desired}${w.paused ? ' (paused)' : ''}`, w.images.map(displayName).join(', '),
     ]} />
-    <ResourceTable key={`pods-${selected}`} title="Pods" rows={scoped(inventory.pods)} rowKey={(p) => `${p.namespace}/${p.name}`} empty="No pods." head={['Pod', 'Phase', 'Node', 'Restarts', 'Containers']} render={(p) => [
+    <ResourceTable key={`pods-${selected}`} title="Pods" rows={scoped(inventory.pods)} rowKey={(p) => `${p.namespace}/${p.name}`} empty="No pods." head={['Pod', 'Phase', 'Uptime', 'Node', 'Restarts', 'Containers']} render={(p) => [
       <div className="ky-resource-name"><strong>{qualified(p)}</strong>{p.owner_kind && <small>{displayName(p.owner_kind)} {displayName(p.owner_name)}</small>}</div>,
-      displayName(p.phase), displayName(p.node) || '—', p.containers.reduce((sum, c) => sum + c.restart_count, 0),
+      displayName(p.phase), uptime(p.started_at, now) || '—', displayName(p.node) || '—', p.containers.reduce((sum, c) => sum + c.restart_count, 0),
       <ul className="ky-list">{p.containers.map((c) => <li key={c.name}>
         {displayName(c.name)} <span className={`badge ${stateBadge[c.state] ?? 'badge-secondary'}`} title={c.image}>{displayName(c.state)}</span>{c.reason && ` ${displayName(c.reason)}`}{' '}
         <button className="btn-secondary" disabled={!active} aria-label={`Logs for ${p.namespace}/${p.name}/${c.name}`} onClick={() => setLogs({ pod: p, container: c })}>Logs</button>

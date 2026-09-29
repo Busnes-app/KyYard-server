@@ -32,3 +32,17 @@ it('drops a namespace filter whose namespace left the cluster', () => {
   expect(screen.getByRole('combobox', { name: 'Namespace' })).toHaveProperty('value', '');
   expect(screen.getByText('billing/pay-1')).toBeTruthy();
 });
+
+it('shows pod uptime from started_at and a dash for the zero time', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-29T10:00:00Z'));
+  const inventory: KubernetesInventory = { ...empty, namespaces: ['shop'], pods: [
+    { namespace: 'shop', name: 'web-1', phase: 'Running', node: 'n1', owner_kind: 'ReplicaSet', owner_name: 'web', started_at: '2026-09-29T09:00:00Z', containers: [] },
+    { namespace: 'shop', name: 'web-2', phase: 'Pending', node: '', owner_kind: '', owner_name: '', started_at: '0001-01-01T00:00:00Z', containers: [] },
+  ] };
+  render(<KubernetesCluster org="a" base="/api/x" endpoint={endpoint} inventory={inventory} instances={[]} admin={false} onChanged={() => {}} />);
+  const rows = screen.getAllByRole('row').slice(1);
+  expect(rows[0].textContent).toContain('1h 0m');
+  expect(rows[1].querySelectorAll('td')[2].textContent).toBe('—');
+  vi.useRealTimers();
+});
