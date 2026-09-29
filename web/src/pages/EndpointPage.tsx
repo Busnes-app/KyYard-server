@@ -12,9 +12,8 @@ import { envPath } from '../router';
 import { canEnroll, canExec, useTenantResource, type Endpoint, type Inventory, type MemberOrganization, type Sample } from '../tenant';
 import { displayName } from '../components/Endpoints';
 import { KubernetesCluster } from '../components/KubernetesCluster';
+import { ago, bytes } from '../components/containerFacts';
 
-const bytes = (n: number) => n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GiB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(0)} MiB` : `${n} B`;
-const ago = (iso: string) => { const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000)); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
 
 // Freshness is shown from received_at (server clock); observed_at is the agent's clock and is
 // flagged when it disagrees by more than five minutes.
