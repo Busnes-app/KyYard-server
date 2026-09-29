@@ -119,6 +119,20 @@ it('asks to acknowledge a read-only bind made writable and sends its path', asyn
   expect(JSON.parse(String((fetcher.mock.calls[0] as [unknown, RequestInit])[1].body)).acknowledge_binds).toEqual(['/srv/data']);
 });
 
+it('asks to acknowledge a retargeted bind and sends its path', async () => {
+  const fetcher = accept();
+  edit({ mounts: [{ kind: 'bind', source: '/srv/data', target: '/data', read_only: false }] });
+  expect(screen.queryByLabelText(/This container will see host path/)).toBeNull();
+  fireEvent.change(screen.getByLabelText('Mount 1 target'), { target: { value: '/other' } });
+  confirmName('web');
+  expect(save().disabled).toBe(true);
+  fireEvent.click(screen.getByLabelText('This container will see host path /srv/data'));
+  expect(save().disabled).toBe(false);
+  confirmName('web');
+  await act(async () => { fireEvent.click(save()); });
+  expect(JSON.parse(String((fetcher.mock.calls[0] as [unknown, RequestInit])[1].body)).acknowledge_binds).toEqual(['/srv/data']);
+});
+
 it('disables Save and names the settings it cannot carry', () => {
   edit({ unsupported: ['volumes_from', 'env_truncated'] });
   expect(screen.getByText(/mounts volumes from another container/)).toBeTruthy();

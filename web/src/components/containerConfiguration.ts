@@ -111,9 +111,9 @@ export function toSpec(c: ContainerConfiguration): Spec {
 }
 
 // needsAck mirrors the server's bind rule: an old bind covers a new one only with the same source
-// and no less restriction, so a read-only bind made writable needs acknowledgement too.
+// and target and no less restriction, so a retargeted or writable-made bind needs acknowledgement.
 export function needsAck(old: ConfigMount[], m: ConfigMount): boolean {
-  return m.kind === 'bind' && !old.some((o) => o.kind === 'bind' && o.source === m.source && (!o.read_only || m.read_only));
+  return m.kind === 'bind' && !old.some((o) => o.kind === 'bind' && o.source === m.source && o.target === m.target && (!o.read_only || m.read_only));
 }
 
 // diff names the top-level fields that differ, never their values (env holds secrets).

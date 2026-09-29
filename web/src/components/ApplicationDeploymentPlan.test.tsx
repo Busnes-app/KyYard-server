@@ -187,16 +187,14 @@ it('pauses status updates after three consecutive poll failures and stops pollin
   await vi.waitFor(() => screen.getByRole('button', { name: 'Apply deployment' }));
   fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
-  // The interval is registered mid-flight of the first advance, so its first tick lands in the
-  // second advance; four advances cover three actual failed polls.
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // registers the interval
-  expect(document.body.textContent).not.toContain('Status updates paused');
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 1
-  expect(document.body.textContent).not.toContain('Status updates paused');
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 2
-  expect(document.body.textContent).not.toContain('Status updates paused');
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // failure 3: pause
-  expect(document.body.textContent).toContain('Status updates paused; refresh to continue.');
+  const paused = () => document.body.textContent?.includes('Status updates paused; refresh to continue.');
+  // Step whole intervals until the pause shows; it must take exactly three failed polls.
+  for (let i = 0; i < 6 && !paused(); i++) {
+    expect(reads - 1).toBeLessThan(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  }
+  expect(paused()).toBe(true);
+  expect(reads - 1).toBe(3);
   const before = fetcher.mock.calls.length;
   await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
   expect(fetcher.mock.calls.length).toBe(before); // no further polling once paused
