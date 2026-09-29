@@ -22,6 +22,9 @@ it('routes a container page and refuses IDs that are not 64 hex', () => {
   }
   expect(containerPath('a', 'ep 1', id)).toBe(`/organizations/a/endpoints/ep%201/containers/${id}`);
   expect(containerPath('a', 'ep_1', id, 'logs')).toBe(`/organizations/a/endpoints/ep_1/containers/${id}?tab=logs`);
+  const escaped = containerPath('a', 'ep_1', '../x/y', 'a&b');
+  expect(escaped).toBe('/organizations/a/endpoints/ep_1/containers/..%2Fx%2Fy?tab=a%26b');
+  expect(matchRoute(escaped.split('?')[0]).name).toBe('notfound');
 });
 
 it('reads a search parameter and follows in-app navigation', async () => {

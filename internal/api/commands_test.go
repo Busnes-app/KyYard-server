@@ -245,7 +245,7 @@ func TestRemovingAContainerNeedsConfirmationAndItsOwnPermission(t *testing.T) {
 	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
 	snap := protocol.Snapshot{
 		Generation: uint64(time.Now().Unix()),
-		Containers: []protocol.Container{{ID: "c1", Name: "web", Image: "nginx:1", State: "exited", Status: "Exited", ComposeProject: "shop", Ports: []protocol.Port{{Container: 80, Protocol: "tcp"}}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}},
+		Containers: []protocol.Container{{ID: "c1", Name: "web", Image: "nginx:1", State: "exited", Status: "Exited", ComposeProject: "shop", Ports: []protocol.Port{{Container: 80, Protocol: "tcp"}}, Labels: map[string]string{}, Networks: []string{}}},
 		Images:     []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
 	}
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, snap)

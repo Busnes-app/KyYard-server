@@ -64,7 +64,7 @@ func TestRemovalOverTheAgentSocket(t *testing.T) {
 		gen++
 		writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{
 			Generation: gen, Engine: protocol.Engine{Version: "1"},
-			Containers: append([]protocol.Container{{ID: containerID, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: created, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}}, extra...),
+			Containers: append([]protocol.Container{{ID: containerID, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: created, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}}, extra...),
 			Images:     []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
 		})
 		sync(sock)
@@ -125,7 +125,7 @@ func TestRemovalOverTheAgentSocket(t *testing.T) {
 	request(developer, "POST", removal, body, 403)
 	request(admin, "POST", removal, `{"instance_id":"`+instance.ID+`","confirm":"other"}`, 400)
 	// A container of the project KyYard never adopted would be orphaned by the release.
-	inventory(sock, protocol.Container{ID: strings.Repeat("f", 64), Name: "shop-web-old", ImageID: image, State: "exited", ComposeProject: "shop", CreatedAt: created, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}})
+	inventory(sock, protocol.Container{ID: strings.Repeat("f", 64), Name: "shop-web-old", ImageID: image, State: "exited", ComposeProject: "shop", CreatedAt: created, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}})
 	var blocked struct {
 		Code     string   `json:"code"`
 		Blockers []string `json:"blockers"`

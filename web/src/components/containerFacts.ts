@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { Container, NetworkAttachment } from '../tenant';
 
-// networks is absent from reports of older agents.
-export const attachments = (c: Pick<Container, 'networks'>): NetworkAttachment[] => (c.networks ?? []).map((n) => typeof n === 'string' ? { name: n } : n);
-export const primaryIP = (c: Pick<Container, 'networks'>): string => attachments(c).find((n) => n.ip)?.ip ?? '';
+type Nets = Pick<Container, 'networks' | 'network_attachments'>;
+// Older agents send names only, and the oldest reports may lack networks entirely.
+export const attachments = (c: Nets): NetworkAttachment[] => c.network_attachments ?? (c.networks ?? []).map((name) => ({ name }));
+export const primaryIP = (c: Nets): string => attachments(c).find((n) => n.ip)?.ip ?? '';
 
 // A zero time (year 1) is the agent saying "unknown"; it is never an uptime.
 export const uptime = (startedAt: string | undefined, now: number): string => {
@@ -19,7 +20,7 @@ export const uptime = (startedAt: string | undefined, now: number): string => {
 };
 
 const healthClasses: Record<string, string> = { healthy: 'badge-success', unhealthy: 'badge-danger', starting: 'badge-accent' };
-export const healthBadge = (health: string | undefined): { text: string; className: string } | null => health && healthClasses[health] ? { text: health, className: healthClasses[health] } : null;
+export const healthBadge = (health: string | undefined): { text: string; className: string } | null => health && Object.hasOwn(healthClasses, health) ? { text: health, className: healthClasses[health] } : null;
 
 export const stateBadge = (state: string): string => `badge ${state === 'running' ? 'badge-success' : state === 'exited' || state === 'dead' ? 'badge-danger' : 'badge-secondary'}`;
 

@@ -16,18 +16,28 @@ type Tab = typeof TABS[number];
 interface Command { id: string; action: string; outcome: string; detail?: string; created_at: string }
 interface Rollup { hour: string; samples: number; cpu_avg: number; cpu_max: number; memory_avg: number; memory_max: number; rx_bytes: number; tx_bytes: number; pids_max: number; restart_count: number }
 
-// Folds every hourly row: averages weighted by samples, peaks as maxima, traffic summed.
-function aggregate(rows: Rollup[]): Rollup | null {
+interface Usage { samples: number; cpu_avg: number | null; cpu_max: number | null; memory_avg: number; memory_max: number; rx_bytes: number; tx_bytes: number; pids_max: number; restart_count: number | null }
+
+// Folds the hourly rows. A negative CPU or restart value means "not measured" and is skipped.
+// rx/tx are each hour's highest cumulative counter, so traffic is the sum of hour-to-hour rises
+// (a counter reset adds nothing, a single hour adds nothing).
+function aggregate(rows: Rollup[]): Usage | null {
   const samples = rows.reduce((n, r) => n + r.samples, 0);
   if (samples <= 0) return null;
-  const weighted = (f: (r: Rollup) => number) => rows.reduce((n, r) => n + f(r) * r.samples, 0) / samples;
+  const sorted = [...rows].sort((a, b) => Date.parse(a.hour) - Date.parse(b.hour));
   const max = (f: (r: Rollup) => number) => Math.max(...rows.map(f));
+  const rise = (f: (r: Rollup) => number) => sorted.slice(1).reduce((n, r, i) => n + Math.max(0, f(r) - f(sorted[i])), 0);
+  const measured = rows.filter((r) => r.cpu_avg >= 0);
+  const cpuSamples = measured.reduce((n, r) => n + r.samples, 0);
+  const peaks = rows.map((r) => r.cpu_max).filter((v) => v >= 0);
+  const restarts = rows.map((r) => r.restart_count).filter((v) => v >= 0);
   return {
-    hour: '', samples,
-    cpu_avg: weighted((r) => r.cpu_avg), cpu_max: max((r) => r.cpu_max),
-    memory_avg: weighted((r) => r.memory_avg), memory_max: max((r) => r.memory_max),
-    rx_bytes: rows.reduce((n, r) => n + r.rx_bytes, 0), tx_bytes: rows.reduce((n, r) => n + r.tx_bytes, 0),
-    pids_max: max((r) => r.pids_max), restart_count: max((r) => r.restart_count),
+    samples,
+    cpu_avg: cpuSamples > 0 ? measured.reduce((n, r) => n + r.cpu_avg * r.samples, 0) / cpuSamples : null,
+    cpu_max: peaks.length ? Math.max(...peaks) : null,
+    memory_avg: rows.reduce((n, r) => n + r.memory_avg * r.samples, 0) / samples, memory_max: max((r) => r.memory_max),
+    rx_bytes: rise((r) => r.rx_bytes), tx_bytes: rise((r) => r.tx_bytes),
+    pids_max: max((r) => r.pids_max), restart_count: restarts.length ? Math.max(...restarts) : null,
   };
 }
 
@@ -104,11 +114,11 @@ function Overview({ base, container: c, received }: { base: string; container: C
     <h2 style={{ fontSize: 16, marginTop: 16 }}>Last 24 hours</h2>
     <StateNotice state={rollups.state} onRetry={rollups.reload} />
     {rollups.state === 'ready' && (usage ? <dl className="ky-facts">
-      <dt>CPU</dt><dd>avg {usage.cpu_avg.toFixed(1)}% · peak {usage.cpu_max.toFixed(1)}%</dd>
+      <dt>CPU</dt><dd>{usage.cpu_avg === null ? '—' : `avg ${usage.cpu_avg.toFixed(1)}% · peak ${usage.cpu_max === null ? '—' : `${usage.cpu_max.toFixed(1)}%`}`}</dd>
       <dt>Memory</dt><dd>avg {bytes(usage.memory_avg)} · peak {bytes(usage.memory_max)}</dd>
       <dt>Network</dt><dd>rx {bytes(usage.rx_bytes)} · tx {bytes(usage.tx_bytes)}</dd>
       <dt>Processes</dt><dd>peak {usage.pids_max}</dd>
-      <dt>Restarts</dt><dd>{usage.restart_count}</dd>
+      <dt>Restart count</dt><dd>{usage.restart_count ?? '—'}</dd>
     </dl> : <EmptyNotice>No usage samples yet.</EmptyNotice>)}
   </section>;
 }

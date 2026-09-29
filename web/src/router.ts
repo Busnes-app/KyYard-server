@@ -70,4 +70,4 @@ export function useSearchParam(name: string): string {
 export const orgPath = (org: string, suffix = '') => `/organizations/${encodeURIComponent(org)}${suffix}`;
 export const envPath = (org: string, env: string) => orgPath(org, `/environments/${encodeURIComponent(env)}`);
 export const endpointPath = (org: string, endpoint: string) => orgPath(org, `/endpoints/${encodeURIComponent(endpoint)}`);
-export const containerPath = (org: string, endpoint: string, container: string, tab?: string) => endpointPath(org, endpoint) + `/containers/${container}` + (tab ? `?tab=${tab}` : '');
+export const containerPath = (org: string, endpoint: string, container: string, tab?: string) => endpointPath(org, endpoint) + `/containers/${encodeURIComponent(container)}` + (tab ? `?tab=${encodeURIComponent(tab)}` : '');

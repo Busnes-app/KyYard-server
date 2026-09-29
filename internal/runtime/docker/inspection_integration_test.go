@@ -137,10 +137,10 @@ func TestInspectionRealDocker(t *testing.T) {
 		t.Fatal("fixture missing from the snapshot")
 	}
 	got := snap.Containers[i]
-	if got.StartedAt.IsZero() || time.Since(got.StartedAt) > time.Hour || got.Health != "none" || got.RestartPolicy != "unless-stopped" || len(got.Networks) == 0 {
+	if got.StartedAt.IsZero() || time.Since(got.StartedAt) > time.Hour || got.Health != "none" || got.RestartPolicy != "unless-stopped" || len(got.Networks) == 0 || len(got.NetworkAttachments) != len(got.Networks) {
 		t.Fatalf("snapshot facts: %+v", got)
 	}
-	if _, err := netip.ParseAddr(got.Networks[0].IP); err != nil {
-		t.Fatalf("network IP %q: %v", got.Networks[0].IP, err)
+	if addr, err := netip.ParseAddr(got.NetworkAttachments[0].IP); err != nil || !addr.Is4() || got.NetworkAttachments[0].Name != got.Networks[0] {
+		t.Fatalf("network attachment %+v: %v", got.NetworkAttachments[0], err)
 	}
 }

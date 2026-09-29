@@ -1,10 +1,11 @@
 import { expect, it } from 'vitest';
 import { attachments, healthBadge, primaryIP, uptime } from './containerFacts';
 
-it('normalises old string networks and picks the first IP', () => {
+it('falls back to network names and picks the first IP', () => {
   expect(attachments({ networks: ['bridge'] })).toEqual([{ name: 'bridge' }]);
+  expect(attachments({} as { networks: string[] })).toEqual([]);
   expect(primaryIP({ networks: ['bridge'] })).toBe('');
-  expect(primaryIP({ networks: [{ name: 'a' }, { name: 'b', ip: '172.18.0.3' }, { name: 'c', ip: '10.0.0.9' }] })).toBe('172.18.0.3');
+  expect(primaryIP({ networks: ['a', 'b', 'c'], network_attachments: [{ name: 'a' }, { name: 'b', ip: '172.18.0.3' }, { name: 'c', ip: '10.0.0.9' }] })).toBe('172.18.0.3');
 });
 
 it('formats uptime from started_at and says nothing when unknown', () => {
@@ -26,4 +27,6 @@ it('maps health to a badge and hides unknown health', () => {
   expect(healthBadge('unhealthy')).toEqual({ text: 'unhealthy', className: 'badge-danger' });
   expect(healthBadge('starting')).toEqual({ text: 'starting', className: 'badge-accent' });
   expect(healthBadge('weird')).toBeNull();
+  expect(healthBadge('toString')).toBeNull();
+  expect(healthBadge('__proto__')).toBeNull();
 });

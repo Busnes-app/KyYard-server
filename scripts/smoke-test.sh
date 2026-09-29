@@ -250,8 +250,13 @@ if [ -x "$AGENT" ]; then
   INV="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints/$EP_ID/inventory")"
   contains "inventory is stored with its generation" "$INV" '"generation"'
   contains "inventory carries a snapshot" "$INV" '"containers"'
-  # The smoke host may run no container, so only the field's presence is asserted.
-  contains "inventory carries network attachments" "$INV" '"networks":['
+  # Holds with zero containers: the smoke host may run none.
+  check "inventory containers carry network names and attachments" \
+    "$(printf '%s' "$INV" | python3 -c '
+import json, sys
+cs = json.load(sys.stdin)["snapshot"]["containers"]
+ok = all(isinstance(c.get("networks"), list) and all(isinstance(n, dict) and "name" in n for n in c.get("network_attachments", [])) for c in cs)
+print("ok" if ok else "bad")')" "ok"
   check "inventory never carries container environment" \
     "$(if printf '%s' "$INV" | grep -qi '"env"'; then echo leaked; else echo clean; fi)" "clean"
   check "revoke closes the live agent" \

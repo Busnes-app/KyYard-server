@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EndpointPage } from './EndpointPage';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const endpoint = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime: 'docker', state: 'active', facts: { hostname: 'h1' }, fingerprint: 'ab'.repeat(32), capabilities: ['docker.containers'], alerts: [], created_at: '' };
 
@@ -285,7 +285,7 @@ it('lists uptime, IP and health and links each container to its page', async () 
   const now = '2026-09-29T09:59:00Z';
   const id = 'd'.repeat(64);
   const containers = [
-    { id, name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', started_at: '2026-09-29T07:30:00Z', health: 'unhealthy', ports: [], labels: {}, networks: [{ name: 'bridge', ip: '172.17.0.5' }] },
+    { id, name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', started_at: '2026-09-29T07:30:00Z', health: 'unhealthy', ports: [], labels: {}, networks: ['bridge'], network_attachments: [{ name: 'bridge', ip: '172.17.0.5' }] },
     { id: 'e'.repeat(64), name: 'old', image: 'redis:7', image_id: 'j', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: ['bridge'] },
   ];
   const fetcher = vi.fn(async (input: RequestInfo | URL) => { const url = String(input); if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role: 'operator' }]); if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, observed_at: now, engine: { runtime: 'docker', version: '29', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers, images: [], networks: [], volumes: [] } }); return url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications') ? json([]) : json(endpoint); });

@@ -174,28 +174,14 @@ type Port struct {
 	Protocol  string `json:"protocol"`
 }
 
-// NetworkAttachment is one network a container is joined to. An agent older than the IP
-// fields sent a bare name; UnmarshalJSON accepts both so a report never fails on shape.
+// NetworkAttachment is one network a container is joined to, with its addresses on it.
 type NetworkAttachment struct {
 	Name string `json:"name"`
-	IP   string `json:"ip,omitempty"`  // IPv4 as the runtime reports it, "" when none
+	IP   string `json:"ip,omitempty"`  // IPv4, "" when none
 	IP6  string `json:"ip6,omitempty"` // global IPv6, "" when none
 }
 
-func (n *NetworkAttachment) UnmarshalJSON(b []byte) error {
-	if len(b) > 0 && b[0] == '"' {
-		return json.Unmarshal(b, &n.Name)
-	}
-	type plain NetworkAttachment
-	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
-		return err
-	}
-	*n = NetworkAttachment(p)
-	return nil
-}
-
-// MaxNetworkAttachments bounds a container's reported networks.
+// MaxNetworkAttachments bounds a container's reported networks and attachments alike.
 const MaxNetworkAttachments = 32
 
 // HealthStates is the closed vocabulary of Container.Health and ContainerInspection.Health.
@@ -211,12 +197,14 @@ type Container struct {
 	CreatedAt time.Time `json:"created_at"`
 	// StartedAt is zero when the container is not running or the agent could not read it in
 	// budget; the UI derives uptime from it and never parses Status.
-	StartedAt     time.Time           `json:"started_at,omitzero"`
-	Health        string              `json:"health,omitempty"` // HealthStates, "" when not reported
-	RestartPolicy string              `json:"restart_policy,omitempty"`
-	Ports         []Port              `json:"ports"`
-	Labels        map[string]string   `json:"labels"`
-	Networks      []NetworkAttachment `json:"networks"`
+	StartedAt     time.Time         `json:"started_at,omitzero"`
+	Health        string            `json:"health,omitempty"` // HealthStates, "" when not reported
+	RestartPolicy string            `json:"restart_policy,omitempty"`
+	Ports         []Port            `json:"ports"`
+	Labels        map[string]string `json:"labels"`
+	Networks      []string          `json:"networks"`
+	// NetworkAttachments repeats Networks with addresses; nil from an agent older than it.
+	NetworkAttachments []NetworkAttachment `json:"network_attachments,omitempty"`
 	// Managed is the Compose project label when present; ownership arrives with M6.
 	ComposeProject string `json:"compose_project,omitempty"`
 	// Mounts is nil when the agent did not report them (older than mounts), empty when there
@@ -242,17 +230,26 @@ type Mount struct {
 	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
-// UnmarshalJSON caps mounts while decoding, like the snapshot's own lists.
+// UnmarshalJSON caps mounts and network attachments while decoding, like the snapshot's own
+// lists.
 func (c *Container) UnmarshalJSON(data []byte) error {
 	type plain Container
 	var aux struct {
 		plain
-		Mounts json.RawMessage `json:"mounts"`
+		Mounts             json.RawMessage `json:"mounts"`
+		NetworkAttachments json.RawMessage `json:"network_attachments"`
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	*c = Container(aux.plain)
+	if len(aux.NetworkAttachments) > 0 {
+		attachments, _, err := decodeBounded[NetworkAttachment](aux.NetworkAttachments, MaxNetworkAttachments)
+		if err != nil {
+			return err
+		}
+		c.NetworkAttachments = attachments
+	}
 	if len(aux.Mounts) == 0 {
 		return nil
 	}
@@ -335,14 +332,14 @@ func Clamp(s *Snapshot) {
 			c.Networks = c.Networks[:MaxNetworkAttachments]
 		}
 		for j := range c.Networks {
-			n := &c.Networks[j]
-			n.Name = CleanText(n.Name, MaxNameBytes)
-			if _, err := netip.ParseAddr(n.IP); err != nil {
-				n.IP = ""
-			}
-			if _, err := netip.ParseAddr(n.IP6); err != nil {
-				n.IP6 = ""
-			}
+			c.Networks[j] = CleanText(c.Networks[j], MaxNameBytes)
+		}
+		if len(c.NetworkAttachments) > MaxNetworkAttachments {
+			c.NetworkAttachments = c.NetworkAttachments[:MaxNetworkAttachments]
+		}
+		for j := range c.NetworkAttachments {
+			n := &c.NetworkAttachments[j]
+			n.Name, n.IP, n.IP6 = CleanText(n.Name, MaxNameBytes), cleanIP(n.IP, netip.Addr.Is4), cleanIP(n.IP6, netip.Addr.Is6)
 		}
 		if len(c.Mounts) > MaxMounts {
 			c.Mounts, c.MountsTruncated = c.Mounts[:MaxMounts], true
@@ -361,7 +358,7 @@ func Clamp(s *Snapshot) {
 			c.Ports = []Port{}
 		}
 		if c.Networks == nil {
-			c.Networks = []NetworkAttachment{}
+			c.Networks = []string{}
 		}
 	}
 	if len(s.Images) > MaxImages {
@@ -426,6 +423,15 @@ func cleanLabels(in map[string]string) map[string]string {
 		out[CleanText(k, MaxLabelBytes)] = CleanText(in[k], MaxLabelBytes)
 	}
 	return out
+}
+
+// cleanIP keeps s only when it is a zoneless address of the family it reports.
+func cleanIP(s string, family func(netip.Addr) bool) string {
+	addr, err := netip.ParseAddr(s)
+	if err != nil || addr.Zone() != "" || !family(addr) {
+		return ""
+	}
+	return s
 }
 
 func cleanList(in []string, max, each int) []string {

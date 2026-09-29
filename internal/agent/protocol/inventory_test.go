@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -110,55 +111,82 @@ func TestShrinkDropsMountsBeforeContainers(t *testing.T) {
 	}
 }
 
-func TestContainerNetworksDecodeBothShapes(t *testing.T) {
+// Network attachments are an additive field: an older report decodes unchanged, and a long
+// list is cut while decoding.
+func TestContainerNetworkAttachmentsAreAdditive(t *testing.T) {
 	old := []byte(`{"containers":[{"id":"c1","name":"web","networks":["shop_default","bridge"]}]}`)
 	var s Snapshot
 	if err := UnmarshalSnapshotBounded(old, &s); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Containers[0].Networks) != 2 || s.Containers[0].Networks[0] != (NetworkAttachment{Name: "shop_default"}) {
-		t.Fatalf("string networks: %+v", s.Containers[0].Networks)
+	c := s.Containers[0]
+	if !slices.Equal(c.Networks, []string{"shop_default", "bridge"}) || c.NetworkAttachments != nil {
+		t.Fatalf("old report: %+v", c)
 	}
-	if !s.Containers[0].StartedAt.IsZero() || s.Containers[0].Health != "" {
-		t.Fatalf("old agent must report no start or health: %+v", s.Containers[0])
+	if !c.StartedAt.IsZero() || c.Health != "" {
+		t.Fatalf("old agent must report no start or health: %+v", c)
 	}
-	current := []byte(`{"containers":[{"id":"c1","name":"web","started_at":"2026-09-29T10:00:00Z","health":"healthy","restart_policy":"unless-stopped","networks":[{"name":"shop_default","ip":"172.18.0.3","ip6":""}]}]}`)
+	current := []byte(`{"containers":[{"id":"c1","name":"web","started_at":"2026-09-29T10:00:00Z","health":"healthy","restart_policy":"unless-stopped","networks":["shop_default"],"network_attachments":[{"name":"shop_default","ip":"172.18.0.3","ip6":""}]}]}`)
 	s = Snapshot{}
 	if err := UnmarshalSnapshotBounded(current, &s); err != nil {
 		t.Fatal(err)
 	}
-	c := s.Containers[0]
-	if c.Networks[0] != (NetworkAttachment{Name: "shop_default", IP: "172.18.0.3"}) || c.Health != "healthy" || c.RestartPolicy != "unless-stopped" || c.StartedAt.Year() != 2026 {
-		t.Fatalf("attachment networks: %+v", c)
+	c = s.Containers[0]
+	if c.Networks[0] != "shop_default" || c.NetworkAttachments[0] != (NetworkAttachment{Name: "shop_default", IP: "172.18.0.3"}) || c.Health != "healthy" || c.RestartPolicy != "unless-stopped" || c.StartedAt.Year() != 2026 {
+		t.Fatalf("current report: %+v", c)
 	}
-	var n NetworkAttachment
-	if err := json.Unmarshal([]byte(`42`), &n); err == nil {
-		t.Fatal("a number is neither shape")
+	long := `{"containers":[{"id":"c1","networks":[],"network_attachments":[` + strings.TrimSuffix(strings.Repeat(`{"name":"n"},`, MaxNetworkAttachments+5), ",") + `]}]}`
+	s = Snapshot{}
+	if err := UnmarshalSnapshotBounded([]byte(long), &s); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Containers[0].NetworkAttachments) != MaxNetworkAttachments {
+		t.Fatalf("attachments not cut while decoding: %d", len(s.Containers[0].NetworkAttachments))
 	}
 }
 
 func TestClampBoundsNewContainerFields(t *testing.T) {
 	var nets []NetworkAttachment
+	var names []string
 	for i := 0; i < MaxNetworkAttachments+3; i++ {
 		nets = append(nets, NetworkAttachment{Name: "n", IP: "not an ip"})
+		names = append(names, "n")
 	}
-	s := Snapshot{Containers: []Container{{ID: "c1", Health: "bogus\x00", RestartPolicy: strings.Repeat("r", 40), Networks: nets}}}
+	s := Snapshot{Containers: []Container{{ID: "c1", Health: "bogus\x00", RestartPolicy: strings.Repeat("r", 40), Networks: names, NetworkAttachments: nets}}}
 	Clamp(&s)
 	c := s.Containers[0]
-	if len(c.Networks) != MaxNetworkAttachments || c.Networks[0].IP != "" {
-		t.Fatalf("networks not bounded or ip not validated: %d %q", len(c.Networks), c.Networks[0].IP)
+	if len(c.Networks) != MaxNetworkAttachments || len(c.NetworkAttachments) != MaxNetworkAttachments || c.NetworkAttachments[0].IP != "" {
+		t.Fatalf("networks not bounded or ip not validated: %d %d %q", len(c.Networks), len(c.NetworkAttachments), c.NetworkAttachments[0].IP)
 	}
 	if c.Health != "" || len(c.RestartPolicy) != 32 {
 		t.Fatalf("health %q policy %q", c.Health, c.RestartPolicy)
 	}
-	s = Snapshot{Containers: []Container{{ID: "c1", Health: "unhealthy", Networks: []NetworkAttachment{{Name: "b", IP: "10.0.0.2", IP6: "fd00::2"}}}}}
+	s = Snapshot{Containers: []Container{{ID: "c1", Health: "unhealthy", NetworkAttachments: []NetworkAttachment{{Name: "b", IP: "10.0.0.2", IP6: "fd00::2"}}}}}
 	Clamp(&s)
-	if s.Containers[0].Health != "unhealthy" || s.Containers[0].Networks[0].IP != "10.0.0.2" || s.Containers[0].Networks[0].IP6 != "fd00::2" {
+	if s.Containers[0].Health != "unhealthy" || s.Containers[0].NetworkAttachments[0] != (NetworkAttachment{Name: "b", IP: "10.0.0.2", IP6: "fd00::2"}) {
 		t.Fatalf("valid values must survive: %+v", s.Containers[0])
 	}
 	s = Snapshot{Containers: []Container{{ID: "c1"}}}
 	Clamp(&s)
 	if s.Containers[0].Networks == nil {
 		t.Fatal("nil networks must become an empty list")
+	}
+}
+
+// An address is kept only in its own family and without a zone.
+func TestClampClearsMisplacedOrZonedAddresses(t *testing.T) {
+	bad := []NetworkAttachment{
+		{Name: "zone", IP6: "fe80::1%eth0"},
+		{Name: "v6 in ip", IP: "fd00::2"},
+		{Name: "v4 in ip6", IP6: "10.0.0.2"},
+		{Name: "long zone", IP6: "fe80::1%" + strings.Repeat("z", 5000)},
+		{Name: "mapped", IP: "::ffff:10.0.0.2"},
+	}
+	s := Snapshot{Containers: []Container{{ID: "c1", NetworkAttachments: bad}}}
+	Clamp(&s)
+	for _, n := range s.Containers[0].NetworkAttachments {
+		if n.IP != "" || n.IP6 != "" {
+			t.Fatalf("%s kept an address: %+v", n.Name, n)
+		}
 	}
 }

@@ -179,14 +179,18 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		if len(ct.Names) > 0 {
 			name = strings.TrimPrefix(ct.Names[0], "/")
 		}
-		pc := protocol.Container{ID: ct.ID, Name: bound(name, 255), Image: bound(ct.Image, 512), ImageID: ct.ImageID, State: ct.State, Status: bound(ct.Status, 128), CreatedAt: time.Unix(ct.Created, 0).UTC(), Ports: []protocol.Port{}, Labels: boundLabels(ct.Labels), Networks: []protocol.NetworkAttachment{}}
+		pc := protocol.Container{ID: ct.ID, Name: bound(name, 255), Image: bound(ct.Image, 512), ImageID: ct.ImageID, State: ct.State, Status: bound(ct.Status, 128), CreatedAt: time.Unix(ct.Created, 0).UTC(), Ports: []protocol.Port{}, Labels: boundLabels(ct.Labels), Networks: []string{}, NetworkAttachments: []protocol.NetworkAttachment{}}
 		for _, p := range ct.Ports {
 			pc.Ports = append(pc.Ports, protocol.Port{HostIP: p.IP, Host: p.PublicPort, Container: p.PrivatePort, Protocol: p.Type})
 		}
-		for n, settings := range ct.NetworkSettings.Networks {
-			pc.Networks = append(pc.Networks, protocol.NetworkAttachment{Name: n, IP: settings.IPAddress, IP6: settings.GlobalIPv6Address})
+		for n := range ct.NetworkSettings.Networks {
+			pc.Networks = append(pc.Networks, n)
 		}
-		sort.Slice(pc.Networks, func(i, j int) bool { return pc.Networks[i].Name < pc.Networks[j].Name })
+		sort.Strings(pc.Networks)
+		for _, n := range pc.Networks {
+			settings := ct.NetworkSettings.Networks[n]
+			pc.NetworkAttachments = append(pc.NetworkAttachments, protocol.NetworkAttachment{Name: n, IP: settings.IPAddress, IP6: settings.GlobalIPv6Address})
+		}
 		pc.Mounts = []protocol.Mount{}
 		for _, m := range ct.Mounts {
 			mount := protocol.Mount{Kind: protocol.MountOther, Source: m.Source, Target: m.Destination, ReadOnly: !m.RW}
@@ -319,7 +323,7 @@ func (c *Client) enrichRunning(parent context.Context, containers []protocol.Con
 		var raw struct {
 			State struct {
 				StartedAt string `json:"StartedAt"`
-				// Only the status is read: the health log carries the healthcheck's output.
+				// Only the status is decoded: the health log carries the healthcheck's output.
 				Health *struct{ Status string } `json:"Health"`
 			} `json:"State"`
 			HostConfig struct {

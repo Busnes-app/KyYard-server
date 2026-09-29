@@ -626,7 +626,7 @@ func TestAgentReportsMetricsWithInventory(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	snapshot := func(context.Context) (*protocol.Snapshot, error) {
-		return &protocol.Snapshot{ObservedAt: time.Now(), Containers: []protocol.Container{{ID: "c1", Name: "web", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}, {ID: "c2", Name: "old", State: "exited", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+		return &protocol.Snapshot{ObservedAt: time.Now(), Containers: []protocol.Container{{ID: "c1", Name: "web", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}, {ID: "c2", Name: "old", State: "exited", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
 	}
 	var asked []string
 	metrics := func(_ context.Context, running []string) protocol.Metrics {
@@ -691,7 +691,7 @@ func TestHeartbeatsContinueWhileMetricsAreSlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	snapshot := func(context.Context) (*protocol.Snapshot, error) {
-		return &protocol.Snapshot{Containers: []protocol.Container{{ID: "c1", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+		return &protocol.Snapshot{Containers: []protocol.Container{{ID: "c1", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
 	}
 	metrics := func(mctx context.Context, _ []string) protocol.Metrics {
 		select {

@@ -86,7 +86,7 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 		gen++
 		writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{
 			Generation: gen, Engine: protocol.Engine{Version: "1"},
-			Containers: []protocol.Container{{ID: containerID, Name: "shop-web", ImageID: imageID, State: "running", ComposeProject: "shop", CreatedAt: created, Mounts: []protocol.Mount{}, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}},
+			Containers: []protocol.Container{{ID: containerID, Name: "shop-web", ImageID: imageID, State: "running", ComposeProject: "shop", CreatedAt: created, Mounts: []protocol.Mount{}, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}},
 			Images:     []protocol.Image{{ID: imageID, Tags: []string{"ghcr.io/org/web:1.2"}, Digests: []string{"ghcr.io/org/web@" + local}}},
 			Networks:   []protocol.Network{}, Volumes: []protocol.Volume{},
 		})

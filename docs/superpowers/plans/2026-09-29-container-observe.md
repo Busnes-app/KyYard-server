@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Protocol major version stays 1; every wire change is additive and the server decodes both the old and the new shape of `networks`.
+- Protocol major version stays 1; every wire change is additive. Superseded by the final fix wave: `networks` stays `[]string` and addresses travel in a new `network_attachments` field, so the dual-shape `networks` steps below no longer describe the code (see the spec, section 1.1).
 - Inventory stays bounded: `MaxContainers = 1000`, `MaxSnapshotBytes = 1 << 20`; the new per-container inspect is capped at `maxSnapshotInspects = 200` running containers and `snapshotInspectBudget = 5 * time.Second` total.
 - Health vocabulary is exactly `none`, `starting`, `healthy`, `unhealthy` (same as `protocol.ContainerInspection.Health`); the empty string means "not reported" (older agent).
 - Uptime is computed in the browser from `started_at`; the Docker `status` text is never parsed.

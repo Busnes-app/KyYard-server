@@ -72,7 +72,7 @@ it.each([['organization_admin', true], ['environment_admin', false], ['operator'
 
 it('lists uptime and IP and links container names to their page', async () => {
   const id = 'c'.repeat(64);
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role: 'operator' }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { containers: [{ id, name: 'web', image: 'nginx:1', state: 'running', started_at: '2026-09-29T07:30:00Z', health: 'healthy', ports: [], networks: [{ name: 'bridge', ip: '172.17.0.5' }] }] } }) : json([{ id: 'e', name: 'Docker host', state: 'active', runtime: 'docker', facts: {} }])));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role: 'operator' }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { containers: [{ id, name: 'web', image: 'nginx:1', state: 'running', started_at: '2026-09-29T07:30:00Z', health: 'healthy', ports: [], networks: ['bridge'], network_attachments: [{ name: 'bridge', ip: '172.17.0.5' }] }] } }) : json([{ id: 'e', name: 'Docker host', state: 'active', runtime: 'docker', facts: {} }])));
   render(<Dashboard />);
   const link = await screen.findByRole('link', { name: 'web' });
   expect(link.getAttribute('href')).toBe(`/organizations/a/endpoints/e/containers/${id}`);

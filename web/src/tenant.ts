@@ -9,8 +9,8 @@ export interface Endpoint { id: string; environment_id: string; name: string; ru
 export interface EnrollmentToken { id: string; runtime: string; expires_at: string; token: string; command?: string; image?: string; note?: string; disclosure: string; manifest?: string; manifest_file?: string; namespaces?: string[] }
 export interface Port { host_ip?: string; host?: number; container: number; protocol: string }
 export interface NetworkAttachment { name: string; ip?: string; ip6?: string }
-// networks holds bare names from an agent older than the IP fields; containerFacts.attachments normalises.
-export interface Container { id: string; name: string; image: string; image_id: string; state: string; status: string; created_at: string; started_at?: string; health?: string; restart_policy?: string; ports: Port[]; labels: Record<string, string>; networks: (NetworkAttachment | string)[]; compose_project?: string; mounts?: { kind: string; source: string; target: string; read_only: boolean }[]; mounts_truncated?: boolean }
+// network_attachments is absent from an agent older than it; containerFacts.attachments falls back to names.
+export interface Container { id: string; name: string; image: string; image_id: string; state: string; status: string; created_at: string; started_at?: string; health?: string; restart_policy?: string; ports: Port[]; labels: Record<string, string>; networks: string[]; network_attachments?: NetworkAttachment[]; compose_project?: string; mounts?: { kind: string; source: string; target: string; read_only: boolean }[]; mounts_truncated?: boolean }
 export interface Snapshot {
   generation: number; observed_at: string;
   engine: { runtime: string; version: string; api_version: string; os: string; arch: string; kernel: string; cpus: number; memory_bytes: number; hostname: string };

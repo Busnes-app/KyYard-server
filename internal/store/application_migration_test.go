@@ -42,7 +42,7 @@ func migrationFixtureNamed(t *testing.T, sourceName string, spec ApplicationSpec
 	snapshot := protocol.Snapshot{Engine: protocol.Engine{Version: "1"}, Volumes: []protocol.Volume{{Name: "shop_data"}}}
 	bindings := map[string]string{}
 	for i, s := range spec.Services {
-		c := protocol.Container{ID: strings.Repeat("a", 63) + string("a0123456789"[i]), Name: "shop-" + s.Name, ImageID: "sha256:" + strings.Repeat("b", 63) + string("b0123456789"[i]), CreatedAt: time.Now().UTC().Add(-time.Hour), ComposeProject: "shop", Mounts: []protocol.Mount{}, Networks: []protocol.NetworkAttachment{{Name: "shop_default"}}}
+		c := protocol.Container{ID: strings.Repeat("a", 63) + string("a0123456789"[i]), Name: "shop-" + s.Name, ImageID: "sha256:" + strings.Repeat("b", 63) + string("b0123456789"[i]), CreatedAt: time.Now().UTC().Add(-time.Hour), ComposeProject: "shop", Mounts: []protocol.Mount{}, Networks: []string{"shop_default"}}
 		snapshot.Containers = append(snapshot.Containers, c)
 		snapshot.Images = append(snapshot.Images, protocol.Image{ID: c.ImageID, Tags: []string{s.Image}})
 		bindings[s.Name] = c.ID
