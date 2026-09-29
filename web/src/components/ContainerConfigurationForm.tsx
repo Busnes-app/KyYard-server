@@ -74,6 +74,7 @@ const BLOCKERS: Record<string, string> = {
   port_conflict: 'Another container already publishes one of these host ports.',
   image_unresolved: "The image could not be resolved. Check the reference and the organization's registries.",
   bind_unacknowledged: 'Acknowledge every new host path.',
+  privileged_disabled: 'Host-level settings (privileged, devices, security options, extra capabilities, host networking or system paths) are disabled on this server. Set KY_CONTAINER_ALLOW_PRIVILEGED to allow them.',
 };
 // spec_invalid:<field> names the setting the server's configuration rules refused.
 const FIELDS: Record<string, string> = {

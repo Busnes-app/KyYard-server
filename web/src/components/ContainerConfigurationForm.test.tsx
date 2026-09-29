@@ -284,3 +284,21 @@ it('links to the new container only after a success that names another ID', () =
   render(<CommandResult command={cmd('succeeded', id)} org="a" endpoint="ep_1" current={id} />);
   expect(link()).toBeNull();
 });
+
+it('shows the privileged_disabled refusal text', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({ code: 'invalid_spec', blockers: ['privileged_disabled'] }, 422)));
+  edit();
+  fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'box' } });
+  confirmName('web');
+  await act(async () => { fireEvent.click(save()); });
+  expect(screen.getByRole('alert').textContent).toBe('Host-level settings (privileged, devices, security options, extra capabilities, host networking or system paths) are disabled on this server. Set KY_CONTAINER_ALLOW_PRIVILEGED to allow them.');
+});
+
+it('round-trips a read-only tmpfs mount', async () => {
+  const fetcher = accept();
+  edit({ mounts: [{ kind: 'tmpfs', source: '', target: '/scratch', read_only: true }] });
+  expect((screen.getByLabelText(/read-only/) as HTMLInputElement).checked).toBe(true);
+  fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'box' } });
+  const spec = await postedSpec(fetcher);
+  expect(spec.mounts).toEqual([{ kind: 'tmpfs', source: '', target: '/scratch', read_only: true }]);
+});

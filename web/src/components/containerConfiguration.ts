@@ -10,11 +10,13 @@ const truncationNames: Record<string, string> = {
   argv_truncated: 'has a command or entrypoint longer than the read could carry',
 };
 const LIST_TRUNCATED = /^list_truncated:[a-z_]+$/;
-const knownCode = (c: string) => Object.hasOwn(unsupportedNames, c) || Object.hasOwn(truncationNames, c) || LIST_TRUNCATED.test(c);
+const HOST_CONFIG = /^host_config:[A-Za-z0-9]{1,64}$/;
+const knownCode = (c: string) => Object.hasOwn(unsupportedNames, c) || Object.hasOwn(truncationNames, c) || LIST_TRUNCATED.test(c) || HOST_CONFIG.test(c);
 // unsupportedLabel is the fixed text of an unsupported code, '' for one this build does not know.
 export function unsupportedLabel(code: string): string {
   if (Object.hasOwn(unsupportedNames, code)) return unsupportedNames[code] ?? '';
   if (Object.hasOwn(truncationNames, code)) return truncationNames[code] ?? '';
+  if (HOST_CONFIG.test(code)) return `host setting ${code.slice('host_config:'.length)} (not editable here)`;
   return LIST_TRUNCATED.test(code) ? `has more ${code.slice('list_truncated:'.length)} entries than the read could carry` : '';
 }
 

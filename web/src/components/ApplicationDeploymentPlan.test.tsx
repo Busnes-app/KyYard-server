@@ -602,3 +602,8 @@ it('StepTable renders the rollback step texts', () => {
   expect(screen.getByText('The new container did not start; the previous one was restored.')).toBeTruthy();
   expect(screen.getByText('The new container did not start and the previous one could not be restored; check the host.')).toBeTruthy();
 });
+
+it('StepTable renders exited_early', () => {
+  render(<StepTable steps={[{ service: 'web', step: 'start', outcome: 'failed', code: 'exited_early', detail: '' }]} />);
+  expect(screen.getByText('The new container exited right after starting.')).toBeTruthy();
+});

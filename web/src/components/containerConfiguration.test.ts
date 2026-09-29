@@ -69,3 +69,11 @@ it('diff names changed fields and never returns values', () => {
   b.restart = 'no'; b.ports = a.ports; b.resources = { ...a.resources, pids_limit: 5 };
   expect(diff(a, b)).toEqual(['resources']);
 });
+
+it('accepts host_config codes and labels them with fixed text', () => {
+  const c = parseConfiguration({ ...payload(), unsupported: ['host_config:ShmSize', 'dns'] }, target);
+  expect(c?.unsupported).toEqual(['host_config:ShmSize', 'dns']);
+  expect(unsupportedLabel('host_config:ShmSize')).toBe('host setting ShmSize (not editable here)');
+  expect(parseConfiguration({ ...payload(), unsupported: ['host_config:Bad-Key'] }, target)).toBeNull();
+  expect(parseConfiguration({ ...payload(), unsupported: [`host_config:${'a'.repeat(65)}`] }, target)).toBeNull();
+});
