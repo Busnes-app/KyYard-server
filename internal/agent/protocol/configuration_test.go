@@ -70,7 +70,6 @@ func TestConfigurationRefusals(t *testing.T) {
 			}
 		},
 		"env value":     func(c *ContainerConfiguration) { c.Env = []EnvEntry{{Name: "A", Value: long}} },
-		"env name":      func(c *ContainerConfiguration) { c.Env = []EnvEntry{{Name: "1A"}} },
 		"env duplicate": func(c *ContainerConfiguration) { c.Env = []EnvEntry{{Name: "A"}, {Name: "A"}} },
 		"argv":          func(c *ContainerConfiguration) { c.Command = make([]string, 65) },
 		"argv entry":    func(c *ContainerConfiguration) { c.Entrypoint = []string{strings.Repeat("a", MaxArgvEntryBytes+1)} },
@@ -140,6 +139,35 @@ func TestConfigurationEnvValueKeepsNewlineAndEquals(t *testing.T) {
 	c := validConfiguration()
 	c.Env = []EnvEntry{{Name: "K", Value: "a=b\nc=d"}}
 	if err := c.Validate(configTarget(), configNow); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfigurationEnvNames(t *testing.T) {
+	for name, ok := range map[string]bool{"a.b": true, "1x": true, "lower": true, "": false, "A=B": false, "A\x00": false, strings.Repeat("a", 128): true, strings.Repeat("a", 129): false} {
+		c := validConfiguration()
+		c.Env = []EnvEntry{{Name: name}}
+		if got := c.Validate(configTarget(), configNow) == nil; got != ok {
+			t.Errorf("%q: valid=%v", name, got)
+		}
+	}
+	c := validConfiguration()
+	c.Labels["k"] = "a\nb"
+	if c.Validate(configTarget(), configNow) == nil {
+		t.Error("newline label accepted")
+	}
+}
+
+func TestConfigurationGrantLifetime(t *testing.T) {
+	o := ConfigurationOpen{Request: "r", Endpoint: "e", Actor: "a", Connection: make([]byte, 32), Expires: configNow.Add(22 * time.Second), Target: configTarget()}
+	if err := o.ValidateFor(configNow, RuntimeDocker); err != nil {
+		t.Fatal(err)
+	}
+	if o.ValidateWithin(configNow, ConfigurationLifetime, RuntimeDocker) == nil {
+		t.Fatal("22s grant accepted within 20s")
+	}
+	o.Expires = configNow.Add(ConfigurationLifetime)
+	if err := o.ValidateWithin(configNow, ConfigurationLifetime, RuntimeDocker); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -17,8 +17,12 @@ const (
 	TypeConfigurationResult      = "configuration.result"
 	TypeConfigurationCancel      = "configuration.cancel"
 	CapabilityContainerConfigure = "container.configure"
-	ConfigurationLifetime        = 20 * time.Second
-	MaxConfigurationFrameBytes   = 320 << 10
+	// ConfigurationLifetime is the longest grant a configuration.open may carry. The alias below
+	// shares InspectionOpen.ValidateFor, which enforces InspectionLifetime; the server issues
+	// Expires = min(context deadline, now + ConfigurationLifetime) and the agent enforces this
+	// bound with ValidateWithin.
+	ConfigurationLifetime      = 20 * time.Second
+	MaxConfigurationFrameBytes = 320 << 10
 
 	MaxArgv, MaxArgvEntryBytes        = 64, 4096
 	MaxListEntries, MaxListEntryBytes = 32, 1024
@@ -86,17 +90,18 @@ type LogConfig struct {
 // form. Unlike ContainerInspection it carries values (env, labels, argv). Unsupported names
 // configuration the agent cannot express in a service spec.
 type ContainerConfiguration struct {
-	Target         InspectionTarget        `json:"target"`
-	ObservedAt     time.Time               `json:"observed_at"`
-	Name           string                  `json:"name"`
-	Image          ImagePull               `json:"image"`
-	ImageID        string                  `json:"image_id"`
-	Command        []string                `json:"command"`
-	Entrypoint     []string                `json:"entrypoint"`
-	User           string                  `json:"user"`
-	WorkingDir     string                  `json:"working_dir"`
-	Hostname       string                  `json:"hostname"`
-	Env            []EnvEntry              `json:"env"`
+	Target     InspectionTarget `json:"target"`
+	ObservedAt time.Time        `json:"observed_at"`
+	Name       string           `json:"name"`
+	Image      ImagePull        `json:"image"`
+	ImageID    string           `json:"image_id"`
+	Command    []string         `json:"command"`
+	Entrypoint []string         `json:"entrypoint"`
+	User       string           `json:"user"`
+	WorkingDir string           `json:"working_dir"`
+	Hostname   string           `json:"hostname"`
+	Env        []EnvEntry       `json:"env"`
+	// Labels are cleaned (CleanText) by the agent before sending; Validate refuses any that are not.
 	Labels         map[string]string       `json:"labels"`
 	Restart        string                  `json:"restart"`
 	RestartRetries int                     `json:"restart_retries"`
@@ -275,6 +280,12 @@ func (c *ContainerConfiguration) Validate(target InspectionTarget, now time.Time
 	return nil
 }
 
+// configurationEnvName follows Docker, not the deployment grammar: an existing container may
+// carry any name Docker accepted.
+func configurationEnvName(n string) bool {
+	return n != "" && len(n) <= 128 && utf8.ValidString(n) && !strings.ContainsAny(n, "=\x00")
+}
+
 func (c *ContainerConfiguration) validEnv() error {
 	if len(c.Env) > MaxDeploymentEnvEntries {
 		return configErr("env")
@@ -283,7 +294,7 @@ func (c *ContainerConfiguration) validEnv() error {
 	seen := map[string]bool{}
 	for _, e := range c.Env {
 		total += len(e.Name) + len(e.Value)
-		if !deploymentEnvName.MatchString(e.Name) || seen[e.Name] || !raw(e.Value, MaxDeploymentEnvValueBytes) || total > MaxDeploymentEnvBytes {
+		if !configurationEnvName(e.Name) || seen[e.Name] || !raw(e.Value, MaxDeploymentEnvValueBytes) || total > MaxDeploymentEnvBytes {
 			return configErr("env")
 		}
 		seen[e.Name] = true
