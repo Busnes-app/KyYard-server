@@ -273,6 +273,8 @@ func TestDockerRoutesRefuseAKubernetesEndpoint(t *testing.T) {
 		{"GET", ep + "/containers/shop-web/removal", ""},
 		{"GET", ep + "/containers/shop-web/inspection", ""},
 		{"GET", ep + "/containers/shop-web/configuration", ""},
+		{"POST", ep + "/containers/" + h.targets[0].ContainerID + "/recreate", "{}"},
+		{"POST", ep + "/containers", "{}"},
 		{"GET", ep + "/containers/shop-web/logs", ""},
 		{"POST", h.deployments, h.planBody},
 		{"POST", h.deployments + "/" + planned.ID + "/apply", `{"confirm":"shop"}`},

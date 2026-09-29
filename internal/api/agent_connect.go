@@ -511,7 +511,12 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 			return true
 		}
-		switch err := ts.SettleDeployment(fctx, c.endpointID, res); {
+		err := ts.SettleDeployment(fctx, c.endpointID, res)
+		if errors.Is(err, store.ErrNotFound) {
+			// Not a deployment row: a direct recreate or run is the other thing a result settles.
+			err = ts.SettleDirectCommand(fctx, c.endpointID, res)
+		}
+		switch {
 		case err == nil:
 		case errors.Is(err, store.ErrUnreadableResult):
 			// The size is already bounded. Closing would only make the agent re-send the same

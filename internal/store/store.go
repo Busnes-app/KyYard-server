@@ -340,6 +340,11 @@ type TenancyStore interface {
 	StillAllowed(ctx context.Context, access TenantAccess, action permissions.Action, endpointID string) error
 	MarkCommandDispatched(ctx context.Context, id string) error
 	SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error
+	// Direct commands (container.recreate, container.run) are explicit deployment frames recorded
+	// as commands under container.configure and settled from the agent's deployment.result.
+	CreateDirectCommand(ctx context.Context, access TenantAccess, endpointID string, dc DirectCommand) (*Command, *protocol.DeploymentRequest, error)
+	ResolveDirectImage(ctx context.Context, access TenantAccess, endpointID, reference string, resolver DigestResolver, key []byte, privateAllowed bool) (*protocol.ImagePull, map[string]protocol.RegistryAuth, error)
+	SettleDirectCommand(ctx context.Context, endpointID string, res protocol.DeploymentResult) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
 	// ReconcileAfterStart settles every in-flight command as unknown, fails every open policy run
 	// and settles validations the previous process left; startup only.

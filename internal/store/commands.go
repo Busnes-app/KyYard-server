@@ -41,6 +41,8 @@ type Command struct {
 	CreatedAt      time.Time            `json:"created_at"`
 	DispatchedAt   *time.Time           `json:"dispatched_at,omitempty"`
 	SettledAt      *time.Time           `json:"settled_at,omitempty"`
+	// Result is a direct recreate or run's step table; nil for every other command.
+	Result *storedDeploymentResult `json:"result,omitempty"`
 }
 
 // InFlight reports whether the command is still waiting for an answer.
@@ -59,6 +61,9 @@ var commandActions = map[string]permissions.Action{
 
 // CommandPermission is the permission a command action needs; false for an unknown action.
 func CommandPermission(action string) (permissions.Action, bool) {
+	if directActions[action] {
+		return permissions.ContainerConfigure, true
+	}
 	p, ok := commandActions[action]
 	return p, ok
 }
@@ -283,16 +288,16 @@ func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpoin
 	return out, nil
 }
 
-const commandColumns = `SELECT id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,outcome,detail,created_at,dispatched_at,settled_at FROM endpoint_commands`
+const commandColumns = `SELECT id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,outcome,detail,created_at,dispatched_at,settled_at,result FROM endpoint_commands`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanCommand(row scanner) (*Command, error) {
 	var c Command
-	var expects string
+	var expects, result string
 	var deadline, created any
 	var dispatched, settled sql.NullTime
-	if err := row.Scan(&c.ID, &c.EndpointID, &c.OrganizationID, &c.EnvironmentID, &c.ActorID, &c.RequestID, &c.Action, &c.ContainerID, &c.Reference, &expects, &deadline, &c.Outcome, &c.Detail, &created, &dispatched, &settled); err != nil {
+	if err := row.Scan(&c.ID, &c.EndpointID, &c.OrganizationID, &c.EnvironmentID, &c.ActorID, &c.RequestID, &c.Action, &c.ContainerID, &c.Reference, &expects, &deadline, &c.Outcome, &c.Detail, &created, &dispatched, &settled, &result); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -315,6 +320,11 @@ func scanCommand(row scanner) (*Command, error) {
 	}
 	if err := json.Unmarshal([]byte(expects), &c.Expects); err != nil {
 		return nil, err
+	}
+	if result != "" {
+		if err := json.Unmarshal([]byte(result), &c.Result); err != nil {
+			return nil, err
+		}
 	}
 	return &c, nil
 }
