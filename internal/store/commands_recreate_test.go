@@ -77,3 +77,96 @@ func TestSettleDirectCommand(t *testing.T) {
 		t.Fatalf("a second answer: %v", err)
 	}
 }
+
+// directRun is a minimal valid run frame for image on a host whose inventory lists it.
+func directRun(name, image string) DirectCommand {
+	return DirectCommand{Action: ActionRun, Confirm: name, MaxFrameBytes: protocol.MaxDeploymentRequestBytes, Frame: protocol.DeploymentRequest{Services: []protocol.DeploymentService{{
+		Name: "direct", ContainerName: name, ImageID: image, Ports: []protocol.Port{}, Env: map[string]string{}, Mounts: []protocol.Mount{}, Explicit: &protocol.ExplicitService{},
+	}}}}
+}
+
+// An unsettled direct command past its deadline no longer blocks the endpoint: creating the next
+// one settles it unknown, and a late real answer may still replace that.
+func TestCreateDirectCommandSweepsAnExpiredOne(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	image := "sha256:" + strings.Repeat("b", 64)
+	endpointID := activeEndpointWith(t, st.Tenancy(), a, nil, []protocol.Image{{ID: image, Tags: []string{}, Digests: []string{}}})
+	first, _, err := st.Tenancy().CreateDirectCommand(ctx, a, endpointID, directRun("one", image))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Tenancy().CreateDirectCommand(ctx, a, endpointID, directRun("two", image)); err != ErrCommandInProgress {
+		t.Fatalf("while the first is live: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE endpoint_commands SET deadline=? WHERE id=?`), time.Now().UTC().Add(-time.Minute), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Tenancy().CreateDirectCommand(ctx, a, endpointID, directRun("two", image)); err != nil {
+		t.Fatalf("after the deadline: %v", err)
+	}
+	if cmd, err := st.Tenancy().ReadCommand(ctx, a, endpointID, first.ID); err != nil || cmd.Outcome != protocol.OutcomeUnknown {
+		t.Fatalf("expired command: %+v %v", cmd, err)
+	}
+}
+
+// One writer settles a direct command: a plain command.result cannot, a dispatch failure goes
+// through FailDirectCommand, and a result must speak only of the direct service.
+func TestDirectCommandsHaveOneWriter(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	image := "sha256:" + strings.Repeat("b", 64)
+	endpointID := activeEndpointWith(t, st.Tenancy(), a, nil, []protocol.Image{{ID: image, Tags: []string{}, Digests: []string{}}})
+	cmd, req, err := st.Tenancy().CreateDirectCommand(ctx, a, endpointID, directRun("one", image))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tenancy().SettleCommand(ctx, endpointID, cmd.ID, protocol.OutcomeSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	read := func() *Command {
+		t.Helper()
+		c, err := st.Tenancy().ReadCommand(ctx, a, endpointID, cmd.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := read(); c.Outcome != "" {
+		t.Fatalf("a command.result settled a direct command: %+v", c)
+	}
+	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Outcome: protocol.OutcomeSucceeded,
+		Steps:    []protocol.DeploymentStep{{Service: "other", Step: protocol.StepCreate, Outcome: protocol.OutcomeSucceeded}},
+		Services: []protocol.DeploymentIdentity{}}
+	if err := st.Tenancy().SettleDirectCommand(ctx, endpointID, res); err != ErrUnreadableResult {
+		t.Fatalf("a step for another service: %v", err)
+	}
+	identity := protocol.DeploymentIdentity{Service: "direct", ContainerID: strings.Repeat("e", 64), ImageID: image, CreatedUnix: time.Now().Unix()}
+	res.Steps = []protocol.DeploymentStep{}
+	res.Services = []protocol.DeploymentIdentity{identity, identity}
+	if err := st.Tenancy().SettleDirectCommand(ctx, endpointID, res); err != ErrUnreadableResult {
+		t.Fatalf("two identities: %v", err)
+	}
+	res.Services = []protocol.DeploymentIdentity{identity}
+	if err := st.Tenancy().SettleDirectCommand(ctx, endpointID, res); err != nil {
+		t.Fatal(err)
+	}
+	if c := read(); c.Outcome != protocol.OutcomeSucceeded || c.ResultContainerID != identity.ContainerID || c.ContainerID != "" {
+		t.Fatalf("settled: %+v", c)
+	}
+	// The new container's Activity lists the run that made it.
+	list, err := st.Tenancy().ListCommands(ctx, a, endpointID, identity.ContainerID, 0)
+	if err != nil || len(list) != 1 || list[0].ID != cmd.ID {
+		t.Fatalf("by new container: %+v %v", list, err)
+	}
+	next, _, err := st.Tenancy().CreateDirectCommand(ctx, a, endpointID, directRun("two", image))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tenancy().FailDirectCommand(ctx, endpointID, next.ID, "deployment_not_sent"); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := st.Tenancy().ReadCommand(ctx, a, endpointID, next.ID); c == nil || c.Outcome != protocol.OutcomeFailed || c.Detail != "deployment_not_sent" {
+		t.Fatalf("unsent: %+v", c)
+	}
+}

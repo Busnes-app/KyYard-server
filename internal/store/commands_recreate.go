@@ -107,36 +107,11 @@ func (t *tenancyStore) CreateDirectCommand(ctx context.Context, a TenantAccess, 
 			protocol.OutcomeUnknown, "no result arrived before the deadline", now, endpointID, ActionRecreate, ActionRun, now); err != nil {
 			return err
 		}
-		var busy int
-		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM endpoint_commands WHERE endpoint_id=? AND action IN (?,?) AND outcome=''`), endpointID, ActionRecreate, ActionRun).Scan(&busy); err != nil {
-			return err
-		}
-		if busy > 0 {
-			return ErrCommandInProgress
-		}
-		if recreate {
-			var one int
-			err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM application_resources WHERE endpoint_id=? AND container_id=?`), endpointID, svc.Replaces.ContainerID).Scan(&one)
-			if err == nil {
-				return ErrContainerManaged
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-		}
-		var raw string
-		err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: this endpoint has reported no inventory", ErrInvalid)
-		}
+		snap, old, err := t.directTarget(ctx, tx, endpointID, dc, svc, now)
 		if err != nil {
 			return err
 		}
-		var snap protocol.Snapshot
-		if err := json.Unmarshal([]byte(raw), &snap); err != nil {
-			return err
-		}
-		if err := directBlockers(snap, dc, svc); err != nil {
+		if err := directBlockers(snap, old, svc); err != nil {
 			return err
 		}
 		if b := frameBlocker(req, now, dc.MaxFrameBytes); b != "" {
@@ -145,6 +120,13 @@ func (t *tenancyStore) CreateDirectCommand(ctx context.Context, a TenantAccess, 
 		expects, err := json.Marshal(cmd.Expects)
 		if err != nil {
 			return err
+		}
+		// One row per acknowledged host path, committed with the command or not at all.
+		for _, path := range svc.Explicit.AcknowledgedBinds {
+			if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?,?)`),
+				a.actor(), "container.bind.acknowledged", protocol.CleanText(target, 255), protocol.CleanText(path, 200), a.IPAddress, now, "organization", a.OrganizationID, a.EnvironmentID, a.CorrelationID, "success"); err != nil {
+				return err
+			}
 		}
 		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_commands (id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
 			cmd.ID, cmd.EndpointID, cmd.OrganizationID, cmd.EnvironmentID, cmd.ActorID, cmd.RequestID, cmd.Action, cmd.ContainerID, "", string(expects), cmd.Deadline, cmd.CreatedAt)
@@ -156,27 +138,89 @@ func (t *tenancyStore) CreateDirectCommand(ctx context.Context, a TenantAccess, 
 	return cmd, &req, nil
 }
 
-// directBlockers checks svc against the last inventory: a recreate's target is still the
-// container the operator read, the name and published ports are free, a local image is present,
-// and every bind the container did not already have is acknowledged.
-func directBlockers(snap protocol.Snapshot, dc DirectCommand, svc *protocol.DeploymentService) error {
-	recreate := dc.Action == ActionRecreate
-	var old *protocol.Container
-	if recreate {
-		i := slices.IndexFunc(snap.Containers, func(c protocol.Container) bool { return c.ID == svc.Replaces.ContainerID })
-		if i < 0 {
-			return ErrAdoptionChanged
-		}
-		old = &snap.Containers[i]
-		if old.ImageID != svc.Replaces.ImageID || old.CreatedAt.Unix() != svc.Replaces.CreatedUnix || old.State != dc.State {
-			return ErrAdoptionChanged
-		}
-		if dc.Confirm != old.Name {
-			return fmt.Errorf("%w: confirm must be %q", ErrInvalid, old.Name)
-		}
-	} else if dc.Confirm != svc.ContainerName {
-		return fmt.Errorf("%w: confirm must be %q", ErrInvalid, svc.ContainerName)
+// CheckDirectCommand runs CreateDirectCommand's preconditions (the endpoint is active, no other
+// direct command is in flight, the target is unmanaged and unchanged, the confirmation matches)
+// without writing, so the API refuses before spending registry budget on the image.
+func (t *tenancyStore) CheckDirectCommand(ctx context.Context, a TenantAccess, endpointID string, dc DirectCommand) error {
+	if !directActions[dc.Action] || len(dc.Frame.Services) != 1 {
+		return ErrInvalid
 	}
+	return t.readTenant(ctx, a, permissions.ContainerConfigure, func(tx *sql.Tx) error {
+		var state string
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT state FROM endpoints WHERE id=? AND organization_id=? AND (?='' OR environment_id=?)`), endpointID, a.OrganizationID, a.EnvironmentID, a.EnvironmentID).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if state != "active" {
+			return fmt.Errorf("%w: it is %s", ErrEndpointOffline, state)
+		}
+		_, _, err = t.directTarget(ctx, tx, endpointID, dc, &dc.Frame.Services[0], time.Now().UTC())
+		return err
+	})
+}
+
+// directTarget refuses while another live direct command is on the endpoint, or a managed
+// container, and checks against the last inventory that a recreate's target is still the
+// container the operator read and that the confirmation names it (or, for a run, the new name).
+// It returns the inventory and the replaced container (nil for a run).
+func (t *tenancyStore) directTarget(ctx context.Context, tx *sql.Tx, endpointID string, dc DirectCommand, svc *protocol.DeploymentService, now time.Time) (protocol.Snapshot, *protocol.Container, error) {
+	var snap protocol.Snapshot
+	var busy int
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM endpoint_commands WHERE endpoint_id=? AND action IN (?,?) AND outcome='' AND deadline>=?`), endpointID, ActionRecreate, ActionRun, now).Scan(&busy); err != nil {
+		return snap, nil, err
+	}
+	if busy > 0 {
+		return snap, nil, ErrCommandInProgress
+	}
+	recreate := dc.Action == ActionRecreate
+	if recreate {
+		var one int
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM application_resources WHERE endpoint_id=? AND container_id=?`), endpointID, svc.Replaces.ContainerID).Scan(&one)
+		if err == nil {
+			return snap, nil, ErrContainerManaged
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return snap, nil, err
+		}
+	}
+	var raw string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return snap, nil, fmt.Errorf("%w: this endpoint has reported no inventory", ErrInvalid)
+	}
+	if err != nil {
+		return snap, nil, err
+	}
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
+		return snap, nil, err
+	}
+	if !recreate {
+		if dc.Confirm != svc.ContainerName {
+			return snap, nil, fmt.Errorf("%w: confirm must be %q", ErrInvalid, svc.ContainerName)
+		}
+		return snap, nil, nil
+	}
+	i := slices.IndexFunc(snap.Containers, func(c protocol.Container) bool { return c.ID == svc.Replaces.ContainerID })
+	if i < 0 {
+		return snap, nil, ErrAdoptionChanged
+	}
+	old := &snap.Containers[i]
+	if old.ImageID != svc.Replaces.ImageID || old.CreatedAt.Unix() != svc.Replaces.CreatedUnix || old.State != dc.State {
+		return snap, nil, ErrAdoptionChanged
+	}
+	if dc.Confirm != old.Name {
+		return snap, nil, fmt.Errorf("%w: confirm must be %q", ErrInvalid, old.Name)
+	}
+	return snap, old, nil
+}
+
+// directBlockers checks svc against the last inventory: the name and published ports are free,
+// a local image is present, and every bind the replaced container (old; nil for a run) did not
+// already grant is acknowledged. A writable bind where the old one was read-only is new.
+func directBlockers(snap protocol.Snapshot, old *protocol.Container, svc *protocol.DeploymentService) error {
 	var blockers []string
 	if svc.ImageID != "" && !slices.ContainsFunc(snap.Images, func(im protocol.Image) bool { return im.ID == svc.ImageID }) {
 		blockers = append(blockers, "image_unresolved")
@@ -200,7 +244,9 @@ func directBlockers(snap protocol.Snapshot, dc DirectCommand, svc *protocol.Depl
 		if m.Kind != protocol.MountBind || slices.Contains(svc.Explicit.AcknowledgedBinds, m.Source) {
 			continue
 		}
-		if old == nil || !slices.ContainsFunc(old.Mounts, func(o protocol.Mount) bool { return o.Kind == protocol.MountBind && o.Source == m.Source }) {
+		if old == nil || !slices.ContainsFunc(old.Mounts, func(o protocol.Mount) bool {
+			return o.Kind == protocol.MountBind && o.Source == m.Source && (!o.ReadOnly || m.ReadOnly)
+		}) {
 			blockers = append(blockers, "bind_unacknowledged")
 		}
 	}
@@ -298,12 +344,21 @@ func (t *tenancyStore) SettleDirectCommand(ctx context.Context, endpointID strin
 	if res.RequestID == "" {
 		return ErrNotFound // a binary without request IDs never ran a direct command
 	}
+	// A direct frame has one service, named direct; a result about anything else is not its.
+	if len(res.Services) > 1 || slices.ContainsFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Service != "direct" }) ||
+		slices.ContainsFunc(res.Services, func(id protocol.DeploymentIdentity) bool { return id.Service != "direct" }) {
+		return ErrUnreadableResult
+	}
+	created := ""
+	if len(res.Services) == 1 {
+		created = res.Services[0].ContainerID
+	}
 	raw, err := json.Marshal(storedDeploymentResult{Code: res.Code, Steps: res.Steps, Services: res.Services})
 	if err != nil || len(raw) > MaxDeploymentResultStoredBytes {
 		return ErrInvalid
 	}
-	updated, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, result=?, settled_at=? WHERE id=? AND endpoint_id=? AND request_id=? AND action IN (?,?) AND (outcome='' OR (outcome=? AND result=''))`),
-		res.Outcome, res.Code, string(raw), time.Now().UTC(), res.Deployment, endpointID, res.RequestID, ActionRecreate, ActionRun, protocol.OutcomeUnknown)
+	updated, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, result=?, result_container_id=?, settled_at=? WHERE id=? AND endpoint_id=? AND request_id=? AND action IN (?,?) AND (outcome='' OR (outcome=? AND result=''))`),
+		res.Outcome, res.Code, string(raw), created, time.Now().UTC(), res.Deployment, endpointID, res.RequestID, ActionRecreate, ActionRun, protocol.OutcomeUnknown)
 	if err != nil {
 		return err
 	}
@@ -314,4 +369,11 @@ func (t *tenancyStore) SettleDirectCommand(ctx context.Context, endpointID strin
 		return err
 	}
 	return nil
+}
+
+// FailDirectCommand records that a direct command's frame never left the server.
+func (t *tenancyStore) FailDirectCommand(ctx context.Context, endpointID, id, detail string) error {
+	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=? AND endpoint_id=? AND action IN (?,?) AND outcome=''`),
+		protocol.OutcomeFailed, protocol.CleanText(detail, protocol.MaxResultDetailBytes), time.Now().UTC(), id, endpointID, ActionRecreate, ActionRun)
+	return err
 }

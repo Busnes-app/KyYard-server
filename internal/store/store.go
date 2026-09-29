@@ -345,6 +345,8 @@ type TenancyStore interface {
 	CreateDirectCommand(ctx context.Context, access TenantAccess, endpointID string, dc DirectCommand) (*Command, *protocol.DeploymentRequest, error)
 	ResolveDirectImage(ctx context.Context, access TenantAccess, endpointID, reference string, resolver DigestResolver, key []byte, privateAllowed bool) (*protocol.ImagePull, map[string]protocol.RegistryAuth, error)
 	SettleDirectCommand(ctx context.Context, endpointID string, res protocol.DeploymentResult) error
+	CheckDirectCommand(ctx context.Context, access TenantAccess, endpointID string, dc DirectCommand) error
+	FailDirectCommand(ctx context.Context, endpointID, id, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
 	// ReconcileAfterStart settles every in-flight command as unknown, fails every open policy run
 	// and settles validations the previous process left; startup only.

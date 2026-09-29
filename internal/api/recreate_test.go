@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func directFixture(t *testing.T, capabilities []string) terminalFixture {
 		Generation: uint64(time.Now().Unix()) + 2, ObservedAt: time.Now(), Engine: protocol.Engine{Version: "1"},
 		Containers: []protocol.Container{
 			{ID: terminalSpec.Container, Name: "web", ImageID: directImage, CreatedAt: directCreated, State: "running", Labels: map[string]string{}, Networks: []string{"bridge"},
-				Ports: []protocol.Port{{HostIP: "0.0.0.0", Host: 8080, Container: 80, Protocol: "tcp"}}, Mounts: []protocol.Mount{{Kind: protocol.MountBind, Source: "/srv/web", Target: "/data"}}},
+				Ports: []protocol.Port{{HostIP: "0.0.0.0", Host: 8080, Container: 80, Protocol: "tcp"}}, Mounts: []protocol.Mount{{Kind: protocol.MountBind, Source: "/srv/web", Target: "/data", ReadOnly: true}}},
 			{ID: directDB, Name: "db", ImageID: directImage, CreatedAt: directCreated, State: "running", Labels: map[string]string{}, Networks: []string{"bridge"},
 				Ports: []protocol.Port{{HostIP: "0.0.0.0", Host: 5432, Container: 5432, Protocol: "tcp"}}, Mounts: []protocol.Mount{}},
 		},
@@ -63,7 +64,7 @@ func directSpec(name string) protocol.ContainerConfiguration {
 		Command: []string{"serve"}, Env: []protocol.EnvEntry{{Name: "API_KEY", Value: configurationSentinel}}, Labels: map[string]string{"app": "web"},
 		Restart: "unless-stopped", NetworkMode: "bridge", Networks: []protocol.NetworkAttachmentSpec{{Name: "bridge"}},
 		Ports:  []protocol.Port{{HostIP: "0.0.0.0", Host: 8080, Container: 80, Protocol: "tcp"}},
-		Mounts: []protocol.Mount{{Kind: protocol.MountBind, Source: "/srv/web", Target: "/data"}}, Unsupported: []string{},
+		Mounts: []protocol.Mount{{Kind: protocol.MountBind, Source: "/srv/web", Target: "/data", ReadOnly: true}}, Unsupported: []string{},
 	}
 }
 
@@ -138,6 +139,9 @@ func TestRecreateSendsAnExplicitFrameAndSettlesFromTheResult(t *testing.T) {
 			t.Fatalf("a Compose label was added: %s", k)
 		}
 	}
+	// A plain command.result is not how a direct command settles.
+	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeResult, protocol.Result{ID: cmd.ID, Outcome: protocol.OutcomeSucceeded})
+	syncAgent(t, f)
 	// A second edit on the endpoint waits for the first.
 	if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(directSpec("web")), true); w.Code != 409 || !strings.Contains(w.Body.String(), "command_in_progress") {
 		t.Fatalf("second recreate: %d %s", w.Code, w.Body.String())
@@ -153,11 +157,12 @@ func TestRecreateSendsAnExplicitFrameAndSettlesFromTheResult(t *testing.T) {
 	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &got) != nil || got.Outcome != protocol.OutcomeSucceeded || got.SettledAt == nil || got.Result == nil || len(got.Result.Steps) != 3 {
 		t.Fatalf("settled command: %d %s", r.Code, r.Body.String())
 	}
-	// The Activity list shows it under the container it edited.
-	r = tenantRequest(f.s, f.admin, "GET", "/api/organizations/a/endpoints/"+f.ag.id+"/commands?container="+terminalSpec.Container, "", false)
-	var list []directCommand
-	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &list) != nil || len(list) != 1 || list[0].ID != cmd.ID || list[0].Result == nil {
-		t.Fatalf("activity: %d %s", r.Code, r.Body.String())
+	// The Activity list shows it under the container it edited and the one that replaced it.
+	for _, id := range []string{terminalSpec.Container, strings.Repeat("e", 64)} {
+		activityShows(t, f, id, cmd.ID)
+	}
+	if got.ContainerID != terminalSpec.Container || got.ResultContainerID != strings.Repeat("e", 64) {
+		t.Fatalf("container IDs: %+v", got.Command)
 	}
 	rows, _, err := f.st.Audit().ListAuditRecords(f.ctx, 0, 100)
 	if err != nil {
@@ -185,6 +190,15 @@ func TestRecreateSendsAnExplicitFrameAndSettlesFromTheResult(t *testing.T) {
 	// The edit is over: another may start.
 	if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(directSpec("web")), true); w.Code != 202 {
 		t.Fatalf("after settle: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func activityShows(t *testing.T, f terminalFixture, container, id string) {
+	t.Helper()
+	r := tenantRequest(f.s, f.admin, "GET", "/api/organizations/a/endpoints/"+f.ag.id+"/commands?container="+container, "", false)
+	var list []directCommand
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &list) != nil || len(list) != 1 || list[0].ID != id || list[0].Result == nil {
+		t.Fatalf("activity for %s: %d %s", container, r.Code, r.Body.String())
 	}
 }
 
@@ -268,23 +282,107 @@ func TestRunRefusesTakenNamesPortsAndUnacknowledgedBinds(t *testing.T) {
 	bad := directSpec("fresh")
 	bad.Restart = "sometimes"
 	blockers(t, tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(bad), true), "spec_invalid:restart")
+	spec.Mounts = append(spec.Mounts, protocol.Mount{Kind: protocol.MountBind, Source: "/srv/logs", Target: "/logs"})
+	taken := spec
+	taken.Name = "db"
+	blockers(t, tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(taken, "/srv/web", "/srv/logs"), true), "name_taken")
+	acknowledged := func() []string {
+		rows, _, _ := f.st.Audit().ListAuditRecords(f.ctx, 0, 200)
+		var paths []string
+		for _, r := range rows {
+			if r.Action == "container.bind.acknowledged" && r.Resource == f.ag.id+"/fresh" && r.Result == "success" {
+				paths = append(paths, r.Details)
+			}
+		}
+		slices.Sort(paths)
+		return paths
+	}
+	if got := acknowledged(); len(got) != 0 {
+		t.Fatalf("a refused run audited acknowledgements: %v", got)
+	}
 	// The refusals sent nothing: the next frame the agent reads is this run's.
-	w := tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(spec, "/srv/web"), true)
+	w := tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(spec, "/srv/web", "/srv/logs"), true)
 	if w.Code != 202 {
 		t.Fatalf("acknowledged run: %d %s", w.Code, w.Body.String())
 	}
+	var cmd store.Command
+	_ = json.Unmarshal(w.Body.Bytes(), &cmd)
 	req := applyFrame(t, f)
 	svc := req.Services[0]
-	if svc.Replaces != (protocol.InspectionTarget{}) || svc.ContainerName != "fresh" || len(svc.Explicit.AcknowledgedBinds) != 1 || svc.Explicit.AcknowledgedBinds[0] != "/srv/web" {
+	if svc.Replaces != (protocol.InspectionTarget{}) || svc.ContainerName != "fresh" || !slices.Equal(svc.Explicit.AcknowledgedBinds, []string{"/srv/web", "/srv/logs"}) {
 		t.Fatalf("run frame: %+v", svc)
 	}
-	rows, _, _ := f.st.Audit().ListAuditRecords(f.ctx, 0, 100)
+	if got := acknowledged(); !slices.Equal(got, []string{"/srv/logs", "/srv/web"}) {
+		t.Fatalf("acknowledgement rows: %v", got)
+	}
+	rows, _, _ := f.st.Audit().ListAuditRecords(f.ctx, 0, 200)
 	found := false
 	for _, r := range rows {
-		found = found || (r.Action == "container.configure" && r.Result == "success" && r.Resource == f.ag.id+"/fresh" && strings.Contains(r.Details, "binds=1"))
+		found = found || (r.Action == "container.configure" && r.Result == "success" && r.Resource == f.ag.id+"/fresh" && strings.Contains(r.Details, "binds=2"))
 	}
 	if !found {
-		t.Fatal("the run's audit row does not carry binds=1")
+		t.Fatal("the run's audit row does not carry binds=2")
+	}
+	// Once settled, the run is in the new container's Activity.
+	created := strings.Repeat("f", 64)
+	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Outcome: protocol.OutcomeSucceeded,
+		Steps: []protocol.DeploymentStep{{Service: "direct", Step: protocol.StepStart, Outcome: protocol.OutcomeSucceeded}}, Services: []protocol.DeploymentIdentity{{Service: "direct", ContainerID: created, ImageID: directImage, CreatedUnix: time.Now().Unix()}}})
+	syncAgent(t, f)
+	activityShows(t, f, created, cmd.ID)
+}
+
+// A container from a locally built image (no repository digest) keeps its image: no pull.
+func TestRecreateKeepsALocalImage(t *testing.T) {
+	f := directFixture(t, directCaps)
+	api.SetDigestResolverForTest(f.s, &countingResolver{})
+	spec := directSpec("web")
+	spec.Image = protocol.ImagePull{Reference: "web-local:dev"}
+	if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true); w.Code != 202 {
+		t.Fatalf("local image: %d %s", w.Code, w.Body.String())
+	}
+	if svc := applyFrame(t, f).Services[0]; svc.ImageID != directImage || svc.Pull != nil {
+		t.Fatalf("local image frame: %+v", svc)
+	}
+}
+
+// Making a read-only bind writable grants the container something new.
+func TestRecreateNeedsAcknowledgementToMakeABindWritable(t *testing.T) {
+	f := directFixture(t, directCaps)
+	spec := directSpec("web")
+	spec.Mounts[0].ReadOnly = false
+	blockers(t, tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true), "bind_unacknowledged")
+	if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec, "/srv/web"), true); w.Code != 202 {
+		t.Fatalf("acknowledged: %d %s", w.Code, w.Body.String())
+	}
+}
+
+type countingResolver struct{ calls atomic.Int32 }
+
+func (r *countingResolver) Head(context.Context, registry.Reference, *registry.Credential, bool) (string, error) {
+	r.calls.Add(1)
+	return "sha256:" + strings.Repeat("f", 64), nil
+}
+
+// A request the store would refuse spends no registry call.
+func TestRefusedRunSpendsNoRegistryCall(t *testing.T) {
+	f := directFixture(t, directCaps)
+	resolver := &countingResolver{}
+	api.SetDigestResolverForTest(f.s, resolver)
+	if err := f.st.Tenancy().SetAnonymousPull(f.ctx, store.TenantAccess{ActorID: "usr_execadmin", OrganizationID: "a"}, true); err != nil {
+		t.Fatal(err)
+	}
+	spec := directSpec("fresh")
+	spec.Image, spec.ImageID, spec.Mounts = protocol.ImagePull{Reference: "ghcr.io/acme/web:2"}, "", []protocol.Mount{}
+	spec.Ports = []protocol.Port{}
+	raw, _ := json.Marshal(map[string]any{"spec": spec, "confirm": "not-fresh"})
+	if w := tenantRequest(f.s, f.admin, "POST", runPath(f), string(raw), true); w.Code != 400 {
+		t.Fatalf("wrong confirm: %d %s", w.Code, w.Body.String())
+	}
+	if n := resolver.calls.Load(); n != 0 {
+		t.Fatalf("%d registry calls for a refused run", n)
+	}
+	if w := tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(spec), true); w.Code != 202 || resolver.calls.Load() != 1 {
+		t.Fatalf("run: %d %s, %d calls", w.Code, w.Body.String(), resolver.calls.Load())
 	}
 }
 

@@ -130,12 +130,17 @@ func (s *Server) handleDirectCommand(w http.ResponseWriter, r *http.Request, a s
 			frame.Volumes = append(frame.Volumes, m.Source)
 		}
 	}
-	if !s.directImage(w, r, a, ep, spec, &frame) {
-		return
-	}
 	dc := store.DirectCommand{Action: action, Confirm: body.Confirm, MaxFrameBytes: maxFrameBytes(ep.Capabilities), Frame: frame}
 	if body.Expects != nil {
 		dc.State = body.Expects.State
+	}
+	// Refuse what the store would refuse before spending registry budget on the image.
+	if err := s.store.Tenancy().CheckDirectCommand(r.Context(), a, endpoint, dc); err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if !s.directImage(w, r, a, ep, spec, replaces.ImageID, &dc.Frame) {
+		return
 	}
 	cmd, req, err := s.store.Tenancy().CreateDirectCommand(r.Context(), a, endpoint, dc)
 	if err != nil {
@@ -143,7 +148,7 @@ func (s *Server) handleDirectCommand(w http.ResponseWriter, r *http.Request, a s
 		return
 	}
 	if !s.agents.deliver(endpoint, envelope(protocol.TypeDeploymentApply, req)) {
-		if err := s.store.Tenancy().SettleCommand(context.WithoutCancel(r.Context()), endpoint, cmd.ID, protocol.OutcomeFailed, "deployment_not_sent"); err != nil {
+		if err := s.store.Tenancy().FailDirectCommand(context.WithoutCancel(r.Context()), endpoint, cmd.ID, "deployment_not_sent"); err != nil {
 			log.Printf("command %s: recording an unsent frame: %v", cmd.ID, err)
 		}
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The command could not be sent to the endpoint", "code": "deployment_not_sent"})
@@ -155,23 +160,25 @@ func (s *Server) handleDirectCommand(w http.ResponseWriter, r *http.Request, a s
 	s.writeJSON(w, http.StatusAccepted, cmd)
 }
 
-// directImage points the frame's service at the local image when the spec keeps its digest and
-// the host still has that image. Otherwise it pulls: at the kept digest (what the operator saw),
-// or with none kept at the reference's current registry digest. It writes the response and
-// reports false on refusal.
-func (s *Server) directImage(w http.ResponseWriter, r *http.Request, a store.TenantAccess, ep *store.Endpoint, spec protocol.ContainerConfiguration, frame *protocol.DeploymentRequest) bool {
+// directImage points the frame's service at the spec's image ID (or, with none, the recreate
+// target's) when the host has it, which covers a locally built image with no digest. Otherwise it
+// pulls: at the kept digest (what the operator saw), or with none kept at the reference's
+// current registry digest. It writes the response and reports false on refusal.
+func (s *Server) directImage(w http.ResponseWriter, r *http.Request, a store.TenantAccess, ep *store.Endpoint, spec protocol.ContainerConfiguration, targetImage string, frame *protocol.DeploymentRequest) bool {
 	svc := &frame.Services[0]
-	if spec.Image.Digest != "" && spec.ImageID != "" {
+	local := spec.ImageID
+	if local == "" {
+		local = targetImage
+	}
+	if local != "" {
 		inv, err := s.store.Tenancy().ReadInventory(r.Context(), a, ep.ID)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			s.tenantError(w, err)
 			return false
 		}
 		var snap protocol.Snapshot
-		if inv != nil && json.Unmarshal(inv.Snapshot, &snap) == nil && slices.ContainsFunc(snap.Images, func(im protocol.Image) bool {
-			return im.ID == spec.ImageID && slices.ContainsFunc(im.Digests, func(d string) bool { return strings.HasSuffix(d, "@"+spec.Image.Digest) })
-		}) {
-			svc.ImageID = spec.ImageID
+		if inv != nil && json.Unmarshal(inv.Snapshot, &snap) == nil && slices.ContainsFunc(snap.Images, func(im protocol.Image) bool { return im.ID == local }) {
+			svc.ImageID = local
 			return true
 		}
 	}
