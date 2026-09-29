@@ -326,7 +326,7 @@ func (c *ContainerConfiguration) validPorts() error {
 		}
 		exposed[key] = true
 	}
-	if validPorts(published, map[binding]bool{}, true) != nil {
+	if validPorts(published, map[binding]bool{}, true, false) != nil {
 		return configErr("ports")
 	}
 	return nil
@@ -349,7 +349,7 @@ func (c *ContainerConfiguration) validMounts() error {
 		}
 		plain = append(plain, m)
 	}
-	if !validMounts(plain, map[string]bool{}) {
+	if !validMounts(plain, map[string]bool{}, false) {
 		return configErr("mounts")
 	}
 	for _, m := range plain {

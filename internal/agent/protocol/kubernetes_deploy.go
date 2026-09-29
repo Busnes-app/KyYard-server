@@ -121,10 +121,10 @@ func (r DeploymentRequest) validateKubernetes() error {
 			}
 			ips[s.ClusterIP] = true
 		}
-		if err := validPorts(s.Ports, map[binding]bool{}, false); err != nil {
+		if err := validPorts(s.Ports, map[binding]bool{}, false, false); err != nil {
 			return err
 		}
-		if err := validEnv(s.Env); err != nil {
+		if err := validEnv(s.Env, deploymentEnvName.MatchString); err != nil {
 			return err
 		}
 		for i, k := range s.SecretKeys {

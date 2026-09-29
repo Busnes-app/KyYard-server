@@ -42,17 +42,23 @@ const (
 	StepCreate                      = "create"
 	StepStart                       = "start"
 	StepRemove                      = "remove"
-	StepRecheck                     = "recheck" // re-inspects the old container at the start of its replacement
-	OutcomeSkipped                  = "skipped"
-	TypeDeploymentRemove            = "deployment.remove"
-	CapabilityDeploymentRemove      = "deployment.remove"
-	MaxRemovalTargets               = 100 // three steps each fit a result's MaxDeploymentResultSteps
+	StepRecheck                     = "recheck"  // re-inspects the old container at the start of its replacement
+	StepRollback                    = "rollback" // restores the replaced container after a failed start
+	// ExplicitProject and ExplicitRevision are the fixed identity of a direct (edit or run) frame.
+	ExplicitProject            = "direct"
+	ExplicitRevision           = 1
+	OutcomeSkipped             = "skipped"
+	TypeDeploymentRemove       = "deployment.remove"
+	CapabilityDeploymentRemove = "deployment.remove"
+	MaxRemovalTargets          = 100 // three steps each fit a result's MaxDeploymentResultSteps
 	// MaxClockSkew bounds the difference between the server's clock when it built a frame and
 	// the agent's when it reads one, and between an inventory's observed and received times.
 	MaxClockSkew = 5 * time.Minute
 	// MaxDeploymentResultSteps is eight steps per service (precondition, image or pull,
-	// recheck, rename, create, stop, start, remove) plus one per volume.
-	MaxDeploymentResultSteps = 8*MaxDeploymentServices + MaxDeploymentVolumes
+	// recheck, rename, create, stop, start, remove), one per volume and one rollback: only an
+	// explicit request, which has a single service, rolls back. A ninth step per service would
+	// break the MaxDeploymentResultBytes proof.
+	MaxDeploymentResultSteps = 8*MaxDeploymentServices + MaxDeploymentVolumes + 1
 )
 
 // Outcome codes: the closed vocabulary a denied or failed step, and a result that did not
@@ -98,6 +104,7 @@ var stepCodes = map[string]detailRule{
 	"forbidden": detailNone, "rollout_timeout": detailRollout, "conflict": detailObject,
 	"pod_security": detailPodSecurity, "admission_denied": detailObject, "claim_immutable": detailObject,
 	"service_ip_immutable": detailObject, "service_ip_unavailable": detailObject,
+	"rollback_failed": detailNone, "start_failed_rolled_back": detailNone,
 }
 
 var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
@@ -144,7 +151,7 @@ var (
 	deploymentEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 	// Docker's volume name characters, at least two, long enough for a resolved "<project>_<name>" (64+1+64).
 	deploymentVolume  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{1,128}$`)
-	deploymentSteps   = map[string]bool{StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true, StepRecheck: true}
+	deploymentSteps   = map[string]bool{StepRollback: true, StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true, StepRecheck: true}
 	deploymentRestart = map[string]bool{"": true, "no": true, "always": true, "unless-stopped": true, "on-failure": true}
 	resultOutcomes    = map[string]bool{OutcomeSucceeded: true, OutcomeFailed: true, OutcomeDenied: true, OutcomeTimedOut: true, OutcomeUnknown: true}
 )
@@ -185,6 +192,9 @@ type DeploymentRequest struct {
 	Volumes []string `json:"volumes,omitempty"`
 	// Kubernetes is set exactly for a cluster endpoint: the namespace and labels of its objects.
 	Kubernetes *KubernetesTarget `json:"kubernetes,omitempty"`
+	// Explicit is set when the operator saw and kept every setting: each service then carries
+	// its Explicit configuration and the adapter inherits nothing from the replaced container.
+	Explicit bool `json:"explicit,omitempty"`
 }
 type DeploymentService struct {
 	Name          string            `json:"name"`
@@ -206,6 +216,82 @@ type DeploymentService struct {
 	Volumes []KubernetesMount `json:"volumes,omitempty"`
 	// ClusterIP requests a static internal Service address; Kubernetes only.
 	ClusterIP string `json:"cluster_ip,omitempty"`
+	// Explicit is the full configuration of an explicit request; nil otherwise.
+	Explicit *ExplicitService `json:"explicit,omitempty"`
+}
+
+// ExplicitService is every setting of one container that a direct edit or run sets. Replaces may
+// be zero (a run).
+type ExplicitService struct {
+	Command           []string                `json:"command"`
+	Entrypoint        []string                `json:"entrypoint"`
+	User              string                  `json:"user"`
+	WorkingDir        string                  `json:"working_dir"`
+	Hostname          string                  `json:"hostname"`
+	Labels            map[string]string       `json:"labels"` // sent as-is; no Compose labels added
+	NetworkMode       string                  `json:"network_mode"`
+	Networks          []NetworkAttachmentSpec `json:"networks"`
+	Resources         Resources               `json:"resources"`
+	Healthcheck       *Healthcheck            `json:"healthcheck,omitempty"`
+	Privileged        bool                    `json:"privileged"`
+	ReadOnlyRootfs    bool                    `json:"read_only_rootfs"`
+	Init              bool                    `json:"init"`
+	TTY               bool                    `json:"tty"`
+	StdinOpen         bool                    `json:"stdin_open"`
+	CapAdd            []string                `json:"cap_add"`
+	CapDrop           []string                `json:"cap_drop"`
+	SecurityOpt       []string                `json:"security_opt"`
+	ExtraHosts        []string                `json:"extra_hosts"`
+	DNS               []string                `json:"dns"`
+	Devices           []Device                `json:"devices"`
+	Log               LogConfig               `json:"log"`
+	StopSignal        string                  `json:"stop_signal"`
+	StopTimeout       *int                    `json:"stop_timeout,omitempty"`
+	RestartRetries    int                     `json:"restart_retries"`
+	AcknowledgedBinds []string                `json:"acknowledged_binds"` // host paths the operator confirmed
+}
+
+// valid bounds an explicit service with the same rules as ContainerConfiguration.Validate.
+func (e ExplicitService) valid() bool {
+	if !rawArgv(e.Command) || !rawArgv(e.Entrypoint) || !text(e.User, 256) || !text(e.WorkingDir, MaxMountPathBytes) || !text(e.Hostname, 256) || !text(e.NetworkMode, 256) || !text(e.StopSignal, 32) ||
+		(e.StopTimeout != nil && (*e.StopTimeout < 0 || *e.StopTimeout > 3600)) || e.RestartRetries < 0 || e.RestartRetries > MaxRestartCount ||
+		!textList(e.CapAdd, MaxListEntryBytes) || !textList(e.CapDrop, MaxListEntryBytes) || !textList(e.SecurityOpt, MaxListEntryBytes) || !textList(e.ExtraHosts, MaxListEntryBytes) || !textList(e.DNS, MaxListEntryBytes) ||
+		e.Resources.NanoCPUs < 0 || e.Resources.MemoryBytes < 0 || e.Resources.MemorySwapBytes < -1 || e.Resources.PidsLimit < -1 ||
+		len(e.Labels) > MaxLabels || len(e.Networks) > MaxConfigurationNetworks || len(e.Devices) > MaxListEntries || len(e.AcknowledgedBinds) > MaxMounts ||
+		!text(e.Log.Driver, 64) || len(e.Log.Options) > MaxLogOptions {
+		return false
+	}
+	for k, v := range e.Labels {
+		if k == "" || !text(k, MaxLabelBytes) || !text(v, MaxLabelBytes) {
+			return false
+		}
+	}
+	seen := map[string]bool{}
+	for _, n := range e.Networks {
+		if n.Name == "" || !text(n.Name, 256) || seen[n.Name] || !textList(n.Aliases, 256) || !validIPOrEmpty(n.IP) {
+			return false
+		}
+		seen[n.Name] = true
+	}
+	if h := e.Healthcheck; h != nil && (!rawArgv(h.Test) || !nonNegative(h.IntervalSeconds, h.TimeoutSeconds, h.StartPeriodSeconds) || h.Retries < 0 || h.Retries > 1000) {
+		return false
+	}
+	for _, d := range e.Devices {
+		if !text(d.Host, MaxListEntryBytes) || d.Host == "" || !text(d.Container, MaxListEntryBytes) || d.Container == "" || !devicePerms.MatchString(d.Permissions) {
+			return false
+		}
+	}
+	for k, v := range e.Log.Options {
+		if k == "" || !text(k, 256) || !text(v, 256) {
+			return false
+		}
+	}
+	for _, b := range e.AcknowledgedBinds {
+		if !cleanAbsolute(b) {
+			return false
+		}
+	}
+	return true
 }
 
 // ImagePull names an image by host, repository and the digest it must resolve to. Tag, when
@@ -252,7 +338,8 @@ func cleanAbsolute(p string) bool {
 	return len(p) > 1 && len(p) <= MaxMountPathBytes && path.IsAbs(p) && path.Clean(p) == p && CleanText(p, MaxMountPathBytes) == p && !strings.ContainsFunc(p, func(r rune) bool { return unicode.Is(unicode.Cf, r) })
 }
 
-func validMounts(mounts []Mount, used map[string]bool) bool {
+// validMounts checks mounts; tmpfs (no source, writable) only where tmpfs is set.
+func validMounts(mounts []Mount, used map[string]bool, tmpfs bool) bool {
 	if len(mounts) > MaxMounts {
 		return false
 	}
@@ -264,6 +351,7 @@ func validMounts(mounts []Mount, used map[string]bool) bool {
 		case m.Kind == MountVolume && deploymentVolume.MatchString(m.Source):
 			used[m.Source] = true
 		case m.Kind == MountBind && cleanAbsolute(m.Source):
+		case tmpfs && m.Kind == MountTmpfs && m.Source == "" && !m.ReadOnly:
 		default:
 			return false
 		}
@@ -285,11 +373,20 @@ type binding struct {
 
 // validPorts checks ports and records their bindings in used, refusing one already there. A host
 // address is allowed only where hostIP is: a Kubernetes Service has none.
-func validPorts(ports []Port, used map[binding]bool, hostIP bool) error {
+// With exposed, Host 0 is allowed: a port exposed but unpublished, one per container port and protocol.
+func validPorts(ports []Port, used map[binding]bool, hostIP, exposed bool) error {
 	if len(ports) > MaxDeploymentPorts {
 		return errors.New("too many ports")
 	}
 	for _, p := range ports {
+		if exposed && p.Host == 0 {
+			b := binding{"exposed", p.Container, p.Protocol}
+			if p.Container < 1 || p.Container > 65535 || (p.Protocol != "tcp" && p.Protocol != "udp") || p.HostIP != "" || used[b] {
+				return errors.New("invalid port")
+			}
+			used[b] = true
+			continue
+		}
 		if p.Container < 1 || p.Container > 65535 || p.Host < 1 || p.Host > 65535 || (p.Protocol != "tcp" && p.Protocol != "udp") || (p.HostIP != "" && !hostIP) {
 			return errors.New("invalid port")
 		}
@@ -316,14 +413,14 @@ func validPorts(ports []Port, used map[binding]bool, hostIP bool) error {
 	return nil
 }
 
-func validEnv(env map[string]string) error {
+func validEnv(env map[string]string, name func(string) bool) error {
 	if len(env) > MaxDeploymentEnvEntries {
 		return errors.New("too many environment entries")
 	}
 	total := 0
 	for k, v := range env {
 		total += len(k) + len(v)
-		if !deploymentEnvName.MatchString(k) || len(v) > MaxDeploymentEnvValueBytes || !utf8.ValidString(v) || strings.ContainsRune(v, 0) || total > MaxDeploymentEnvBytes {
+		if !name(k) || len(v) > MaxDeploymentEnvValueBytes || !utf8.ValidString(v) || strings.ContainsRune(v, 0) || total > MaxDeploymentEnvBytes {
 			return errors.New("invalid environment value")
 		}
 	}
@@ -346,25 +443,35 @@ func (r DeploymentRequest) Validate(now time.Time) error {
 		return errors.New("invalid service count")
 	}
 	if r.Kubernetes != nil {
+		if r.Explicit {
+			return errors.New("explicit request for a cluster")
+		}
 		return r.validateKubernetes()
+	}
+	if r.Explicit && (len(r.Services) != 1 || r.Project != ExplicitProject || r.Revision != ExplicitRevision) {
+		return errors.New("invalid explicit request")
 	}
 	names, containers, replaces, bindings, pulled, mounted := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[binding]bool{}, map[string]bool{}, map[string]bool{}
 	for _, s := range r.Services {
 		image := (s.Pull == nil && fullImageID(s.ImageID)) || (s.Pull != nil && s.ImageID == "" && s.Pull.valid())
-		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || s.Replaces.Validate() != nil || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 || len(s.Volumes) > 0 || s.ClusterIP != "" {
+		if !deploymentService.MatchString(s.Name) || names[s.Name] || !ValidContainerID(s.ContainerName) || containers[s.ContainerName] || !image || (s.Replaces.Validate() != nil && !(r.Explicit && s.Replaces == InspectionTarget{})) || replaces[s.Replaces.ContainerID] || !deploymentRestart[s.Restart] || len(s.SecretKeys) > 0 || len(s.Volumes) > 0 || s.ClusterIP != "" || (s.Explicit != nil) != r.Explicit || (s.Explicit != nil && !s.Explicit.valid()) {
 			return errors.New("invalid deployment service")
 		}
 		names[s.Name], containers[s.ContainerName], replaces[s.Replaces.ContainerID] = true, true, true
 		if s.Pull != nil {
 			pulled[s.Pull.Host()] = true
 		}
-		if s.Mounts == nil || !validMounts(s.Mounts, mounted) {
+		if s.Mounts == nil || !validMounts(s.Mounts, mounted, r.Explicit) {
 			return errors.New("invalid mount")
 		}
-		if err := validPorts(s.Ports, bindings, true); err != nil {
+		if err := validPorts(s.Ports, bindings, true, r.Explicit); err != nil {
 			return err
 		}
-		if err := validEnv(s.Env); err != nil {
+		envName := deploymentEnvName.MatchString
+		if r.Explicit {
+			envName = configurationEnvName
+		}
+		if err := validEnv(s.Env, envName); err != nil {
 			return err
 		}
 	}

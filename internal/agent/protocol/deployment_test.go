@@ -476,7 +476,7 @@ func TestDeploymentStepCodeDetails(t *testing.T) {
 			t.Errorf("code %q detail %q: %v", tc.code, tc.detail, err)
 		}
 	}
-	if len(stepCodes) != 38 || len(resultCodes) != 8 {
+	if len(stepCodes) != 40 || len(resultCodes) != 8 {
 		t.Fatalf("closed sets: %d step codes, %d result codes", len(stepCodes), len(resultCodes))
 	}
 }
@@ -557,6 +557,7 @@ func TestDeploymentResultWorstCaseFitsTheFrame(t *testing.T) {
 				r.Steps = append(r.Steps, step(name, kind, stepOutcome(i, j)))
 			}
 			if i == 0 {
+				r.Steps = append(r.Steps, step(name, StepRollback, stepOutcome(0, 1)))
 				for v := 0; v < MaxDeploymentVolumes; v++ {
 					r.Steps = append(r.Steps, step(name, StepVolume, stepOutcome(0, 1)))
 				}
