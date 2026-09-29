@@ -25,6 +25,7 @@ var (
 	directDigest  = "sha256:" + strings.Repeat("c", 64)
 	directDB      = strings.Repeat("d", 64)
 	directCreated = time.Unix(1700000000, 0).UTC()
+	localImage    = "sha256:" + strings.Repeat("7", 64) // built on the host: a tag, no digest
 	directCaps    = []string{protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentPull, protocol.CapabilityContainerInspect, protocol.CapabilityContainerConfigure}
 )
 
@@ -42,7 +43,8 @@ func directFixture(t *testing.T, capabilities []string) terminalFixture {
 			{ID: directDB, Name: "db", ImageID: directImage, CreatedAt: directCreated, State: "running", Labels: map[string]string{}, Networks: []string{"bridge"},
 				Ports: []protocol.Port{{HostIP: "0.0.0.0", Host: 5432, Container: 5432, Protocol: "tcp"}}, Mounts: []protocol.Mount{}},
 		},
-		Images:   []protocol.Image{{ID: directImage, Tags: []string{"ghcr.io/acme/web:1"}, Digests: []string{"ghcr.io/acme/web@" + directDigest}}},
+		Images: []protocol.Image{{ID: directImage, Tags: []string{"ghcr.io/acme/web:1"}, Digests: []string{"ghcr.io/acme/web@" + directDigest}},
+			{ID: localImage, Tags: []string{"web-local:dev"}, Digests: []string{}}},
 		Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
 	})
 	syncAgent(t, f)
@@ -301,7 +303,8 @@ func TestRunRefusesTakenNamesPortsAndUnacknowledgedBinds(t *testing.T) {
 		t.Fatalf("a refused run audited acknowledgements: %v", got)
 	}
 	// The refusals sent nothing: the next frame the agent reads is this run's.
-	w := tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(spec, "/srv/web", "/srv/logs"), true)
+	// "/srv/unused" matches no mount: acknowledged, but nothing to audit.
+	w := tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(spec, "/srv/web", "/srv/logs", "/srv/unused"), true)
 	if w.Code != 202 {
 		t.Fatalf("acknowledged run: %d %s", w.Code, w.Body.String())
 	}
@@ -309,7 +312,7 @@ func TestRunRefusesTakenNamesPortsAndUnacknowledgedBinds(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &cmd)
 	req := applyFrame(t, f)
 	svc := req.Services[0]
-	if svc.Replaces != (protocol.InspectionTarget{}) || svc.ContainerName != "fresh" || !slices.Equal(svc.Explicit.AcknowledgedBinds, []string{"/srv/web", "/srv/logs"}) {
+	if svc.Replaces != (protocol.InspectionTarget{}) || svc.ContainerName != "fresh" || !slices.Equal(svc.Explicit.AcknowledgedBinds, []string{"/srv/web", "/srv/logs", "/srv/unused"}) {
 		t.Fatalf("run frame: %+v", svc)
 	}
 	if got := acknowledged(); !slices.Equal(got, []string{"/srv/logs", "/srv/web"}) {
@@ -331,17 +334,38 @@ func TestRunRefusesTakenNamesPortsAndUnacknowledgedBinds(t *testing.T) {
 	activityShows(t, f, created, cmd.ID)
 }
 
-// A container from a locally built image (no repository digest) keeps its image: no pull.
-func TestRecreateKeepsALocalImage(t *testing.T) {
-	f := directFixture(t, directCaps)
-	api.SetDigestResolverForTest(f.s, &countingResolver{})
-	spec := directSpec("web")
-	spec.Image = protocol.ImagePull{Reference: "web-local:dev"}
-	if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true); w.Code != 202 {
-		t.Fatalf("local image: %d %s", w.Code, w.Body.String())
-	}
-	if svc := applyFrame(t, f).Services[0]; svc.ImageID != directImage || svc.Pull != nil {
-		t.Fatalf("local image frame: %+v", svc)
+// The host's image is kept only when it is the image the spec names: its digest when the spec
+// keeps one, otherwise a tag equal to the reference. Anything else pulls.
+func TestDirectImageKeepsOnlyTheImageTheSpecNames(t *testing.T) {
+	pulled := "sha256:" + strings.Repeat("f", 64)
+	for _, tc := range []struct {
+		name              string
+		reference, digest string
+		imageID           string
+		wantLocal         string
+		wantPullDigest    string
+	}{
+		{"digest-less image tagged as the reference", "web-local:dev", "", localImage, localImage, ""},
+		{"digest-less image, reference changed", "web-local:prod", "", localImage, "", pulled},
+		{"kept digest listed by the image", "ghcr.io/acme/web:1", directDigest, directImage, directImage, ""},
+		{"kept digest the image does not list", "ghcr.io/acme/web:1", "sha256:" + strings.Repeat("9", 64), directImage, "", "sha256:" + strings.Repeat("9", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := directFixture(t, directCaps)
+			api.SetDigestResolverForTest(f.s, fixedResolver{pulled})
+			if err := f.st.Tenancy().SetAnonymousPull(f.ctx, store.TenantAccess{ActorID: "usr_execadmin", OrganizationID: "a"}, true); err != nil {
+				t.Fatal(err)
+			}
+			spec := directSpec("fresh")
+			spec.Image, spec.ImageID, spec.Ports, spec.Mounts = protocol.ImagePull{Reference: tc.reference, Digest: tc.digest}, tc.imageID, []protocol.Port{}, []protocol.Mount{}
+			if w := tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(spec), true); w.Code != 202 {
+				t.Fatalf("run: %d %s", w.Code, w.Body.String())
+			}
+			svc := applyFrame(t, f).Services[0]
+			if svc.ImageID != tc.wantLocal || (tc.wantPullDigest == "") != (svc.Pull == nil) || (svc.Pull != nil && svc.Pull.Digest != tc.wantPullDigest) {
+				t.Fatalf("image %q pull %+v", svc.ImageID, svc.Pull)
+			}
+		})
 	}
 }
 

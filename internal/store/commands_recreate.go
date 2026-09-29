@@ -84,7 +84,14 @@ func (t *tenancyStore) CreateDirectCommand(ctx context.Context, a TenantAccess, 
 	if svc.Pull != nil {
 		image = svc.Pull.Digest
 	}
-	details := fmt.Sprintf("image=%s binds=%d fields=%s", image, len(svc.Explicit.AcknowledgedBinds), strings.Join(directFields(svc), ","))
+	// Only acknowledgements a bind uses are audited and counted.
+	var acknowledged []string
+	for _, path := range svc.Explicit.AcknowledgedBinds {
+		if slices.ContainsFunc(svc.Mounts, func(m protocol.Mount) bool { return m.Kind == protocol.MountBind && m.Source == path }) {
+			acknowledged = append(acknowledged, path)
+		}
+	}
+	details := fmt.Sprintf("image=%s binds=%d fields=%s", image, len(acknowledged), strings.Join(directFields(svc), ","))
 	err := t.withTenantTargetDetails(ctx, a, permissions.ContainerConfigure, target, &details, func(tx *sql.Tx) error {
 		lock := ""
 		if t.store.driver == "postgres" {
@@ -122,7 +129,7 @@ func (t *tenancyStore) CreateDirectCommand(ctx context.Context, a TenantAccess, 
 			return err
 		}
 		// One row per acknowledged host path, committed with the command or not at all.
-		for _, path := range svc.Explicit.AcknowledgedBinds {
+		for _, path := range acknowledged {
 			if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?,?)`),
 				a.actor(), "container.bind.acknowledged", protocol.CleanText(target, 255), protocol.CleanText(path, 200), a.IPAddress, now, "organization", a.OrganizationID, a.EnvironmentID, a.CorrelationID, "success"); err != nil {
 				return err
