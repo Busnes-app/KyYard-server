@@ -347,6 +347,8 @@ func TestDirectImageKeepsOnlyTheImageTheSpecNames(t *testing.T) {
 	}{
 		{"digest-less image tagged as the reference", "web-local:dev", "", localImage, localImage, ""},
 		{"digest-less image, reference changed", "web-local:prod", "", localImage, "", pulled},
+		// A container KyYard created names its image by ID, so a re-read reports that as the reference.
+		{"reference is the image's own ID", localImage, "", localImage, localImage, ""},
 		{"kept digest listed by the image", "ghcr.io/acme/web:1", directDigest, directImage, directImage, ""},
 		{"kept digest the image does not list", "ghcr.io/acme/web:1", "sha256:" + strings.Repeat("9", 64), directImage, "", "sha256:" + strings.Repeat("9", 64)},
 	} {

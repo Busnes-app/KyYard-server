@@ -162,7 +162,7 @@ func (s *Server) handleDirectCommand(w http.ResponseWriter, r *http.Request, a s
 
 // directImage points the frame's service at the spec's image ID (or, with none, the recreate
 // target's) when the host has that image and it is the one the spec names; a locally built image
-// with no digest qualifies by its tag. Otherwise it pulls: at the kept digest (what the operator
+// with no digest qualifies by its tag or by a reference that is its ID. Otherwise it pulls: at the kept digest (what the operator
 // saw), or with none kept at the reference's current registry digest. It writes the response and
 // reports false on refusal.
 func (s *Server) directImage(w http.ResponseWriter, r *http.Request, a store.TenantAccess, ep *store.Endpoint, spec protocol.ContainerConfiguration, targetImage string, frame *protocol.DeploymentRequest) bool {
@@ -179,7 +179,8 @@ func (s *Server) directImage(w http.ResponseWriter, r *http.Request, a store.Ten
 		}
 		var snap protocol.Snapshot
 		// Only the image the spec names: its kept digest, or with none a tag equal to the
-		// reference. A changed reference or a cleared digest pulls instead.
+		// reference or the reference being its ID (a container KyYard created names its image
+		// that way). A changed reference or a cleared digest pulls instead.
 		if inv != nil && json.Unmarshal(inv.Snapshot, &snap) == nil && slices.ContainsFunc(snap.Images, func(im protocol.Image) bool {
 			if im.ID != local {
 				return false
@@ -187,7 +188,7 @@ func (s *Server) directImage(w http.ResponseWriter, r *http.Request, a store.Ten
 			if spec.Image.Digest != "" {
 				return slices.ContainsFunc(im.Digests, func(d string) bool { return strings.HasSuffix(d, "@"+spec.Image.Digest) })
 			}
-			return slices.Contains(im.Tags, spec.Image.Reference)
+			return spec.Image.Reference == im.ID || slices.Contains(im.Tags, spec.Image.Reference)
 		}) {
 			svc.ImageID = local
 			return true
