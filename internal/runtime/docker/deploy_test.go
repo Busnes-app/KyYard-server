@@ -52,6 +52,7 @@ type fakeDeployEngine struct {
 	oldStartStatus   int                                            // POST /containers/{old}/start, the rollback's restart; 204 default
 	removeNewStatus  int                                            // DELETE /containers/{new}, the rollback's removal; 204 default
 	connectStatus    int                                            // POST /networks/{name}/connect; 200 default
+	onStart          func()                                         // runs on the handler before POST /containers/{new}/start answers
 	pullStatus       int                                            // POST /images/create; 200 default
 	pullStatusFor    map[string]int                                 // per fromImage, overriding pullStatus
 	pullBody         string                                         // its progress stream
@@ -155,6 +156,9 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			w.WriteHeader(f.createStatus)
 			_, _ = w.Write([]byte(`{"Id":"` + f.createdID + `","Warnings":[]}`))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+newID+"/start"):
+			if f.onStart != nil {
+				f.onStart()
+			}
 			w.WriteHeader(f.startStatus)
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/start"):
 			w.WriteHeader(f.oldStartStatus)
@@ -1165,5 +1169,159 @@ func TestDeployExplicitBindNeedsAcknowledgement(t *testing.T) {
 	f = newFakeDeployEngine(t)
 	if res = f.client().Deploy(context.Background(), explicitRequest(s), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("acknowledged: %s", explicitSteps(res))
+	}
+}
+
+// 1a: a failed connect removes the new container and renames the old one back, so a retry
+// finds the host as it was.
+func TestDeployExplicitConnectFailureRestores(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.connectStatus = 500
+	res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+	if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=failed:runtime_status: 500,stop=skipped,start=skipped,remove=skipped" {
+		t.Fatalf("steps: %s", got)
+	}
+	tail := "POST /containers/create,POST /networks/back/connect,DELETE /containers/" + newID + ",POST /containers/" + oldID + "/rename"
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, tail) {
+		t.Fatalf("calls:\n got %s\nwant suffix %s", got, tail)
+	}
+	if del, _ := f.call("DELETE", "/containers/"+newID); del.Query != "force=1" {
+		t.Fatalf("delete query %q", del.Query)
+	}
+	f.mu.Lock()
+	last := f.calls[len(f.calls)-1]
+	f.mu.Unlock()
+	if last.Query != "name=shop-web-1" {
+		t.Fatalf("rename back: %q", last.Query)
+	}
+}
+
+// A failed connect on a run removes the new container; there is no old one to restore.
+func TestDeployExplicitRunConnectFailureRemovesTheNewContainer(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.connectStatus = 500
+	s := explicitService()
+	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
+	f.client().Deploy(context.Background(), explicitRequest(s), func() {})
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /networks/back/connect,DELETE /containers/"+newID) {
+		t.Fatalf("calls: %s", got)
+	}
+}
+
+// 1b: a run whose start fails removes the container it created, within the start step.
+func TestDeployExplicitRunStartFailureRemovesTheNewContainer(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.startStatus = 500
+	s := explicitService()
+	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
+	res := f.client().Deploy(context.Background(), explicitRequest(s), func() {})
+	if got := explicitSteps(res); got != "image=succeeded,create=succeeded,start=failed:runtime_status: 500" || res.Validate() != nil {
+		t.Fatalf("steps: %s", got)
+	}
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/"+newID+"/start,DELETE /containers/"+newID) {
+		t.Fatalf("calls: %s", got)
+	}
+}
+
+// 1c: the parked name derives from ContainerName and never stacks: an old container already
+// parked by this deployment is not renamed again; one parked by another is renamed from the base.
+func TestDeployRenameDoesNotStackSuffixes(t *testing.T) {
+	for name, want := range map[string]string{
+		"/shop-web-1.kyyard-prev-3f2b1c9e": "",
+		"/shop-web-1.kyyard-prev-0badbeef": "name=shop-web-1.kyyard-prev-3f2b1c9e",
+		"/shop-web-1":                      "name=shop-web-1.kyyard-prev-3f2b1c9e",
+	} {
+		f := newFakeDeployEngine(t)
+		f.oldContainer["Name"] = name
+		res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+		if res.Outcome != protocol.OutcomeSucceeded {
+			t.Fatalf("%s: %s", name, explicitSteps(res))
+		}
+		rename, renamed := f.call("POST", "/containers/"+oldID+"/rename")
+		if rename.Query != want || renamed != (want != "") {
+			t.Fatalf("%s: rename %q", name, rename.Query)
+		}
+	}
+}
+
+// 2: the restore runs even when the run's context is cancelled during start.
+func TestDeployExplicitRollbackSurvivesCancellation(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.onStart = func() {
+		cancel()
+		time.Sleep(50 * time.Millisecond)
+	}
+	res := f.client().Deploy(ctx, explicitRequest(explicitService()), func() {})
+	if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=succeeded,stop=succeeded,start=unknown:start_failed_rolled_back,rollback=succeeded,remove=skipped" {
+		t.Fatalf("steps: %s", got)
+	}
+	tail := "DELETE /containers/" + newID + ",POST /containers/" + oldID + "/rename,POST /containers/" + oldID + "/start"
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, tail) {
+		t.Fatalf("calls: %s", got)
+	}
+}
+
+// 3: a run's binds must each be acknowledged; otherwise create is denied with no daemon call.
+func TestDeployExplicitRunBindNeedsAcknowledgement(t *testing.T) {
+	s := explicitService()
+	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
+	s.Mounts = append(s.Mounts, protocol.Mount{Kind: protocol.MountBind, Source: "/srv/data", Target: "/data"})
+	f := newFakeDeployEngine(t)
+	started := false
+	res := f.client().Deploy(context.Background(), explicitRequest(s), func() { started = true })
+	if got := explicitSteps(res); got != "image=succeeded,create=denied:bind_missing,start=skipped" || started || res.Validate() != nil {
+		t.Fatalf("unacknowledged: %s started=%v", got, started)
+	}
+	if _, created := f.call("POST", "/containers/create"); created {
+		t.Fatal("created with an unacknowledged bind")
+	}
+	s.Explicit.AcknowledgedBinds = []string{"/srv/data"}
+	f = newFakeDeployEngine(t)
+	if res = f.client().Deploy(context.Background(), explicitRequest(s), func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("acknowledged: %s", explicitSteps(res))
+	}
+}
+
+// 4: an explicit frame mounts any existing volume as it is and creates a missing one without
+// labels; a non-explicit frame still refuses another project's volume.
+func TestDeployExplicitVolumes(t *testing.T) {
+	foreign := map[string]any{"Name": "shop_data", "Driver": "local", "Labels": map[string]string{"com.docker.compose.project": "shop"}, "Options": nil}
+	s := explicitService()
+	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
+	s.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: "shop_data", Target: "/a"}, {Kind: protocol.MountVolume, Source: "data", Target: "/b"}}
+	req := explicitRequest(s)
+	req.Volumes = []string{"shop_data", "data"}
+	f := newFakeDeployEngine(t)
+	f.volumes = map[string]any{"shop_data": foreign}
+	res := f.client().Deploy(context.Background(), req, func() {})
+	if got := explicitSteps(res); got != "volume=succeeded,volume=succeeded,image=succeeded,create=succeeded,start=succeeded" {
+		t.Fatalf("steps: %s", got)
+	}
+	c, ok := f.call("POST", "/volumes/create")
+	if !ok || c.Body != `{"Name":"data"}` {
+		t.Fatalf("volume create: %+v", c)
+	}
+	w := webService()
+	w.Mounts = []protocol.Mount{{Kind: protocol.MountVolume, Source: "other_data", Target: "/a"}}
+	plain := request(w)
+	plain.Volumes = []string{"other_data"}
+	f = newFakeDeployEngine(t)
+	f.volumes = map[string]any{"other_data": map[string]any{"Name": "other_data", "Driver": "local", "Labels": map[string]string{"com.docker.compose.project": "other"}, "Options": nil}}
+	if res = f.client().Deploy(context.Background(), plain, func() {}); res.Steps[1].Code != "volume_not_owned" {
+		t.Fatalf("non-explicit: %s", explicitSteps(res))
+	}
+}
+
+// 5: Init is sent only when true; false leaves the daemon default.
+func TestDeployExplicitInitOnlyWhenSet(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	s := explicitService()
+	s.Explicit.Init = false
+	f.client().Deploy(context.Background(), explicitRequest(s), func() {})
+	c, _ := f.call("POST", "/containers/create")
+	if strings.Contains(c.Body, `"Init"`) {
+		t.Fatalf("Init sent: %s", c.Body)
 	}
 }

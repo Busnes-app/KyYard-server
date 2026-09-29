@@ -462,7 +462,9 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
 	if run(r.req, s) {
 		created := r.create(ctx, p)
-		r.start(ctx, s, created)
+		if r.start(ctx, s, created) {
+			r.discard(ctx, created) // part of the failed start: a retry must find the name free
+		}
 		return
 	}
 	budget := replaceBudget
@@ -490,9 +492,12 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		return succeeded()
 	})
 	r.step(s.Name, protocol.StepRename, func() (string, string, string) {
+		name := parked(s.ContainerName, r.req.Deployment)
+		if p.name == name {
+			return succeeded() // this deployment parked it already
+		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
-		name := p.name + ".kyyard-prev-" + r.req.Deployment[:8]
 		status, err := r.c.post(cctx, "/containers/"+old+"/rename?name="+url.QueryEscape(name))
 		if err != nil || status >= 400 {
 			if status == http.StatusConflict {
@@ -535,6 +540,12 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 	var created string
 	r.step(s.Name, protocol.StepCreate, func() (string, string, string) {
 		if run(r.req, s) {
+			// A run has no precondition: its binds are checked here, before any daemon call.
+			for _, m := range s.Mounts {
+				if m.Kind == protocol.MountBind && !slices.Contains(s.Explicit.AcknowledgedBinds, m.Source) {
+					return deny("bind_missing")
+				}
+			}
 			if time.Until(r.req.Deadline) < replaceBudget {
 				return protocol.OutcomeTimedOut, "deadline", ""
 			}
@@ -569,6 +580,10 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 				if err != nil || status != http.StatusOK {
 					outcome, code, detail := r.outcomeFor(nctx, err, status)
 					ncancel()
+					// Leave the host as it was so a retry is not wedged on the name.
+					if r.discard(ctx, created) && !run(r.req, s) {
+						r.unpark(ctx, p)
+					}
 					return outcome, code, detail
 				}
 				ncancel()
@@ -614,22 +629,16 @@ func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, cre
 // failed start, which the skip rule in step would otherwise swallow. Success recodes the start
 // start_failed_rolled_back; failure is rollback_failed and the start keeps its code.
 func (r *deployRun) rollback(ctx context.Context, p prepared, created string, running bool) {
-	old := url.PathEscape(p.s.Replaces.ContainerID)
 	restore := func() bool {
-		cctx, cancel := context.WithTimeout(ctx, callBudget)
-		defer cancel()
-		if status, err := r.c.del(cctx, "/containers/"+url.PathEscape(created)+"?force=1"); err != nil || (status >= 400 && status != http.StatusNotFound) {
-			return false
-		}
-		if status, err := r.c.post(cctx, "/containers/"+old+"/rename?name="+url.QueryEscape(p.name)); err != nil || status >= 400 {
+		if !r.discard(ctx, created) || !r.unpark(ctx, p) {
 			return false
 		}
 		if !running {
 			return true
 		}
-		sctx, scancel := context.WithTimeout(ctx, operationBudget)
-		defer scancel()
-		status, err := r.c.post(sctx, "/containers/"+old+"/start")
+		cctx, cancel := restoring(ctx)
+		defer cancel()
+		status, err := r.c.post(cctx, "/containers/"+url.PathEscape(p.s.Replaces.ContainerID)+"/start")
 		return err == nil && (status < 400 || status == http.StatusNotModified)
 	}
 	s := protocol.DeploymentStep{Service: p.s.Name, Step: protocol.StepRollback, Outcome: protocol.OutcomeSucceeded}
@@ -640,6 +649,37 @@ func (r *deployRun) rollback(ctx context.Context, p prepared, created string, ru
 		s.Outcome, s.Code = protocol.OutcomeFailed, "rollback_failed"
 	}
 	r.res.Steps = append(r.res.Steps, s)
+}
+
+// parkedSuffix marks an old container renamed aside for a deployment's replacement.
+const parkedSuffix = ".kyyard-prev-"
+
+// parked is the name a deployment parks the old container under.
+func parked(containerName, deployment string) string {
+	return containerName + parkedSuffix + deployment[:8]
+}
+
+// restoring bounds a restore by its own budget, detached from the run's cancellation and
+// deadline: an agent shutting down mid-start still puts the old container back.
+func restoring(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), rollbackBudget)
+}
+
+// discard force-removes a container this run created; gone already counts.
+func (r *deployRun) discard(ctx context.Context, created string) bool {
+	cctx, cancel := restoring(ctx)
+	defer cancel()
+	status, err := r.c.del(cctx, "/containers/"+url.PathEscape(created)+"?force=1")
+	return err == nil && (status < 400 || status == http.StatusNotFound)
+}
+
+// unpark gives the old container its name back, without any parked suffix.
+func (r *deployRun) unpark(ctx context.Context, p prepared) bool {
+	cctx, cancel := restoring(ctx)
+	defer cancel()
+	name, _, _ := strings.Cut(p.name, parkedSuffix)
+	status, err := r.c.post(cctx, "/containers/"+url.PathEscape(p.s.Replaces.ContainerID)+"/rename?name="+url.QueryEscape(name))
+	return err == nil && status < 400
 }
 
 type portBinding struct {
@@ -703,7 +743,7 @@ type containerCreate struct {
 		PidsLimit      int64      `json:"PidsLimit,omitempty"`
 		Privileged     bool       `json:"Privileged,omitempty"`
 		ReadonlyRootfs bool       `json:"ReadonlyRootfs,omitempty"`
-		Init           *bool      `json:"Init,omitempty"`
+		Init           bool       `json:"Init,omitempty"` // false leaves the daemon default
 		CapAdd         []string   `json:"CapAdd,omitempty"`
 		CapDrop        []string   `json:"CapDrop,omitempty"`
 		SecurityOpt    []string   `json:"SecurityOpt,omitempty"`
@@ -775,7 +815,7 @@ func explicitBody(body *containerCreate, e *protocol.ExplicitService) {
 	}
 	h.RestartPolicy.MaximumRetryCount = e.RestartRetries
 	h.Memory, h.MemorySwap, h.NanoCpus, h.PidsLimit = e.Resources.MemoryBytes, e.Resources.MemorySwapBytes, e.Resources.NanoCPUs, e.Resources.PidsLimit
-	h.Privileged, h.ReadonlyRootfs, h.Init = e.Privileged, e.ReadOnlyRootfs, &e.Init
+	h.Privileged, h.ReadonlyRootfs, h.Init = e.Privileged, e.ReadOnlyRootfs, e.Init
 	h.CapAdd, h.CapDrop, h.SecurityOpt, h.ExtraHosts, h.Dns = e.CapAdd, e.CapDrop, e.SecurityOpt, e.ExtraHosts, e.DNS
 	for _, d := range e.Devices {
 		h.Devices = append(h.Devices, device{d.Host, d.Container, d.Permissions})

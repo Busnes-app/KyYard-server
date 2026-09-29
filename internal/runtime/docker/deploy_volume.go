@@ -54,7 +54,8 @@ func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentServ
 			var v dockerVolume
 			err := r.c.get(cctx, "/volumes/"+url.PathEscape(m.Source), &v)
 			switch {
-			case err == nil && v.owned(r.req.Project):
+			case err == nil && (r.req.Explicit || v.owned(r.req.Project)):
+				// An explicit frame names each volume the operator saw and kept: used as it is.
 				return succeeded()
 			case err == nil && !mountsVolume(old, m.Source):
 				return deny("volume_not_owned")
@@ -69,22 +70,26 @@ func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentServ
 			case statusOf(err) != http.StatusNotFound:
 				return r.outcomeFor(cctx, err, statusOf(err))
 			}
-			// Only the project's own volumes are created; an external one must already exist.
-			short, ok := strings.CutPrefix(m.Source, r.req.Project+"_")
-			if !ok || short == "" {
-				return deny("volume_missing")
-			}
 			body := struct {
 				Name   string            `json:"Name"`
-				Labels map[string]string `json:"Labels"`
-			}{m.Source, map[string]string{"com.docker.compose.project": r.req.Project, "com.docker.compose.volume": short}}
+				Labels map[string]string `json:"Labels,omitempty"`
+			}{Name: m.Source}
+			// An explicit frame creates any missing name, unlabelled. Otherwise only the project's
+			// own volumes are created; an external one must already exist.
+			if !r.req.Explicit {
+				short, ok := strings.CutPrefix(m.Source, r.req.Project+"_")
+				if !ok || short == "" {
+					return deny("volume_missing")
+				}
+				body.Labels = map[string]string{"com.docker.compose.project": r.req.Project, "com.docker.compose.volume": short}
+			}
 			status, err := r.c.postJSON(cctx, "/volumes/create", body, &v)
 			switch {
 			case err != nil:
 				return r.outcomeFor(cctx, err, status)
 			case status != http.StatusCreated:
 				return fail("volume_create_failed")
-			case !v.owned(r.req.Project):
+			case !r.req.Explicit && !v.owned(r.req.Project):
 				// Docker answers 201 with the existing volume when the name was taken meanwhile.
 				return deny("volume_not_owned")
 			}
