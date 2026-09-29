@@ -82,11 +82,6 @@ func (s *Server) handleDirectCommand(w http.ResponseWriter, r *http.Request, a s
 			s.tenantError(w, store.ErrContainerManaged)
 			return
 		}
-		// The form echoes the read's list; the note catches a form that dropped it.
-		if s.configurationIncomplete(a.Principal(), replaces.ContainerID) {
-			s.tenantError(w, &store.InvalidSpecError{Blockers: []string{"configuration_incomplete"}})
-			return
-		}
 	}
 	// Settings the agent could not express would be lost by the recreate.
 	if len(spec.Unsupported) > 0 {
@@ -130,7 +125,7 @@ func (s *Server) handleDirectCommand(w http.ResponseWriter, r *http.Request, a s
 			frame.Volumes = append(frame.Volumes, m.Source)
 		}
 	}
-	dc := store.DirectCommand{Action: action, Confirm: body.Confirm, MaxFrameBytes: maxFrameBytes(ep.Capabilities), Frame: frame}
+	dc := store.DirectCommand{Action: action, Confirm: body.Confirm, MaxFrameBytes: maxFrameBytes(ep.Capabilities), Frame: frame, AllowPrivileged: s.config.Container.AllowPrivileged}
 	if body.Expects != nil {
 		dc.State = body.Expects.State
 	}
@@ -160,15 +155,16 @@ func (s *Server) handleDirectCommand(w http.ResponseWriter, r *http.Request, a s
 	s.writeJSON(w, http.StatusAccepted, cmd)
 }
 
-// directImage points the frame's service at the spec's image ID (or, with none, the recreate
-// target's) when the host has that image and it is the one the spec names; a locally built image
-// with no digest qualifies by its tag or by a reference that is its ID. Otherwise it pulls: at the kept digest (what the operator
-// saw), or with none kept at the reference's current registry digest. It writes the response and
-// reports false on refusal.
+// directImage points the frame's service at the spec's image ID when the host has that image
+// and it is the one the spec names; a locally built image with no digest qualifies by its tag or
+// by a reference that is its ID. With no image ID the recreate target's image stands in, but only
+// for a kept digest or a reference that is its ID: a cleared digest asks for the registry's.
+// Otherwise it pulls: at the kept digest (what the operator saw), or with none kept at the
+// reference's current registry digest. It writes the response and reports false on refusal.
 func (s *Server) directImage(w http.ResponseWriter, r *http.Request, a store.TenantAccess, ep *store.Endpoint, spec protocol.ContainerConfiguration, targetImage string, frame *protocol.DeploymentRequest) bool {
 	svc := &frame.Services[0]
-	local := spec.ImageID
-	if local == "" {
+	local, fallback := spec.ImageID, spec.ImageID == ""
+	if fallback {
 		local = targetImage
 	}
 	if local != "" {
@@ -188,7 +184,7 @@ func (s *Server) directImage(w http.ResponseWriter, r *http.Request, a store.Ten
 			if spec.Image.Digest != "" {
 				return slices.ContainsFunc(im.Digests, func(d string) bool { return strings.HasSuffix(d, "@"+spec.Image.Digest) })
 			}
-			return spec.Image.Reference == im.ID || slices.Contains(im.Tags, spec.Image.Reference)
+			return spec.Image.Reference == im.ID || (!fallback && slices.Contains(im.Tags, spec.Image.Reference))
 		}) {
 			svc.ImageID = local
 			return true

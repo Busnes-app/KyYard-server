@@ -170,3 +170,135 @@ func TestDirectCommandsHaveOneWriter(t *testing.T) {
 		t.Fatalf("unsent: %+v", c)
 	}
 }
+
+// I7: a direct command's outcome is audited under its correlation ID, for its actor.
+func TestDirectCommandOutcomesAreAudited(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	image := "sha256:" + strings.Repeat("b", 64)
+	endpointID := activeEndpointWith(t, st.Tenancy(), a, nil, []protocol.Image{{ID: image, Tags: []string{}, Digests: []string{}}})
+	outcome := func(correlation string) *AuditRecord {
+		t.Helper()
+		rows, _, err := st.Audit().ListAuditRecords(ctx, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found *AuditRecord
+		for _, r := range rows {
+			if r.CorrelationID == correlation && strings.HasPrefix(r.Details, "code=") {
+				if found != nil {
+					t.Fatalf("two outcome rows: %+v %+v", found, r)
+				}
+				found = r
+			}
+		}
+		if found == nil {
+			t.Fatalf("no outcome row for %s", correlation)
+		}
+		return found
+	}
+	a.CorrelationID = "direct-one"
+	cmd, req, err := st.Tenancy().CreateDirectCommand(ctx, a, endpointID, directRun("one", image))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := strings.Repeat("e", 64)
+	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{},
+		Services: []protocol.DeploymentIdentity{{Service: "direct", ContainerID: created, ImageID: image, CreatedUnix: time.Now().Unix()}}}
+	if err := st.Tenancy().SettleDirectCommand(ctx, endpointID, res); err != nil {
+		t.Fatal(err)
+	}
+	r := outcome(cmd.RequestID)
+	if r.Action != ActionRun || r.UserID != a.ActorID || r.Result != "success" || r.Resource != endpointID+"/"+created || r.Details != "code=- new="+created || r.OrganizationID != a.OrganizationID {
+		t.Fatalf("settled row: %+v", r)
+	}
+	a.CorrelationID = "direct-two"
+	next, _, err := st.Tenancy().CreateDirectCommand(ctx, a, endpointID, directRun("two", image))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tenancy().FailDirectCommand(ctx, endpointID, next.ID, "deployment_not_sent"); err != nil {
+		t.Fatal(err)
+	}
+	if r := outcome(next.RequestID); r.Action != ActionRun || r.Result != "failure" || r.Resource != endpointID+"/-" || r.Details != "code=deployment_not_sent new=-" {
+		t.Fatalf("failed row: %+v", r)
+	}
+	// A repeat changes nothing and writes no second row.
+	if err := st.Tenancy().FailDirectCommand(ctx, endpointID, next.ID, "deployment_not_sent"); err != nil {
+		t.Fatal(err)
+	}
+	outcome(next.RequestID)
+}
+
+// I6: one bind rule with the agent: same source and target, and no read-only bind made writable.
+func TestDirectBlockersBindRule(t *testing.T) {
+	old := &protocol.Container{ID: "old", Mounts: []protocol.Mount{{Kind: protocol.MountBind, Source: "/srv", Target: "/data"}, {Kind: protocol.MountBind, Source: "/ro", Target: "/ro", ReadOnly: true}}}
+	for name, c := range map[string]struct {
+		m  protocol.Mount
+		ok bool
+	}{
+		"same":       {protocol.Mount{Kind: protocol.MountBind, Source: "/srv", Target: "/data"}, true},
+		"tightened":  {protocol.Mount{Kind: protocol.MountBind, Source: "/srv", Target: "/data", ReadOnly: true}, true},
+		"kept ro":    {protocol.Mount{Kind: protocol.MountBind, Source: "/ro", Target: "/ro", ReadOnly: true}, true},
+		"loosened":   {protocol.Mount{Kind: protocol.MountBind, Source: "/ro", Target: "/ro"}, false},
+		"moved":      {protocol.Mount{Kind: protocol.MountBind, Source: "/srv", Target: "/elsewhere"}, false},
+		"new source": {protocol.Mount{Kind: protocol.MountBind, Source: "/etc", Target: "/data"}, false},
+	} {
+		svc := &protocol.DeploymentService{ContainerName: "web", Mounts: []protocol.Mount{c.m}, Explicit: &protocol.ExplicitService{}}
+		if err := directBlockers(protocol.Snapshot{Containers: []protocol.Container{*old}}, old, svc, false); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// I8: each host-level setting is refused without the opt-in and accepted with it.
+func TestDirectBlockersHostLevel(t *testing.T) {
+	bind := func(src string) func(*protocol.DeploymentService) {
+		return func(s *protocol.DeploymentService) {
+			s.Mounts = []protocol.Mount{{Kind: protocol.MountBind, Source: src, Target: "/mnt"}}
+			s.Explicit.AcknowledgedBinds = []string{src}
+		}
+	}
+	for name, c := range map[string]struct {
+		set      func(*protocol.DeploymentService)
+		hostWide bool
+	}{
+		"plain":      {func(*protocol.DeploymentService) {}, false},
+		"privileged": {func(s *protocol.DeploymentService) { s.Explicit.Privileged = true }, true},
+		"devices": {func(s *protocol.DeploymentService) {
+			s.Explicit.Devices = []protocol.Device{{Host: "/dev/fuse", Container: "/dev/fuse"}}
+		}, true},
+		"security_opt": {func(s *protocol.DeploymentService) { s.Explicit.SecurityOpt = []string{"no-new-privileges"} }, true},
+		"default caps": {func(s *protocol.DeploymentService) {
+			s.Explicit.CapAdd = []string{"CHOWN", "cap_net_bind_service", "CAP_KILL"}
+		}, false},
+		"cap beyond":                   {func(s *protocol.DeploymentService) { s.Explicit.CapAdd = []string{"NET_ADMIN"} }, true},
+		"host network":                 {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "host" }, true},
+		"container network":            {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "container:db" }, true},
+		"bridge":                       {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "bridge" }, false},
+		"bind root":                    {bind("/"), true},
+		"bind /etc":                    {bind("/etc"), true},
+		"bind /etc/localtime":          {bind("/etc/localtime"), false},
+		"bind /var":                    {bind("/var"), true},
+		"bind /var/run":                {bind("/var/run"), true},
+		"bind /run/docker.sock":        {bind("/run/docker.sock"), true},
+		"bind /proc/1/root":            {bind("/proc/1/root"), true},
+		"bind /root/.ssh":              {bind("/root/.ssh"), true},
+		"bind /var/lib/docker/volumes": {bind("/var/lib/docker/volumes"), true},
+		"bind /srv/data":               {bind("/srv/data"), false},
+		"bind /var/lib/app":            {bind("/var/lib/app"), false},
+		"bind /devices":                {bind("/devices"), false},
+	} {
+		for _, allow := range []bool{false, true} {
+			svc := &protocol.DeploymentService{ContainerName: "web", Explicit: &protocol.ExplicitService{}}
+			c.set(svc)
+			err := directBlockers(protocol.Snapshot{}, nil, svc, allow)
+			if refused := err != nil; refused != (c.hostWide && !allow) {
+				t.Errorf("%s allow=%v: %v", name, allow, err)
+			}
+			if e, ok := err.(*InvalidSpecError); err != nil && (!ok || len(e.Blockers) != 1 || e.Blockers[0] != "privileged_disabled") {
+				t.Errorf("%s: %v", name, err)
+			}
+		}
+	}
+}

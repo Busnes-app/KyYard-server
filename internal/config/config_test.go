@@ -152,6 +152,18 @@ func TestRegistryAllowPrivateFromEnv(t *testing.T) {
 	}
 }
 
+func TestContainerAllowPrivilegedFromEnv(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil || cfg.Container.AllowPrivileged {
+		t.Fatalf("default: %+v %v", cfg.Container, err)
+	}
+	t.Setenv("KY_CONTAINER_ALLOW_PRIVILEGED", "true")
+	if cfg, err = config.LoadFromEnv(); err != nil || !cfg.Container.AllowPrivileged {
+		t.Fatalf("opt-in: %+v %v", cfg.Container, err)
+	}
+}
+
 func TestBackupKeepBelowOneIsRefused(t *testing.T) {
 	t.Setenv("KY_DATA_DIR", t.TempDir())
 	t.Setenv("KY_BACKUP_KEEP", "0")

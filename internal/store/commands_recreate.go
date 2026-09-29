@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -49,6 +50,8 @@ type DirectCommand struct {
 	// State is the replaced container's state the operator saw; recreate only.
 	State         string
 	MaxFrameBytes int
+	// AllowPrivileged is KY_CONTAINER_ALLOW_PRIVILEGED: without it a host-level setting is refused.
+	AllowPrivileged bool
 	// Frame has one explicit service; identity, issue time and deadline are set here.
 	Frame protocol.DeploymentRequest
 }
@@ -118,7 +121,7 @@ func (t *tenancyStore) CreateDirectCommand(ctx context.Context, a TenantAccess, 
 		if err != nil {
 			return err
 		}
-		if err := directBlockers(snap, old, svc); err != nil {
+		if err := directBlockers(snap, old, svc, dc.AllowPrivileged); err != nil {
 			return err
 		}
 		if b := frameBlocker(req, now, dc.MaxFrameBytes); b != "" {
@@ -149,7 +152,7 @@ func (t *tenancyStore) CreateDirectCommand(ctx context.Context, a TenantAccess, 
 // direct command is in flight, the target is unmanaged and unchanged, the confirmation matches)
 // without writing, so the API refuses before spending registry budget on the image.
 func (t *tenancyStore) CheckDirectCommand(ctx context.Context, a TenantAccess, endpointID string, dc DirectCommand) error {
-	if !directActions[dc.Action] || len(dc.Frame.Services) != 1 {
+	if !directActions[dc.Action] || len(dc.Frame.Services) != 1 || dc.Frame.Services[0].Explicit == nil {
 		return ErrInvalid
 	}
 	return t.readTenant(ctx, a, permissions.ContainerConfigure, func(tx *sql.Tx) error {
@@ -164,8 +167,13 @@ func (t *tenancyStore) CheckDirectCommand(ctx context.Context, a TenantAccess, e
 		if state != "active" {
 			return fmt.Errorf("%w: it is %s", ErrEndpointOffline, state)
 		}
-		_, _, err = t.directTarget(ctx, tx, endpointID, dc, &dc.Frame.Services[0], time.Now().UTC())
-		return err
+		if _, _, err = t.directTarget(ctx, tx, endpointID, dc, &dc.Frame.Services[0], time.Now().UTC()); err != nil {
+			return err
+		}
+		if !dc.AllowPrivileged && hostLevel(&dc.Frame.Services[0]) {
+			return invalidSpec("privileged_disabled")
+		}
+		return nil
 	})
 }
 
@@ -226,9 +234,13 @@ func (t *tenancyStore) directTarget(ctx context.Context, tx *sql.Tx, endpointID 
 
 // directBlockers checks svc against the last inventory: the name and published ports are free,
 // a local image is present, and every bind the replaced container (old; nil for a run) did not
-// already grant is acknowledged. A writable bind where the old one was read-only is new.
-func directBlockers(snap protocol.Snapshot, old *protocol.Container, svc *protocol.DeploymentService) error {
+// already grant is acknowledged. An old bind grants a new one at the same source and target,
+// read-only unless the old one was writable: the agent's rule.
+func directBlockers(snap protocol.Snapshot, old *protocol.Container, svc *protocol.DeploymentService, allowPrivileged bool) error {
 	var blockers []string
+	if !allowPrivileged && hostLevel(svc) {
+		blockers = append(blockers, "privileged_disabled")
+	}
 	if svc.ImageID != "" && !slices.ContainsFunc(snap.Images, func(im protocol.Image) bool { return im.ID == svc.ImageID }) {
 		blockers = append(blockers, "image_unresolved")
 	}
@@ -252,7 +264,7 @@ func directBlockers(snap protocol.Snapshot, old *protocol.Container, svc *protoc
 			continue
 		}
 		if old == nil || !slices.ContainsFunc(old.Mounts, func(o protocol.Mount) bool {
-			return o.Kind == protocol.MountBind && o.Source == m.Source && (!o.ReadOnly || m.ReadOnly)
+			return o.Kind == protocol.MountBind && o.Source == m.Source && o.Target == m.Target && (!o.ReadOnly || m.ReadOnly)
 		}) {
 			blockers = append(blockers, "bind_unacknowledged")
 		}
@@ -261,6 +273,35 @@ func directBlockers(snap protocol.Snapshot, old *protocol.Container, svc *protoc
 		return invalidSpec(blockers...)
 	}
 	return nil
+}
+
+// dockerDefaultCaps is the capability set Docker grants a container that adds none.
+var dockerDefaultCaps = []string{"CHOWN", "DAC_OVERRIDE", "FSETID", "FOWNER", "MKNOD", "NET_RAW", "SETGID", "SETUID", "SETFCAP", "SETPCAP", "NET_BIND_SERVICE", "SYS_CHROOT", "KILL", "AUDIT_WRITE"}
+
+// hostPaths are host paths a bind reaches only with the opt-in: the path and every parent, and
+// for all but / and /etc (whose files, like /etc/localtime, containers commonly read) anything
+// beneath it too.
+var hostPaths = []string{"/", "/etc", "/var/run/docker.sock", "/run/docker.sock", "/proc", "/sys", "/dev", "/boot", "/root", "/var/lib/docker"}
+
+// hostLevel reports a setting that reaches past the container into the host, which
+// KY_CONTAINER_ALLOW_PRIVILEGED gates: privileged, devices, security options, capabilities
+// beyond Docker's defaults, the host's or another container's network, or a bind of hostPaths.
+func hostLevel(svc *protocol.DeploymentService) bool {
+	e := svc.Explicit
+	if e.Privileged || len(e.Devices) > 0 || len(e.SecurityOpt) > 0 || e.NetworkMode == "host" || strings.HasPrefix(e.NetworkMode, "container:") {
+		return true
+	}
+	if slices.ContainsFunc(e.CapAdd, func(c string) bool {
+		return !slices.Contains(dockerDefaultCaps, strings.TrimPrefix(strings.ToUpper(c), "CAP_"))
+	}) {
+		return true
+	}
+	under := func(p, dir string) bool { return p == dir || dir == "/" || strings.HasPrefix(p, dir+"/") }
+	return slices.ContainsFunc(svc.Mounts, func(m protocol.Mount) bool {
+		return m.Kind == protocol.MountBind && slices.ContainsFunc(hostPaths, func(h string) bool {
+			return under(h, m.Source) || (h != "/" && h != "/etc" && under(m.Source, h))
+		})
+	})
 }
 
 func hostIPsOverlap(a, b string) bool {
@@ -364,8 +405,35 @@ func (t *tenancyStore) SettleDirectCommand(ctx context.Context, endpointID strin
 	if err != nil || len(raw) > MaxDeploymentResultStoredBytes {
 		return ErrInvalid
 	}
-	updated, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, result=?, result_container_id=?, settled_at=? WHERE id=? AND endpoint_id=? AND request_id=? AND action IN (?,?) AND (outcome='' OR (outcome=? AND result=''))`),
-		res.Outcome, res.Code, string(raw), created, time.Now().UTC(), res.Deployment, endpointID, res.RequestID, ActionRecreate, ActionRun, protocol.OutcomeUnknown)
+	return t.settleDirect(ctx, endpointID, res.Deployment, res.Outcome, res.Code, created, `, result=?, result_container_id=?`, []any{string(raw), created},
+		`request_id=? AND (outcome='' OR (outcome=? AND result=''))`, []any{res.RequestID, protocol.OutcomeUnknown})
+}
+
+// FailDirectCommand records that a direct command's frame never left the server. A command
+// already settled is left alone.
+func (t *tenancyStore) FailDirectCommand(ctx context.Context, endpointID, id, detail string) error {
+	err := t.settleDirect(ctx, endpointID, id, protocol.OutcomeFailed, protocol.CleanText(detail, protocol.MaxResultDetailBytes), "", "", nil, `outcome=''`, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
+// settleDirect records a direct command's outcome and, in the same transaction, its audit row
+// under the command's correlation ID and actor: action container.recreate or container.run,
+// resource endpoint/container (the replaced one, else the created one), details the code and
+// the new container's ID. set adds assignments (", col=?") and where conditions to the update;
+// it returns ErrNotFound when no row matched.
+func (t *tenancyStore) settleDirect(ctx context.Context, endpointID, id, outcome, code, created, set string, setArgs []any, where string, whereArgs []any) error {
+	tx, err := t.store.beginTx(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	args := append([]any{outcome, code, now}, setArgs...)
+	args = append(append(args, id, endpointID, ActionRecreate, ActionRun), whereArgs...)
+	updated, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=?`+set+` WHERE id=? AND endpoint_id=? AND action IN (?,?) AND `+where), args...)
 	if err != nil {
 		return err
 	}
@@ -375,12 +443,15 @@ func (t *tenancyStore) SettleDirectCommand(ctx context.Context, endpointID strin
 		}
 		return err
 	}
-	return nil
-}
-
-// FailDirectCommand records that a direct command's frame never left the server.
-func (t *tenancyStore) FailDirectCommand(ctx context.Context, endpointID, id, detail string) error {
-	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=? AND endpoint_id=? AND action IN (?,?) AND outcome=''`),
-		protocol.OutcomeFailed, protocol.CleanText(detail, protocol.MaxResultDetailBytes), time.Now().UTC(), id, endpointID, ActionRecreate, ActionRun)
-	return err
+	var actor, org, env, correlation, action, container string
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT actor_id,organization_id,environment_id,request_id,action,container_id FROM endpoint_commands WHERE id=?`), id).Scan(&actor, &org, &env, &correlation, &action, &container); err != nil {
+		return err
+	}
+	resource := endpointID + "/" + cmp.Or(container, created, "-")
+	details := "code=" + cmp.Or(code, "-") + " new=" + cmp.Or(created, "-")
+	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`),
+		actor, action, protocol.CleanText(resource, 255), protocol.CleanText(details, 255), now, "organization", org, env, correlation, auditResults[outcome]); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

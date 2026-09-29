@@ -56,9 +56,8 @@ type Server struct {
 	logs        *logRegistry
 	execs       execRegistry
 	inspections inspectionRegistry
-	// configurations admits configuration reads; configurationNotes remembers incomplete ones.
-	configurations     inspectionRegistry
-	configurationNotes configurationNotes
+	// configurations admits configuration reads.
+	configurations inspectionRegistry
 	// imageChecks holds "org/env/app" while an update check runs; one process is the supported
 	// deployment, so an in-memory guard is enough.
 	imageChecks sync.Map

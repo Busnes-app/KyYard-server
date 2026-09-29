@@ -4,62 +4,12 @@ import (
 	"context"
 	"net/http"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
-
-const (
-	configurationNoteTTL = 10 * time.Minute
-	configurationNoteCap = 1024
-)
-
-// configurationNotes remembers, per actor and container, a read whose answer listed unsupported
-// fields, so a recreate from that read can be refused. In memory only: a restart forgets it.
-type configurationNotes struct {
-	mu sync.Mutex
-	at map[string]time.Time
-}
-
-func (n *configurationNotes) set(key string, incomplete bool) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	now := time.Now()
-	if !incomplete {
-		delete(n.at, key)
-		return
-	}
-	if n.at == nil {
-		n.at = map[string]time.Time{}
-	}
-	if _, known := n.at[key]; !known && len(n.at) >= configurationNoteCap {
-		oldest := ""
-		for k, t := range n.at {
-			if now.Sub(t) > configurationNoteTTL {
-				delete(n.at, k)
-			} else if oldest == "" || t.Before(n.at[oldest]) {
-				oldest = k
-			}
-		}
-		if len(n.at) >= configurationNoteCap {
-			delete(n.at, oldest)
-		}
-	}
-	n.at[key] = now
-}
-
-// configurationIncomplete reports whether actor's last read of container, within the last ten
-// minutes, listed configuration the agent could not express.
-func (s *Server) configurationIncomplete(actor, container string) bool {
-	n := &s.configurationNotes
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	at, ok := n.at[actor+"/"+container]
-	return ok && time.Since(at) <= configurationNoteTTL
-}
 
 func (s *Server) configurationAllowed(r *http.Request, a store.TenantAccess, endpoint string) bool {
 	ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
@@ -146,6 +96,5 @@ func (s *Server) handleContainerConfiguration(w http.ResponseWriter, r *http.Req
 		s.tenantError(w, err)
 		return
 	}
-	s.configurationNotes.set(a.Principal()+"/"+target.ContainerID, len(result.Unsupported) > 0)
 	s.writeJSON(w, 200, result)
 }

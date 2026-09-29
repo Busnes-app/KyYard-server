@@ -15,14 +15,15 @@ import (
 
 // Config encapsulates all runtime configuration for kyyard-server.
 type Config struct {
-	Server   ServerConfig   `json:"server"`
-	Database DatabaseConfig `json:"database"`
-	Security SecurityConfig `json:"security"`
-	SSO      SSOConfig      `json:"sso"`
-	SCIM     SCIMConfig     `json:"scim"`
-	Backup   BackupConfig   `json:"backup"`
-	Registry RegistryConfig `json:"registry"`
-	Captcha  CaptchaConfig  `json:"captcha"`
+	Server    ServerConfig    `json:"server"`
+	Database  DatabaseConfig  `json:"database"`
+	Security  SecurityConfig  `json:"security"`
+	SSO       SSOConfig       `json:"sso"`
+	SCIM      SCIMConfig      `json:"scim"`
+	Backup    BackupConfig    `json:"backup"`
+	Registry  RegistryConfig  `json:"registry"`
+	Container ContainerConfig `json:"container"`
+	Captcha   CaptchaConfig   `json:"captcha"`
 }
 
 // ServerConfig defines HTTP and network settings.
@@ -110,6 +111,15 @@ type RegistryConfig struct {
 	// AllowPrivate lets organization admins set allow_private on a registry, admitting
 	// private and CGNAT destinations. Off by default: a tenant must not reach the server's network.
 	AllowPrivate bool `json:"allow_private"`
+}
+
+// ContainerConfig holds the operator's limits on direct container edits.
+type ContainerConfig struct {
+	// AllowPrivileged lets a container recreate or run set host-level settings: privileged,
+	// devices, security options, capabilities beyond Docker's defaults, the host's or another
+	// container's network, or a bind of a system path. Off by default: with it, container.configure
+	// is root on the host.
+	AllowPrivileged bool `json:"allow_privileged"`
 }
 
 // CaptchaConfig holds anti-abuse settings (PoW default, Turnstile, Friendly).
@@ -293,7 +303,8 @@ func LoadFromEnv() (*Config, error) {
 			DepositInterval:      depositInterval,
 			AllowPrivateRecovery: getEnvBool("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", false),
 		},
-		Registry: RegistryConfig{AllowPrivate: getEnvBool("KY_REGISTRY_ALLOW_PRIVATE", false)},
+		Registry:  RegistryConfig{AllowPrivate: getEnvBool("KY_REGISTRY_ALLOW_PRIVATE", false)},
+		Container: ContainerConfig{AllowPrivileged: getEnvBool("KY_CONTAINER_ALLOW_PRIVILEGED", false)},
 		Captcha: CaptchaConfig{
 			Provider:      getEnv("KY_CAPTCHA_PROVIDER", "pow"),
 			SiteKey:       getEnv("KY_CAPTCHA_SITE_KEY", ""),

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
-	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -73,9 +72,6 @@ func TestConfigurationReadForOrganizationAdmin(t *testing.T) {
 	if json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Target != req.Target || len(got.Env) != 1 || got.Env[0].Value != configurationSentinel {
 		t.Fatalf("bad body: %s", w.Body.String())
 	}
-	if !api.ConfigurationIncompleteForTest(f.s, "usr_execadmin", terminalSpec.Container) || api.ConfigurationIncompleteForTest(f.s, "usr_other", terminalSpec.Container) {
-		t.Fatal("an unsupported read must be noted for its actor and container only")
-	}
 	rows, _, err := f.st.Audit().ListAuditRecords(f.ctx, 0, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -109,9 +105,6 @@ func TestConfigurationReadCompleteAndUntrusted(t *testing.T) {
 	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeConfigurationResult, configurationReply(req))
 	if w := <-response; w.Code != 200 {
 		t.Fatalf("complete read: %d %s", w.Code, w.Body.String())
-	}
-	if api.ConfigurationIncompleteForTest(f.s, "usr_execadmin", terminalSpec.Container) {
-		t.Fatal("a complete read is not incomplete")
 	}
 	// A result for another target is never published.
 	response = beginConfiguration(f)

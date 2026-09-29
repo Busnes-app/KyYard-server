@@ -47,6 +47,9 @@ func RegisterDetachedForTest(s *Server) func() {
 // SetDigestResolverForTest replaces the registry resolver behind update checks. Test-only.
 func SetDigestResolverForTest(s *Server, r store.DigestResolver) { s.digestResolver = r }
 
+// SetAllowPrivilegedForTest sets KY_CONTAINER_ALLOW_PRIVILEGED. Test-only.
+func SetAllowPrivilegedForTest(s *Server, on bool) { s.config.Container.AllowPrivileged = on }
+
 // SetPlanInspectorForTest replaces the agent round trip of each plan-time inspection. Test-only.
 func SetPlanInspectorForTest(s *Server, f func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error)) {
 	s.planInspector = f
@@ -90,9 +93,4 @@ var ErrInspectionInvalidForTest = errInspectionInvalid
 // StillAllowedForTest runs a log stream's periodic re-check. Test-only.
 func StillAllowedForTest(s *Server, r *http.Request, a store.TenantAccess, endpointID string) bool {
 	return s.stillAllowed(r, a, endpointID)
-}
-
-// ConfigurationIncompleteForTest reports whether actor's last read of container listed unsupported fields.
-func ConfigurationIncompleteForTest(s *Server, actor, container string) bool {
-	return s.configurationIncomplete(actor, container)
 }

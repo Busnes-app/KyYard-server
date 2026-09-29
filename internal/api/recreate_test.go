@@ -257,17 +257,6 @@ func TestRecreateRefusesAnIncompleteConfiguration(t *testing.T) {
 	spec := directSpec("web")
 	spec.Unsupported = []string{"env_truncated"}
 	blockers(t, tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true), "configuration_incomplete")
-	// The form dropped the list, but this actor's last read of the container reported it.
-	response := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		response <- tenantRequest(f.s, f.admin, "GET", strings.TrimSuffix(recreatePath(f), "recreate")+"configuration", "", false)
-	}()
-	grant := configurationGrant(t, f)
-	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeConfigurationResult, configurationReply(grant, "env_truncated"))
-	if w := <-response; w.Code != 200 {
-		t.Fatalf("read: %d %s", w.Code, w.Body.String())
-	}
-	blockers(t, tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(directSpec("web")), true), "configuration_incomplete")
 	assertNoFrame(t, f)
 }
 
@@ -371,6 +360,37 @@ func TestDirectImageKeepsOnlyTheImageTheSpecNames(t *testing.T) {
 	}
 }
 
+// A recreate whose spec names no image ID falls back to the target's image only when the spec
+// keeps a digest or names that ID; a cleared digest with a tag reference pulls.
+func TestRecreateImageFallback(t *testing.T) {
+	pulled := "sha256:" + strings.Repeat("f", 64)
+	for _, tc := range []struct {
+		name, reference, digest string
+		wantLocal, wantPull     string
+	}{
+		{"cleared digest, tag reference", "ghcr.io/acme/web:1", "", "", pulled},
+		{"kept digest", "ghcr.io/acme/web:1", directDigest, directImage, ""},
+		{"reference is the target's image ID", directImage, "", directImage, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := directFixture(t, directCaps)
+			api.SetDigestResolverForTest(f.s, fixedResolver{pulled})
+			if err := f.st.Tenancy().SetAnonymousPull(f.ctx, store.TenantAccess{ActorID: "usr_execadmin", OrganizationID: "a"}, true); err != nil {
+				t.Fatal(err)
+			}
+			spec := directSpec("web")
+			spec.Image, spec.ImageID = protocol.ImagePull{Reference: tc.reference, Digest: tc.digest}, ""
+			if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true); w.Code != 202 {
+				t.Fatalf("recreate: %d %s", w.Code, w.Body.String())
+			}
+			svc := applyFrame(t, f).Services[0]
+			if svc.ImageID != tc.wantLocal || (tc.wantPull == "") != (svc.Pull == nil) || (svc.Pull != nil && svc.Pull.Digest != tc.wantPull) {
+				t.Fatalf("image %q pull %+v", svc.ImageID, svc.Pull)
+			}
+		})
+	}
+}
+
 // Making a read-only bind writable grants the container something new.
 func TestRecreateNeedsAcknowledgementToMakeABindWritable(t *testing.T) {
 	f := directFixture(t, directCaps)
@@ -379,6 +399,48 @@ func TestRecreateNeedsAcknowledgementToMakeABindWritable(t *testing.T) {
 	blockers(t, tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true), "bind_unacknowledged")
 	if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec, "/srv/web"), true); w.Code != 202 {
 		t.Fatalf("acknowledged: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// An old bind covers a new one only at the same target: the agent's rule.
+func TestRecreateNeedsAcknowledgementToMoveABind(t *testing.T) {
+	f := directFixture(t, directCaps)
+	spec := directSpec("web")
+	spec.Mounts[0].Target = "/elsewhere"
+	blockers(t, tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true), "bind_unacknowledged")
+	assertNoFrame(t, f)
+}
+
+// I8: host-level settings need KY_CONTAINER_ALLOW_PRIVILEGED; a plain spec never does.
+func TestDirectCommandsGateHostLevelSettings(t *testing.T) {
+	for name, set := range map[string]func(*protocol.ContainerConfiguration){
+		"privileged": func(s *protocol.ContainerConfiguration) { s.Privileged = true },
+		"devices": func(s *protocol.ContainerConfiguration) {
+			s.Devices = []protocol.Device{{Host: "/dev/fuse", Container: "/dev/fuse", Permissions: "rwm"}}
+		},
+		"security_opt": func(s *protocol.ContainerConfiguration) { s.SecurityOpt = []string{"apparmor=unconfined"} },
+		"cap_add":      func(s *protocol.ContainerConfiguration) { s.CapAdd = []string{"CAP_SYS_ADMIN"} },
+		"host network": func(s *protocol.ContainerConfiguration) { s.NetworkMode, s.Networks = "host", nil },
+		"docker socket": func(s *protocol.ContainerConfiguration) {
+			s.Mounts = append(s.Mounts, protocol.Mount{Kind: protocol.MountBind, Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := directFixture(t, directCaps)
+			spec := directSpec("web")
+			set(&spec)
+			blockers(t, tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec, "/var/run/docker.sock"), true), "privileged_disabled")
+			api.SetAllowPrivilegedForTest(f.s, true)
+			if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec, "/var/run/docker.sock"), true); w.Code != 202 {
+				t.Fatalf("allowed: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+	f := directFixture(t, directCaps)
+	spec := directSpec("web")
+	spec.CapAdd = []string{"NET_BIND_SERVICE", "CAP_CHOWN"} // within Docker's defaults
+	if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true); w.Code != 202 {
+		t.Fatalf("plain spec: %d %s", w.Code, w.Body.String())
 	}
 }
 
