@@ -108,6 +108,24 @@ func TestCreateDirectCommandSweepsAnExpiredOne(t *testing.T) {
 	if cmd, err := st.Tenancy().ReadCommand(ctx, a, endpointID, first.ID); err != nil || cmd.Outcome != protocol.OutcomeUnknown {
 		t.Fatalf("expired command: %+v %v", cmd, err)
 	}
+	// The sweep audits the outcome like any other settle: one row under the first command's
+	// correlation ID.
+	rows, _, err := st.Audit().ListAuditRecords(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var swept []*AuditRecord
+	for _, r := range rows {
+		if r.CorrelationID == first.RequestID && strings.HasPrefix(r.Details, "code=") {
+			swept = append(swept, r)
+		}
+	}
+	if len(swept) != 1 || swept[0].Action != ActionRun || swept[0].Result != "unknown" || swept[0].Details != "code=deadline new=-" || swept[0].Resource != endpointID+"/-" || swept[0].UserID != a.ActorID {
+		for _, r := range swept {
+			t.Logf("row: %+v", r)
+		}
+		t.Fatalf("want one deadline outcome row, got %d", len(swept))
+	}
 }
 
 // One writer settles a direct command: a plain command.result cannot, a dispatch failure goes

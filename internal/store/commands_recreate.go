@@ -113,8 +113,7 @@ func (t *tenancyStore) CreateDirectCommand(ctx context.Context, a TenantAccess, 
 			return fmt.Errorf("%w: it is %s", ErrEndpointOffline, state)
 		}
 		// Past its deadline the agent has given up; a late answer may still settle it.
-		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE endpoint_id=? AND action IN (?,?) AND outcome='' AND deadline<?`),
-			protocol.OutcomeUnknown, "no result arrived before the deadline", now, endpointID, ActionRecreate, ActionRun, now); err != nil {
+		if err := t.sweepDirect(ctx, tx, endpointID, now); err != nil {
 			return err
 		}
 		snap, old, err := t.directTarget(ctx, tx, endpointID, dc, svc, now)
@@ -426,10 +425,8 @@ func (t *tenancyStore) FailDirectCommand(ctx context.Context, endpointID, id, de
 }
 
 // settleDirect records a direct command's outcome and, in the same transaction, its audit row
-// under the command's correlation ID and actor: action container.recreate or container.run,
-// resource endpoint/container (the replaced one, else the created one), details the code and
-// the new container's ID. set adds assignments (", col=?") and where conditions to the update;
-// it returns ErrNotFound when no row matched.
+// (auditDirect). set adds assignments (", col=?") and where conditions to the update; it returns
+// ErrNotFound when no row matched.
 func (t *tenancyStore) settleDirect(ctx context.Context, endpointID, id, outcome, code, created, set string, setArgs []any, where string, whereArgs []any) error {
 	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
@@ -449,15 +446,54 @@ func (t *tenancyStore) settleDirect(ctx context.Context, endpointID, id, outcome
 		}
 		return err
 	}
+	if err := t.auditDirect(ctx, tx, endpointID, id, outcome, code, created, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// sweepDirect settles the endpoint's direct commands past their deadline unknown, each with its
+// outcome audit row (code deadline).
+func (t *tenancyStore) sweepDirect(ctx context.Context, tx *sql.Tx, endpointID string, now time.Time) error {
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id FROM endpoint_commands WHERE endpoint_id=? AND action IN (?,?) AND outcome='' AND deadline<?`), endpointID, ActionRecreate, ActionRun, now)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=?`),
+			protocol.OutcomeUnknown, "no result arrived before the deadline", now, id); err != nil {
+			return err
+		}
+		if err := t.auditDirect(ctx, tx, endpointID, id, protocol.OutcomeUnknown, "deadline", "", now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// auditDirect writes a direct command's outcome row under its correlation ID and actor: action
+// container.recreate or container.run, resource endpoint/container (the replaced one, else the
+// created one), details the code and the new container's ID.
+func (t *tenancyStore) auditDirect(ctx context.Context, tx *sql.Tx, endpointID, id, outcome, code, created string, now time.Time) error {
 	var actor, org, env, correlation, action, container string
 	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT actor_id,organization_id,environment_id,request_id,action,container_id FROM endpoint_commands WHERE id=?`), id).Scan(&actor, &org, &env, &correlation, &action, &container); err != nil {
 		return err
 	}
 	resource := endpointID + "/" + cmp.Or(container, created, "-")
 	details := "code=" + cmp.Or(code, "-") + " new=" + cmp.Or(created, "-")
-	if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`),
-		actor, action, protocol.CleanText(resource, 255), protocol.CleanText(details, 255), now, "organization", org, env, correlation, auditResults[outcome]); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`),
+		actor, action, protocol.CleanText(resource, 255), protocol.CleanText(details, 255), now, "organization", org, env, correlation, auditResults[outcome])
+	return err
 }
