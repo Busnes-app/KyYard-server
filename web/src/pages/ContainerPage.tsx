@@ -23,6 +23,21 @@ function useNow() {
   return now;
 }
 
+// Folds every hourly row: averages weighted by samples, peaks as maxima, traffic summed.
+function aggregate(rows: Rollup[]): Rollup | null {
+  const samples = rows.reduce((n, r) => n + r.samples, 0);
+  if (samples <= 0) return null;
+  const weighted = (f: (r: Rollup) => number) => rows.reduce((n, r) => n + f(r) * r.samples, 0) / samples;
+  const max = (f: (r: Rollup) => number) => Math.max(...rows.map(f));
+  return {
+    hour: '', samples,
+    cpu_avg: weighted((r) => r.cpu_avg), cpu_max: max((r) => r.cpu_max),
+    memory_avg: weighted((r) => r.memory_avg), memory_max: max((r) => r.memory_max),
+    rx_bytes: rows.reduce((n, r) => n + r.rx_bytes, 0), tx_bytes: rows.reduce((n, r) => n + r.tx_bytes, 0),
+    pids_max: max((r) => r.pids_max), restart_count: max((r) => r.restart_count),
+  };
+}
+
 export const ContainerPage: React.FC<{ org: string; endpoint: string; container: string }> = ({ org, endpoint, container }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
   const details = useTenantResource<Endpoint>(base);
@@ -31,7 +46,8 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
   const role = (organizations.data ?? []).find((o) => o.id === org)?.role;
   const exec = canExec(role);
   const requested = useSearchParam('tab');
-  const tab: Tab = (TABS as readonly string[]).includes(requested) ? requested as Tab : 'overview';
+  const tabs = TABS.filter((t) => t !== 'terminal' || exec);
+  const tab: Tab = (tabs as readonly string[]).includes(requested) ? requested as Tab : 'overview';
   const [status] = useState('');
   useEffect(() => {
     if (inventory.state === 'denied') return;
@@ -42,7 +58,6 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
   const c = inventory.data?.snapshot.containers.find((row) => row.id === container) ?? null;
   const active = e?.state === 'active';
   const scope = `Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`;
-  const tabs = TABS.filter((t) => t !== 'terminal' || exec);
   const health = c ? healthBadge(c.health) : null;
   return <div className="ky-page ky-container-page">
     <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link><span>/</span><Link to={endpointPath(org, endpoint)}>{e?.name ?? endpoint}</Link></nav>
@@ -76,7 +91,7 @@ function Overview({ base, container: c, received }: { base: string; container: C
   const rollups = useTenantResource<Rollup[]>(`${base}/containers/${encodeURIComponent(c.id)}/rollups?hours=24`);
   const up = uptime(c.started_at, now);
   const nets = attachments(c);
-  const latest = Array.isArray(rollups.data) && rollups.data.length ? rollups.data[rollups.data.length - 1] : null;
+  const usage = Array.isArray(rollups.data) ? aggregate(rollups.data) : null;
   return <section className="panel" aria-label="Overview">
     <dl className="ky-facts">
       <dt>State</dt><dd>{displayName(c.state)}{c.status ? ` · ${displayName(c.status)}` : ''}</dd>
@@ -95,12 +110,12 @@ function Overview({ base, container: c, received }: { base: string; container: C
     </dl>
     <h2 style={{ fontSize: 16, marginTop: 16 }}>Last 24 hours</h2>
     <StateNotice state={rollups.state} onRetry={rollups.reload} />
-    {rollups.state === 'ready' && (latest ? <dl className="ky-facts">
-      <dt>CPU</dt><dd>avg {latest.cpu_avg.toFixed(1)}% · peak {latest.cpu_max.toFixed(1)}%</dd>
-      <dt>Memory</dt><dd>avg {bytes(latest.memory_avg)} · peak {bytes(latest.memory_max)}</dd>
-      <dt>Network</dt><dd>rx {bytes(latest.rx_bytes)} · tx {bytes(latest.tx_bytes)}</dd>
-      <dt>Processes</dt><dd>peak {latest.pids_max}</dd>
-      <dt>Restarts</dt><dd>{latest.restart_count}</dd>
+    {rollups.state === 'ready' && (usage ? <dl className="ky-facts">
+      <dt>CPU</dt><dd>avg {usage.cpu_avg.toFixed(1)}% · peak {usage.cpu_max.toFixed(1)}%</dd>
+      <dt>Memory</dt><dd>avg {bytes(usage.memory_avg)} · peak {bytes(usage.memory_max)}</dd>
+      <dt>Network</dt><dd>rx {bytes(usage.rx_bytes)} · tx {bytes(usage.tx_bytes)}</dd>
+      <dt>Processes</dt><dd>peak {usage.pids_max}</dd>
+      <dt>Restarts</dt><dd>{usage.restart_count}</dd>
     </dl> : <EmptyNotice>No usage samples yet.</EmptyNotice>)}
   </section>;
 }
@@ -142,6 +157,6 @@ function Activity({ base, container }: { base: string; container: string }) {
   return <section className="panel" aria-label="Activity">
     <div className="panel-header"><h2>Recent activity</h2><button className="btn-secondary" onClick={commands.reload}>Refresh</button></div>
     <StateNotice state={commands.state} onRetry={commands.reload} />
-    {commands.state === 'ready' && Array.isArray(commands.data) && (commands.data.length ? <ul className="ky-list">{commands.data.map((k) => <li key={k.id}>{new Date(k.created_at).toLocaleString()} · {k.action} · {k.outcome || 'pending'}{k.detail ? ` — ${k.detail}` : ''}</li>)}</ul> : <EmptyNotice>No commands have been sent to this container.</EmptyNotice>)}
+    {commands.state === 'ready' && Array.isArray(commands.data) && (commands.data.length ? <ul className="ky-list">{commands.data.map((k) => <li key={k.id}>{new Date(k.created_at).toLocaleString()} · {k.action} · {k.outcome || 'pending'}{k.detail ? ` — ${displayName(k.detail)}` : ''}</li>)}</ul> : <EmptyNotice>No commands have been sent to this container.</EmptyNotice>)}
   </section>;
 }
