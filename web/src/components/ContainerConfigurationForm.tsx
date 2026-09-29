@@ -12,9 +12,12 @@ import { NetworkGroup, PortsGroup, VolumesGroup } from './configurationGroups/mo
 import { LoggingGroup, SecurityGroup } from './configurationGroups/security';
 
 type Props = {
-  base: string; org: string; endpoint: string; mode: 'edit' | 'run';
+  base: string; mode: 'edit' | 'run';
   initial?: ContainerConfiguration; container?: Container;
   managed?: { application: string; link: string };
+  // onSent runs when a new command is accepted; onSettled when it has an outcome. The caller
+  // renders the settled result (CommandResult), so it survives the form unmounting.
+  onSent?: () => void;
   onSettled: (command: DirectCommand) => void;
 };
 
@@ -101,7 +104,7 @@ const OUTCOMES: Record<string, string> = {
   unknown: 'The outcome is unknown: the host may or may not have acted. Check the container before trying again.',
 };
 
-export function ContainerConfigurationForm({ base, org, endpoint, mode, initial, container, managed, onSettled }: Props) {
+export function ContainerConfigurationForm({ base, mode, initial, container, managed, onSent, onSettled }: Props) {
   const start = initial ? toSpec(initial) : EMPTY_SPEC;
   const [draft, setDraft] = useState<ExplicitSpec>(start);
   const [logOptions, setLogOptions] = useState<[string, string][]>(Object.entries(start.log.options));
@@ -122,8 +125,6 @@ export function ContainerConfigurationForm({ base, org, endpoint, mode, initial,
   const newBinds = [...new Set(spec.mounts.filter((m) => m.kind === 'bind' && !known.includes(m.source)).map((m) => m.source))];
   const expected = run ? spec.name : container?.name ?? '';
   const pending = command !== null && !command.outcome;
-  // The inventory lags the result by up to a report interval, so the page stays and links instead.
-  const created = command?.outcome ? command.result?.services[0]?.container_id ?? '' : '';
   const incomplete = spec.env.some((e) => e.name === '') || spec.ports.some((p) => p.container === 0) || spec.devices.some((d) => d.host === '' || d.container === '');
   const r = spec.resources, h = spec.healthcheck;
   const numbers = [r.nano_cpus, r.memory_bytes, r.memory_swap_bytes, r.pids_limit, spec.restart_retries, spec.stop_timeout ?? 0, ...(h ? [h.interval_seconds, h.timeout_seconds, h.start_period_seconds, h.retries] : [])];
@@ -142,7 +143,7 @@ export function ContainerConfigurationForm({ base, org, endpoint, mode, initial,
       if (!resp.ok) { setError(await failure(resp)); return; }
       const cmd: DirectCommand = await resp.json();
       if (!alive.current) return;
-      setConfirm(''); setSent(cmd);
+      setConfirm(''); setSent(cmd); onSent?.();
       if (cmd.outcome) onSettled(cmd);
     } catch {
       if (alive.current) { setLost(true); setError('Connection lost. The change may have been sent. Check recent activity and refresh before trying again.'); }
@@ -182,11 +183,24 @@ export function ContainerConfigurationForm({ base, org, endpoint, mode, initial,
     {error && <p role="alert" className="dr-alert dr-alert-error">{error}</p>}
     {pending && <p role="status">Command sent; waiting for the host. Do not retry while its outcome is unknown.</p>}
     {pollError && <p role="alert" className="dr-alert dr-alert-error">Could not read the command result. Check recent activity before trying again.</p>}
-    {command?.outcome && <div role="status">
-      <p>{Object.hasOwn(OUTCOMES, command.outcome) ? OUTCOMES[command.outcome] : 'Unrecognised outcome.'}</p>
-      {command.result?.code && Object.hasOwn(RESULT_CODES, command.result.code) && <p>{RESULT_CODES[command.result.code]}</p>}
-      {command.result && command.result.steps.length > 0 && <StepTable steps={command.result.steps} />}
-      {created && <p><Link to={containerPath(org, endpoint, created, 'configuration')}>Open the new container</Link></p>}
-    </div>}
   </section>;
+}
+
+// CommandResult is a settled recreate or run: outcome, result code and steps. The inventory lags
+// the result by up to a report interval, so a success that made a new container links to it rather
+// than navigating to a page that would not know it yet.
+export function CommandResult({ command, org, endpoint, current, link = true }: { command: DirectCommand; org: string; endpoint: string; current: string; link?: boolean }) {
+  const created = newContainer(command, current);
+  return <div role="status">
+    <p>{Object.hasOwn(OUTCOMES, command.outcome) ? OUTCOMES[command.outcome] : 'Unrecognised outcome.'}</p>
+    {command.result?.code && Object.hasOwn(RESULT_CODES, command.result.code) && <p>{RESULT_CODES[command.result.code]}</p>}
+    {command.result && command.result.steps.length > 0 && <StepTable steps={command.result.steps} />}
+    {link && created && <p><Link to={containerPath(org, endpoint, created, 'configuration')}>Open the new container</Link></p>}
+  </div>;
+}
+
+// newContainer is the ID a successful command created, or '' when it created none or kept current.
+export function newContainer(command: DirectCommand, current: string): string {
+  const id = command.outcome === 'succeeded' ? command.result?.services[0]?.container_id ?? '' : '';
+  return id !== current ? id : '';
 }

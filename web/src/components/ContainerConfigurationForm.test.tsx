@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { ContainerConfigurationForm } from './ContainerConfigurationForm';
+import { CommandResult, ContainerConfigurationForm } from './ContainerConfigurationForm';
+import type { DirectCommand } from '../tenant';
 import type { Container, ContainerConfiguration } from '../tenant';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
@@ -23,7 +24,7 @@ const config = (over: Partial<ContainerConfiguration> = {}): ContainerConfigurat
   log: { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '3' } }, stop_signal: '', unsupported: [], ...over,
 });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-const edit = (over: Partial<ContainerConfiguration> = {}, props: object = {}) => render(<ContainerConfigurationForm base={base} org="a" endpoint="ep_1" mode="edit" initial={config(over)} container={container} onSettled={() => {}} {...props} />);
+const edit = (over: Partial<ContainerConfiguration> = {}, props: object = {}) => render(<ContainerConfigurationForm base={base} mode="edit" initial={config(over)} container={container} onSettled={() => {}} {...props} />);
 const save = () => screen.getByRole('button', { name: 'Save and recreate' }) as HTMLButtonElement;
 const confirmName = (name: string) => fireEvent.change(screen.getByLabelText(/^Type the container name/), { target: { value: name } });
 
@@ -124,10 +125,14 @@ it('posts the recreate with CSRF and expects, then shows the steps once the comm
   expect(screen.getByText(/waiting for the host/)).toBeTruthy();
   expect(save().disabled).toBe(true);
   await act(async () => { vi.advanceTimersByTime(1500); });
-  const table = await screen.findByRole('table');
+  expect(settled).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'failed' }));
+  expect(screen.queryByText(/waiting for the host/)).toBeNull();
+  // The page renders the settled result; see CommandResult below.
+  cleanup();
+  render(<CommandResult command={settled.mock.calls[0]![0]} org="a" endpoint="ep_1" current={id} />);
+  const table = screen.getByRole('table');
   expect(within(table).getByText('rollback')).toBeTruthy();
   expect(within(table).getByText('The new container did not start; the previous one was restored.')).toBeTruthy();
-  expect(settled).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'failed' }));
 });
 
 it('maps refusals to fixed texts', async () => {
@@ -151,7 +156,7 @@ it('maps refusals to fixed texts', async () => {
 it('runs a new container from an empty form once image and name are set', async () => {
   const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json({ id: 'cmd2', action: 'container.run', outcome: '' }, 202));
   vi.stubGlobal('fetch', fetcher);
-  render(<ContainerConfigurationForm base={base} org="a" endpoint="ep_1" mode="run" onSettled={() => {}} />);
+  render(<ContainerConfigurationForm base={base} mode="run" onSettled={() => {}} />);
   const run = screen.getByRole('button', { name: 'Run container' }) as HTMLButtonElement;
   expect((screen.getByLabelText('Image reference') as HTMLInputElement).value).toBe('');
   expect(run.disabled).toBe(true);
@@ -210,4 +215,18 @@ it('accepts a typed -1 and an empty draft in numeric fields', async () => {
   fireEvent.change(swap, { target: { value: '-1' } });
   const spec = await postedSpec(fetcher);
   expect(spec.resources.memory_swap_bytes).toBe(-1);
+});
+
+it('links to the new container only after a success that names another ID', () => {
+  const next = 'e'.repeat(64);
+  const cmd = (outcome: string, container_id: string): DirectCommand => ({ id: 'c', action: 'container.recreate', outcome, result: { steps: [], services: [{ service: 'direct', container_id, image_id: imageID, created_unix: 1 }] } });
+  const link = () => screen.queryByRole('link', { name: 'Open the new container' });
+  render(<CommandResult command={cmd('succeeded', next)} org="a" endpoint="ep_1" current={id} />);
+  expect(link()?.getAttribute('href')).toBe(`/organizations/a/endpoints/ep_1/containers/${next}?tab=configuration`);
+  cleanup();
+  render(<CommandResult command={cmd('failed', next)} org="a" endpoint="ep_1" current={id} />);
+  expect(link()).toBeNull();
+  cleanup();
+  render(<CommandResult command={cmd('succeeded', id)} org="a" endpoint="ep_1" current={id} />);
+  expect(link()).toBeNull();
 });

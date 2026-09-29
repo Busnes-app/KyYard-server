@@ -8,7 +8,7 @@ const id = 'c'.repeat(64);
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const endpoint = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime: 'docker', state: 'active', facts: {}, fingerprint: '', capabilities: ['container.inspect'], alerts: [], created_at: '' };
 const container = (over: object = {}) => ({ id, name: 'web', image: 'nginx:1', image_id: 'sha256:1', state: 'running', status: 'Up', created_at: '2026-09-29T08:00:00Z', started_at: '2026-09-29T09:00:00Z', health: 'healthy', restart_policy: 'always', ports: [{ host: 8080, container: 80, protocol: 'tcp' }], labels: { tier: 'web' }, networks: ['bridge'], network_attachments: [{ name: 'bridge', ip: '172.17.0.2' }], mounts: [{ kind: 'volume', source: 'data', target: '/data', read_only: false }], ...over });
-function stub(role = 'organization_admin', containers: object[] = [container()], opts: { ep?: object; inventoryStatus?: number; rollups?: object[]; commands?: object[]; applications?: object[]; command?: object } = {}) {
+function stub(role = 'organization_admin', containers: object[] = [container()], opts: { ep?: object; inventoryStatus?: number; rollups?: object[]; commands?: object[]; applications?: object[]; command?: object; epStatus?: number } = {}) {
   const now = '2026-09-29T10:00:00Z';
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -24,7 +24,7 @@ function stub(role = 'organization_admin', containers: object[] = [container()],
     if (url.endsWith('/rollups?hours=24') && opts.rollups) return json(opts.rollups);
     if (url.endsWith('/rollups?hours=24')) return json([{ container_id: id, hour: now, samples: 60, cpu_avg: 1.5, cpu_max: 3, memory_avg: 1048576, memory_max: 2097152, rx_bytes: 10, tx_bytes: 20, pids_max: 4, restart_count: 0 }]);
     if (url.endsWith('/inspection')) return json({ target: { container_id: id, image_id: 'sha256:1', created_unix: Date.parse('2026-09-29T08:00:00Z') / 1000 }, observed_at: now, state: 'running', health: 'healthy', restart_count: 0, image_platform: { os: 'linux', architecture: 'amd64' }, restart_policy: 'always', restart_retries: 0, ports: [], mounts: { bind: 0, volume: 1, tmpfs: 0, other: 0, read_only: 0 }, network_mode: 'bridge', network_count: 1, privileged: false, read_only_rootfs: false, auto_remove: false, configuration_verified: true, unsupported: [] });
-    return json({ ...endpoint, ...opts.ep });
+    return json({ ...endpoint, ...opts.ep }, opts.epStatus ?? 200);
   });
   vi.stubGlobal('fetch', fetcher);
   return fetcher;
@@ -132,6 +132,38 @@ it('stays on the page after a recreate settles and links to the new container', 
   expect(screen.getByText('Done.')).toBeTruthy();
   expect(within(screen.getByRole('table')).getByText('start')).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Open the new container' }).getAttribute('href')).toBe(`/organizations/a/endpoints/ep_1/containers/${next}?tab=configuration`);
+});
+
+it('keeps the result and the link once the inventory drops the replaced container', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const next = 'd'.repeat(64);
+  const containers = [container()];
+  stub('organization_admin', containers, { ...configurable, command: { id: 'cmd9', action: 'container.recreate', outcome: 'succeeded', result: { steps: [{ service: 'direct', step: 'start', outcome: 'succeeded', detail: '' }], services: [{ service: 'direct', container_id: next, image_id: 'sha256:1', created_unix: 1 }] } } });
+  window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  fireEvent.change(await screen.findByLabelText('Hostname'), { target: { value: 'other' } });
+  fireEvent.change(screen.getByLabelText(/^Type the container name/), { target: { value: 'web' } });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Save and recreate' })); });
+  containers.length = 0;
+  await act(async () => { vi.advanceTimersByTime(1500); });
+  await act(async () => {});
+  expect(await screen.findByText(/no longer reported/)).toBeTruthy();
+  expect(within(screen.getByRole('table')).getByText('start')).toBeTruthy();
+  expect(screen.getByText('Done.')).toBeTruthy();
+  expect(screen.getAllByRole('link', { name: 'Open the new container' }).map((l) => l.getAttribute('href'))).toEqual([`/organizations/a/endpoints/ep_1/containers/${next}?tab=configuration`]);
+});
+
+it('says a run needs a Docker host, and shows only the load error when the host cannot be read', async () => {
+  stub('organization_admin', [container()], { ep: { runtime: 'kubernetes', capabilities: ['container.configure', 'deployment.pull'] } });
+  render(<ContainerRunPage org="a" endpoint="ep_1" />);
+  expect(await screen.findByText('Containers can be run only on a Docker host.')).toBeTruthy();
+  cleanup();
+  stub('organization_admin', [container()], { ...configurable, epStatus: 500 });
+  render(<ContainerRunPage org="a" endpoint="ep_1" />);
+  await act(async () => {});
+  await act(async () => {});
+  expect(screen.queryByText(/Upgrade the host agent|Docker host/)).toBeNull();
+  expect(screen.queryByLabelText('Image reference')).toBeNull();
 });
 
 it('refuses the run form on a host whose agent cannot run containers', async () => {
