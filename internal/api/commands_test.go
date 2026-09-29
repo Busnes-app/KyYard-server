@@ -46,7 +46,7 @@ func TestCommandDispatchSettlesAndIsScoped(t *testing.T) {
 	if w.Code != 409 {
 		t.Fatalf("dispatch to a disconnected endpoint: %d %s", w.Code, w.Body.String())
 	}
-	before, err := ts.ListCommands(ctx, store.TenantAccess{ActorID: "usr_envadmin", OrganizationID: "a"}, ag.id, 0)
+	before, err := ts.ListCommands(ctx, store.TenantAccess{ActorID: "usr_envadmin", OrganizationID: "a"}, ag.id, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
