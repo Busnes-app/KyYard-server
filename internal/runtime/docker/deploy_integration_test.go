@@ -530,32 +530,35 @@ func TestRunRealDocker(t *testing.T) {
 // under its name and the new one is gone. The command names no executable, so start itself
 // fails; a command that starts and then exits would not.
 func TestRecreateRollbackRealDocker(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	name := "kyyard-rollback-fixture"
-	req, oldID := explicitFixture(t, ctx, name)
-	req.Services[0].Explicit.Command = []string{"/kyyard-no-such-executable"}
-	res := New("/var/run/docker.sock").Deploy(ctx, req, func() {})
-	if res.Outcome != protocol.OutcomeFailed || res.Validate() != nil {
-		t.Fatalf("deploy: %+v", res)
-	}
-	var start, rollback protocol.DeploymentStep
-	for _, s := range res.Steps {
-		switch s.Step {
-		case protocol.StepStart:
-			start = s
-		case protocol.StepRollback:
-			rollback = s
+	// A command that cannot start, and one that starts and exits at once (C2).
+	for _, command := range [][]string{{"/kyyard-no-such-executable"}, {"sh", "-c", "exit 1"}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		name := "kyyard-rollback-fixture"
+		req, oldID := explicitFixture(t, ctx, name)
+		req.Services[0].Explicit.Command = command
+		res := New("/var/run/docker.sock").Deploy(ctx, req, func() {})
+		if res.Outcome != protocol.OutcomeFailed || res.Validate() != nil {
+			t.Fatalf("%v deploy: %+v", command, res)
 		}
-	}
-	if start.Code != "start_failed_rolled_back" || rollback.Outcome != protocol.OutcomeSucceeded {
-		t.Fatalf("steps: %+v", res.Steps)
-	}
-	if id, state := dockerState(ctx, name); id != oldID || state != "running" {
-		t.Fatalf("old container under its name: %s %s", id, state)
-	}
-	out, _ := exec.CommandContext(ctx, "docker", "ps", "-aq", "--no-trunc", "--filter", "label=kyyard.test="+name).Output()
-	if ids := strings.Fields(string(out)); len(ids) != 1 || ids[0] != oldID {
-		t.Fatalf("containers left: %v", ids)
+		var start, rollback protocol.DeploymentStep
+		for _, s := range res.Steps {
+			switch s.Step {
+			case protocol.StepStart:
+				start = s
+			case protocol.StepRollback:
+				rollback = s
+			}
+		}
+		if start.Code != "start_failed_rolled_back" || rollback.Outcome != protocol.OutcomeSucceeded {
+			t.Fatalf("%v steps: %+v", command, res.Steps)
+		}
+		if id, state := dockerState(ctx, name); id != oldID || state != "running" {
+			t.Fatalf("%v old container under its name: %s %s", command, id, state)
+		}
+		out, _ := exec.CommandContext(ctx, "docker", "ps", "-aq", "--no-trunc", "--filter", "label=kyyard.test="+name).Output()
+		if ids := strings.Fields(string(out)); len(ids) != 1 || ids[0] != oldID {
+			t.Fatalf("%v containers left: %v", command, ids)
+		}
 	}
 }

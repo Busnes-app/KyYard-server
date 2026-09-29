@@ -64,6 +64,9 @@ func TestExplicitDeploymentRequest(t *testing.T) {
 			r.Services[0].Ports = []Port{{Container: 80, Protocol: "tcp", HostIP: "127.0.0.1"}}
 		}, false},
 		"tmpfs explicit": {func(r *DeploymentRequest) { r.Services[0].Mounts = []Mount{{Kind: MountTmpfs, Target: "/run"}} }, true},
+		"tmpfs read-only": {func(r *DeploymentRequest) {
+			r.Services[0].Mounts = []Mount{{Kind: MountTmpfs, Target: "/run", ReadOnly: true}}
+		}, true},
 		"tmpfs with source": {func(r *DeploymentRequest) {
 			r.Services[0].Mounts = []Mount{{Kind: MountTmpfs, Source: "/x", Target: "/run"}}
 		}, false},

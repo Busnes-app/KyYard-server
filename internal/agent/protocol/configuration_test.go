@@ -94,28 +94,30 @@ func TestConfigurationRefusals(t *testing.T) {
 				c.Log.Options[fmt.Sprintf("o%d", i)] = "v"
 			}
 		},
-		"target":          func(c *ContainerConfiguration) { c.Target.ContainerID = strings.Repeat("d", 64) },
-		"skew future":     func(c *ContainerConfiguration) { c.ObservedAt = configNow.Add(MaxClockSkew + time.Second) },
-		"skew past":       func(c *ContainerConfiguration) { c.ObservedAt = configNow.Add(-MaxClockSkew - time.Second) },
-		"restart":         func(c *ContainerConfiguration) { c.Restart = "sometimes" },
-		"unsupported":     func(c *ContainerConfiguration) { c.Unsupported = []string{"bogus"} },
-		"truncated field": func(c *ContainerConfiguration) { c.Unsupported = []string{"list_truncated:Cap-Add"} },
-		"unsupported dup": func(c *ContainerConfiguration) { c.Unsupported = []string{"ulimits", "ulimits"} },
-		"nul name":        func(c *ContainerConfiguration) { c.Name = "we\x00b" },
-		"nul env":         func(c *ContainerConfiguration) { c.Env[0].Value = "a\x00b" },
-		"nul label":       func(c *ContainerConfiguration) { c.Labels["k"] = "a\x00" },
-		"nul argv":        func(c *ContainerConfiguration) { c.Command[0] = "a\x00" },
-		"nul mount":       func(c *ContainerConfiguration) { c.Mounts[0].Source = "d\x00" },
-		"mount kind":      func(c *ContainerConfiguration) { c.Mounts[0].Kind = "other" },
-		"tmpfs source":    func(c *ContainerConfiguration) { c.Mounts[2].Source = "/x" },
-		"mount target":    func(c *ContainerConfiguration) { c.Mounts[1].Target = "/data" },
-		"port":            func(c *ContainerConfiguration) { c.Ports[0].Container = 0 },
-		"port dup":        func(c *ContainerConfiguration) { c.Ports = append(c.Ports, c.Ports[0]) },
-		"port proto":      func(c *ContainerConfiguration) { c.Ports[0].Protocol = "sctp" },
-		"device perms":    func(c *ContainerConfiguration) { c.Devices[0].Permissions = "x" },
-		"resources":       func(c *ContainerConfiguration) { c.Resources.MemoryBytes = -1 },
-		"healthcheck":     func(c *ContainerConfiguration) { c.Healthcheck.Retries = -1 },
-		"image id":        func(c *ContainerConfiguration) { c.ImageID = "sha256:short" },
+		"target":           func(c *ContainerConfiguration) { c.Target.ContainerID = strings.Repeat("d", 64) },
+		"skew future":      func(c *ContainerConfiguration) { c.ObservedAt = configNow.Add(MaxClockSkew + time.Second) },
+		"skew past":        func(c *ContainerConfiguration) { c.ObservedAt = configNow.Add(-MaxClockSkew - time.Second) },
+		"restart":          func(c *ContainerConfiguration) { c.Restart = "sometimes" },
+		"unsupported":      func(c *ContainerConfiguration) { c.Unsupported = []string{"bogus"} },
+		"truncated field":  func(c *ContainerConfiguration) { c.Unsupported = []string{"list_truncated:Cap-Add"} },
+		"host key grammar": func(c *ContainerConfiguration) { c.Unsupported = []string{"host_config:Shm-Size"} },
+		"host key length":  func(c *ContainerConfiguration) { c.Unsupported = []string{"host_config:" + strings.Repeat("A", 65)} },
+		"unsupported dup":  func(c *ContainerConfiguration) { c.Unsupported = []string{"ulimits", "ulimits"} },
+		"nul name":         func(c *ContainerConfiguration) { c.Name = "we\x00b" },
+		"nul env":          func(c *ContainerConfiguration) { c.Env[0].Value = "a\x00b" },
+		"nul label":        func(c *ContainerConfiguration) { c.Labels["k"] = "a\x00" },
+		"nul argv":         func(c *ContainerConfiguration) { c.Command[0] = "a\x00" },
+		"nul mount":        func(c *ContainerConfiguration) { c.Mounts[0].Source = "d\x00" },
+		"mount kind":       func(c *ContainerConfiguration) { c.Mounts[0].Kind = "other" },
+		"tmpfs source":     func(c *ContainerConfiguration) { c.Mounts[2].Source = "/x" },
+		"mount target":     func(c *ContainerConfiguration) { c.Mounts[1].Target = "/data" },
+		"port":             func(c *ContainerConfiguration) { c.Ports[0].Container = 0 },
+		"port dup":         func(c *ContainerConfiguration) { c.Ports = append(c.Ports, c.Ports[0]) },
+		"port proto":       func(c *ContainerConfiguration) { c.Ports[0].Protocol = "sctp" },
+		"device perms":     func(c *ContainerConfiguration) { c.Devices[0].Permissions = "x" },
+		"resources":        func(c *ContainerConfiguration) { c.Resources.MemoryBytes = -1 },
+		"healthcheck":      func(c *ContainerConfiguration) { c.Healthcheck.Retries = -1 },
+		"image id":         func(c *ContainerConfiguration) { c.ImageID = "sha256:short" },
 		"frame size": func(c *ContainerConfiguration) {
 			c.Command, c.Entrypoint = nil, nil
 			for range MaxArgv {
@@ -226,4 +228,14 @@ func fill(s string) []string {
 		out[i] = s
 	}
 	return out
+}
+
+// A setting the agent does not know is named by its Engine key; a read-only tmpfs is carried.
+func TestConfigurationAcceptsHostConfigCodesAndReadOnlyTmpfs(t *testing.T) {
+	c := validConfiguration()
+	c.Unsupported = []string{"resource_limits", "host_config:ShmSize", "host_config:" + strings.Repeat("A", 64)}
+	c.Mounts[2].ReadOnly = true
+	if err := c.Validate(configTarget(), configNow); err != nil {
+		t.Fatal(err)
+	}
 }

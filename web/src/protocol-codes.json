@@ -10,6 +10,7 @@
     "container_missing",
     "deadline",
     "dependents",
+    "exited_early",
     "forbidden",
     "identity_mismatch",
     "identity_unreadable",

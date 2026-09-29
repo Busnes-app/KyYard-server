@@ -2,9 +2,11 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"net/netip"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -64,9 +66,108 @@ type inspectedConfiguration struct {
 	}
 }
 
-// configurationOnly lists the codes of undescribed that name settings ExplicitService cannot
-// express; the rest of its checks are settings the configuration carries.
-var configurationOnly = []string{"volumes_from", "volume_driver", "mount_options", "ulimits", "sysctls", "device_requests", "pid_mode", "ipc_mode", "userns_mode", "cgroup_parent", "group_add", "links", "runtime", "anonymous_volume"}
+// rawInspection is the same container read as maps, so a setting no typed field names is seen.
+type rawInspection struct {
+	Config, HostConfig map[string]json.RawMessage
+	NetworkSettings    *struct {
+		Networks map[string]map[string]json.RawMessage
+	}
+}
+
+// configKeys, hostConfigKeys and endpointKeys list every key the Engine reports that the read
+// knows: "" when a configuration field carries it, another check (undescribed, mountOptions,
+// the tmpfs options) reads it, or it is the client's or the daemon's own; otherwise the code it is
+// flagged under when set. A key not listed is flagged host_config:<Key> when set, so a setting
+// this adapter has never heard of fails closed rather than being dropped by a recreate.
+var (
+	configKeys = keyCodes(map[string][]string{
+		"": {"Image", "User", "WorkingDir", "Hostname", "StopSignal", "Env", "Cmd", "Entrypoint", "Labels", "ExposedPorts", "Tty", "OpenStdin", "StopTimeout", "Healthcheck",
+			// attach settings of the client that ran it, and what the image declares (its volumes are anonymous_volume's)
+			"AttachStdin", "AttachStdout", "AttachStderr", "StdinOnce", "Volumes", "OnBuild", "ArgsEscaped", "Shell"},
+	})
+	hostConfigKeys = keyCodes(map[string][]string{
+		"": {"NetworkMode", "Privileged", "ReadonlyRootfs", "Init", "RestartPolicy", "PortBindings", "Memory", "MemorySwap", "NanoCpus", "PidsLimit",
+			"CapAdd", "CapDrop", "SecurityOpt", "ExtraHosts", "Dns", "Devices", "LogConfig", "Tmpfs", "Binds", "Mounts",
+			"VolumesFrom", "VolumeDriver", "Ulimits", "Sysctls", "DeviceRequests", "PidMode", "IpcMode", "UsernsMode", "CgroupParent", "GroupAdd", "Links", "Runtime",
+			// the client's console and ID file; the default masked paths, which privileged and security_opt decide
+			"ConsoleSize", "ContainerIDFile", "MaskedPaths", "ReadonlyPaths"},
+		"resource_limits": {"CpuShares", "CpuPeriod", "CpuQuota", "CpuRealtimePeriod", "CpuRealtimeRuntime", "CpusetCpus", "CpusetMems", "CpuCount", "CpuPercent",
+			"MemoryReservation", "MemorySwappiness", "KernelMemory", "KernelMemoryTCP", "BlkioWeight", "BlkioWeightDevice", "BlkioDeviceReadBps",
+			"BlkioDeviceWriteBps", "BlkioDeviceReadIOps", "BlkioDeviceWriteIOps", "IOMaximumBandwidth", "IOMaximumIOps"},
+		"dns":         {"DnsOptions", "DnsSearch"},
+		"auto_remove": {"AutoRemove"},
+	})
+	endpointKeys = keyCodes(map[string][]string{
+		"":      {"Aliases", "IPAMConfig", "NetworkID", "EndpointID", "Gateway", "IPAddress", "IPPrefixLen", "IPv6Gateway", "GlobalIPv6Address", "GlobalIPv6PrefixLen", "MacAddress", "DNSNames"},
+		"links": {"Links"},
+	})
+	// daemonDefaults are values the daemon gives a container that sets nothing.
+	daemonDefaults = map[string]string{"ShmSize": "67108864", "CgroupnsMode": `"private"`, "MemorySwappiness": "-1"}
+	engineKey      = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
+)
+
+func keyCodes(byCode map[string][]string) map[string]string {
+	out := map[string]string{}
+	for code, keys := range byCode {
+		for _, k := range keys {
+			out[k] = code
+		}
+	}
+	return out
+}
+
+// unset reports a value that sets nothing: null, false, 0, "", an empty list or map, or the
+// daemon's own default for key.
+func unset(key string, raw json.RawMessage) bool {
+	if d, ok := daemonDefaults[key]; ok && string(raw) == d {
+		return true
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return false
+	}
+	switch x := v.(type) {
+	case nil:
+		return true
+	case bool:
+		return !x
+	case float64:
+		return x == 0
+	case string:
+		return x == ""
+	case []any:
+		return len(x) == 0
+	case map[string]any:
+		return len(x) == 0
+	}
+	return false
+}
+
+// uncarried adds to codes each set key of section the configuration does not carry. It reports
+// false for a key outside the Engine's grammar.
+func uncarried(section map[string]json.RawMessage, known map[string]string, codes map[string]bool) bool {
+	for k, raw := range section {
+		code, listed := known[k]
+		switch {
+		case !engineKey.MatchString(k):
+			return false
+		case k == "IPAMConfig": // only its IPv4Address is carried
+			var ipam map[string]json.RawMessage
+			_ = json.Unmarshal(raw, &ipam)
+			for sub, v := range ipam {
+				if sub != "IPv4Address" && !unset(sub, v) {
+					codes["host_config:IPAMConfig"] = true
+				}
+			}
+		case unset(k, raw) || (listed && code == ""):
+		case listed:
+			codes[code] = true
+		default:
+			codes["host_config:"+k] = true
+		}
+	}
+	return true
+}
 
 // ReadConfiguration reads one container's editable configuration through Engine v1.41, like
 // InspectContainer: GETs only, the pinned image, and a second container read that must match
@@ -83,8 +184,9 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 	}
 	var before, after inspectedConfiguration
 	var full, fullAfter inspectedForDeploy
+	var raw, rawAfter rawInspection
 	path := "/containers/" + target.ContainerID + "/json"
-	if err := c.inspectionGet(ctx, path, &before, &full); err != nil {
+	if err := c.inspectionGet(ctx, path, &before, &full, &raw); err != nil {
 		return nil, err
 	}
 	if before.ID != target.ContainerID || before.Image != target.ImageID || before.Created.Unix() != target.CreatedUnix {
@@ -103,24 +205,41 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 	if im.ID != target.ImageID {
 		return nil, ErrInspectionChanged
 	}
-	if err = c.inspectionGet(ctx, path, &after, &fullAfter); err != nil {
+	if err = c.inspectionGet(ctx, path, &after, &fullAfter, &rawAfter); err != nil {
 		return nil, err
 	}
-	if !reflect.DeepEqual(before, after) || !reported(fullAfter) || !sameConfiguration(full, fullAfter) {
+	if !reflect.DeepEqual(before, after) || !reported(fullAfter) || !sameConfiguration(full, fullAfter) || !reflect.DeepEqual(raw, rawAfter) {
 		return nil, ErrInspectionChanged
 	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	out := configurationFacts(before, im.RepoDigests)
+	codes := map[string]bool{}
 	for _, code := range undescribed(full, "", daemonRuntime) {
-		if slices.Contains(configurationOnly, code) {
+		codes[code] = codes[code] || slices.Contains(protocol.ConfigurationOnlyCodes, code)
+	}
+	ok := raw.NetworkSettings != nil && uncarried(raw.Config, configKeys, codes) && uncarried(raw.HostConfig, hostConfigKeys, codes)
+	for _, n := range raw.NetworkSettings.Networks {
+		ok = ok && uncarried(n, endpointKeys, codes)
+	}
+	if !ok {
+		return nil, ErrInspectionInvalid
+	}
+	// Known codes in their vocabulary's order, then Engine keys in theirs.
+	for _, code := range protocol.UnsupportedCodes {
+		if codes[code] {
 			out.Unsupported = append(out.Unsupported, code)
 		}
 	}
-	if out.tmpfsOptions && !slices.Contains(out.Unsupported, "mount_options") {
-		out.Unsupported = append(out.Unsupported, "mount_options")
+	var keys []string
+	for code, set := range codes {
+		if set && strings.HasPrefix(code, "host_config:") {
+			keys = append(keys, code)
+		}
 	}
+	slices.Sort(keys)
+	out.Unsupported = append(out.Unsupported, keys[:min(len(keys), protocol.MaxListEntries)]...)
 	out.Unsupported = append(out.Unsupported, out.truncated...)
 	out.Target, out.ImageID, out.ObservedAt = target, target.ImageID, time.Now().UTC()
 	if out.Validate(target, time.Now()) != nil {
@@ -131,8 +250,7 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 
 type configurationRead struct {
 	protocol.ContainerConfiguration
-	truncated    []string // codes for what was cut to fit the protocol's bounds
-	tmpfsOptions bool     // a tmpfs mount carries options the mount list cannot
+	truncated []string // codes for what was cut to fit the protocol's bounds
 }
 
 func (o *configurationRead) cut(code string) {
@@ -178,6 +296,9 @@ func configurationFacts(in inspectedConfiguration, repoDigests []string) *config
 	}
 	o.Command, o.Entrypoint = argv(o, cfg.Cmd), argv(o, cfg.Entrypoint)
 	o.User, o.WorkingDir, o.Hostname = cfg.User, cfg.WorkingDir, cfg.Hostname
+	if o.Hostname == in.ID[:min(12, len(in.ID))] {
+		o.Hostname = "" // Docker's default; a recreate gets its own
+	}
 	o.Env = env(o, cfg.Env)
 	o.Labels = labels(o, cfg.Labels)
 	o.Restart, o.RestartRetries = h.RestartPolicy.Name, h.RestartPolicy.MaximumRetryCount
@@ -345,20 +466,18 @@ func mounts(o *configurationRead, in inspectedConfiguration) []protocol.Mount {
 		case m.Type == "bind":
 			out = append(out, protocol.Mount{Kind: protocol.MountBind, Source: m.Source, Target: m.Destination, ReadOnly: !m.RW})
 		case m.Type == "tmpfs":
-			out = append(out, protocol.Mount{Kind: protocol.MountTmpfs, Target: m.Destination})
+			out = append(out, protocol.Mount{Kind: protocol.MountTmpfs, Target: m.Destination, ReadOnly: !m.RW})
 		default:
 			o.cut("list_truncated:mounts")
 			continue
 		}
 		targets[m.Destination] = true
 	}
-	// The Engine may report --tmpfs only in HostConfig.Tmpfs.
+	// The Engine may report --tmpfs only in HostConfig.Tmpfs; of its options only ro is carried
+	// (mountOptions names the rest).
 	for target, options := range in.HostConfig.Tmpfs {
-		if options != "" && options != "rw" {
-			o.tmpfsOptions = true
-		}
 		if !targets[target] {
-			out = append(out, protocol.Mount{Kind: protocol.MountTmpfs, Target: target})
+			out = append(out, protocol.Mount{Kind: protocol.MountTmpfs, Target: target, ReadOnly: slices.Contains(strings.Split(options, ","), "ro")})
 		}
 	}
 	slices.SortFunc(out, func(a, b protocol.Mount) int { return strings.Compare(a.Target, b.Target) })

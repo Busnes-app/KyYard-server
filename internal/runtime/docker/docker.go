@@ -33,6 +33,8 @@ type Client struct {
 	runtimeMu   sync.Mutex
 	runtimeName string
 	runtimeRead time.Time
+	// startWatch and startPoll override the package's for tests; zero is the default.
+	startWatch, startPoll time.Duration
 }
 
 // callBudget bounds a call whose caller set no deadline of its own.

@@ -452,6 +452,8 @@ func TestDeploymentStepCodeDetails(t *testing.T) {
 		{CodeLegacy, "", true},
 		{"unsupported", "privileged,devices", true},
 		{"runtime_status", "404", true},
+		{"exited_early", "", true},
+		{"exited_early", "137", false},
 		{"container_missing", "the container no longer exists", false},
 		{"runtime_error", "the runtime call failed", false},
 		{"legacy", "old text", false},
@@ -476,7 +478,7 @@ func TestDeploymentStepCodeDetails(t *testing.T) {
 			t.Errorf("code %q detail %q: %v", tc.code, tc.detail, err)
 		}
 	}
-	if len(stepCodes) != 40 || len(resultCodes) != 8 {
+	if len(stepCodes) != 41 || len(resultCodes) != 8 {
 		t.Fatalf("closed sets: %d step codes, %d result codes", len(stepCodes), len(resultCodes))
 	}
 }

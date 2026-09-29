@@ -72,7 +72,7 @@ func TestReadConfigurationMapsEverything(t *testing.T) {
 	if !slices.Equal(got.Env, wantEnv) {
 		t.Fatalf("env %+v", got.Env)
 	}
-	if !slices.Equal(got.Unsupported, []string{"volumes_from", "sysctls", "mount_options"}) {
+	if !slices.Equal(got.Unsupported, []string{"volumes_from", "mount_options", "sysctls"}) {
 		t.Fatalf("unsupported %v", got.Unsupported)
 	}
 	wantPorts := []protocol.Port{{Container: 80, Host: 8080, Protocol: "tcp", HostIP: "127.0.0.1"}, {Container: 9000, Protocol: "tcp"}}
@@ -222,5 +222,83 @@ func TestReadConfigurationNamesAliasOverflow(t *testing.T) {
 	})
 	if !slices.Contains(got.Unsupported, "list_truncated:aliases") || slices.Contains(got.Unsupported, "list_truncated:networks") {
 		t.Fatalf("%v", got.Unsupported)
+	}
+}
+
+// Settings the configuration does not carry fail closed: known ones under their code, the rest
+// by their Engine key. A read-only tmpfs is carried.
+func TestReadConfigurationFlagsEverySettingItCannotCarry(t *testing.T) {
+	got := readFixture(t, func(c map[string]any) {
+		h := c["HostConfig"].(map[string]any)
+		delete(h, "VolumesFrom")
+		delete(h, "Sysctls")
+		h["Tmpfs"] = map[string]string{"/run": "ro"}
+		h["CpuShares"], h["CpusetCpus"], h["MemoryReservation"] = 512, "0", int64(32<<20)
+		h["DnsSearch"], h["ShmSize"], h["UTSMode"], h["OomKillDisable"] = []string{"lan"}, int64(128<<20), "host", true
+	})
+	want := []string{"resource_limits", "dns", "host_config:OomKillDisable", "host_config:ShmSize", "host_config:UTSMode"}
+	if !slices.Equal(got.Unsupported, want) {
+		t.Fatalf("unsupported %v, want %v", got.Unsupported, want)
+	}
+	if i := slices.IndexFunc(got.Mounts, func(m protocol.Mount) bool { return m.Target == "/run" }); i < 0 || !got.Mounts[i].ReadOnly {
+		t.Fatalf("read-only tmpfs: %+v", got.Mounts)
+	}
+}
+
+// A container as `docker run -d alpine sleep` leaves it, with the daemon's defaults, the
+// endpoint the daemon assigned and the short-ID hostname, carries everything.
+func TestReadConfigurationPlainContainerHasNoUnsupported(t *testing.T) {
+	var id string
+	got := readFixture(t, func(c map[string]any) {
+		id = c["Id"].(string)
+		c["Config"] = map[string]any{"Hostname": id[:12], "Domainname": "", "User": "", "AttachStdin": false, "AttachStdout": true, "AttachStderr": true, "Tty": false, "OpenStdin": false, "StdinOnce": false,
+			"Env": []string{"PATH=/usr/bin"}, "Cmd": []string{"sleep", "300"}, "Image": "alpine:3.24", "Volumes": nil, "WorkingDir": "/", "Entrypoint": nil, "OnBuild": nil, "Labels": map[string]string{}}
+		c["HostConfig"] = map[string]any{"Binds": nil, "ContainerIDFile": "", "LogConfig": map[string]any{"Type": "json-file", "Config": map[string]any{}}, "NetworkMode": "bridge", "PortBindings": map[string]any{},
+			"RestartPolicy": map[string]any{"Name": "no", "MaximumRetryCount": 0}, "AutoRemove": false, "VolumeDriver": "", "VolumesFrom": nil, "ConsoleSize": []int{0, 0}, "CapAdd": nil, "CapDrop": nil,
+			"CgroupnsMode": "private", "Dns": []string{}, "DnsOptions": []string{}, "DnsSearch": []string{}, "ExtraHosts": nil, "GroupAdd": nil, "IpcMode": "private", "Cgroup": "", "Links": nil,
+			"OomScoreAdj": 0, "PidMode": "", "Privileged": false, "PublishAllPorts": false, "ReadonlyRootfs": false, "SecurityOpt": nil, "UTSMode": "", "UsernsMode": "", "ShmSize": 67108864,
+			"Runtime": "runc", "Isolation": "", "CpuShares": 0, "Memory": 0, "NanoCpus": 0, "CgroupParent": "", "BlkioWeight": 0, "BlkioWeightDevice": []any{}, "CpuPeriod": 0, "CpuQuota": 0,
+			"CpusetCpus": "", "CpusetMems": "", "Devices": []any{}, "DeviceCgroupRules": nil, "DeviceRequests": nil, "MemoryReservation": 0, "MemorySwap": 0, "MemorySwappiness": nil,
+			"OomKillDisable": nil, "PidsLimit": nil, "Ulimits": nil, "CpuCount": 0, "CpuPercent": 0, "IOMaximumIOps": 0, "IOMaximumBandwidth": 0,
+			"MaskedPaths": []string{"/proc/acpi"}, "ReadonlyPaths": []string{"/proc/bus"}}
+		c["Mounts"] = []any{}
+		c["NetworkSettings"] = map[string]any{"Networks": map[string]any{"bridge": map[string]any{"IPAMConfig": nil, "Links": nil, "Aliases": nil, "MacAddress": "d6:4d:9f:6c:df:71", "DriverOpts": nil, "GwPriority": 0,
+			"NetworkID": "568cc986", "EndpointID": "113c2805", "Gateway": "172.17.0.1", "IPAddress": "172.17.0.2", "IPPrefixLen": 16, "IPv6Gateway": "", "GlobalIPv6Address": "", "GlobalIPv6PrefixLen": 0, "DNSNames": nil}}}
+	})
+	if len(got.Unsupported) != 0 {
+		t.Fatalf("unsupported %v", got.Unsupported)
+	}
+	// Docker's default hostname is the short ID; carrying it would pin the old container's.
+	if got.Hostname != "" {
+		t.Fatalf("hostname %q", got.Hostname)
+	}
+}
+
+// An endpoint setting other than the carried IPv4 address is named, and so is an unknown one.
+func TestReadConfigurationFlagsEndpointSettings(t *testing.T) {
+	got := readFixture(t, func(c map[string]any) {
+		h := c["HostConfig"].(map[string]any)
+		delete(h, "VolumesFrom")
+		delete(h, "Sysctls")
+		h["Tmpfs"] = map[string]string{}
+		c["NetworkSettings"].(map[string]any)["Networks"] = map[string]any{"shop_default": map[string]any{
+			"IPAMConfig": map[string]any{"IPv4Address": "172.20.0.10", "IPv6Address": "fd00::10"}, "DriverOpts": map[string]string{"a": "b"}}}
+	})
+	if want := []string{"host_config:DriverOpts", "host_config:IPAMConfig"}; !slices.Equal(got.Unsupported, want) {
+		t.Fatalf("unsupported %v", got.Unsupported)
+	}
+}
+
+// A tmpfs mount's size or mode is an option the mount list cannot carry.
+func TestReadConfigurationFlagsTmpfsMountOptions(t *testing.T) {
+	got := readFixture(t, func(c map[string]any) {
+		h := c["HostConfig"].(map[string]any)
+		delete(h, "VolumesFrom")
+		delete(h, "Sysctls")
+		h["Tmpfs"] = map[string]string{}
+		h["Mounts"] = []any{map[string]any{"Type": "tmpfs", "Target": "/tmp", "TmpfsOptions": map[string]any{"SizeBytes": 1 << 20}}}
+	})
+	if !slices.Equal(got.Unsupported, []string{"mount_options"}) {
+		t.Fatalf("unsupported %v", got.Unsupported)
 	}
 }

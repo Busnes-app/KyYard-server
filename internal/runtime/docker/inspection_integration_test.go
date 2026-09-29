@@ -185,4 +185,26 @@ func TestInspectionRealDocker(t *testing.T) {
 	if cfg.Validate(target, time.Now()) != nil {
 		t.Fatalf("real configuration invalid: %+v", cfg)
 	}
+
+	// Settings the configuration cannot carry are named, not dropped; a read-only tmpfs is carried.
+	// (A cgroup v2 kernel discards --oom-kill-disable; --oom-score-adj stands in for an unknown key.)
+	raw, err = exec.CommandContext(ctx, "docker", "create", "--pull", "never", "--cpu-shares", "512", "--cpuset-cpus", "0", "--memory-reservation", "32m", "--dns-search", "lan",
+		"--shm-size", "128m", "--uts", "host", "--oom-score-adj", "100", "--tmpfs", "/scratch:ro", image, "true").Output()
+	if err != nil {
+		t.Fatalf("unsupported fixture: %v: %s", err, raw)
+	}
+	flagged := strings.TrimSpace(string(raw))
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", flagged).Run() })
+	raw, err = exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .}}", flagged).Output()
+	if err != nil || json.Unmarshal(raw, &identity) != nil {
+		t.Fatalf("unsupported fixture identity: %v", err)
+	}
+	target = protocol.InspectionTarget{ContainerID: flagged, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}
+	if cfg, err = c.ReadConfiguration(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"resource_limits", "dns", "host_config:OomScoreAdj", "host_config:ShmSize", "host_config:UTSMode"}
+	if !slices.Equal(cfg.Unsupported, want) || !slices.Contains(cfg.Mounts, protocol.Mount{Kind: protocol.MountTmpfs, Target: "/scratch", ReadOnly: true}) {
+		t.Fatalf("unsupported %v mounts %+v", cfg.Unsupported, cfg.Mounts)
+	}
 }

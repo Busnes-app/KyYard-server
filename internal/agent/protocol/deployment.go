@@ -104,7 +104,7 @@ var stepCodes = map[string]detailRule{
 	"forbidden": detailNone, "rollout_timeout": detailRollout, "conflict": detailObject,
 	"pod_security": detailPodSecurity, "admission_denied": detailObject, "claim_immutable": detailObject,
 	"service_ip_immutable": detailObject, "service_ip_unavailable": detailObject,
-	"rollback_failed": detailNone, "start_failed_rolled_back": detailNone,
+	"rollback_failed": detailNone, "start_failed_rolled_back": detailNone, "exited_early": detailNone,
 }
 
 var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
@@ -339,7 +339,7 @@ func cleanAbsolute(p string) bool {
 	return len(p) > 1 && len(p) <= MaxMountPathBytes && path.IsAbs(p) && path.Clean(p) == p && CleanText(p, MaxMountPathBytes) == p && !strings.ContainsFunc(p, func(r rune) bool { return unicode.Is(unicode.Cf, r) })
 }
 
-// validMounts checks mounts; tmpfs (no source, writable) only where tmpfs is set.
+// validMounts checks mounts; tmpfs (no source) only where tmpfs is set.
 func validMounts(mounts []Mount, used map[string]bool, tmpfs bool) bool {
 	if len(mounts) > MaxMounts {
 		return false
@@ -352,7 +352,7 @@ func validMounts(mounts []Mount, used map[string]bool, tmpfs bool) bool {
 		case m.Kind == MountVolume && deploymentVolume.MatchString(m.Source):
 			used[m.Source] = true
 		case m.Kind == MountBind && cleanAbsolute(m.Source):
-		case tmpfs && m.Kind == MountTmpfs && m.Source == "" && !m.ReadOnly:
+		case tmpfs && m.Kind == MountTmpfs && m.Source == "":
 		default:
 			return false
 		}

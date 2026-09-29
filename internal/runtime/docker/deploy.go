@@ -34,14 +34,24 @@ const replaceBudget = 2*operationBudget + 4*callBudget
 // rename at callBudget, restart at operationBudget.
 const rollbackBudget = operationBudget + 2*callBudget
 
+// startWatch is how long an explicit recreate's new container must stay running (or leave the
+// starting health state) before its start counts, read every startPoll. watchBudget is the
+// watch with its last read.
+const (
+	startWatch  = 5 * time.Second
+	startPoll   = 500 * time.Millisecond
+	watchBudget = startWatch + callBudget
+)
+
 // Deploy replaces each service's mapped container with one created from the pinned image ID.
 // First every service's precondition and image (pull, for a service naming a digest), in plan
 // order, with each frame volume ensured after the precondition of the first service mounting
 // it; then per service recheck, rename, create, stop, start, remove. Renaming and creating while the
 // old container still runs means a name conflict or a refused create costs no downtime. The
 // first step that is not a success ends the run and every later step is recorded as skipped.
-// Only an explicit recreate rolls back, and only a failed start; otherwise the steps say where
-// the old container was left. An explicit run (no Replaces) is image, create, start. No volume
+// Only an explicit recreate puts the host back: a failed create or stop is undone, and a failed
+// start, which includes a new container that stops running within startWatch, is rolled back
+// (a rollback step); otherwise the steps say where the old container was left. An explicit run (no Replaces) is image, create, start. No volume
 // is ever removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
 // 2026-09-23-pull-step-design.md and 2026-09-24-volumes-design.md.
 // started is called once, immediately before the first phase-two call (after the first recheck's
@@ -63,7 +73,7 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 	icancel()
 	remaining := time.Until(req.Deadline)
 	if req.Explicit {
-		remaining -= rollbackBudget // the recheck guard reserves it after the pulls
+		remaining -= rollbackBudget + watchBudget // the recheck guard reserves them after the pulls
 	}
 	r.pullDeadline = time.Now().Add(pullPhase(remaining))
 	// Every service is checked and its image made present before any container is touched, so
@@ -191,6 +201,10 @@ type inspectedForDeploy struct {
 				Subpath      string
 				DriverConfig *struct{ Name string }
 			}
+			TmpfsOptions *struct {
+				SizeBytes, Mode int64
+				Options         [][]string
+			}
 		}
 	}
 	NetworkSettings *struct {
@@ -223,8 +237,14 @@ func (l *mountList) UnmarshalJSON(b []byte) error {
 var anonymousVolume = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // mountOptions reports an option on the old container's mounts the recreate would drop: a
-// propagation other than the default, nocopy, a volume subpath or driver, recursion settings.
+// propagation other than the default, nocopy, a volume subpath or driver, recursion settings,
+// a tmpfs size, mode or flag.
 func mountOptions(in inspectedForDeploy) bool {
+	for _, options := range in.HostConfig.Tmpfs {
+		if slices.ContainsFunc(strings.Split(options, ","), func(o string) bool { return o != "" && o != "rw" && o != "ro" }) {
+			return true
+		}
+	}
 	for _, m := range *in.Mounts {
 		if (m.Propagation != "" && m.Propagation != "rprivate") || slices.Contains(strings.Split(m.Mode, ","), "nocopy") {
 			return true
@@ -235,6 +255,9 @@ func mountOptions(in inspectedForDeploy) bool {
 			return true
 		}
 		if v := m.VolumeOptions; v != nil && (v.NoCopy || v.Subpath != "" || (v.DriverConfig != nil && v.DriverConfig.Name != "" && v.DriverConfig.Name != "local")) {
+			return true
+		}
+		if o := m.TmpfsOptions; o != nil && (o.SizeBytes != 0 || o.Mode != 0 || len(o.Options) > 0) {
 			return true
 		}
 	}
@@ -385,15 +408,21 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		if !reported(before) {
 			return deny("configuration_unreported")
 		}
-		// An explicit frame carries every setting the operator saw and kept: nothing is inherited,
-		// so nothing is refused as undescribed.
-		if codes := undescribed(before, r.req.Project+"_default", r.defaultRuntime); len(codes) > 0 && !r.req.Explicit {
+		// An explicit frame carries every setting the operator saw and kept, so only what it
+		// cannot express is refused.
+		codes := undescribed(before, r.req.Project+"_default", r.defaultRuntime)
+		if r.req.Explicit {
+			codes = slices.DeleteFunc(codes, func(c string) bool { return !slices.Contains(protocol.ConfigurationOnlyCodes, c) })
+		}
+		if len(codes) > 0 {
 			return unsupported(codes)
 		}
-		// Binds are preserve-only unless the operator acknowledged the host path.
+		// Binds are preserve-only unless the operator acknowledged the host path: an old bind
+		// covers a new one at its source and target in its mode, or (an explicit edit, the
+		// server's rule) read-only where the old one was writable.
 		for _, m := range s.Mounts {
 			if m.Kind == protocol.MountBind && (s.Explicit == nil || !slices.Contains(s.Explicit.AcknowledgedBinds, m.Source)) && !slices.ContainsFunc(*before.Mounts, func(o inspectedMount) bool {
-				return o.Type == "bind" && o.Source == m.Source && o.Destination == m.Target && o.RW == !m.ReadOnly
+				return o.Type == "bind" && o.Source == m.Source && o.Destination == m.Target && (o.RW == !m.ReadOnly || (s.Explicit != nil && m.ReadOnly))
 			}) {
 				return deny("bind_missing")
 			}
@@ -469,7 +498,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	}
 	budget := replaceBudget
 	if r.req.Explicit {
-		budget += rollbackBudget
+		budget += rollbackBudget + watchBudget
 	}
 	// The pull window can be minutes: re-read the container right before touching it.
 	r.step(s.Name, protocol.StepRecheck, func() (string, string, string) {
@@ -509,7 +538,12 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	})
 	created := r.create(ctx, p)
 	running := false // the old container was running when stopped: a rollback starts it again
-	r.step(s.Name, protocol.StepStop, func() (string, string, string) {
+	r.step(s.Name, protocol.StepStop, func() (outcome, code, detail string) {
+		defer func() {
+			if outcome != protocol.OutcomeSucceeded && r.req.Explicit {
+				r.undo(ctx, p, created)
+			}
+		}()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
 		defer cancel()
 		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
@@ -538,7 +572,12 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 func (r *deployRun) create(ctx context.Context, p prepared) string {
 	s := p.s
 	var created string
-	r.step(s.Name, protocol.StepCreate, func() (string, string, string) {
+	r.step(s.Name, protocol.StepCreate, func() (outcome, code, detail string) {
+		defer func() {
+			if outcome != protocol.OutcomeSucceeded && r.req.Explicit {
+				r.undo(ctx, p, created)
+			}
+		}()
 		if run(r.req, s) {
 			// A run has no precondition: its binds are checked here, before any daemon call.
 			for _, m := range s.Mounts {
@@ -578,13 +617,8 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 				nctx, ncancel := context.WithTimeout(ctx, callBudget)
 				status, err := r.c.postJSON(nctx, "/networks/"+url.PathEscape(n.Name)+"/connect", body, nil)
 				if err != nil || status != http.StatusOK {
-					outcome, code, detail := r.outcomeFor(nctx, err, status)
-					ncancel()
-					// Leave the host as it was so a retry is not wedged on the name.
-					if r.discard(ctx, created) && !run(r.req, s) {
-						r.unpark(ctx, p)
-					}
-					return outcome, code, detail
+					defer ncancel()
+					return r.outcomeFor(nctx, err, status)
 				}
 				ncancel()
 			}
@@ -604,6 +638,12 @@ func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, cre
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
 			return r.outcomeFor(cctx, err, status)
 		}
+		// A recreate's container must keep running; a run's may be a job that exits.
+		if r.req.Explicit && !run(r.req, s) {
+			if outcome, code, detail := r.watch(ctx, created); outcome != protocol.OutcomeSucceeded {
+				return outcome, code, detail
+			}
+		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
 		defer icancel()
 		var after inspectedForDeploy
@@ -622,6 +662,42 @@ func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, cre
 		return succeeded()
 	})
 	return failed
+}
+
+// watch reads a started container every startPoll for startWatch and fails the start
+// (exited_early) once it is no longer running: exited, dead or restarting. A healthcheck leaving
+// starting ends the watch early; one still starting at its end does not fail it.
+func (r *deployRun) watch(ctx context.Context, id string) (string, string, string) {
+	end := time.Now().Add(cmp.Or(r.c.startWatch, startWatch))
+	for {
+		var in struct {
+			State *struct {
+				Status  string
+				Running bool
+				Health  *struct{ Status string }
+			}
+		}
+		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		err := r.c.get(cctx, "/containers/"+url.PathEscape(id)+"/json", &in)
+		if err != nil {
+			defer cancel()
+			return r.outcomeFor(cctx, err, statusOf(err))
+		}
+		cancel()
+		switch st := in.State; {
+		case st == nil || !st.Running || st.Status == "exited" || st.Status == "dead" || st.Status == "restarting":
+			return fail("exited_early")
+		case st.Health != nil && st.Health.Status != "" && st.Health.Status != "starting" && st.Health.Status != "none":
+			return succeeded()
+		case !time.Now().Before(end):
+			return succeeded()
+		}
+		select {
+		case <-ctx.Done():
+			return r.outcomeFor(ctx, ctx.Err(), 0)
+		case <-time.After(cmp.Or(r.c.startPoll, startPoll)):
+		}
+	}
 }
 
 // rollback undoes an explicit recreate whose start failed: the new container is removed by
@@ -663,6 +739,15 @@ func parked(containerName, deployment string) string {
 // deadline: an agent shutting down mid-start still puts the old container back.
 func restoring(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), rollbackBudget)
+}
+
+// undo puts the host back after an explicit step failed before the new container started, so a
+// retry is not wedged on the name: the new container, if any, is removed and the old one given
+// its name back.
+func (r *deployRun) undo(ctx context.Context, p prepared, created string) {
+	if (created == "" || r.discard(ctx, created)) && !run(r.req, p.s) {
+		r.unpark(ctx, p)
+	}
 }
 
 // discard force-removes a container this run created; gone already counts.

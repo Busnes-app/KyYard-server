@@ -132,8 +132,15 @@ type ContainerConfiguration struct {
 // stay out of that list, which the web vocabulary fixture pins.
 var configurationCodes = []string{"env_truncated", "labels_truncated", "argv_truncated"}
 
+// ConfigurationOnlyCodes are the UnsupportedCodes naming settings an ExplicitService cannot
+// express: a configuration read lists them, and an explicit recreate of a container that has
+// any is refused.
+var ConfigurationOnlyCodes = []string{"volumes_from", "volume_driver", "mount_options", "ulimits", "sysctls", "device_requests", "pid_mode", "ipc_mode", "userns_mode", "cgroup_parent", "group_add", "links", "runtime", "anonymous_volume"}
+
 var (
-	listTruncated  = regexp.MustCompile(`^list_truncated:[a-z_]+$`)
+	listTruncated = regexp.MustCompile(`^list_truncated:[a-z_]+$`)
+	// hostConfig names an Engine setting the read does not know, by its key.
+	hostConfig     = regexp.MustCompile(`^host_config:[A-Za-z0-9]{1,64}$`)
 	devicePerms    = regexp.MustCompile(`^[rwm]{1,3}$`)
 	configRestarts = []string{"no", "always", "unless-stopped", "on-failure"}
 )
@@ -341,7 +348,7 @@ func (c *ContainerConfiguration) validMounts() error {
 	targets := map[string]bool{}
 	for _, m := range c.Mounts {
 		if m.Kind == MountTmpfs {
-			if m.Source != "" || m.ReadOnly || !cleanAbsolute(m.Target) || targets[m.Target] {
+			if m.Source != "" || !cleanAbsolute(m.Target) || targets[m.Target] {
 				return configErr("mounts")
 			}
 			targets[m.Target] = true
@@ -361,12 +368,12 @@ func (c *ContainerConfiguration) validMounts() error {
 }
 
 func (c *ContainerConfiguration) validUnsupported() error {
-	if len(c.Unsupported) > MaxUnsupported+len(configurationCodes)+MaxListEntries {
+	if len(c.Unsupported) > MaxUnsupported+len(configurationCodes)+2*MaxListEntries {
 		return configErr("unsupported")
 	}
 	seen := map[string]bool{}
 	for _, code := range c.Unsupported {
-		if seen[code] || !(slices.Contains(UnsupportedCodes, code) || slices.Contains(configurationCodes, code) || listTruncated.MatchString(code)) {
+		if seen[code] || !(slices.Contains(UnsupportedCodes, code) || slices.Contains(configurationCodes, code) || listTruncated.MatchString(code) || hostConfig.MatchString(code)) {
 			return configErr("unsupported")
 		}
 		seen[code] = true
