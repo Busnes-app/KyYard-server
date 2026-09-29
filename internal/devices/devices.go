@@ -2,21 +2,17 @@ package devices
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"math/big"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
-var (
-	ErrPairingNotFound = errors.New("pairing session not found")
-	ErrPairingExpired  = errors.New("pairing code expired")
-)
+// ErrPairingNotFound covers unknown, expired and consumed pairings alike, so a verifier
+// learns nothing about which secrets were ever issued.
+var ErrPairingNotFound = errors.New("pairing not found or expired")
 
 type PairingService struct {
 	store   store.Store
@@ -33,27 +29,19 @@ func NewPairingService(st store.Store, appName, appURL string) *PairingService {
 }
 
 type InitPairingResult struct {
-	Code      string `json:"code"`
 	Secret    string `json:"secret"`
 	ExpiresAt int64  `json:"expires_at"`
 	QRPayload string `json:"qr_payload"`
 }
 
-// InitPairing generates a 90-second ephemeral 6-digit PIN and QR payload for pairing mobile/PWA wrappers.
+// InitPairing creates a 90-second pairing carried by a QR code. Only the 24-byte secret
+// redeems it: a short typed code could be guessed within the window.
 func (s *PairingService) InitPairing(ctx context.Context, userID string) (*InitPairingResult, error) {
-	// Generate random 6-digit code
-	nBig, err := rand.Int(rand.Reader, big.NewInt(900000))
-	if err != nil {
-		return nil, err
-	}
-	code := fmt.Sprintf("%06d", nBig.Int64()+100000)
-
 	secret := crypto.RandomHex(24)
 	now := time.Now().UTC()
 	expiresAt := now.Add(90 * time.Second)
 
 	pairing := &store.DevicePairing{
-		Code:      code,
 		Secret:    secret,
 		UserID:    userID,
 		Status:    "pending",
@@ -69,46 +57,28 @@ func (s *PairingService) InitPairing(ctx context.Context, userID string) (*InitP
 		"action":   "ky_pair",
 		"app_name": s.appName,
 		"app_url":  s.appURL,
-		"code":     code,
 		"secret":   secret,
 		"expires":  expiresAt.Unix(),
 	}
 	qrBytes, _ := json.Marshal(qrData)
 
 	return &InitPairingResult{
-		Code:      code,
 		Secret:    secret,
 		ExpiresAt: expiresAt.Unix(),
 		QRPayload: string(qrBytes),
 	}, nil
 }
 
-// VerifyPairing processes code submission from a client device (e.g. mobile app scanning QR or entering PIN).
-func (s *PairingService) VerifyPairing(ctx context.Context, codeOrSecret, deviceName, platform, pushToken string) (*store.DevicePairing, *store.User, error) {
-	var pairing *store.DevicePairing
-	var err error
-
-	if len(codeOrSecret) == 6 {
-		pairing, err = s.store.Devices().GetPairingByCode(ctx, codeOrSecret)
-	} else {
-		pairing, err = s.store.Devices().GetPairingBySecret(ctx, codeOrSecret)
-	}
-
+// VerifyPairing redeems the QR secret from a client device.
+func (s *PairingService) VerifyPairing(ctx context.Context, secret, deviceName, platform, pushToken string) (*store.DevicePairing, *store.User, error) {
+	pairing, err := s.store.Devices().GetPairingBySecret(ctx, secret)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrPairingExpired) {
 			return nil, nil, ErrPairingNotFound
-		}
-		if errors.Is(err, store.ErrPairingExpired) {
-			return nil, nil, ErrPairingExpired
 		}
 		return nil, nil, err
 	}
-
-	if time.Now().UTC().After(pairing.ExpiresAt) {
-		return nil, nil, ErrPairingExpired
-	}
-
-	if pairing.Status != "pending" {
+	if time.Now().UTC().After(pairing.ExpiresAt) || pairing.Status != "pending" {
 		return nil, nil, ErrPairingNotFound
 	}
 	// Carry the pre-consumption credential snapshot through session issuance.
@@ -117,6 +87,9 @@ func (s *PairingService) VerifyPairing(ctx context.Context, codeOrSecret, device
 		return nil, nil, ErrPairingNotFound
 	}
 	if err := s.store.Devices().ConsumePairing(ctx, pairing.Secret, deviceName, platform, pushToken); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil, ErrPairingNotFound
+		}
 		return nil, nil, err
 	}
 

@@ -1019,7 +1019,40 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	{Version: 34, Name: "kubernetes_namespaces", SQLite: kubernetesNamespaces, Postgres: kubernetesNamespaces},
 	{Version: 35, Name: "application_migrations", SQLite: applicationMigrations, Postgres: strings.ReplaceAll(applicationMigrations, "DATETIME", "TIMESTAMPTZ")},
 	{Version: 36, Name: "service_tokens", SQLite: serviceTokens, Postgres: strings.ReplaceAll(serviceTokens, "DATETIME", "TIMESTAMPTZ")},
+	{Version: 37, Name: "pairing_secret_only", SQLite: pairingSecretOnlySQLite, Postgres: pairingSecretOnlyPostgres},
 }
+
+// Pairings live 90 seconds, so dropping pending rows on upgrade loses nothing. Only the
+// 24-byte QR secret redeems a pairing; the guessable 6-digit code column goes.
+const pairingSecretOnlySQLite = `
+DROP TABLE IF EXISTS device_pairings;
+CREATE TABLE device_pairings (
+    secret TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    push_token TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX idx_pairings_expires ON device_pairings(expires_at);
+`
+
+const pairingSecretOnlyPostgres = `
+DROP TABLE IF EXISTS device_pairings;
+CREATE TABLE device_pairings (
+    secret VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL DEFAULT '',
+    device_name VARCHAR(255) NOT NULL DEFAULT '',
+    platform VARCHAR(32) NOT NULL DEFAULT '',
+    push_token TEXT NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX idx_pairings_expires ON device_pairings(expires_at);
+`
 
 // serviceTokens holds another Ky product's read-only credential for one organization, and
 // the single-use six-digit pairing codes that mint them. Only hashes are stored.

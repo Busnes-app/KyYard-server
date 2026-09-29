@@ -79,7 +79,7 @@ func TestAdminPasswordResetRevokesGrants(t *testing.T) {
 	if err := st.Sessions().CreateMFAChallenge(ctx, challenge, "old"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Devices().CreatePairing(ctx, &store.DevicePairing{Secret: "pair", Code: "123456", UserID: u.ID, Status: "pending", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
+	if err := st.Devices().CreatePairing(ctx, &store.DevicePairing{Secret: "pair", UserID: u.ID, Status: "pending", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	u.Status = "disabled"

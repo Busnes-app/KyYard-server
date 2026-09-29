@@ -156,7 +156,6 @@ func TestDevicePairingLifecycle(t *testing.T) {
 
 	pairing := &store.DevicePairing{
 		Secret:     "secret-pairing-token-abc",
-		Code:       "849201",
 		DeviceName: "Yoshi's Pixel 9",
 		Platform:   "android",
 		Status:     "pending",
@@ -168,12 +167,12 @@ func TestDevicePairingLifecycle(t *testing.T) {
 		t.Fatalf("CreatePairing error: %v", err)
 	}
 
-	byCode, err := st.Devices().GetPairingByCode(ctx, "849201")
+	bySecret, err := st.Devices().GetPairingBySecret(ctx, "secret-pairing-token-abc")
 	if err != nil {
-		t.Fatalf("GetPairingByCode error: %v", err)
+		t.Fatalf("GetPairingBySecret error: %v", err)
 	}
-	if byCode.Secret != "secret-pairing-token-abc" {
-		t.Errorf("unexpected secret: %s", byCode.Secret)
+	if bySecret.Status != "pending" {
+		t.Errorf("unexpected status: %s", bySecret.Status)
 	}
 
 	if err := st.Devices().ConsumePairing(ctx, pairing.Secret, "Pixel", "android", "fcm-token-xyz"); err != nil {
