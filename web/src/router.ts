@@ -5,7 +5,7 @@ export type Route =
   | { name: 'dashboard' | 'endpoints' | 'backup' | 'settings' | 'notfound' }
   | { name: 'organization' | 'members' | 'audit'; org: string }
   | { name: 'environment'; org: string; env: string }
-  | { name: 'endpoint'; org: string; endpoint: string }
+  | { name: 'endpoint' | 'container-new'; org: string; endpoint: string }
   | { name: 'container'; org: string; endpoint: string; container: string };
 
 const NAV_EVENT = 'ky:navigate';
@@ -34,6 +34,7 @@ export function matchRoute(pathname: string): Route {
     if (parts.length === 3 && (parts[2] === 'members' || parts[2] === 'audit')) return { name: parts[2], org };
     if (parts.length === 4 && parts[2] === 'environments' && segment.test(parts[3])) return { name: 'environment', org, env: parts[3] };
     if (parts.length === 4 && parts[2] === 'endpoints' && segment.test(parts[3])) return { name: 'endpoint', org, endpoint: parts[3] };
+    if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && parts[5] === 'new') return { name: 'container-new', org, endpoint: parts[3] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && containerID.test(parts[5])) return { name: 'container', org, endpoint: parts[3], container: parts[5] };
   }
   return { name: 'notfound' };
@@ -71,3 +72,4 @@ export const orgPath = (org: string, suffix = '') => `/organizations/${encodeURI
 export const envPath = (org: string, env: string) => orgPath(org, `/environments/${encodeURIComponent(env)}`);
 export const endpointPath = (org: string, endpoint: string) => orgPath(org, `/endpoints/${encodeURIComponent(endpoint)}`);
 export const containerPath = (org: string, endpoint: string, container: string, tab?: string) => endpointPath(org, endpoint) + `/containers/${encodeURIComponent(container)}` + (tab ? `?tab=${encodeURIComponent(tab)}` : '');
+export const runPath = (org: string, endpoint: string) => endpointPath(org, endpoint) + '/containers/new';

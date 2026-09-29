@@ -8,8 +8,8 @@ import { ContainerControls } from '../components/ContainerControls';
 import { Server } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
-import { containerPath, envPath } from '../router';
-import { canEnroll, canExec, useTenantResource, type Endpoint, type Inventory, type MemberOrganization, type Sample } from '../tenant';
+import { containerPath, envPath, runPath } from '../router';
+import { canConfigure, canEnroll, canExec, useTenantResource, type Endpoint, type Inventory, type MemberOrganization, type Sample } from '../tenant';
 import { displayName } from '../components/Endpoints';
 import { IPCell, StateCell } from '../components/ContainerCells';
 import { KubernetesCluster } from '../components/KubernetesCluster';
@@ -108,7 +108,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             requestAnimationFrame(() => document.getElementById('endpoint-containers')?.focus());
           }} /></>}
           {shown === 'containers' && <div id="endpoint-containers" tabIndex={-1}>
-          <div className="ky-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{visibleContainers.length} containers</span></div>
+          <div className="ky-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{visibleContainers.length} containers</span>{canConfigure(role) && <Link className="btn btn-secondary" to={runPath(org, endpoint)}>Run a container</Link>}</div>
           {selectedProject !== null && <p>Showing containers for <strong style={{ overflowWrap: 'anywhere' }}><bdi>{selectedProject}</bdi></strong>. <button className="btn-secondary" onClick={() => setProjectFilter(null)}>Show all containers</button></p>}
           {status && <p role="status">{status}</p>}
           <ResourceTable key={JSON.stringify([base, search, selectedProject])} title="Containers" rows={visibleContainers} rowKey={(c) => c.id} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'Status', 'Uptime', 'IP', 'Usage', 'Actions']} render={(c) => [<div className="ky-resource-name"><strong><Link to={containerPath(org, endpoint, c.id)}>{displayName(c.name)}</Link></strong><span title={c.image}>{displayName(c.image)}</span><ContainerPorts ports={c.ports} />{c.compose_project && <small>{displayName(c.compose_project)}</small>}</div>, <StateCell c={c} />, uptime(c.started_at, now) || '—', <IPCell c={c} />, usage(c), <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onRefresh={commands.reload} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} />]} />

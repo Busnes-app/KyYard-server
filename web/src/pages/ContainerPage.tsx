@@ -7,8 +7,11 @@ import { displayName } from '../components/Endpoints';
 import { ContainerPorts } from '../components/ContainerPorts';
 import { ago, attachments, bytes, healthBadge, stateBadge, uptime, useNow } from '../components/containerFacts';
 import { parseInspection, type Inspection } from '../components/ApplicationInspection';
-import { containerPath, endpointPath, navigate, useSearchParam } from '../router';
-import { canExec, useTenantResource, type Container, type Endpoint, type Inventory, type MemberOrganization } from '../tenant';
+import { ContainerConfigurationForm } from '../components/ContainerConfigurationForm';
+import { parseConfiguration } from '../components/containerConfiguration';
+import type { ApplicationInstance } from '../components/ApplicationAdoption';
+import { containerPath, endpointPath, envPath, navigate, useSearchParam } from '../router';
+import { canConfigure, canExec, useTenantResource, type Container, type ContainerConfiguration, type DirectCommand, type Endpoint, type Inventory, type MemberOrganization } from '../tenant';
 const ContainerTerminal = lazy(() => import('../components/ContainerTerminal').then((m) => ({ default: m.ContainerTerminal })));
 
 const TABS = ['overview', 'configuration', 'logs', 'terminal', 'activity'] as const;
@@ -81,13 +84,87 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
         {tabs.map((t) => <button type="button" key={t} aria-pressed={tab === t} onClick={() => navigate(containerPath(org, endpoint, container, t === 'overview' ? undefined : t))}>{t[0].toUpperCase() + t.slice(1)}</button>)}
       </nav>
       {tab === 'overview' && <Overview base={base} container={c} received={inventory.data?.received_at ?? ''} />}
-      {tab === 'configuration' && <Configuration base={base} container={c} capable={(e?.capabilities ?? []).includes('container.inspect')} />}
+      {tab === 'configuration' && (organizations.state === 'loading' || details.state === 'loading' ? <p role="status">Loading…</p> : !e ? null
+        : canConfigure(role) ? <EditConfiguration key={`${c.id}/${c.image_id}/${c.created_at}`} base={base} org={org} endpoint={e} container={c} onSettled={(cmd) => { inventory.reload(); openResult(org, endpoint, c.id, cmd); }} />
+        : <Configuration base={base} container={c} capable={e.capabilities.includes('container.inspect')} />)}
       {tab === 'logs' && <section className="panel" aria-label="Logs"><ContainerLogs key={c.id} url={`${base}/containers/${encodeURIComponent(c.id)}/logs`} name={c.name} /></section>}
       {tab === 'terminal' && exec && <section className="panel" aria-label="Terminal">{c.state === 'running' && active ? <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${c.id}/${c.image_id}`} base={base} container={c} scope={scope} /></Suspense> : <EmptyNotice>The terminal needs a running container on an active host.</EmptyNotice>}</section>}
       {tab === 'activity' && <Activity base={base} container={c.id} />}
     </>}
   </div>;
 };
+
+// A recreate replaces the container and a run makes one: follow the settled result to its page.
+function openResult(org: string, endpoint: string, current: string, cmd: DirectCommand) {
+  const next = cmd.result?.services[0]?.container_id;
+  if (next && next !== current) navigate(containerPath(org, endpoint, next, 'configuration'));
+}
+
+export const ContainerRunPage: React.FC<{ org: string; endpoint: string }> = ({ org, endpoint }) => {
+  const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
+  const details = useTenantResource<Endpoint>(base);
+  const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  const role = (Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role;
+  return <div className="ky-page">
+    <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link><span>/</span><Link to={endpointPath(org, endpoint)}>{details.data?.name ?? endpoint}</Link></nav>
+    <h1 style={{ fontSize: 24 }}>Run a container</h1>
+    <StateNotice state={details.state} onRetry={details.reload} />
+    {organizations.state === 'loading' ? <p role="status">Loading…</p>
+      : !canConfigure(role) ? <EmptyNotice>Only an organization administrator can run containers.</EmptyNotice>
+      : <section className="panel"><ContainerConfigurationForm base={base} mode="run" onSettled={(cmd) => openResult(org, endpoint, '', cmd)} /></section>}
+  </div>;
+};
+
+const READ_ERRORS: Record<number, string> = {
+  403: 'You do not have permission to edit this container.',
+  429: 'Too many configuration requests. Wait a minute and try again.',
+  501: 'Upgrade the host agent to enable editing.',
+  504: 'The host did not answer in time. Try again.',
+};
+const READ_CONFLICTS: Record<string, string> = {
+  application_managed: 'An application manages this container. Change it through the application.',
+  runtime_unsupported: 'Only a Docker host supports editing containers.',
+  endpoint_offline: 'The host is not connected. Reconnect it to edit this container.',
+};
+
+// EditConfiguration reads the full configuration (environment values included) once per mount;
+// a container an adopted application owns is never read and edits through its application.
+function EditConfiguration({ base, org, endpoint, container: c, onSettled }: { base: string; org: string; endpoint: Endpoint; container: Container; onSettled: (cmd: DirectCommand) => void }) {
+  const capable = endpoint.capabilities.includes('container.configure');
+  const owners = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
+  const owner = owners.state === 'ready' && Array.isArray(owners.data) ? owners.data.find((i) => i.containers?.some((x) => x.id === c.id)) : undefined;
+  const [attempt, setAttempt] = useState(0);
+  const [read, setRead] = useState<{ kind: 'loading' } | { kind: 'ready'; data: ContainerConfiguration } | { kind: 'error'; text: string }>({ kind: 'loading' });
+  const settled = owners.state !== 'loading';
+  useEffect(() => {
+    if (!capable || !settled || owner) return;
+    const controller = new AbortController();
+    setRead({ kind: 'loading' });
+    (async () => {
+      try {
+        const r = await fetch(`${base}/containers/${encodeURIComponent(c.id)}/configuration`, { signal: controller.signal, cache: 'no-store' });
+        if (controller.signal.aborted) return;
+        if (!r.ok) {
+          const code = r.status === 409 ? ((await r.json().catch(() => ({}))) as { code?: unknown }).code : undefined;
+          if (controller.signal.aborted) return;
+          setRead({ kind: 'error', text: typeof code === 'string' && Object.hasOwn(READ_CONFLICTS, code) ? READ_CONFLICTS[code] ?? '' : READ_ERRORS[r.status] ?? 'The configuration is unavailable right now.' });
+          return;
+        }
+        const data = parseConfiguration(await r.json(), { container_id: c.id, image_id: c.image_id, created_unix: Math.floor(Date.parse(c.created_at) / 1000) });
+        if (!controller.signal.aborted) setRead(data ? { kind: 'ready', data } : { kind: 'error', text: 'The configuration did not match this container. Refresh the inventory.' });
+      } catch { if (!controller.signal.aborted) setRead({ kind: 'error', text: 'The configuration connection was lost.' }); }
+    })();
+    return () => controller.abort();
+  }, [base, c.id, c.image_id, c.created_at, capable, settled, owner, attempt]);
+  if (!capable) return <><EmptyNotice>Upgrade the host agent to enable editing.</EmptyNotice><Configuration base={base} container={c} capable={endpoint.capabilities.includes('container.inspect')} /></>;
+  const props = { base, mode: 'edit' as const, container: c, onSettled };
+  return <section className="panel" aria-label="Configuration">
+    {owner ? <ContainerConfigurationForm {...props} managed={{ application: displayName(owner.project), link: envPath(org, endpoint.environment_id) }} />
+      : !settled || read.kind === 'loading' ? <p role="status">Reading configuration…</p>
+      : read.kind === 'error' ? <><p role="status">{read.text}</p><button type="button" className="btn-secondary" onClick={() => setAttempt((n) => n + 1)}>Read again</button></>
+      : <ContainerConfigurationForm {...props} initial={read.data} />}
+  </section>;
+}
 
 function Overview({ base, container: c, received }: { base: string; container: Container; received: string }) {
   const now = useNow();

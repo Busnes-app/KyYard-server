@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { containerPath, matchRoute } from './router';
+import { containerPath, matchRoute, runPath } from './router';
 
 it('maps paths to routes and rejects unsafe segments', () => {
   expect(matchRoute('/')).toEqual({ name: 'dashboard' });
@@ -20,6 +20,8 @@ it('routes a container page and refuses IDs that are not 64 hex', () => {
   for (const bad of ['..', 'x%2Fy', 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), 'g'.repeat(64)]) {
     expect(matchRoute(`/organizations/a/endpoints/ep_1/containers/${bad}`).name).toBe('notfound');
   }
+  expect(matchRoute('/organizations/a/endpoints/ep_1/containers/new')).toEqual({ name: 'container-new', org: 'a', endpoint: 'ep_1' });
+  expect(runPath('a', 'ep 1')).toBe('/organizations/a/endpoints/ep%201/containers/new');
   expect(containerPath('a', 'ep 1', id)).toBe(`/organizations/a/endpoints/ep%201/containers/${id}`);
   expect(containerPath('a', 'ep_1', id, 'logs')).toBe(`/organizations/a/endpoints/ep_1/containers/${id}?tab=logs`);
   const escaped = containerPath('a', 'ep_1', '../x/y', 'a&b');

@@ -302,3 +302,11 @@ it('lists uptime, IP and health and links each container to its page', async () 
   expect(old.querySelectorAll('td')[2].textContent?.replace('Uptime', '').trim()).toBe('—');
   expect(old.querySelectorAll('td')[3].textContent?.replace('IP', '').trim()).toBe('—');
 });
+
+it.each([['organization_admin', true], ['environment_admin', false], ['operator', false]])('offers Run a container to %s: %s', async (role, want) => {
+  const fetcher = stubHost(async () => json([{ id: 'a', name: 'Team', role }]));
+  await terminalOffered('a', fetcher);
+  const link = screen.queryByRole('link', { name: 'Run a container' });
+  expect(link !== null).toBe(want);
+  if (link) expect(link.getAttribute('href')).toBe('/organizations/a/endpoints/ep_1/containers/new');
+});

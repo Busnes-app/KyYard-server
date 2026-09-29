@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { ContainerPage } from './ContainerPage';
+import { ContainerPage, ContainerRunPage } from './ContainerPage';
 vi.mock('../components/ContainerTerminal', () => ({ ContainerTerminal: () => <p>terminal stub</p> }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '/'); });
 
@@ -8,13 +8,17 @@ const id = 'c'.repeat(64);
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const endpoint = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime: 'docker', state: 'active', facts: {}, fingerprint: '', capabilities: ['container.inspect'], alerts: [], created_at: '' };
 const container = (over: object = {}) => ({ id, name: 'web', image: 'nginx:1', image_id: 'sha256:1', state: 'running', status: 'Up', created_at: '2026-09-29T08:00:00Z', started_at: '2026-09-29T09:00:00Z', health: 'healthy', restart_policy: 'always', ports: [{ host: 8080, container: 80, protocol: 'tcp' }], labels: { tier: 'web' }, networks: ['bridge'], network_attachments: [{ name: 'bridge', ip: '172.17.0.2' }], mounts: [{ kind: 'volume', source: 'data', target: '/data', read_only: false }], ...over });
-function stub(role = 'organization_admin', containers: object[] = [container()], opts: { ep?: object; inventoryStatus?: number; rollups?: object[]; commands?: object[] } = {}) {
+function stub(role = 'organization_admin', containers: object[] = [container()], opts: { ep?: object; inventoryStatus?: number; rollups?: object[]; commands?: object[]; applications?: object[]; command?: object } = {}) {
   const now = '2026-09-29T10:00:00Z';
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role }]);
     if (url.endsWith('/inventory') && opts.inventoryStatus) return json({}, opts.inventoryStatus);
     if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, observed_at: now, engine: { runtime: 'docker', version: '29', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers, images: [], networks: [], volumes: [] } });
+    if (url.endsWith('/recreate')) return json({ id: 'cmd9', action: 'container.recreate', outcome: '' }, 202);
+    if (url.endsWith('/commands/cmd9') && opts.command) return json(opts.command);
+    if (url.endsWith('/applications')) return json(opts.applications ?? []);
+    if (url.endsWith('/configuration')) return json(configuration);
     if (url.includes('/commands') && opts.commands) return json(opts.commands);
     if (url.includes('/commands')) return json([{ id: 'cmd1', action: 'container.restart', outcome: 'succeeded', container_id: id, created_at: now }]);
     if (url.endsWith('/rollups?hours=24') && opts.rollups) return json(opts.rollups);
@@ -70,12 +74,73 @@ it('says when the container is no longer reported and disables actions', async (
   expect(screen.getAllByRole('link', { name: 'host-1' }).length).toBe(2);
 });
 
-it('shows the redacted inspection under Configuration', async () => {
-  stub();
+it('shows the redacted inspection under Configuration to a role that cannot configure', async () => {
+  stub('operator', [container()], { ep: { capabilities: ['container.inspect', 'container.configure'] } });
   window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
   render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
   expect(await screen.findByText(/Network mode/)).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Configuration' }).textContent).toContain('bridge');
+});
+
+const configuration = {
+  target: { container_id: id, image_id: 'sha256:1', created_unix: Date.parse('2026-09-29T08:00:00Z') / 1000 }, observed_at: '2026-09-29T10:00:00Z', name: 'web',
+  image: { reference: 'nginx:1', digest: '' }, image_id: 'sha256:1', command: [], entrypoint: [], user: '', working_dir: '', hostname: 'box',
+  env: [{ name: 'TOKEN', value: 's3cret' }], labels: {}, restart: 'always', restart_retries: 0, ports: [], mounts: [], network_mode: 'bridge', networks: [],
+  resources: { nano_cpus: 0, memory_bytes: 0, memory_swap_bytes: 0, pids_limit: 0 }, healthcheck: null, privileged: false, read_only_rootfs: false, init: false, tty: false, stdin_open: false,
+  cap_add: [], cap_drop: [], security_opt: [], extra_hosts: [], dns: [], devices: [], log: { driver: 'json-file', options: {} }, stop_signal: '', unsupported: [],
+};
+const configurable = { ep: { capabilities: ['container.inspect', 'container.configure'] } };
+
+it('shows an organization administrator the editable configuration, values masked', async () => {
+  const fetcher = stub('organization_admin', [container()], configurable);
+  window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  expect(((await screen.findByLabelText('Hostname')) as HTMLInputElement).value).toBe('box');
+  expect((screen.getByLabelText('Value of TOKEN') as HTMLInputElement).type).toBe('password');
+  expect(fetcher.mock.calls.some(([u]) => String(u).endsWith('/inspection'))).toBe(false);
+});
+
+it('asks for an agent upgrade before editing when the host lacks container.configure', async () => {
+  stub('organization_admin');
+  window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  expect(await screen.findByText('Upgrade the host agent to enable editing.')).toBeTruthy();
+  expect(await screen.findByText(/Network mode/)).toBeTruthy();
+});
+
+it('shows a managed container read-only with a link to its application', async () => {
+  const fetcher = stub('organization_admin', [container()], { ...configurable, applications: [{ id: 'i1', application_id: 'app1', endpoint_id: 'ep_1', project: 'shop', containers: [{ id, name: 'web', image_id: 'sha256:1', created_at: '' }] }] });
+  window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  expect((await screen.findByRole('link', { name: 'Edit it there.' })).getAttribute('href')).toBe('/organizations/a/environments/env-a');
+  expect(screen.getByText(/Managed by application shop/)).toBeTruthy();
+  expect(fetcher.mock.calls.some(([u]) => String(u).endsWith('/configuration'))).toBe(false);
+});
+
+it('opens the new container after a recreate settles with a new ID', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const next = 'd'.repeat(64);
+  stub('organization_admin', [container()], { ...configurable, command: { id: 'cmd9', action: 'container.recreate', outcome: 'succeeded', result: { steps: [], services: [{ service: 'direct', container_id: next, image_id: 'sha256:1', created_unix: 1 }] } } });
+  window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  fireEvent.change(await screen.findByLabelText('Hostname'), { target: { value: 'other' } });
+  fireEvent.change(screen.getByLabelText(/^Type the container name/), { target: { value: 'web' } });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Save and recreate' })); });
+  await act(async () => { vi.advanceTimersByTime(1500); });
+  await act(async () => {});
+  expect(window.location.pathname).toBe(`/organizations/a/endpoints/ep_1/containers/${next}`);
+  expect(window.location.search).toBe('?tab=configuration');
+});
+
+it('renders the run form for an administrator and refuses other roles', async () => {
+  stub('organization_admin', [container()], configurable);
+  render(<ContainerRunPage org="a" endpoint="ep_1" />);
+  expect(((await screen.findByLabelText('Image reference')) as HTMLInputElement).value).toBe('');
+  cleanup();
+  stub('operator', [container()], configurable);
+  render(<ContainerRunPage org="a" endpoint="ep_1" />);
+  expect(await screen.findByText('Only an organization administrator can run containers.')).toBeTruthy();
+  expect(screen.queryByLabelText('Image reference')).toBeNull();
 });
 
 const hour = (over: object) => ({ container_id: id, hour: '2026-09-29T09:00:00Z', samples: 1, cpu_avg: 0, cpu_max: 0, memory_avg: 0, memory_max: 0, rx_bytes: 0, tx_bytes: 0, pids_max: 0, restart_count: 0, ...over });
@@ -125,7 +190,7 @@ it('asks for an agent upgrade when the host lacks container.inspect', async () =
   stub('organization_admin', [container()], { ep: { capabilities: [] } });
   window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
   render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
-  expect(await screen.findByText(/Upgrade the host agent/)).toBeTruthy();
+  expect(await screen.findByText(/Upgrade the host agent to enable live inspection/)).toBeTruthy();
 });
 
 it('shows the fixed notice instead of a terminal for a stopped container', async () => {
