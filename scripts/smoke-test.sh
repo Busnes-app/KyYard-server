@@ -212,7 +212,7 @@ if [ -x "$AGENT" ]; then
   TOKEN="$(printf '%s' "$TOKEN_JSON" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
   contains "token response carries the socket disclosure" "$TOKEN_JSON" "root-equivalent"
   contains "HTTP-only installation explains remote setup" "$TOKEN_JSON" "Remote setup needs a reachable HTTPS address"
-  printf '%s\n' "$TOKEN" | "$AGENT" --server "$BASE" --identity-dir "$WORK/agent" --name smoke-host >"$WORK/agent.log" 2>&1 &
+  printf '%s\n' "$TOKEN" | "$AGENT" --server "$BASE" --identity-dir "$WORK/agent" --name smoke-host --inventory-every 2s >"$WORK/agent.log" 2>&1 &
   AGENT_PID=$!
   endpoint_state() { curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p'; }
   wait_state() { for _ in $(seq 1 50); do [ "$(endpoint_state)" = "$1" ] && return 0; sleep 0.2; done; return 1; }
@@ -259,6 +259,86 @@ ok = all(isinstance(c.get("networks"), list) and all(isinstance(n, dict) and "na
 print("ok" if ok else "bad")')" "ok"
   check "inventory never carries container environment" \
     "$(if printf '%s' "$INV" | grep -qi '"env"'; then echo leaked; else echo clean; fi)" "clean"
+  # Edit and run against the real agent and Docker. The spec names the host's own image ID, so no
+  # registry is contacted. KY_SMOKE_IMAGE lets a run prove the skip path.
+  SMOKE_IMAGE="${KY_SMOKE_IMAGE:-alpine:3.24}"
+  SMOKE_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$SMOKE_IMAGE" 2>/dev/null || :)"
+  if [ -z "$SMOKE_IMAGE_ID" ]; then
+    pass "skipped: $SMOKE_IMAGE not present"
+  else
+    EP_URL="$BASE/api/organizations/org_initial/endpoints/$EP_ID"
+    SMOKE_CID=""
+    jget() { python3 -c 'import json,sys
+d=json.load(sys.stdin)
+for k in sys.argv[1].split("."):
+    d=d[int(k)] if isinstance(d,list) else d[k]
+print(d)' "$1"; }
+    api() { # api <method> <path> [json-body]; the body is optional
+      curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -X "$1" ${3:+-d "$3"} "$EP_URL$2"
+    }
+    wait_command() { # wait_command <command-id>: prints the outcome once the command settles
+      local out=""
+      for _ in $(seq 1 100); do
+        out="$(api GET "/commands/$1" | jget outcome 2>/dev/null || :)"
+        [ -n "$out" ] && break
+        sleep 0.3
+      done
+      printf '%s' "$out"
+    }
+    read_configuration() { # wait for the inventory to list the container: reads share a 12/min budget
+      for _ in $(seq 1 60); do
+        api GET /inventory | grep -Fq "\"$1\"" && break
+        sleep 0.5
+      done
+      api GET "/containers/$1/configuration"
+    }
+    smoke_container_cleanup() {
+      if [ -n "$SMOKE_CID" ]; then docker rm -f "$SMOKE_CID" >/dev/null 2>&1 || :; fi
+      docker rm -f ky-smoke-run >/dev/null 2>&1 || :
+    }
+    trap 'smoke_container_cleanup; cleanup' EXIT
+    smoke_spec() { # smoke_spec <env value>
+      python3 -c 'import json,sys
+print(json.dumps({"name":"ky-smoke-run","image":{"reference":sys.argv[1]},"image_id":sys.argv[2],"command":["sleep","60"],"entrypoint":[],
+"env":[{"name":"SMOKE_KEY","value":sys.argv[3]}],"labels":{},"restart":"no","ports":[],"mounts":[],"network_mode":"bridge",
+"networks":[{"name":"bridge"}],"cap_add":[],"cap_drop":[],"security_opt":[],"extra_hosts":[],"dns":[],"devices":[],"unsupported":[]}))' \
+        "$SMOKE_IMAGE" "$SMOKE_IMAGE_ID" "$1"
+    }
+    RUN_CMD="$(api POST /containers "{\"spec\":$(smoke_spec one),\"acknowledge_binds\":[],\"confirm\":\"ky-smoke-run\"}")"
+    RUN_ID="$(printf '%s' "$RUN_CMD" | jget id 2>/dev/null || :)"
+    check "run accepts a new container" "$(test -n "$RUN_ID" && echo yes || echo no)" "yes"
+    check "run command succeeds" "$(wait_command "$RUN_ID")" "succeeded"
+    SMOKE_CID="$(api GET "/commands/$RUN_ID" | jget result_container_id 2>/dev/null || :)"
+    check "run reports the new container id" "$(printf '%s' "$SMOKE_CID" | grep -Ec '^[0-9a-f]{64}$')" "1"
+    CFG="$(read_configuration "$SMOKE_CID")"
+    contains "configuration names the container" "$CFG" '"name":"ky-smoke-run"'
+    contains "configuration carries the env it was given" "$CFG" '"name":"SMOKE_KEY","value":"one"'
+    RECREATE="$(printf '%s' "$CFG" | python3 -c '
+import json, sys
+c = json.load(sys.stdin)
+t = c.pop("target")
+c.pop("observed_at")
+c["env"] = [{"name": e["name"], "value": "two" if e["name"] == "SMOKE_KEY" else e["value"]} for e in c["env"]]
+print(json.dumps({"expects": {"image_id": t["image_id"], "created_unix": t["created_unix"], "state": "running"}, "spec": c, "acknowledge_binds": [], "confirm": c["name"]}))')"
+    REC_CMD="$(api POST "/containers/$SMOKE_CID/recreate" "$RECREATE")"
+    REC_ID="$(printf '%s' "$REC_CMD" | jget id 2>/dev/null || :)"
+    check "recreate accepts the edit" "$(test -n "$REC_ID" && echo yes || echo no)" "yes"
+    check "recreate command succeeds" "$(wait_command "$REC_ID")" "succeeded"
+    NEW_CID="$(api GET "/commands/$REC_ID" | jget result_container_id 2>/dev/null || :)"
+    check "recreate yields a different container" "$(test -n "$NEW_CID" && test "$NEW_CID" != "$SMOKE_CID" && echo yes || echo no)" "yes"
+    [ -n "$NEW_CID" ] && SMOKE_CID="$NEW_CID"
+    CFG="$(read_configuration "$SMOKE_CID")"
+    contains "recreated configuration carries the new env" "$CFG" '"name":"SMOKE_KEY","value":"two"'
+    check "old env value is gone" "$(if printf '%s' "$CFG" | grep -Fq '"value":"one"'; then echo stale; else echo gone; fi)" "gone"
+    STOP_CMD="$(api POST /commands "{\"action\":\"container.stop\",\"container\":\"$SMOKE_CID\",\"confirm\":\"ky-smoke-run\",\"expects\":{\"state\":\"running\"}}")"
+    check "stop succeeds" "$(wait_command "$(printf '%s' "$STOP_CMD" | jget id 2>/dev/null || :)")" "succeeded"
+    RM_CMD="$(api POST /commands "{\"action\":\"container.remove\",\"container\":\"$SMOKE_CID\",\"confirm\":\"ky-smoke-run\",\"expects\":{\"state\":\"exited\"}}")"
+    check "remove succeeds" "$(wait_command "$(printf '%s' "$RM_CMD" | jget id 2>/dev/null || :)")" "succeeded"
+    check "container is gone from Docker" "$(docker ps -aq --filter name=ky-smoke-run | wc -l | tr -d ' ')" "0"
+    smoke_container_cleanup
+    SMOKE_CID=""
+    trap cleanup EXIT
+  fi
   check "revoke closes the live agent" \
     "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/organizations/org_initial/endpoints/$EP_ID/revoke")" "204"
   AGENT_EXIT=0

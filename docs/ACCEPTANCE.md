@@ -181,6 +181,22 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   with "Process exited with code 0." Activity tab lists the restart.
 - Record: anything the operator expected and did not find.
 
+### 3b. Edit and run a container
+
+- Run: on the endpoint page, "Run a container". Give it a name (`accept-run`), an image
+  already on the host, command `sleep 3600`, and one environment variable `ACCEPT_KEY=one`.
+  Type the name in "Type the new container name to confirm", then "Run container". Expect the
+  step table and "Open the new container".
+- Edit: on that container's Configuration tab (admin), change `ACCEPT_KEY` to `two`. The
+  save area lists "Changes: environment". Type the container name, "Save and recreate". Expect
+  the step table and a container with a new ID; its Configuration tab shows `two`.
+- Pass: both commands succeed, the old ID is gone from `docker ps -a`, and Activity lists
+  `container.run` and `container.recreate`.
+- Read-only: as reader, the same Configuration tab shows the redacted view (no environment
+  values, no edit form), and the endpoint page has no "Run a container" button. Removing the
+  container from step 3 cleans up.
+- Record: anything in the save area or step table the operator could not interpret.
+
 ### 4. Read-only and cross-tenant
 
 - As reader: Restart answers "You do not have permission for this action."; Logs answers "You
@@ -302,6 +318,7 @@ Copy this table into the run record.
 | 1 First start | | | | | – | |
 | 2 Enrollment | | | | | – | |
 | 3 Containers | | | | | – | |
+| 3b Edit and run | | | | | – | |
 | 4 Read-only and cross-tenant | | | | | – | |
 | 5 Import and deploy | | | | | | |
 | 6 Update | | | | | – | |
