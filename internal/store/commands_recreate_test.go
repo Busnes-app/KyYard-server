@@ -128,6 +128,37 @@ func TestCreateDirectCommandSweepsAnExpiredOne(t *testing.T) {
 	}
 }
 
+// A direct command abandoned when its agent disconnects is audited like any other settle.
+func TestAbandonedDirectCommandIsAudited(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	image := "sha256:" + strings.Repeat("b", 64)
+	endpointID := activeEndpointWith(t, st.Tenancy(), a, nil, []protocol.Image{{ID: image, Tags: []string{}, Digests: []string{}}})
+	cmd, _, err := st.Tenancy().CreateDirectCommand(ctx, a, endpointID, directRun("one", image))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tenancy().MarkCommandDispatched(ctx, cmd.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.Tenancy().AbandonCommands(ctx, endpointID); err != nil || n != 1 {
+		t.Fatalf("abandon: %d %v", n, err)
+	}
+	rows, _, err := st.Audit().ListAuditRecords(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []*AuditRecord
+	for _, r := range rows {
+		if r.CorrelationID == cmd.RequestID && strings.HasPrefix(r.Details, "code=") {
+			got = append(got, r)
+		}
+	}
+	if len(got) != 1 || got[0].Action != ActionRun || got[0].Result != "unknown" || got[0].Details != "code=disconnected new=-" || got[0].UserID != a.ActorID {
+		t.Fatalf("want one disconnected outcome row, got %+v", got)
+	}
+}
+
 // One writer settles a direct command: a plain command.result cannot, a dispatch failure goes
 // through FailDirectCommand, and a result must speak only of the direct service.
 func TestDirectCommandsHaveOneWriter(t *testing.T) {

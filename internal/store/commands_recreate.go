@@ -455,20 +455,8 @@ func (t *tenancyStore) settleDirect(ctx context.Context, endpointID, id, outcome
 // sweepDirect settles the endpoint's direct commands past their deadline unknown, each with its
 // outcome audit row (code deadline).
 func (t *tenancyStore) sweepDirect(ctx context.Context, tx *sql.Tx, endpointID string, now time.Time) error {
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id FROM endpoint_commands WHERE endpoint_id=? AND action IN (?,?) AND outcome='' AND deadline<?`), endpointID, ActionRecreate, ActionRun, now)
+	ids, err := t.directIDs(ctx, tx, `endpoint_id=? AND outcome='' AND deadline<?`, endpointID, now)
 	if err != nil {
-		return err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
 	for _, id := range ids {
@@ -481,6 +469,24 @@ func (t *tenancyStore) sweepDirect(ctx context.Context, tx *sql.Tx, endpointID s
 		}
 	}
 	return nil
+}
+
+// directIDs lists the direct commands (recreate, run) matching where.
+func (t *tenancyStore) directIDs(ctx context.Context, tx *sql.Tx, where string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id FROM endpoint_commands WHERE action IN (?,?) AND `+where), append([]any{ActionRecreate, ActionRun}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, errors.Join(rows.Err(), rows.Close())
 }
 
 // auditDirect writes a direct command's outcome row under its correlation ID and actor: action

@@ -227,15 +227,32 @@ func (t *tenancyStore) SettleCommand(ctx context.Context, endpointID, id, outcom
 
 // AbandonCommands settles everything still in flight for an endpoint as unknown. The socket
 // going is not evidence that the work did not happen, so the outcome says exactly that rather
-// than guessing at failure, and nothing is retried on its own.
+// than guessing at failure, and nothing is retried on its own. A direct command gets its
+// outcome audit row (code disconnected) like any other settle.
 func (t *tenancyStore) AbandonCommands(ctx context.Context, endpointID string) (int64, error) {
-	result, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE endpoint_id=? AND outcome='' AND dispatched_at IS NOT NULL`),
-		protocol.OutcomeUnknown, "the connection ended before a result arrived", time.Now().UTC(), endpointID)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return 0, err
 	}
+	defer tx.Rollback()
+	const inFlight = `endpoint_id=? AND outcome='' AND dispatched_at IS NOT NULL`
+	direct, err := t.directIDs(ctx, tx, inFlight, endpointID)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE `+inFlight),
+		protocol.OutcomeUnknown, "the connection ended before a result arrived", now, endpointID)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range direct {
+		if err := t.auditDirect(ctx, tx, endpointID, id, protocol.OutcomeUnknown, "disconnected", "", now); err != nil {
+			return 0, err
+		}
+	}
 	n, _ := result.RowsAffected()
-	return n, nil
+	return n, tx.Commit()
 }
 
 // ReadCommand returns one command in the caller's scope.
