@@ -94,6 +94,7 @@ KEYS_BEFORE="$(sha256sum "$WORK/data/encryption.key" "$WORK/data/session.key" "$
 check "GET / serves the PWA" "$(status "$BASE/")" "200"
 contains "index.html has react root" "$(curl -s "$BASE/")" 'id="root"'
 check "SPA fallback for unknown route" "$(status "$BASE/settings/deep/link")" "200"
+check "SPA serves a container page URL" "$(status "$BASE/organizations/org_initial/endpoints/ep_x/containers/$(printf 'a%.0s' $(seq 64))")" "200"
 check "login blocked without captcha token" \
   "$(status -X POST -H 'Content-Type: application/json' -d '{"username":"admin","password":"'"$ADMIN_PASS"'"}' "$BASE/api/auth/login")" "403"
 check "malformed login body rejected" \
@@ -249,6 +250,13 @@ if [ -x "$AGENT" ]; then
   INV="$(curl -s -b "$WORK/cookies" "$BASE/api/organizations/org_initial/endpoints/$EP_ID/inventory")"
   contains "inventory is stored with its generation" "$INV" '"generation"'
   contains "inventory carries a snapshot" "$INV" '"containers"'
+  # Holds with zero containers: the smoke host may run none.
+  check "inventory containers carry network names and attachments" \
+    "$(printf '%s' "$INV" | python3 -c '
+import json, sys
+cs = json.load(sys.stdin)["snapshot"]["containers"]
+ok = all(isinstance(c.get("networks"), list) and all(isinstance(n, dict) and "name" in n for n in c.get("network_attachments", [])) for c in cs)
+print("ok" if ok else "bad")')" "ok"
   check "inventory never carries container environment" \
     "$(if printf '%s' "$INV" | grep -qi '"env"'; then echo leaked; else echo clean; fi)" "clean"
   check "revoke closes the live agent" \

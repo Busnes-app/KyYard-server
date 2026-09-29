@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Dashboard } from './Dashboard';
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -7,9 +7,8 @@ it('puts container inventory on the home page and links to real endpoint operati
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role: 'operator' }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { containers: [{ id: 'c', name: 'web', image: 'nginx:1', state: 'running', ports: [] }] } }) : json([{ id: 'e', name: 'Docker host', state: 'active', runtime: 'docker', facts: {} }])));
   render(<Dashboard />);
   expect(await screen.findByText('web')).toBeTruthy();
-  fireEvent.click(screen.getByLabelText('Actions for web'));
-  expect(screen.getByRole('button', { name: 'Logs' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Logs for web' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Stop web' })).toBeTruthy();
   expect(screen.queryByRole('combobox')).toBeNull();
   expect(screen.queryByText(/Directory|Feature 0|Pluggable/)).toBeNull();
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } });
@@ -37,8 +36,7 @@ it('names the target host when identical container names occur on different host
   await screen.findAllByText('web');
   const hostSelect = screen.queryByRole('combobox', { name: 'Docker host' });
   if (hostSelect) fireEvent.change(hostSelect, { target: { value: 'e1' } });
-  fireEvent.click(await screen.findByLabelText('Actions for web'));
-  const buttons = await screen.findAllByRole('button', { name: 'Stop' });
+  const buttons = await screen.findAllByRole('button', { name: 'Stop web' });
   fireEvent.click(buttons[buttons.length - 1]);
   expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Second host'));
 });
@@ -68,6 +66,18 @@ it('pages a large inventory and searches containers beyond the current page', as
 it.each([['organization_admin', true], ['environment_admin', false], ['operator', false], ['developer', false], ['read_only', false]])('offers Terminal to %s: %s', async (role, want) => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { containers: [{ id: 'c', name: 'web', image: 'nginx:1', state: 'running', ports: [] }] } }) : json([{ id: 'e', name: 'Docker host', state: 'active', runtime: 'docker', facts: {} }])));
   render(<Dashboard />);
-  fireEvent.click(await screen.findByLabelText('Actions for web'));
-  await waitFor(() => expect(screen.queryByRole('button', { name: 'Terminal' }) !== null).toBe(want));
+  await screen.findByRole('group', { name: 'Actions for web' });
+  await waitFor(() => expect(screen.queryByRole('link', { name: 'Terminal for web' }) !== null).toBe(want));
+});
+
+it('lists uptime and IP and links container names to their page', async () => {
+  const id = 'c'.repeat(64);
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', name: 'Team', role: 'operator' }]) : url.includes('/inventory') ? json({ received_at: new Date().toISOString(), snapshot: { containers: [{ id, name: 'web', image: 'nginx:1', state: 'running', started_at: '2026-09-29T07:30:00Z', health: 'healthy', ports: [], networks: ['bridge'], network_attachments: [{ name: 'bridge', ip: '172.17.0.5' }] }] } }) : json([{ id: 'e', name: 'Docker host', state: 'active', runtime: 'docker', facts: {} }])));
+  render(<Dashboard />);
+  const link = await screen.findByRole('link', { name: 'web' });
+  expect(link.getAttribute('href')).toBe(`/organizations/a/endpoints/e/containers/${id}`);
+  const table = screen.getByRole('table');
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Container', 'Status', 'Uptime', 'IP', 'Ports', 'Actions']);
+  expect(table.textContent).toContain('172.17.0.5');
+  expect(within(table).getByText('healthy')).toBeTruthy();
 });

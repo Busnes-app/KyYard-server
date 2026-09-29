@@ -1,20 +1,18 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Play, RotateCw, ScrollText, Square, Terminal, Trash2 } from 'lucide-react';
+import { Link } from './Link';
+import { containerPath } from '../router';
 import { secureFetch } from '../api';
-const ContainerTerminal = lazy(() => import('./ContainerTerminal').then((module) => ({ default: module.ContainerTerminal })));
 import type { Container } from '../tenant';
+import { displayName } from './Endpoints';
 
 interface Command { id: string; action: string; outcome: string; detail?: string }
-export function ContainerControls({ base, container, active, scope, onRefresh, canExec }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void; canExec: boolean }) {
-  const actions = useRef<HTMLDetailsElement>(null);
+export function ContainerControls({ base, container, active, scope, onRefresh, canExec, org, endpoint, onStatus }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void; canExec: boolean; org: string; endpoint: string; onStatus?: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
+  const [inline, setInline] = useState('');
   const [command, setCommand] = useState<Command | null>(null);
-  const [showLogs, setShowLogs] = useState(false);
-  const [showTerminal, setShowTerminal] = useState(false);
-  const logDialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => { if (showLogs) logDialog.current?.showModal(); }, [showLogs]);
-  const terminalDialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => { if (showTerminal) terminalDialog.current?.showModal(); }, [showTerminal]);
+  // The shared status line serves a whole table, so it names the container.
+  const setMessage = (text: string) => { if (onStatus) onStatus(text ? `${displayName(container.name)} · ${text}` : ''); else setInline(text); };
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
@@ -53,32 +51,20 @@ export function ContainerControls({ base, container, active, scope, onRefresh, c
     finally { if (alive.current) setBusy(false); }
   };
   const disabled = busy || !active || (command !== null && !command.outcome);
+  const name = container.name;
+  const icon = 16;
   return <>
-    <details ref={actions} className="ky-container-actions" onKeyDown={(event) => {
-      if (event.key === 'Escape' && actions.current?.open) { actions.current.open = false; actions.current.querySelector('summary')?.focus(); }
-    }}>
-      <summary aria-label={`Actions for ${container.name}`}>Actions</summary>
-      <div className="ky-container-action-list" onClick={(event) => {
-        if (event.target instanceof HTMLButtonElement && !event.target.disabled && actions.current) {
-          actions.current.open = false; actions.current.querySelector('summary')?.focus();
-        }
-      }}>
-      {container.state !== 'running' && <button className="btn-secondary" disabled={disabled} onClick={() => void act('start')}>Start</button>}
-      {container.state === 'running' && <><button className="btn-secondary" disabled={disabled} onClick={() => void act('stop')}>Stop</button><button className="btn-secondary" disabled={disabled} onClick={() => void act('restart')}>Restart</button></>}
-      {canExec && <button className="btn-secondary" disabled={!active || container.state !== 'running'} aria-expanded={showTerminal} onClick={() => setShowTerminal(!showTerminal)}>{showTerminal ? 'Close terminal' : 'Terminal'}</button>}
-      <button className="btn-secondary" disabled={!active} aria-expanded={showLogs} onClick={() => setShowLogs(!showLogs)}>{showLogs ? 'Close logs' : 'Logs'}</button>
-      <button className="btn-secondary" disabled={disabled || ['running', 'paused', 'restarting'].includes(container.state)} onClick={() => void act('remove')}>Remove</button>
-      </div>
-    </details>
-    {message && <p role="status">{message}</p>}
-    {canExec && showTerminal && <dialog ref={terminalDialog} className="modal-window" aria-label={`Terminal for ${container.name}`} onCancel={(event) => { event.preventDefault(); setShowTerminal(false); }} onClose={() => setShowTerminal(false)} style={{ color: 'var(--ink-strong)', width: 'min(960px, calc(100vw - 32px))', maxWidth: 'none', maxHeight: 'calc(100dvh - 32px)', margin: 'auto' }}>
-      <button className="btn-secondary" onClick={() => setShowTerminal(false)}>Close terminal</button>
-      <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${container.id}/${container.image_id}`} base={base} container={container} scope={scope} /></Suspense>
-    </dialog>}
-    {showLogs && <dialog ref={logDialog} className="modal-window ky-log-dialog" aria-label={`Logs for ${container.name}`} onCancel={(event) => { event.preventDefault(); setShowLogs(false); }} onClose={() => setShowLogs(false)}>
-      <button className="btn-secondary" onClick={() => setShowLogs(false)}>Close logs</button>
-      <ContainerLogs key={container.id} url={`${base}/containers/${encodeURIComponent(container.id)}/logs`} name={container.name} />
-    </dialog>}
+    <div className="ky-container-actions" role="group" aria-label={`Actions for ${name}`}>
+      {container.state !== 'running' && <button type="button" className="btn-secondary ky-icon-button" aria-label={`Start ${name}`} title="Start" disabled={disabled} onClick={() => void act('start')}><Play size={icon} aria-hidden /></button>}
+      {container.state === 'running' && <>
+        <button type="button" className="btn-secondary ky-icon-button" aria-label={`Stop ${name}`} title="Stop" disabled={disabled} onClick={() => void act('stop')}><Square size={icon} aria-hidden /></button>
+        <button type="button" className="btn-secondary ky-icon-button" aria-label={`Restart ${name}`} title="Restart" disabled={disabled} onClick={() => void act('restart')}><RotateCw size={icon} aria-hidden /></button>
+      </>}
+      <Link className="btn btn-secondary ky-icon-button" aria-label={`Logs for ${name}`} title="Logs" to={containerPath(org, endpoint, container.id, 'logs')}><ScrollText size={icon} aria-hidden /></Link>
+      {canExec && <Link className="btn btn-secondary ky-icon-button" aria-label={`Terminal for ${name}`} title="Terminal" to={containerPath(org, endpoint, container.id, 'terminal')}><Terminal size={icon} aria-hidden /></Link>}
+      <button type="button" className="btn-secondary ky-icon-button" aria-label={`Remove ${name}`} title="Remove" disabled={disabled || ['running', 'paused', 'restarting'].includes(container.state)} onClick={() => void act('remove')}><Trash2 size={icon} aria-hidden /></button>
+    </div>
+    {!onStatus && inline && <p role="status">{inline}</p>}
   </>;
 }
 

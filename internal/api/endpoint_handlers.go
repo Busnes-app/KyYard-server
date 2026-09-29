@@ -510,7 +510,12 @@ func (s *Server) handleListCommands(w http.ResponseWriter, r *http.Request, a st
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	rows, err := s.store.Tenancy().ListCommands(r.Context(), a, id, limit)
+	container := r.URL.Query().Get("container")
+	if container != "" && !protocol.ValidContainerHexID(container) {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid container", "code": "invalid_container"})
+		return
+	}
+	rows, err := s.store.Tenancy().ListCommands(r.Context(), a, id, container, limit)
 	if err != nil {
 		s.tenantError(w, err)
 		return

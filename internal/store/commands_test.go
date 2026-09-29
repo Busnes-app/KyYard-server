@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,5 +156,27 @@ func TestRemovingAnImageIsConfirmedAndPinned(t *testing.T) {
 	// Pulling is not destructive and needs no confirmation.
 	if _, err := ts.CreateCommand(ctx, a, id, protocol.ActionImagePull, "ghcr.io/busnes-app/kyyard:1.2.4", "", protocol.Expectation{}); err != nil {
 		t.Fatalf("a pull: %v", err)
+	}
+}
+
+// An Activity tab for one container must not see another container's commands.
+func TestListCommandsFiltersByContainer(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	endpointID := activeEndpointWith(t, ts, a, nil, nil)
+	one, two := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	for _, id := range []string{one, two} {
+		if _, err := ts.CreateCommand(ctx, a, endpointID, protocol.ActionRestart, id, "", protocol.Expectation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := ts.ListCommands(ctx, a, endpointID, "", 0)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("unfiltered: %v %d", err, len(all))
+	}
+	only, err := ts.ListCommands(ctx, a, endpointID, one, 0)
+	if err != nil || len(only) != 1 || only[0].ContainerID != one {
+		t.Fatalf("filtered: %v %+v", err, only)
 	}
 }

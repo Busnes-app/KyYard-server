@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"os/exec"
 	"slices"
@@ -112,5 +113,34 @@ func TestInspectionRealDocker(t *testing.T) {
 	target = protocol.InspectionTarget{ContainerID: checked, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}
 	if out, err = c.InspectContainer(ctx, target); err != nil || out.Health != "healthy" || out.RestartCount != 0 || out.Validate(target, time.Now(), true) != nil {
 		t.Fatalf("healthcheck inspection: %+v %v", out, err)
+	}
+
+	// The inventory reports what the daemon says about a running container on the default bridge.
+	raw, err = exec.CommandContext(ctx, "docker", "run", "-d", "--pull", "never", "--no-healthcheck", "--restart", "unless-stopped", image, "sh", "-c", "sleep 120").CombinedOutput()
+	if err != nil {
+		t.Fatalf("snapshot fixture: %v: %s", err, raw)
+	}
+	bridged := strings.TrimSpace(string(raw))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, "docker", "rm", "-fv", bridged).CombinedOutput(); err != nil {
+			t.Errorf("snapshot fixture cleanup: %v: %s", err, out)
+		}
+	})
+	snap, err := c.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(snap.Containers, func(x protocol.Container) bool { return x.ID == bridged })
+	if i < 0 {
+		t.Fatal("fixture missing from the snapshot")
+	}
+	got := snap.Containers[i]
+	if got.StartedAt.IsZero() || time.Since(got.StartedAt) > time.Hour || got.Health != "none" || got.RestartPolicy != "unless-stopped" || len(got.Networks) == 0 || len(got.NetworkAttachments) != len(got.Networks) {
+		t.Fatalf("snapshot facts: %+v", got)
+	}
+	if addr, err := netip.ParseAddr(got.NetworkAttachments[0].IP); err != nil || !addr.Is4() || got.NetworkAttachments[0].Name != got.Networks[0] {
+		t.Fatalf("network attachment %+v: %v", got.NetworkAttachments[0], err)
 	}
 }

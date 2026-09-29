@@ -75,7 +75,7 @@ A service token authenticates as `service:<id>` with the fixed role `pulse_reade
 
 | Action | OA | EA | Op | Dev | RO | Secret | Audit |
 |---|---|---|---|---|---|---|---|
-| `container.read` (inspect, stats) | ✓ | ✓ | ✓ | ✓ | ✓ | redacted env/labels | – |
+| `container.read` (inspect, stats) | ✓ | ✓ | ✓ | ✓ | ✓ | redacted env; labels, network names and IPs are reported | – |
 | `container.logs` (implemented) | ✓ | ✓ | ✓ | ✓ | – | log bodies not stored; also covers pod logs on a Kubernetes endpoint (read workload logs) | session metadata: one row per session naming the endpoint and the container, or the pod and container, asked for |
 | `container.operate` (start, stop, restart, pause) | ✓ | ✓ | ✓ | – | – | no | success/failure/unknown |
 | `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |

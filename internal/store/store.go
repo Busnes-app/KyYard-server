@@ -341,7 +341,7 @@ type TenancyStore interface {
 	// and settles validations the previous process left; startup only.
 	ReconcileAfterStart(ctx context.Context) (int64, error)
 	ReadCommand(ctx context.Context, access TenantAccess, endpointID, id string) (*Command, error)
-	ListCommands(ctx context.Context, access TenantAccess, endpointID string, limit int) ([]Command, error)
+	ListCommands(ctx context.Context, access TenantAccess, endpointID, containerID string, limit int) ([]Command, error)
 	RollUp(ctx context.Context, since time.Time) (int64, error)
 	ReadRollups(ctx context.Context, access TenantAccess, endpointID, containerID string, window time.Duration) ([]RollupRow, error)
 	Prune(ctx context.Context) (int64, error)

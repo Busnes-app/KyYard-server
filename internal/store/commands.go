@@ -248,8 +248,9 @@ func (t *tenancyStore) ReadCommand(ctx context.Context, a TenantAccess, endpoint
 	return cmd, nil
 }
 
-// ListCommands returns an endpoint's recent commands, newest first.
-func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpointID string, limit int) ([]Command, error) {
+// ListCommands returns an endpoint's recent commands, newest first; a non-empty containerID
+// narrows them to that container.
+func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpointID, containerID string, limit int) ([]Command, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -258,7 +259,11 @@ func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpoin
 		if err := t.endpointInScope(ctx, tx, a, endpointID); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, t.store.rebind(commandColumns+` WHERE endpoint_id=? ORDER BY created_at DESC LIMIT ?`), endpointID, limit)
+		query, args := commandColumns+` WHERE endpoint_id=? ORDER BY created_at DESC LIMIT ?`, []any{endpointID, limit}
+		if containerID != "" {
+			query, args = commandColumns+` WHERE endpoint_id=? AND container_id=? ORDER BY created_at DESC LIMIT ?`, []any{endpointID, containerID, limit}
+		}
+		rows, err := tx.QueryContext(ctx, t.store.rebind(query), args...)
 		if err != nil {
 			return err
 		}

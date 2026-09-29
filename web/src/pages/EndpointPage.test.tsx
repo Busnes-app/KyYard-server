@@ -2,14 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EndpointPage } from './EndpointPage';
 
-// Counts terminal mounts: a remount would have ended the exec session.
-const terminal = vi.hoisted(() => ({ mounts: 0 }));
-vi.mock('../components/ContainerTerminal', async () => {
-  const { useEffect } = await import('react');
-  return { ContainerTerminal: () => { useEffect(() => { terminal.mounts++; }, []); return <p>terminal stub</p>; } };
-});
-
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const endpoint = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime: 'docker', state: 'active', facts: { hostname: 'h1' }, fingerprint: 'ab'.repeat(32), capabilities: ['docker.containers'], alerts: [], created_at: '' };
 
@@ -126,36 +119,26 @@ function pollingHost() {
   return { now, web, fetcher, polled, poll: (next: () => Response) => { answer = next; } };
 }
 
-it('keeps an open terminal and log viewer through a failed poll and a container added ahead', async () => {
+it('keeps a row\'s controls through a failed poll and a container added ahead', async () => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: vi.fn() });
   try {
     const host = pollingHost();
     render(<EndpointPage org="a" endpoint="ep_1" />);
-    fireEvent.click(await screen.findByLabelText('Actions for web'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Terminal' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
-    await screen.findByText('terminal stub');
+    const group = await screen.findByRole('group', { name: 'Actions for web' });
     const table = screen.getByRole('table');
-    const logs = document.querySelector('dialog[aria-label="Logs for web"]');
-    expect(logs).not.toBeNull();
     const api = { ...host.web, id: 'c0', name: 'api' };
     host.poll(() => json({ endpoint_id: 'ep_1', state: 'active', generation: 2, observed_at: host.now, received_at: host.now, snapshot: { ...terminalSnapshot(host.now), generation: 2, containers: [api, host.web] } }));
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     await screen.findByText('api');
-    // Rows keyed by index would remount web's controls here and close its terminal.
-    expect(screen.queryByText('terminal stub')).not.toBeNull();
-    expect(terminal.mounts).toBe(1);
+    // Rows keyed by index would remount web's controls here.
+    expect(screen.getByRole('group', { name: 'Actions for web' })).toBe(group);
     host.poll(() => json({ error: 'boom' }, 500));
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(screen.queryByRole('table')).toBe(table);
-    expect(document.querySelector('dialog[aria-label="Logs for web"]')).toBe(logs);
-    expect(screen.queryByText('terminal stub')).not.toBeNull();
-    expect(terminal.mounts).toBe(1);
+    expect(screen.getByRole('group', { name: 'Actions for web' })).toBe(group);
     await screen.findByText(/Last refresh failed/);
   } finally {
     vi.useRealTimers();
-    Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
   }
 });
 
@@ -219,10 +202,10 @@ function stubHost(organizations: () => Promise<Response>) {
 }
 async function terminalOffered(org: string, fetcher: ReturnType<typeof stubHost>) {
   render(<EndpointPage org={org} endpoint="ep_1" />);
-  fireEvent.click(await screen.findByLabelText('Actions for web'));
+  await screen.findByRole('group', { name: 'Actions for web' });
   expect(fetcher).toHaveBeenCalledWith('/api/organizations');
   await new Promise((resolve) => setTimeout(resolve, 0));
-  return screen.queryByRole('button', { name: 'Terminal' }) !== null;
+  return screen.queryByRole('link', { name: 'Terminal for web' }) !== null;
 }
 it.each([['organization_admin', true], ['environment_admin', false], ['operator', false], ['developer', false], ['read_only', false], ['', false]])('offers Terminal to %s: %s', async (role, want) => {
   const fetcher = stubHost(async () => json(role ? [{ id: 'a', name: 'Team', role }] : []));
@@ -294,4 +277,28 @@ it('renders a Kubernetes cluster, its mapped applications, filters by namespace 
   const logURL = requests.find((u) => u.includes('/pods/'));
   expect(logURL?.startsWith('/api/organizations/a/endpoints/ep_1/pods/shop/web-7c9/logs?container=web&tail=200')).toBe(true);
   Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+});
+
+it('lists uptime, IP and health and links each container to its page', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-29T10:00:00Z'));
+  const now = '2026-09-29T09:59:00Z';
+  const id = 'd'.repeat(64);
+  const containers = [
+    { id, name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', started_at: '2026-09-29T07:30:00Z', health: 'unhealthy', ports: [], labels: {}, networks: ['bridge'], network_attachments: [{ name: 'bridge', ip: '172.17.0.5' }] },
+    { id: 'e'.repeat(64), name: 'old', image: 'redis:7', image_id: 'j', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: ['bridge'] },
+  ];
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => { const url = String(input); if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role: 'operator' }]); if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, observed_at: now, engine: { runtime: 'docker', version: '29', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers, images: [], networks: [], volumes: [] } }); return url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications') ? json([]) : json(endpoint); });
+  vi.stubGlobal('fetch', fetcher);
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  const table = await screen.findByRole('table');
+  const head = within(table).getAllByRole('columnheader').map((h) => h.textContent);
+  expect(head).toEqual(['Container', 'Status', 'Uptime', 'IP', 'Usage', 'Actions']);
+  const [web, old] = within(table).getAllByRole('row').slice(1);
+  expect(within(web).getByRole('link', { name: 'web' }).getAttribute('href')).toBe(`/organizations/a/endpoints/ep_1/containers/${id}`);
+  expect(web.textContent).toContain('2h 30m');
+  expect(web.textContent).toContain('172.17.0.5');
+  expect(within(web).getByText('unhealthy')).toBeTruthy();
+  expect(old.querySelectorAll('td')[2].textContent?.replace('Uptime', '').trim()).toBe('—');
+  expect(old.querySelectorAll('td')[3].textContent?.replace('IP', '').trim()).toBe('—');
 });

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -160,7 +161,10 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 			Type        string `json:"Type"`
 		} `json:"Ports"`
 		NetworkSettings struct {
-			Networks map[string]json.RawMessage `json:"Networks"`
+			Networks map[string]struct {
+				IPAddress         string `json:"IPAddress"`
+				GlobalIPv6Address string `json:"GlobalIPv6Address"`
+			} `json:"Networks"`
 		} `json:"NetworkSettings"`
 		Mounts []struct {
 			Type, Name, Source, Destination string
@@ -175,7 +179,7 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		if len(ct.Names) > 0 {
 			name = strings.TrimPrefix(ct.Names[0], "/")
 		}
-		pc := protocol.Container{ID: ct.ID, Name: bound(name, 255), Image: bound(ct.Image, 512), ImageID: ct.ImageID, State: ct.State, Status: bound(ct.Status, 128), CreatedAt: time.Unix(ct.Created, 0).UTC(), Ports: []protocol.Port{}, Labels: boundLabels(ct.Labels), Networks: []string{}}
+		pc := protocol.Container{ID: ct.ID, Name: bound(name, 255), Image: bound(ct.Image, 512), ImageID: ct.ImageID, State: ct.State, Status: bound(ct.Status, 128), CreatedAt: time.Unix(ct.Created, 0).UTC(), Ports: []protocol.Port{}, Labels: boundLabels(ct.Labels), Networks: []string{}, NetworkAttachments: []protocol.NetworkAttachment{}}
 		for _, p := range ct.Ports {
 			pc.Ports = append(pc.Ports, protocol.Port{HostIP: p.IP, Host: p.PublicPort, Container: p.PrivatePort, Protocol: p.Type})
 		}
@@ -183,6 +187,10 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 			pc.Networks = append(pc.Networks, n)
 		}
 		sort.Strings(pc.Networks)
+		for _, n := range pc.Networks {
+			settings := ct.NetworkSettings.Networks[n]
+			pc.NetworkAttachments = append(pc.NetworkAttachments, protocol.NetworkAttachment{Name: n, IP: settings.IPAddress, IP6: settings.GlobalIPv6Address})
+		}
 		pc.Mounts = []protocol.Mount{}
 		for _, m := range ct.Mounts {
 			mount := protocol.Mount{Kind: protocol.MountOther, Source: m.Source, Target: m.Destination, ReadOnly: !m.RW}
@@ -203,6 +211,7 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		snap.Containers = snap.Containers[:protocol.MaxContainers]
 		snap.Truncated = append(snap.Truncated, "containers")
 	}
+	c.enrichRunning(ctx, snap.Containers)
 
 	var images []struct {
 		ID          string   `json:"Id"`
@@ -292,4 +301,45 @@ func boundLabels(in map[string]string) map[string]string {
 		out[bound(k, protocol.MaxLabelBytes)] = bound(in[k], protocol.MaxLabelBytes)
 	}
 	return out
+}
+
+// The container list carries no start time or health, so each running container is inspected
+// once, bounded in count and time so a large host still reports. A container that cannot be
+// read (gone, or past the budget) keeps zero values: the UI shows "—", never a stale guess.
+const (
+	maxSnapshotInspects   = 200
+	snapshotInspectBudget = 5 * time.Second
+)
+
+func (c *Client) enrichRunning(parent context.Context, containers []protocol.Container) {
+	ctx, cancel := context.WithTimeout(parent, snapshotInspectBudget)
+	defer cancel()
+	inspected := 0
+	for i := range containers {
+		if containers[i].State != "running" || inspected >= maxSnapshotInspects || ctx.Err() != nil {
+			continue
+		}
+		inspected++
+		var raw struct {
+			State struct {
+				StartedAt string `json:"StartedAt"`
+				// Only the status is decoded: the health log carries the healthcheck's output.
+				Health *struct{ Status string } `json:"Health"`
+			} `json:"State"`
+			HostConfig struct {
+				RestartPolicy struct{ Name string } `json:"RestartPolicy"`
+			} `json:"HostConfig"`
+		}
+		if err := c.get(ctx, "/containers/"+url.PathEscape(containers[i].ID)+"/json", &raw); err != nil {
+			continue
+		}
+		if started, err := time.Parse(time.RFC3339Nano, raw.State.StartedAt); err == nil && started.Year() > 1 {
+			containers[i].StartedAt = started.UTC().Truncate(time.Second)
+		}
+		containers[i].Health = "none"
+		if raw.State.Health != nil && protocol.HealthStates[raw.State.Health.Status] {
+			containers[i].Health = raw.State.Health.Status
+		}
+		containers[i].RestartPolicy = raw.HostConfig.RestartPolicy.Name
+	}
 }
