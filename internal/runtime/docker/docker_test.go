@@ -2,11 +2,13 @@ package docker_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -50,6 +52,13 @@ func fakeEngine(t *testing.T, containers int) *httptest.Server {
 			_, _ = w.Write([]byte(`[{"Id":"n1","Name":"shop_default","Driver":"bridge","Scope":"local"}]`))
 		case strings.HasSuffix(r.URL.Path, "/volumes"):
 			_, _ = w.Write([]byte(`{"Volumes":[{"Name":"shop_data","Driver":"local","Mountpoint":"/var/lib/docker/volumes/shop_data/_data","CreatedAt":"2026-09-01T00:00:00Z"}]}`))
+		case strings.HasPrefix(r.URL.Path, "/v1.41/containers/") && strings.HasSuffix(r.URL.Path, "/json"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.41/containers/"), "/json")
+			if id == "c000b" { // the second container vanished between list and inspect
+				w.WriteHeader(404)
+				return
+			}
+			_, _ = w.Write([]byte(`{"Id":"` + id + `","State":{"StartedAt":"2026-09-29T09:30:00.123456789Z","Health":{"Status":"healthy","Log":[{"Output":"secret-looking output"}]}},"HostConfig":{"RestartPolicy":{"Name":"unless-stopped"}}}`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -130,4 +139,54 @@ func TestSnapshotAgainstLocalDocker(t *testing.T) {
 		t.Fatalf("engine facts: %+v", snap.Engine)
 	}
 	t.Logf("engine %s api %s: %d containers, %d images, %d networks, %d volumes", snap.Engine.Version, snap.Engine.APIVersion, len(snap.Containers), len(snap.Images), len(snap.Networks), len(snap.Volumes))
+}
+
+func TestSnapshotEnrichesRunningContainers(t *testing.T) {
+	srv := fakeEngine(t, 3)
+	defer srv.Close()
+	snap, err := docker.NewHTTP(srv.Client(), srv.URL).Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := snap.Containers[0], snap.Containers[1]
+	if a.StartedAt.IsZero() || a.StartedAt.Nanosecond() != 0 || a.Health != "healthy" || a.RestartPolicy != "unless-stopped" {
+		t.Fatalf("first container not enriched (whole seconds): %+v", a)
+	}
+	if !b.StartedAt.IsZero() || b.Health != "" || b.RestartPolicy != "" {
+		t.Fatalf("a container gone at inspect must report zero values, not fail: %+v", b)
+	}
+	if a.Networks[0].Name != "shop_default" {
+		t.Fatalf("networks: %+v", a.Networks)
+	}
+}
+
+func TestSnapshotInspectsAtMostTheCap(t *testing.T) {
+	const cap = 200 // maxSnapshotInspects
+	var inspects atomic.Int32
+	srv := fakeEngine(t, cap+10)
+	defer srv.Close()
+	counting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/json") && !strings.HasSuffix(r.URL.Path, "/containers/json") && strings.Contains(r.URL.Path, "/containers/") {
+			inspects.Add(1)
+		}
+		resp, err := http.Get(srv.URL + r.URL.RequestURI())
+		if err != nil {
+			w.WriteHeader(502)
+			return
+		}
+		defer resp.Body.Close()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer counting.Close()
+	snap, err := docker.NewHTTP(counting.Client(), counting.URL).Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inspects.Load(); got != cap {
+		t.Fatalf("inspected %d, want the cap %d", got, cap)
+	}
+	if !snap.Containers[cap+1].StartedAt.IsZero() {
+		t.Fatal("a container past the cap must not be enriched")
+	}
 }

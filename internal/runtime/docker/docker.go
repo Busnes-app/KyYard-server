@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -206,6 +207,7 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		snap.Containers = snap.Containers[:protocol.MaxContainers]
 		snap.Truncated = append(snap.Truncated, "containers")
 	}
+	c.enrichRunning(ctx, snap.Containers)
 
 	var images []struct {
 		ID          string   `json:"Id"`
@@ -295,4 +297,45 @@ func boundLabels(in map[string]string) map[string]string {
 		out[bound(k, protocol.MaxLabelBytes)] = bound(in[k], protocol.MaxLabelBytes)
 	}
 	return out
+}
+
+// The container list carries no start time or health, so each running container is inspected
+// once, bounded in count and time so a large host still reports. A container that cannot be
+// read (gone, or past the budget) keeps zero values: the UI shows "—", never a stale guess.
+const (
+	maxSnapshotInspects   = 200
+	snapshotInspectBudget = 5 * time.Second
+)
+
+func (c *Client) enrichRunning(parent context.Context, containers []protocol.Container) {
+	ctx, cancel := context.WithTimeout(parent, snapshotInspectBudget)
+	defer cancel()
+	inspected := 0
+	for i := range containers {
+		if containers[i].State != "running" || inspected >= maxSnapshotInspects || ctx.Err() != nil {
+			continue
+		}
+		inspected++
+		var raw struct {
+			State struct {
+				StartedAt string `json:"StartedAt"`
+				// Only the status is read: the health log carries the healthcheck's output.
+				Health *struct{ Status string } `json:"Health"`
+			} `json:"State"`
+			HostConfig struct {
+				RestartPolicy struct{ Name string } `json:"RestartPolicy"`
+			} `json:"HostConfig"`
+		}
+		if err := c.get(ctx, "/containers/"+url.PathEscape(containers[i].ID)+"/json", &raw); err != nil {
+			continue
+		}
+		if started, err := time.Parse(time.RFC3339Nano, raw.State.StartedAt); err == nil && started.Year() > 1 {
+			containers[i].StartedAt = started.UTC().Truncate(time.Second)
+		}
+		containers[i].Health = "none"
+		if raw.State.Health != nil && protocol.HealthStates[raw.State.Health.Status] {
+			containers[i].Health = raw.State.Health.Status
+		}
+		containers[i].RestartPolicy = raw.HostConfig.RestartPolicy.Name
+	}
 }
