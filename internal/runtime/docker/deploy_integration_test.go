@@ -407,3 +407,155 @@ func TestRecheckRealDocker(t *testing.T) {
 		t.Fatalf("the old container was touched: %v %s", err, out)
 	}
 }
+
+// explicitFixture runs a disposable container on the default bridge from an already-present
+// image, labelled kyyard.test=<name> so cleanup removes it and anything created in its place
+// (before, for an aborted run's leftover, and after). It returns the explicit frame that
+// recreates it with the same command and label, and its identity.
+func explicitFixture(t *testing.T, ctx context.Context, name string) (protocol.DeploymentRequest, string) {
+	t.Helper()
+	image := os.Getenv("KY_TEST_DOCKER_INSPECTION_IMAGE")
+	if image == "" {
+		t.Skip("set KY_TEST_DOCKER_INSPECTION_IMAGE to an existing shell image")
+	}
+	cleanup := func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		ids, _ := exec.CommandContext(cctx, "docker", "ps", "-aq", "--filter", "label=kyyard.test="+name).Output()
+		for _, id := range strings.Fields(string(ids)) {
+			_ = exec.CommandContext(cctx, "docker", "rm", "-fv", id).Run()
+		}
+		_ = exec.CommandContext(cctx, "docker", "rm", "-fv", name).Run()
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	out, err := exec.CommandContext(ctx, "docker", "run", "-d", "--pull", "never", "--name", name, "--network", "bridge", "--env", "FOO=old", "--label", "kyyard.test="+name, image, "sleep", "300").CombinedOutput()
+	if err != nil {
+		t.Fatalf("fixture: %v: %s", err, out)
+	}
+	id := strings.TrimSpace(string(out))
+	var identity struct {
+		Image   string
+		Created time.Time
+	}
+	raw, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .}}", id).Output()
+	if err != nil || json.Unmarshal(raw, &identity) != nil {
+		t.Fatalf("fixture identity: %v", err)
+	}
+	return protocol.DeploymentRequest{
+		Deployment: "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b", RequestID: "0123456789abcdef0123456789abcdef", Endpoint: "ep_1",
+		Project: protocol.ExplicitProject, Revision: protocol.ExplicitRevision, Explicit: true, IssuedAt: time.Now(), Deadline: time.Now().Add(5 * time.Minute),
+		Services: []protocol.DeploymentService{{
+			Name: "web", ContainerName: name, ImageID: identity.Image, Restart: "no", Env: map[string]string{"FOO": "old"}, Mounts: []protocol.Mount{},
+			Replaces: protocol.InspectionTarget{ContainerID: id, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()},
+			Explicit: &protocol.ExplicitService{Command: []string{"sleep", "300"}, Labels: map[string]string{"kyyard.test": name}, NetworkMode: "bridge", Networks: []protocol.NetworkAttachmentSpec{{Name: "bridge"}}},
+		}},
+	}, id
+}
+
+func dockerState(ctx context.Context, ref string) (id, state string) {
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.Id}} {{.State.Status}}", ref).Output()
+	if err != nil {
+		return "", "absent"
+	}
+	id, state, _ = strings.Cut(strings.TrimSpace(string(out)), " ")
+	return id, state
+}
+
+// An explicit recreate changes an env value and the memory limit; the new container runs with
+// them under the old name and the old container is gone.
+func TestRecreateRealDocker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	name := "kyyard-recreate-fixture"
+	req, oldID := explicitFixture(t, ctx, name)
+	req.Services[0].Env["FOO"] = "new"
+	req.Services[0].Explicit.Resources.MemoryBytes = 64 << 20
+	c := New("/var/run/docker.sock")
+	res := c.Deploy(ctx, req, func() {})
+	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil || len(res.Services) != 1 {
+		t.Fatalf("deploy: %+v", res)
+	}
+	id := res.Services[0]
+	conf, err := c.ReadConfiguration(ctx, protocol.InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conf.Name != name || conf.Resources.MemoryBytes != 64<<20 || !slices.Contains(conf.Env, protocol.EnvEntry{Name: "FOO", Value: "new"}) || conf.Labels["kyyard.test"] != name {
+		t.Fatalf("configuration: name=%q memory=%d env=%v labels=%v", conf.Name, conf.Resources.MemoryBytes, conf.Env, conf.Labels)
+	}
+	if _, state := dockerState(ctx, id.ContainerID); state != "running" {
+		t.Fatalf("new container %s", state)
+	}
+	if _, state := dockerState(ctx, oldID); state != "absent" {
+		t.Fatalf("old container %s", state)
+	}
+}
+
+// An explicit run creates a container from an image already present; Remove takes it away.
+func TestRunRealDocker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	name := "kyyard-run-fixture"
+	req, fixtureID := explicitFixture(t, ctx, name+"-source")
+	s := &req.Services[0]
+	s.Name, s.ContainerName, s.Replaces, s.Explicit.Labels["kyyard.test"] = "runner", name, protocol.InspectionTarget{}, name+"-source"
+	c := New("/var/run/docker.sock")
+	res := c.Deploy(ctx, req, func() {})
+	steps := []string{}
+	for _, st := range res.Steps {
+		steps = append(steps, st.Step+"="+st.Outcome)
+	}
+	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil || strings.Join(steps, ",") != "image=succeeded,create=succeeded,start=succeeded" {
+		t.Fatalf("run: %+v", res)
+	}
+	id := res.Services[0]
+	if got, state := dockerState(ctx, name); got != id.ContainerID || state != "running" {
+		t.Fatalf("run container %s %s", got, state)
+	}
+	if _, state := dockerState(ctx, fixtureID); state != "running" {
+		t.Fatalf("an unrelated container was touched: %s", state)
+	}
+	removed := c.Remove(ctx, protocol.RemovalRequest{Deployment: req.Deployment, RequestID: req.RequestID, Endpoint: req.Endpoint, Project: req.Project, IssuedAt: time.Now(), Deadline: time.Now().Add(2 * time.Minute),
+		Containers: []protocol.RemovalTarget{{Service: "runner", Target: protocol.InspectionTarget{ContainerID: id.ContainerID, ImageID: id.ImageID, CreatedUnix: id.CreatedUnix}}}}, func() {})
+	if removed.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("remove: %+v", removed)
+	}
+	if _, state := dockerState(ctx, name); state != "absent" {
+		t.Fatalf("run container after removal: %s", state)
+	}
+}
+
+// A recreate whose new container cannot start is rolled back: the old container runs again
+// under its name and the new one is gone. The command names no executable, so start itself
+// fails; a command that starts and then exits would not.
+func TestRecreateRollbackRealDocker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	name := "kyyard-rollback-fixture"
+	req, oldID := explicitFixture(t, ctx, name)
+	req.Services[0].Explicit.Command = []string{"/kyyard-no-such-executable"}
+	res := New("/var/run/docker.sock").Deploy(ctx, req, func() {})
+	if res.Outcome != protocol.OutcomeFailed || res.Validate() != nil {
+		t.Fatalf("deploy: %+v", res)
+	}
+	var start, rollback protocol.DeploymentStep
+	for _, s := range res.Steps {
+		switch s.Step {
+		case protocol.StepStart:
+			start = s
+		case protocol.StepRollback:
+			rollback = s
+		}
+	}
+	if start.Code != "start_failed_rolled_back" || rollback.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("steps: %+v", res.Steps)
+	}
+	if id, state := dockerState(ctx, name); id != oldID || state != "running" {
+		t.Fatalf("old container under its name: %s %s", id, state)
+	}
+	out, _ := exec.CommandContext(ctx, "docker", "ps", "-aq", "--no-trunc", "--filter", "label=kyyard.test="+name).Output()
+	if ids := strings.Fields(string(out)); len(ids) != 1 || ids[0] != oldID {
+		t.Fatalf("containers left: %v", ids)
+	}
+}

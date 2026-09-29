@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -29,17 +30,22 @@ const stopGrace = 10
 // operationBudget, recheck, rename, create and the identity read at callBudget.
 const replaceBudget = 2*operationBudget + 4*callBudget
 
+// rollbackBudget is an explicit recreate's reserve for undoing a failed start: remove and
+// rename at callBudget, restart at operationBudget.
+const rollbackBudget = operationBudget + 2*callBudget
+
 // Deploy replaces each service's mapped container with one created from the pinned image ID.
 // First every service's precondition and image (pull, for a service naming a digest), in plan
 // order, with each frame volume ensured after the precondition of the first service mounting
 // it; then per service recheck, rename, create, stop, start, remove. Renaming and creating while the
 // old container still runs means a name conflict or a refused create costs no downtime. The
 // first step that is not a success ends the run and every later step is recorded as skipped.
-// Nothing is rolled back: the steps say where the old container was left. No volume is ever
-// removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
+// Only an explicit recreate rolls back, and only a failed start; otherwise the steps say where
+// the old container was left. An explicit run (no Replaces) is image, create, start. No volume
+// is ever removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
 // 2026-09-23-pull-step-design.md and 2026-09-24-volumes-design.md.
 // started is called once, immediately before the first phase-two call (after the first recheck's
-// deadline guard); a run that ends in phase one never calls it.
+// deadline guard, or an explicit run's create guard); a run that ends in phase one never calls it.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.ValidateFor(protocol.RuntimeDocker, time.Now()); err != nil {
@@ -55,7 +61,11 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 		r.defaultRuntime = info.DefaultRuntime
 	}
 	icancel()
-	r.pullDeadline = time.Now().Add(pullPhase(time.Until(req.Deadline)))
+	remaining := time.Until(req.Deadline)
+	if req.Explicit {
+		remaining -= rollbackBudget // the recheck guard reserves it after the pulls
+	}
+	r.pullDeadline = time.Now().Add(pullPhase(remaining))
 	// Every service is checked and its image made present before any container is touched, so
 	// a refused precondition or a failed pull on any service leaves the host unchanged.
 	ready := make([]prepared, 0, len(req.Services))
@@ -352,8 +362,13 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 	var before inspectedForDeploy
 	var networkMode string
 	var oldMounts []inspectedMount
+	if run(r.req, s) {
+		r.ensureVolumes(ctx, s, nil)
+		r.image(ctx, &s)
+		return prepared{s: s}
+	}
 	r.step(s.Name, protocol.StepPrecondition, func() (string, string, string) {
-		if r.defaultRuntime == "" {
+		if r.defaultRuntime == "" && !r.req.Explicit {
 			return fail("runtime_unreadable")
 		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
@@ -370,12 +385,14 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		if !reported(before) {
 			return deny("configuration_unreported")
 		}
-		if codes := undescribed(before, r.req.Project+"_default", r.defaultRuntime); len(codes) > 0 {
+		// An explicit frame carries every setting the operator saw and kept: nothing is inherited,
+		// so nothing is refused as undescribed.
+		if codes := undescribed(before, r.req.Project+"_default", r.defaultRuntime); len(codes) > 0 && !r.req.Explicit {
 			return unsupported(codes)
 		}
-		// Binds are preserve-only: a deploy never introduces a host path.
+		// Binds are preserve-only unless the operator acknowledged the host path.
 		for _, m := range s.Mounts {
-			if m.Kind == protocol.MountBind && !slices.ContainsFunc(*before.Mounts, func(o inspectedMount) bool {
+			if m.Kind == protocol.MountBind && (s.Explicit == nil || !slices.Contains(s.Explicit.AcknowledgedBinds, m.Source)) && !slices.ContainsFunc(*before.Mounts, func(o inspectedMount) bool {
 				return o.Type == "bind" && o.Source == m.Source && o.Destination == m.Target && o.RW == !m.ReadOnly
 			}) {
 				return deny("bind_missing")
@@ -383,6 +400,10 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 			if m.Kind == protocol.MountVolume && r.keepOnly[m.Source] && !keeps(*before.Mounts, m) {
 				return deny("volume_mount_missing")
 			}
+		}
+		networkMode, oldMounts = before.HostConfig.NetworkMode, *before.Mounts
+		if r.req.Explicit {
+			return succeeded()
 		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
 		defer icancel()
@@ -396,13 +417,23 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		if before.Config.differs(im.Config) {
 			return unsupported([]string{"image_config"})
 		}
-		networkMode, oldMounts = before.HostConfig.NetworkMode, *before.Mounts
 		return succeeded()
 	})
 	r.ensureVolumes(ctx, s, oldMounts)
+	r.image(ctx, &s)
+	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode, before: before}
+}
+
+// run reports an explicit frame that creates a container rather than replacing one.
+func run(req protocol.DeploymentRequest, s protocol.DeploymentService) bool {
+	return req.Explicit && s.Replaces == (protocol.InspectionTarget{})
+}
+
+// image records the pull step, or checks the pinned image is present. A pull sets s.ImageID.
+func (r *deployRun) image(ctx context.Context, s *protocol.DeploymentService) {
 	if s.Pull != nil {
 		r.step(s.Name, protocol.StepPull, func() (string, string, string) {
-			outcome, code, detail, id := r.pull(ctx, s)
+			outcome, code, detail, id := r.pull(ctx, *s)
 			s.ImageID = id // the replacement is created from, and verified against, the pulled ID
 			return outcome, code, detail
 		})
@@ -425,14 +456,22 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 			return succeeded()
 		})
 	}
-	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode, before: before}
 }
 
 func (r *deployRun) replace(ctx context.Context, p prepared) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
+	if run(r.req, s) {
+		created := r.create(ctx, p)
+		r.start(ctx, s, created)
+		return
+	}
+	budget := replaceBudget
+	if r.req.Explicit {
+		budget += rollbackBudget
+	}
 	// The pull window can be minutes: re-read the container right before touching it.
 	r.step(s.Name, protocol.StepRecheck, func() (string, string, string) {
-		if time.Until(r.req.Deadline) < replaceBudget {
+		if time.Until(r.req.Deadline) < budget {
 			return protocol.OutcomeTimedOut, "deadline", ""
 		}
 		r.begin()
@@ -463,8 +502,44 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		}
 		return succeeded()
 	})
+	created := r.create(ctx, p)
+	running := false // the old container was running when stopped: a rollback starts it again
+	r.step(s.Name, protocol.StepStop, func() (string, string, string) {
+		cctx, cancel := context.WithTimeout(ctx, operationBudget)
+		defer cancel()
+		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
+		if err != nil || (status >= 400 && status != http.StatusNotModified) {
+			return r.outcomeFor(cctx, err, status)
+		}
+		running = status != http.StatusNotModified
+		return succeeded()
+	})
+	if r.start(ctx, s, created) && r.req.Explicit {
+		r.rollback(ctx, p, created, running)
+	}
+	r.step(s.Name, protocol.StepRemove, func() (string, string, string) {
+		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		defer cancel()
+		status, err := r.c.del(cctx, "/containers/"+old)
+		if err != nil || status >= 400 {
+			return r.outcomeFor(cctx, err, status)
+		}
+		return succeeded()
+	})
+}
+
+// create records the create step and returns the new container's ID. An explicit run has no
+// recheck, so its deadline guard and the started call are here.
+func (r *deployRun) create(ctx context.Context, p prepared) string {
+	s := p.s
 	var created string
 	r.step(s.Name, protocol.StepCreate, func() (string, string, string) {
+		if run(r.req, s) {
+			if time.Until(r.req.Deadline) < replaceBudget {
+				return protocol.OutcomeTimedOut, "deadline", ""
+			}
+			r.begin()
+		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var out struct {
@@ -481,18 +556,33 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 			return fail("identity_unusable")
 		}
 		created = out.ID
-		return succeeded()
-	})
-	r.step(s.Name, protocol.StepStop, func() (string, string, string) {
-		cctx, cancel := context.WithTimeout(ctx, operationBudget)
-		defer cancel()
-		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
-		if err != nil || (status >= 400 && status != http.StatusNotModified) {
-			return r.outcomeFor(cctx, err, status)
+		// Create accepts one network; the rest are connected before start.
+		if s.Explicit != nil {
+			_, rest := attachments(s.Explicit)
+			for _, n := range rest {
+				body := struct {
+					Container      string           `json:"Container"`
+					EndpointConfig endpointSettings `json:"EndpointConfig"`
+				}{created, endpoint(n)}
+				nctx, ncancel := context.WithTimeout(ctx, callBudget)
+				status, err := r.c.postJSON(nctx, "/networks/"+url.PathEscape(n.Name)+"/connect", body, nil)
+				if err != nil || status != http.StatusOK {
+					outcome, code, detail := r.outcomeFor(nctx, err, status)
+					ncancel()
+					return outcome, code, detail
+				}
+				ncancel()
+			}
 		}
 		return succeeded()
 	})
-	r.step(s.Name, protocol.StepStart, func() (string, string, string) {
+	return created
+}
+
+// start records the start step and reports whether it ran and did not succeed.
+func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, created string) (failed bool) {
+	r.step(s.Name, protocol.StepStart, func() (outcome, code, detail string) {
+		defer func() { failed = outcome != protocol.OutcomeSucceeded }()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
 		defer cancel()
 		status, err := r.c.post(cctx, "/containers/"+url.PathEscape(created)+"/start")
@@ -516,15 +606,40 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		r.res.Services = append(r.res.Services, id)
 		return succeeded()
 	})
-	r.step(s.Name, protocol.StepRemove, func() (string, string, string) {
+	return failed
+}
+
+// rollback undoes an explicit recreate whose start failed: the new container is removed by
+// force, the old one renamed back and, if it was running, started. It is recorded after the
+// failed start, which the skip rule in step would otherwise swallow. Success recodes the start
+// start_failed_rolled_back; failure is rollback_failed and the start keeps its code.
+func (r *deployRun) rollback(ctx context.Context, p prepared, created string, running bool) {
+	old := url.PathEscape(p.s.Replaces.ContainerID)
+	restore := func() bool {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
-		status, err := r.c.del(cctx, "/containers/"+old)
-		if err != nil || status >= 400 {
-			return r.outcomeFor(cctx, err, status)
+		if status, err := r.c.del(cctx, "/containers/"+url.PathEscape(created)+"?force=1"); err != nil || (status >= 400 && status != http.StatusNotFound) {
+			return false
 		}
-		return succeeded()
-	})
+		if status, err := r.c.post(cctx, "/containers/"+old+"/rename?name="+url.QueryEscape(p.name)); err != nil || status >= 400 {
+			return false
+		}
+		if !running {
+			return true
+		}
+		sctx, scancel := context.WithTimeout(ctx, operationBudget)
+		defer scancel()
+		status, err := r.c.post(sctx, "/containers/"+old+"/start")
+		return err == nil && (status < 400 || status == http.StatusNotModified)
+	}
+	s := protocol.DeploymentStep{Service: p.s.Name, Step: protocol.StepRollback, Outcome: protocol.OutcomeSucceeded}
+	if restore() {
+		failed := &r.res.Steps[len(r.res.Steps)-1]
+		failed.Code, failed.Detail = "start_failed_rolled_back", ""
+	} else {
+		s.Outcome, s.Code = protocol.OutcomeFailed, "rollback_failed"
+	}
+	r.res.Steps = append(r.res.Steps, s)
 }
 
 type portBinding struct {
@@ -532,7 +647,19 @@ type portBinding struct {
 	HostPort string `json:"HostPort"`
 }
 type endpointSettings struct {
-	Aliases []string `json:"Aliases"`
+	Aliases    []string `json:"Aliases"`
+	IPAMConfig *struct {
+		IPv4Address string `json:"IPv4Address"`
+	} `json:"IPAMConfig,omitempty"`
+}
+type device struct {
+	PathOnHost        string `json:"PathOnHost"`
+	PathInContainer   string `json:"PathInContainer"`
+	CgroupPermissions string `json:"CgroupPermissions"`
+}
+type logConfig struct {
+	Type   string            `json:"Type"`
+	Config map[string]string `json:"Config"`
 }
 type networkingConfig struct {
 	EndpointsConfig map[string]endpointSettings `json:"EndpointsConfig"`
@@ -543,11 +670,25 @@ type mountSpec struct {
 	Target   string `json:"Target"`
 	ReadOnly bool   `json:"ReadOnly"`
 }
+
+// containerCreate is the create body. Fields after Labels are set only for an explicit frame;
+// Cmd and Entrypoint are sent even when nil, which Docker reads as the image's, so an explicit
+// [] still clears an image entrypoint.
 type containerCreate struct {
 	Image        string              `json:"Image"`
 	Env          []string            `json:"Env"`
 	Labels       map[string]string   `json:"Labels"`
 	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
+	Cmd          []string            `json:"Cmd"`
+	Entrypoint   []string            `json:"Entrypoint"`
+	User         string              `json:"User,omitempty"`
+	WorkingDir   string              `json:"WorkingDir,omitempty"`
+	Hostname     string              `json:"Hostname,omitempty"`
+	Tty          bool                `json:"Tty,omitempty"`
+	OpenStdin    bool                `json:"OpenStdin,omitempty"`
+	StopSignal   string              `json:"StopSignal,omitempty"`
+	StopTimeout  *int                `json:"StopTimeout,omitempty"`
+	Healthcheck  *healthcheck        `json:"Healthcheck,omitempty"`
 	HostConfig   struct {
 		NetworkMode   string                   `json:"NetworkMode,omitempty"`
 		PortBindings  map[string][]portBinding `json:"PortBindings,omitempty"`
@@ -556,6 +697,20 @@ type containerCreate struct {
 			Name              string `json:"Name"`
 			MaximumRetryCount int    `json:"MaximumRetryCount"`
 		} `json:"RestartPolicy"`
+		Memory         int64      `json:"Memory,omitempty"`
+		MemorySwap     int64      `json:"MemorySwap,omitempty"`
+		NanoCpus       int64      `json:"NanoCpus,omitempty"`
+		PidsLimit      int64      `json:"PidsLimit,omitempty"`
+		Privileged     bool       `json:"Privileged,omitempty"`
+		ReadonlyRootfs bool       `json:"ReadonlyRootfs,omitempty"`
+		Init           *bool      `json:"Init,omitempty"`
+		CapAdd         []string   `json:"CapAdd,omitempty"`
+		CapDrop        []string   `json:"CapDrop,omitempty"`
+		SecurityOpt    []string   `json:"SecurityOpt,omitempty"`
+		ExtraHosts     []string   `json:"ExtraHosts,omitempty"`
+		Dns            []string   `json:"Dns,omitempty"`
+		Devices        []device   `json:"Devices,omitempty"`
+		LogConfig      *logConfig `json:"LogConfig,omitempty"`
 	} `json:"HostConfig"`
 	NetworkingConfig *networkingConfig `json:"NetworkingConfig,omitempty"`
 }
@@ -566,10 +721,7 @@ type containerCreate struct {
 // run on "<project>_default", and dropping that would strand the new one off the project
 // network and its service-name DNS.
 func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, networkMode string) containerCreate {
-	body := containerCreate{Image: s.ImageID, Env: []string{}, Labels: map[string]string{
-		"com.docker.compose.project": req.Project, "com.docker.compose.service": s.Name, "com.docker.compose.container-number": "1", "com.docker.compose.oneoff": "False",
-		"kyyard.deployment": req.Deployment, "kyyard.revision": strconv.Itoa(req.Revision),
-	}}
+	body := containerCreate{Image: s.ImageID, Env: []string{}}
 	keys := make([]string, 0, len(s.Env))
 	for k := range s.Env {
 		keys = append(keys, k)
@@ -585,7 +737,9 @@ func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, ne
 	for _, p := range s.Ports {
 		key := strconv.Itoa(p.Container) + "/" + p.Protocol
 		body.ExposedPorts[key] = struct{}{}
-		body.HostConfig.PortBindings[key] = append(body.HostConfig.PortBindings[key], portBinding{HostIP: p.HostIP, HostPort: strconv.Itoa(p.Host)})
+		if p.Host > 0 { // Host 0 is exposed only, explicit frames alone
+			body.HostConfig.PortBindings[key] = append(body.HostConfig.PortBindings[key], portBinding{HostIP: p.HostIP, HostPort: strconv.Itoa(p.Host)})
+		}
 	}
 	for _, m := range s.Mounts {
 		body.HostConfig.Mounts = append(body.HostConfig.Mounts, mountSpec{Type: m.Kind, Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
@@ -594,11 +748,72 @@ func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, ne
 	if body.HostConfig.RestartPolicy.Name == "" {
 		body.HostConfig.RestartPolicy.Name = "no"
 	}
+	if s.Explicit != nil {
+		explicitBody(&body, s.Explicit)
+		return body
+	}
+	body.Labels = map[string]string{
+		"com.docker.compose.project": req.Project, "com.docker.compose.service": s.Name, "com.docker.compose.container-number": "1", "com.docker.compose.oneoff": "False",
+		"kyyard.deployment": req.Deployment, "kyyard.revision": strconv.Itoa(req.Revision),
+	}
 	if projectNetwork := req.Project + "_default"; networkMode == projectNetwork {
 		body.HostConfig.NetworkMode = projectNetwork
 		body.NetworkingConfig = &networkingConfig{EndpointsConfig: map[string]endpointSettings{projectNetwork: {Aliases: []string{s.Name}}}}
 	}
 	return body
+}
+
+// explicitBody sets every explicit setting as given, with no label or network added.
+func explicitBody(body *containerCreate, e *protocol.ExplicitService) {
+	h := &body.HostConfig
+	body.Labels, body.Cmd, body.Entrypoint = e.Labels, e.Command, e.Entrypoint
+	body.User, body.WorkingDir, body.Hostname, body.Tty, body.OpenStdin = e.User, e.WorkingDir, e.Hostname, e.TTY, e.StdinOpen
+	body.StopSignal, body.StopTimeout = e.StopSignal, e.StopTimeout
+	if hc := e.Healthcheck; hc != nil {
+		ns := func(s float64) int64 { return int64(math.Round(s * float64(time.Second))) }
+		body.Healthcheck = &healthcheck{Test: hc.Test, Interval: ns(hc.IntervalSeconds), Timeout: ns(hc.TimeoutSeconds), StartPeriod: ns(hc.StartPeriodSeconds), Retries: hc.Retries}
+	}
+	h.RestartPolicy.MaximumRetryCount = e.RestartRetries
+	h.Memory, h.MemorySwap, h.NanoCpus, h.PidsLimit = e.Resources.MemoryBytes, e.Resources.MemorySwapBytes, e.Resources.NanoCPUs, e.Resources.PidsLimit
+	h.Privileged, h.ReadonlyRootfs, h.Init = e.Privileged, e.ReadOnlyRootfs, &e.Init
+	h.CapAdd, h.CapDrop, h.SecurityOpt, h.ExtraHosts, h.Dns = e.CapAdd, e.CapDrop, e.SecurityOpt, e.ExtraHosts, e.DNS
+	for _, d := range e.Devices {
+		h.Devices = append(h.Devices, device{d.Host, d.Container, d.Permissions})
+	}
+	if e.Log.Driver != "" {
+		h.LogConfig = &logConfig{e.Log.Driver, e.Log.Options}
+	}
+	h.NetworkMode = e.NetworkMode
+	if first, _ := attachments(e); first != nil {
+		if h.NetworkMode == "" {
+			h.NetworkMode = first.Name
+		}
+		body.NetworkingConfig = &networkingConfig{EndpointsConfig: map[string]endpointSettings{first.Name: endpoint(*first)}}
+	}
+}
+
+// attachments splits the networks into the one create joins (the network mode's, else the
+// first) and the rest, connected after create.
+func attachments(e *protocol.ExplicitService) (*protocol.NetworkAttachmentSpec, []protocol.NetworkAttachmentSpec) {
+	if len(e.Networks) == 0 {
+		return nil, nil
+	}
+	mode := e.NetworkMode
+	if mode == "" || mode == "default" {
+		mode = "bridge"
+	}
+	i := max(0, slices.IndexFunc(e.Networks, func(n protocol.NetworkAttachmentSpec) bool { return n.Name == mode }))
+	return &e.Networks[i], slices.Delete(slices.Clone(e.Networks), i, i+1)
+}
+
+func endpoint(n protocol.NetworkAttachmentSpec) endpointSettings {
+	out := endpointSettings{Aliases: n.Aliases}
+	if n.IP != "" {
+		out.IPAMConfig = &struct {
+			IPv4Address string `json:"IPv4Address"`
+		}{n.IP}
+	}
+	return out
 }
 
 // postJSON sends a JSON body and decodes a JSON answer. The Engine's error body is read and
@@ -622,7 +837,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body, out any) (int,
 	if err != nil {
 		return resp.StatusCode, err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 || out == nil {
 		return resp.StatusCode, nil
 	}
 	return resp.StatusCode, json.Unmarshal(answer, out)

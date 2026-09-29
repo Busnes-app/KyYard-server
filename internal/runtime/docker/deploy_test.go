@@ -49,6 +49,9 @@ type fakeDeployEngine struct {
 	createStatus     int // 201 default
 	startStatus      int
 	removeStatus     int
+	oldStartStatus   int                                            // POST /containers/{old}/start, the rollback's restart; 204 default
+	removeNewStatus  int                                            // DELETE /containers/{new}, the rollback's removal; 204 default
+	connectStatus    int                                            // POST /networks/{name}/connect; 200 default
 	pullStatus       int                                            // POST /images/create; 200 default
 	pullStatusFor    map[string]int                                 // per fromImage, overriding pullStatus
 	pullBody         string                                         // its progress stream
@@ -67,7 +70,7 @@ type fakeDeployEngine struct {
 
 func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
-	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, pullStatus: 200, pulledStatus: 200, tagStatus: 201, volumeStatus: 201, reads: map[string]int{},
+	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, oldStartStatus: 204, removeNewStatus: 204, connectStatus: 200, pullStatus: 200, pulledStatus: 200, tagStatus: 201, volumeStatus: 201, reads: map[string]int{},
 		imageReportedID: newImage, createdID: newID, startedImage: newImage,
 		pullBody: `{"status":"Pulling from org/app"}` + "\n" + `{"status":"Digest: ` + pullDigest + `"}` + "\n",
 		pulled:   map[string]any{"Id": newImage, "RepoDigests": []string{"ghcr.io/org/app@" + pullDigest}}}
@@ -153,6 +156,12 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			_, _ = w.Write([]byte(`{"Id":"` + f.createdID + `","Warnings":[]}`))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+newID+"/start"):
 			w.WriteHeader(f.startStatus)
+		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/start"):
+			w.WriteHeader(f.oldStartStatus)
+		case r.Method == "DELETE" && strings.HasSuffix(p, "/containers/"+newID):
+			w.WriteHeader(f.removeNewStatus)
+		case r.Method == "POST" && strings.Contains(p, "/networks/") && strings.HasSuffix(p, "/connect"):
+			w.WriteHeader(f.connectStatus)
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+newID+"/json"):
 			w.WriteHeader(f.inspectNewStatus)
 			_, _ = w.Write([]byte(`{"Id":"` + newID + `","Image":"` + f.startedImage + `","Created":"2024-01-01T00:00:01Z","Name":"/shop-web-1","State":{"Status":"running"}}`))
@@ -864,5 +873,297 @@ func TestDeployCallsStartedOnceBeforePhaseTwo(t *testing.T) {
 		if res := f.client().Deploy(context.Background(), req, func() { called = true }); res.Outcome == protocol.OutcomeSucceeded || called {
 			t.Fatalf("%s: started=%v %+v", name, called, res)
 		}
+	}
+}
+
+// explicitRequest is a direct edit or run frame: one service, project "direct", revision 1.
+func explicitRequest(s protocol.DeploymentService) protocol.DeploymentRequest {
+	req := request(s)
+	req.Project, req.Revision, req.Explicit = protocol.ExplicitProject, protocol.ExplicitRevision, true
+	return req
+}
+
+// explicitService sets every explicit field to a value distinct from its zero.
+func explicitService() protocol.DeploymentService {
+	timeout := 7
+	s := webService()
+	s.Ports = []protocol.Port{{Container: 80, Host: 8080, Protocol: "tcp", HostIP: "127.0.0.1"}, {Container: 9000, Protocol: "udp"}}
+	s.Mounts = []protocol.Mount{{Kind: protocol.MountTmpfs, Target: "/scratch"}}
+	s.Explicit = &protocol.ExplicitService{
+		Command: []string{"serve", "--port", "80"}, Entrypoint: []string{"/entry"}, User: "1000:1000", WorkingDir: "/app", Hostname: "web1",
+		Labels: map[string]string{"team": "a"}, NetworkMode: "front",
+		Networks:    []protocol.NetworkAttachmentSpec{{Name: "back", Aliases: []string{"b"}}, {Name: "front", Aliases: []string{"web"}, IP: "10.0.0.5"}},
+		Resources:   protocol.Resources{NanoCPUs: 500000000, MemoryBytes: 64 << 20, MemorySwapBytes: 128 << 20, PidsLimit: 100},
+		Healthcheck: &protocol.Healthcheck{Test: []string{"CMD", "true"}, IntervalSeconds: 5, TimeoutSeconds: 2, StartPeriodSeconds: 1.5, Retries: 3},
+		Privileged:  true, ReadOnlyRootfs: true, Init: true, TTY: true, StdinOpen: true,
+		CapAdd: []string{"CAP_NET_ADMIN"}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, ExtraHosts: []string{"db:10.0.0.9"}, DNS: []string{"1.1.1.1"},
+		Devices:    []protocol.Device{{Host: "/dev/fuse", Container: "/dev/fuse", Permissions: "rwm"}},
+		Log:        protocol.LogConfig{Driver: "json-file", Options: map[string]string{"max-size": "10m"}},
+		StopSignal: "SIGINT", StopTimeout: &timeout, RestartRetries: 4, AcknowledgedBinds: []string{},
+	}
+	return s
+}
+
+func (f *fakeDeployEngine) call(method, suffix string) (engineCall, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if c.Method == method && strings.HasSuffix(c.Path, suffix) {
+			return c, true
+		}
+	}
+	return engineCall{}, false
+}
+
+func explicitSteps(res protocol.DeploymentResult) string {
+	out := []string{}
+	for _, s := range res.Steps {
+		out = append(out, s.Step+"="+s.Outcome+strings.TrimSuffix(":"+stepText(s), ":"))
+	}
+	return strings.Join(out, ",")
+}
+
+// (a), (b): the create body carries every explicit setting and nothing the adapter adds.
+func TestDeployExplicitCreateBody(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
+		t.Fatalf("outcome: %+v", res)
+	}
+	c, ok := f.call("POST", "/containers/create")
+	if !ok {
+		t.Fatal("no create")
+	}
+	var body struct {
+		Image, User, WorkingDir, Hostname, StopSignal string
+		Env, Cmd, Entrypoint                          []string
+		Labels                                        map[string]string
+		ExposedPorts                                  map[string]struct{}
+		Tty, OpenStdin                                bool
+		StopTimeout                                   *int
+		Healthcheck                                   *struct {
+			Test                                    []string
+			Interval, Timeout, StartPeriod, Retries int64
+		}
+		HostConfig struct {
+			NetworkMode   string
+			PortBindings  map[string][]struct{ HostIp, HostPort string }
+			Mounts        []struct{ Type, Source, Target string }
+			RestartPolicy struct {
+				Name              string
+				MaximumRetryCount int
+			}
+			Memory, MemorySwap, NanoCpus      int64
+			PidsLimit                         int64
+			Privileged, ReadonlyRootfs        bool
+			Init                              *bool
+			CapAdd, CapDrop, SecurityOpt, Dns []string
+			ExtraHosts                        []string
+			Devices                           []struct{ PathOnHost, PathInContainer, CgroupPermissions string }
+			LogConfig                         struct {
+				Type   string
+				Config map[string]string
+			}
+		}
+		NetworkingConfig struct {
+			EndpointsConfig map[string]struct {
+				Aliases    []string
+				IPAMConfig *struct{ IPv4Address string }
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(c.Body), &body); err != nil {
+		t.Fatal(err)
+	}
+	h := body.HostConfig
+	j := func(v any) string { raw, _ := json.Marshal(v); return string(raw) }
+	checks := map[string][2]string{
+		"image":       {body.Image, newImage},
+		"env":         {j(body.Env), `["A=1","TOKEN=a=b\ncanary-secret"]`},
+		"cmd":         {j(body.Cmd), `["serve","--port","80"]`},
+		"entrypoint":  {j(body.Entrypoint), `["/entry"]`},
+		"user":        {body.User, "1000:1000"},
+		"workdir":     {body.WorkingDir, "/app"},
+		"hostname":    {body.Hostname, "web1"},
+		"labels":      {j(body.Labels), `{"team":"a"}`},
+		"exposed":     {j(body.ExposedPorts), `{"80/tcp":{},"9000/udp":{}}`},
+		"bindings":    {j(h.PortBindings), `{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}]}`},
+		"mounts":      {j(h.Mounts), `[{"Type":"tmpfs","Source":"","Target":"/scratch"}]`},
+		"restart":     {j(h.RestartPolicy), `{"Name":"on-failure","MaximumRetryCount":4}`},
+		"networkMode": {h.NetworkMode, "front"},
+		"endpoints":   {j(body.NetworkingConfig.EndpointsConfig), `{"front":{"Aliases":["web"],"IPAMConfig":{"IPv4Address":"10.0.0.5"}}}`},
+		"resources":   {j([]int64{h.Memory, h.MemorySwap, h.NanoCpus, h.PidsLimit}), `[67108864,134217728,500000000,100]`},
+		"healthcheck": {j(body.Healthcheck), `{"Test":["CMD","true"],"Interval":5000000000,"Timeout":2000000000,"StartPeriod":1500000000,"Retries":3}`},
+		"flags":       {j([]any{h.Privileged, h.ReadonlyRootfs, h.Init, body.Tty, body.OpenStdin}), `[true,true,true,true,true]`},
+		"caps":        {j([][]string{h.CapAdd, h.CapDrop, h.SecurityOpt, h.ExtraHosts, h.Dns}), `[["CAP_NET_ADMIN"],["ALL"],["no-new-privileges"],["db:10.0.0.9"],["1.1.1.1"]]`},
+		"devices":     {j(h.Devices), `[{"PathOnHost":"/dev/fuse","PathInContainer":"/dev/fuse","CgroupPermissions":"rwm"}]`},
+		"log":         {j(h.LogConfig), `{"Type":"json-file","Config":{"max-size":"10m"}}`},
+		"stop":        {j([]any{body.StopSignal, body.StopTimeout}), `["SIGINT",7]`},
+	}
+	for name, c := range checks {
+		if c[0] != c[1] {
+			t.Errorf("%s:\n got %s\nwant %s", name, c[0], c[1])
+		}
+	}
+	// The second attachment is connected after create and before start.
+	got := strings.Join(f.steps(), ",")
+	want := "POST /containers/create,POST /networks/back/connect,POST /containers/" + oldID + "/stop,POST /containers/" + newID + "/start"
+	if !strings.Contains(got, want) {
+		t.Fatalf("calls:\n got %s\nwant substring %s", got, want)
+	}
+	connect, _ := f.call("POST", "/networks/back/connect")
+	if connect.Body != `{"Container":"`+newID+`","EndpointConfig":{"Aliases":["b"]}}` {
+		t.Fatalf("connect body: %s", connect.Body)
+	}
+}
+
+// A healthcheck of ["NONE"] is Docker's own "disabled" and is sent as-is; nil is the image's.
+func TestDeployExplicitHealthcheckNoneAndNil(t *testing.T) {
+	for name, hc := range map[string]*protocol.Healthcheck{"none": {Test: []string{"NONE"}}, "nil": nil} {
+		f := newFakeDeployEngine(t)
+		s := explicitService()
+		s.Explicit.Healthcheck = hc
+		if res := f.client().Deploy(context.Background(), explicitRequest(s), func() {}); res.Outcome != protocol.OutcomeSucceeded {
+			t.Fatalf("%s: %+v", name, res)
+		}
+		c, _ := f.call("POST", "/containers/create")
+		var body struct{ Healthcheck json.RawMessage }
+		_ = json.Unmarshal([]byte(c.Body), &body)
+		want := map[string]string{"none": `{"Test":["NONE"],"Interval":0,"Timeout":0,"StartPeriod":0,"Retries":0}`, "nil": ""}[name]
+		if string(body.Healthcheck) != want {
+			t.Fatalf("%s healthcheck: %s", name, body.Healthcheck)
+		}
+	}
+}
+
+// A failed connect fails create with the status; the run does not start the container.
+func TestDeployExplicitConnectFailureFailsCreate(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.connectStatus = 404
+	res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+	if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=failed:runtime_status: 404,stop=skipped,start=skipped,remove=skipped" || res.Validate() != nil {
+		t.Fatalf("steps: %s", got)
+	}
+}
+
+// (c) A run (no Replaces) is image, create, start and touches no other container.
+func TestDeployExplicitRun(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	s := explicitService()
+	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
+	started := 0
+	res := f.client().Deploy(context.Background(), explicitRequest(s), func() { started++ })
+	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil || started != 1 {
+		t.Fatalf("outcome: %+v started=%d", res, started)
+	}
+	if got := explicitSteps(res); got != "image=succeeded,create=succeeded,start=succeeded" {
+		t.Fatalf("steps: %s", got)
+	}
+	want := "GET /info,GET /images/" + newImage + "/json,POST /containers/create,POST /networks/back/connect,POST /containers/" + newID + "/start,GET /containers/" + newID + "/json"
+	if got := strings.Join(f.steps(), ","); got != want {
+		t.Fatalf("calls:\n got %s\nwant %s", got, want)
+	}
+	if c, _ := f.call("POST", "/containers/create"); c.Query != "name=adhoc" {
+		t.Fatalf("create query: %s", c.Query)
+	}
+	if len(res.Services) != 1 || res.Services[0].ContainerID != newID {
+		t.Fatalf("identity: %+v", res.Services)
+	}
+}
+
+// (d) A recreate whose new container does not start is rolled back: the new one removed by
+// force, the old renamed back and started again when it was running.
+func TestDeployExplicitRollbackOnStartFailure(t *testing.T) {
+	for _, wasRunning := range []bool{true, false} {
+		f := newFakeDeployEngine(t)
+		f.startStatus = 500
+		if !wasRunning {
+			f.stopStatus = 304
+		}
+		res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+		if res.Outcome != protocol.OutcomeFailed || res.Code != protocol.ResultStepFailed || res.Validate() != nil {
+			t.Fatalf("outcome: %+v", res)
+		}
+		if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=succeeded,stop=succeeded,start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped" {
+			t.Fatalf("steps: %s", got)
+		}
+		tail := "POST /containers/" + oldID + "/rename,POST /containers/create,POST /networks/back/connect,POST /containers/" + oldID + "/stop,POST /containers/" + newID + "/start,DELETE /containers/" + newID + ",POST /containers/" + oldID + "/rename"
+		if wasRunning {
+			tail += ",POST /containers/" + oldID + "/start"
+		}
+		if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, tail) {
+			t.Fatalf("running=%v calls:\n got %s\nwant suffix %s", wasRunning, got, tail)
+		}
+		del, _ := f.call("DELETE", "/containers/"+newID)
+		f.mu.Lock()
+		renames := []string{}
+		for _, c := range f.calls {
+			if strings.HasSuffix(c.Path, "/rename") {
+				renames = append(renames, c.Query)
+			}
+		}
+		f.mu.Unlock()
+		if del.Query != "force=1" || strings.Join(renames, "|") != "name=shop-web-1.kyyard-prev-3f2b1c9e|name=shop-web-1" {
+			t.Fatalf("delete %q renames %v", del.Query, renames)
+		}
+	}
+}
+
+// A rollback that cannot finish says so; the start keeps its own code.
+func TestDeployExplicitRollbackFailure(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.startStatus, f.removeNewStatus = 500, 500
+	res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+	if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=succeeded,stop=succeeded,start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped" || res.Validate() != nil {
+		t.Fatalf("steps: %s", got)
+	}
+	if _, renamedBack := f.call("POST", "/containers/"+oldID+"/start"); renamedBack {
+		t.Fatal("old container started after a failed removal")
+	}
+}
+
+// A non-explicit deploy never rolls back.
+func TestDeployWithoutExplicitDoesNotRollBack(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.startStatus = 500
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
+	if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=succeeded,stop=succeeded,start=failed:runtime_status: 500,remove=skipped" {
+		t.Fatalf("steps: %s", got)
+	}
+}
+
+// (e), (f): configuration undescribed refuses is the operator's to keep in an explicit edit,
+// and the image_config comparison is not made; a non-explicit deploy still refuses it.
+func TestDeployExplicitSkipsUndescribed(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.oldContainer["HostConfig"].(map[string]any)["VolumesFrom"] = []string{"other"}
+	f.oldImageConfig["Cmd"] = []string{"something", "else"}
+	if res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("explicit: %s", explicitSteps(res))
+	}
+	if _, read := f.call("GET", "/images/"+oldImage+"/json"); read {
+		t.Fatal("explicit precondition read the old image")
+	}
+	f = newFakeDeployEngine(t)
+	f.oldContainer["HostConfig"].(map[string]any)["VolumesFrom"] = []string{"other"}
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
+	if res.Steps[0].Outcome != protocol.OutcomeDenied || stepText(res.Steps[0]) != "unsupported: volumes_from" {
+		t.Fatalf("non-explicit: %s", explicitSteps(res))
+	}
+}
+
+// (g) A new bind is refused unless the operator acknowledged its host path.
+func TestDeployExplicitBindNeedsAcknowledgement(t *testing.T) {
+	s := explicitService()
+	s.Mounts = append(s.Mounts, protocol.Mount{Kind: protocol.MountBind, Source: "/srv/data", Target: "/data"})
+	f := newFakeDeployEngine(t)
+	res := f.client().Deploy(context.Background(), explicitRequest(s), func() {})
+	if res.Steps[0].Outcome != protocol.OutcomeDenied || res.Steps[0].Code != "bind_missing" || len(f.steps()) != 2 {
+		t.Fatalf("unacknowledged: %s calls %v", explicitSteps(res), f.steps())
+	}
+	s.Explicit.AcknowledgedBinds = []string{"/srv/data"}
+	f = newFakeDeployEngine(t)
+	if res = f.client().Deploy(context.Background(), explicitRequest(s), func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("acknowledged: %s", explicitSteps(res))
 	}
 }
