@@ -11,7 +11,7 @@ import { ContainerConfigurationForm } from '../components/ContainerConfiguration
 import { parseConfiguration } from '../components/containerConfiguration';
 import type { ApplicationInstance } from '../components/ApplicationAdoption';
 import { containerPath, endpointPath, envPath, navigate, useSearchParam } from '../router';
-import { canConfigure, canExec, useTenantResource, type Container, type ContainerConfiguration, type DirectCommand, type Endpoint, type Inventory, type MemberOrganization } from '../tenant';
+import { canConfigure, canExec, canRunContainers, useTenantResource, type Container, type ContainerConfiguration, type Endpoint, type Inventory, type MemberOrganization } from '../tenant';
 const ContainerTerminal = lazy(() => import('../components/ContainerTerminal').then((m) => ({ default: m.ContainerTerminal })));
 
 const TABS = ['overview', 'configuration', 'logs', 'terminal', 'activity'] as const;
@@ -85,7 +85,7 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
       </nav>
       {tab === 'overview' && <Overview base={base} container={c} received={inventory.data?.received_at ?? ''} />}
       {tab === 'configuration' && (organizations.state === 'loading' || details.state === 'loading' ? <p role="status">Loading…</p> : !e ? null
-        : canConfigure(role) ? <EditConfiguration key={`${c.id}/${c.image_id}/${c.created_at}`} base={base} org={org} endpoint={e} container={c} onSettled={(cmd) => { inventory.reload(); openResult(org, endpoint, c.id, cmd); }} />
+        : canConfigure(role) ? <EditConfiguration key={`${c.id}/${c.image_id}/${c.created_at}`} base={base} org={org} endpoint={e} container={c} onSettled={inventory.reload} />
         : <Configuration base={base} container={c} capable={e.capabilities.includes('container.inspect')} />)}
       {tab === 'logs' && <section className="panel" aria-label="Logs"><ContainerLogs key={c.id} url={`${base}/containers/${encodeURIComponent(c.id)}/logs`} name={c.name} /></section>}
       {tab === 'terminal' && exec && <section className="panel" aria-label="Terminal">{c.state === 'running' && active ? <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${c.id}/${c.image_id}`} base={base} container={c} scope={scope} /></Suspense> : <EmptyNotice>The terminal needs a running container on an active host.</EmptyNotice>}</section>}
@@ -93,12 +93,6 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
     </>}
   </div>;
 };
-
-// A recreate replaces the container and a run makes one: follow the settled result to its page.
-function openResult(org: string, endpoint: string, current: string, cmd: DirectCommand) {
-  const next = cmd.result?.services[0]?.container_id;
-  if (next && next !== current) navigate(containerPath(org, endpoint, next, 'configuration'));
-}
 
 export const ContainerRunPage: React.FC<{ org: string; endpoint: string }> = ({ org, endpoint }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
@@ -111,7 +105,9 @@ export const ContainerRunPage: React.FC<{ org: string; endpoint: string }> = ({ 
     <StateNotice state={details.state} onRetry={details.reload} />
     {organizations.state === 'loading' ? <p role="status">Loading…</p>
       : !canConfigure(role) ? <EmptyNotice>Only an organization administrator can run containers.</EmptyNotice>
-      : <section className="panel"><ContainerConfigurationForm base={base} mode="run" onSettled={(cmd) => openResult(org, endpoint, '', cmd)} /></section>}
+      : details.state === 'loading' ? null
+      : !canRunContainers(details.data) ? <EmptyNotice>Upgrade the host agent to run containers here.</EmptyNotice>
+      : <section className="panel"><ContainerConfigurationForm base={base} org={org} endpoint={endpoint} mode="run" onSettled={() => {}} /></section>}
   </div>;
 };
 
@@ -129,7 +125,7 @@ const READ_CONFLICTS: Record<string, string> = {
 
 // EditConfiguration reads the full configuration (environment values included) once per mount;
 // a container an adopted application owns is never read and edits through its application.
-function EditConfiguration({ base, org, endpoint, container: c, onSettled }: { base: string; org: string; endpoint: Endpoint; container: Container; onSettled: (cmd: DirectCommand) => void }) {
+function EditConfiguration({ base, org, endpoint, container: c, onSettled }: { base: string; org: string; endpoint: Endpoint; container: Container; onSettled: () => void }) {
   const capable = endpoint.capabilities.includes('container.configure');
   const owners = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
   const owner = owners.state === 'ready' && Array.isArray(owners.data) ? owners.data.find((i) => i.containers?.some((x) => x.id === c.id)) : undefined;
@@ -157,7 +153,7 @@ function EditConfiguration({ base, org, endpoint, container: c, onSettled }: { b
     return () => controller.abort();
   }, [base, c.id, c.image_id, c.created_at, capable, settled, owner, attempt]);
   if (!capable) return <><EmptyNotice>Upgrade the host agent to enable editing.</EmptyNotice><Configuration base={base} container={c} capable={endpoint.capabilities.includes('container.inspect')} /></>;
-  const props = { base, mode: 'edit' as const, container: c, onSettled };
+  const props = { base, org, endpoint: endpoint.id, mode: 'edit' as const, container: c, onSettled };
   return <section className="panel" aria-label="Configuration">
     {owner ? <ContainerConfigurationForm {...props} managed={{ application: displayName(owner.project), link: envPath(org, endpoint.environment_id) }} />
       : !settled || read.kind === 'loading' ? <p role="status">Reading configuration…</p>

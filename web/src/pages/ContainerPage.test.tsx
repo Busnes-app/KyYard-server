@@ -89,7 +89,7 @@ const configuration = {
   resources: { nano_cpus: 0, memory_bytes: 0, memory_swap_bytes: 0, pids_limit: 0 }, healthcheck: null, privileged: false, read_only_rootfs: false, init: false, tty: false, stdin_open: false,
   cap_add: [], cap_drop: [], security_opt: [], extra_hosts: [], dns: [], devices: [], log: { driver: 'json-file', options: {} }, stop_signal: '', unsupported: [],
 };
-const configurable = { ep: { capabilities: ['container.inspect', 'container.configure'] } };
+const configurable = { ep: { capabilities: ['container.inspect', 'container.configure', 'deployment.pull'] } };
 
 it('shows an organization administrator the editable configuration, values masked', async () => {
   const fetcher = stub('organization_admin', [container()], configurable);
@@ -117,10 +117,10 @@ it('shows a managed container read-only with a link to its application', async (
   expect(fetcher.mock.calls.some(([u]) => String(u).endsWith('/configuration'))).toBe(false);
 });
 
-it('opens the new container after a recreate settles with a new ID', async () => {
+it('stays on the page after a recreate settles and links to the new container', async () => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const next = 'd'.repeat(64);
-  stub('organization_admin', [container()], { ...configurable, command: { id: 'cmd9', action: 'container.recreate', outcome: 'succeeded', result: { steps: [], services: [{ service: 'direct', container_id: next, image_id: 'sha256:1', created_unix: 1 }] } } });
+  stub('organization_admin', [container()], { ...configurable, command: { id: 'cmd9', action: 'container.recreate', outcome: 'succeeded', result: { steps: [{ service: 'direct', step: 'start', outcome: 'succeeded', detail: '' }], services: [{ service: 'direct', container_id: next, image_id: 'sha256:1', created_unix: 1 }] } } });
   window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
   render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
   fireEvent.change(await screen.findByLabelText('Hostname'), { target: { value: 'other' } });
@@ -128,8 +128,17 @@ it('opens the new container after a recreate settles with a new ID', async () =>
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Save and recreate' })); });
   await act(async () => { vi.advanceTimersByTime(1500); });
   await act(async () => {});
-  expect(window.location.pathname).toBe(`/organizations/a/endpoints/ep_1/containers/${next}`);
-  expect(window.location.search).toBe('?tab=configuration');
+  expect(window.location.pathname).toBe(`/organizations/a/endpoints/ep_1/containers/${id}`);
+  expect(screen.getByText('Done.')).toBeTruthy();
+  expect(within(screen.getByRole('table')).getByText('start')).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Open the new container' }).getAttribute('href')).toBe(`/organizations/a/endpoints/ep_1/containers/${next}?tab=configuration`);
+});
+
+it('refuses the run form on a host whose agent cannot run containers', async () => {
+  stub('organization_admin', [container()], { ep: { capabilities: ['container.configure'] } });
+  render(<ContainerRunPage org="a" endpoint="ep_1" />);
+  expect(await screen.findByText('Upgrade the host agent to run containers here.')).toBeTruthy();
+  expect(screen.queryByLabelText('Image reference')).toBeNull();
 });
 
 it('renders the run form for an administrator and refuses other roles', async () => {

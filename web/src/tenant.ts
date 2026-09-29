@@ -75,6 +75,9 @@ export const canExec = (role: string | undefined) => role === 'organization_admi
 // Mirrors permissions.Allows(role, ContainerConfigure): only organization admins may configure.
 export const canConfigure = (role: string | undefined) => role === 'organization_admin';
 
+// A run needs a Docker host whose agent configures containers and pulls images.
+export const canRunContainers = (e: Endpoint | null | undefined) => e?.runtime === 'docker' && e.capabilities.includes('container.configure') && e.capabilities.includes('deployment.pull');
+
 // Mirrors permissions.Allows(role, ApplicationMigrate): only organization admins migrate applications.
 export const canMigrate = (role: string | undefined) => role === 'organization_admin';
 

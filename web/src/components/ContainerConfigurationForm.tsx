@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { secureFetch } from '../api';
 import { refusal, type Container, type ContainerConfiguration, type DirectCommand, type ExplicitSpec, type WriteTexts } from '../tenant';
 import { Link } from './Link';
+import { containerPath } from '../router';
 import { useCommand } from './ContainerControls';
 import { RESULT_CODES, StepTable } from './ApplicationDeploymentPlan';
 import { diff, toSpec, unsupportedLabel } from './containerConfiguration';
@@ -11,7 +12,7 @@ import { NetworkGroup, PortsGroup, VolumesGroup } from './configurationGroups/mo
 import { LoggingGroup, SecurityGroup } from './configurationGroups/security';
 
 type Props = {
-  base: string; mode: 'edit' | 'run';
+  base: string; org: string; endpoint: string; mode: 'edit' | 'run';
   initial?: ContainerConfiguration; container?: Container;
   managed?: { application: string; link: string };
   onSettled: (command: DirectCommand) => void;
@@ -100,7 +101,7 @@ const OUTCOMES: Record<string, string> = {
   unknown: 'The outcome is unknown: the host may or may not have acted. Check the container before trying again.',
 };
 
-export function ContainerConfigurationForm({ base, mode, initial, container, managed, onSettled }: Props) {
+export function ContainerConfigurationForm({ base, org, endpoint, mode, initial, container, managed, onSettled }: Props) {
   const start = initial ? toSpec(initial) : EMPTY_SPEC;
   const [draft, setDraft] = useState<ExplicitSpec>(start);
   const [logOptions, setLogOptions] = useState<[string, string][]>(Object.entries(start.log.options));
@@ -121,7 +122,13 @@ export function ContainerConfigurationForm({ base, mode, initial, container, man
   const newBinds = [...new Set(spec.mounts.filter((m) => m.kind === 'bind' && !known.includes(m.source)).map((m) => m.source))];
   const expected = run ? spec.name : container?.name ?? '';
   const pending = command !== null && !command.outcome;
-  const ready = !managed && spec.unsupported.length === 0 && (run ? spec.name !== '' && spec.image.reference !== '' : changes.length > 0 && !!container)
+  // The inventory lags the result by up to a report interval, so the page stays and links instead.
+  const created = command?.outcome ? command.result?.services[0]?.container_id ?? '' : '';
+  const incomplete = spec.env.some((e) => e.name === '') || spec.ports.some((p) => p.container === 0) || spec.devices.some((d) => d.host === '' || d.container === '');
+  const r = spec.resources, h = spec.healthcheck;
+  const numbers = [r.nano_cpus, r.memory_bytes, r.memory_swap_bytes, r.pids_limit, spec.restart_retries, spec.stop_timeout ?? 0, ...(h ? [h.interval_seconds, h.timeout_seconds, h.start_period_seconds, h.retries] : [])];
+  const malformed = numbers.some((n) => !Number.isFinite(n));
+  const ready = !managed && !incomplete && !malformed && spec.unsupported.length === 0 && (run ? spec.name !== '' && spec.image.reference !== '' : changes.length > 0 && !!container)
     && expected !== '' && confirm === expected && newBinds.every((b) => b !== '' && acks.has(b));
   const set = (patch: Partial<ExplicitSpec>) => setDraft((d) => ({ ...d, ...patch }));
   const submit = async () => {
@@ -167,6 +174,8 @@ export function ContainerConfigurationForm({ base, mode, initial, container, man
         <p>Saving replaces the container with a new one built from this configuration; its ID changes. If the new one does not start, the host tries to restore the previous one.</p>
         <p>{changes.length ? `Changes: ${changes.join(', ')}` : 'No changes.'}</p>
       </>}
+      {incomplete && <p>Complete every row: variable names, container ports and device paths.</p>}
+      {malformed && <p>Enter a number in every numeric field.</p>}
       <label>{run ? 'Type the new container name to confirm' : `Type the container name ${expected} to confirm`}<input value={confirm} autoComplete="off" onChange={(e) => setConfirm(e.target.value)} /></label>
       <div><button type="button" disabled={!ready || busy || pending || lost} onClick={() => void submit()}>{run ? 'Run container' : 'Save and recreate'}</button></div>
     </div>}
@@ -177,6 +186,7 @@ export function ContainerConfigurationForm({ base, mode, initial, container, man
       <p>{Object.hasOwn(OUTCOMES, command.outcome) ? OUTCOMES[command.outcome] : 'Unrecognised outcome.'}</p>
       {command.result?.code && Object.hasOwn(RESULT_CODES, command.result.code) && <p>{RESULT_CODES[command.result.code]}</p>}
       {command.result && command.result.steps.length > 0 && <StepTable steps={command.result.steps} />}
+      {created && <p><Link to={containerPath(org, endpoint, created, 'configuration')}>Open the new container</Link></p>}
     </div>}
   </section>;
 }

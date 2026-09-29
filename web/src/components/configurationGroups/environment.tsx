@@ -15,7 +15,7 @@ export function EnvironmentGroup({ spec, set }: GroupProps) {
         const who = e.name || label.toLowerCase();
         return <>
           <input aria-label={`${label} name`} value={e.name} onChange={(ev) => update({ ...e, name: ev.target.value })} />
-          <input aria-label={`Value of ${who}`} type={revealed.has(i) ? 'text' : 'password'} autoComplete="off" value={e.value} onChange={(ev) => update({ ...e, value: ev.target.value })} />
+          <input aria-label={`Value of ${who}`} type={revealed.has(i) ? 'text' : 'password'} autoComplete="new-password" data-1p-ignore data-lpignore="true" value={e.value} onChange={(ev) => update({ ...e, value: ev.target.value })} />
           <button type="button" className="btn-secondary" aria-pressed={revealed.has(i)} aria-label={`${revealed.has(i) ? 'Hide' : 'Reveal'} value of ${who}`} onClick={() => toggle(i)}>{revealed.has(i) ? 'Hide' : 'Reveal'}</button>
         </>;
       }} />

@@ -1,12 +1,13 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { ExplicitSpec } from '../../tenant';
 
 // Every group edits the draft spec through set; the form's fieldset disables them when read-only.
 export type GroupProps = { spec: ExplicitSpec; set: (patch: Partial<ExplicitSpec>) => void };
 
-// num reads a numeric input; an empty or partial entry is 0 until the operator finishes typing.
-export const num = (v: string) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-export const int = (v: string) => Math.trunc(num(v));
+// num reads a numeric input: empty is 0, and a partial or malformed entry ("-", "1e") is NaN,
+// which keeps Save disabled until it is a number.
+export const num = (v: string) => v.trim() === '' ? 0 : Number(v);
+export const int = (v: string) => { const n = num(v); return Number.isInteger(n) ? n : NaN; };
 
 export function Group({ title, children }: { title: string; children: ReactNode }) {
   return <fieldset className="ky-config-group"><legend>{title}</legend>{children}</fieldset>;
@@ -16,8 +17,11 @@ export function Text({ label, value, onChange, placeholder }: { label: string; v
   return <label>{label}<input value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></label>;
 }
 
-export function Num({ label, value, onChange, step }: { label: string; value: number; onChange: (v: string) => void; step?: string }) {
-  return <label>{label}<input type="number" step={step ?? '1'} value={value} onChange={(e) => onChange(e.target.value)} /></label>;
+// Num keeps the typed text, so "-" on the way to "-1" and an emptied field stay on screen; the
+// parent stores the parsed value.
+export function Num({ label, value, onChange }: { label: string; value: number | ''; onChange: (v: string) => void }) {
+  const [text, setText] = useState(Number.isNaN(value) ? '' : String(value));
+  return <label>{label}<input type="text" inputMode="decimal" value={text} onChange={(e) => { setText(e.target.value); onChange(e.target.value); }} /></label>;
 }
 
 export function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {

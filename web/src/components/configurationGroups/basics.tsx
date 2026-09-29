@@ -6,16 +6,17 @@ const MiB = 1048576;
 const toMiB = (bytes: number) => bytes < 0 ? bytes : bytes / MiB;
 const toBytes = (mib: number) => mib < 0 ? -1 : Math.round(mib * MiB);
 
-// Changing the reference drops the kept digest: a digest belongs to the reference it was read with.
+// Changing the reference drops the kept digest and image ID: both belong to the reference they
+// were read with. The server keeps the local image whenever an image ID is present.
 export function ImageGroup({ spec, set, initial, run }: GroupProps & { initial: ExplicitSpec; run: boolean }) {
   const kept = initial.image.digest;
   const sameReference = spec.image.reference === initial.image.reference;
   return <Group title="Image">
     <Text label="Container name" value={spec.name} onChange={(name) => set({ name })} />
-    <Text label="Image reference" value={spec.image.reference} placeholder="nginx:1.27" onChange={(reference) => set({ image: { ...spec.image, reference, digest: reference === initial.image.reference ? spec.image.digest : '' } })} />
+    <Text label="Image reference" value={spec.image.reference} placeholder="nginx:1.27" onChange={(reference) => { const same = reference === initial.image.reference; set({ image: { ...spec.image, reference, digest: same ? spec.image.digest : '' }, image_id: same ? spec.image_id : '' }); }} />
     {!run && (kept ? <>
       <p>Digest <code style={{ overflowWrap: 'anywhere' }}>{kept}</code></p>
-      <Check label="Pull the reference's current digest" checked={spec.image.digest === ''} onChange={(pull) => set({ image: { ...spec.image, digest: pull || !sameReference ? '' : kept } })} />
+      <Check label="Pull the reference's current digest" checked={spec.image.digest === ''} onChange={(pull) => { const keep = !pull && sameReference; set({ image: { ...spec.image, digest: keep ? kept : '' }, image_id: keep ? initial.image_id : '' }); }} />
     </> : <p>No repository digest was reported; saving pulls the reference.</p>)}
   </Group>;
 }
@@ -43,7 +44,7 @@ export function ResourcesGroup({ spec, set }: GroupProps) {
   const r = spec.resources;
   return <Group title="Resources">
     <p>0 means no limit; -1 swap or PIDs means unlimited.</p>
-    <Num label="CPUs" step="0.01" value={r.nano_cpus / 1e9} onChange={(v) => set({ resources: { ...r, nano_cpus: Math.round(num(v) * 1e9) } })} />
+    <Num label="CPUs" value={r.nano_cpus / 1e9} onChange={(v) => set({ resources: { ...r, nano_cpus: Math.round(num(v) * 1e9) } })} />
     <Num label="Memory (MiB)" value={toMiB(r.memory_bytes)} onChange={(v) => set({ resources: { ...r, memory_bytes: toBytes(num(v)) } })} />
     <Num label="Memory and swap (MiB)" value={toMiB(r.memory_swap_bytes)} onChange={(v) => set({ resources: { ...r, memory_swap_bytes: toBytes(num(v)) } })} />
     <Num label="PIDs limit" value={r.pids_limit} onChange={(v) => set({ resources: { ...r, pids_limit: int(v) } })} />
@@ -75,7 +76,7 @@ export function MiscGroup({ spec, set }: GroupProps) {
     <Lines label="DNS servers, one per line" value={spec.dns} onChange={(dns) => set({ dns })} />
     <Lines label="Extra hosts (name:address), one per line" value={spec.extra_hosts} onChange={(extra_hosts) => set({ extra_hosts })} />
     <Text label="Stop signal" value={spec.stop_signal} placeholder="SIGTERM" onChange={(stop_signal) => set({ stop_signal })} />
-    <label>Stop timeout (seconds, empty for the default)<input type="number" value={spec.stop_timeout ?? ''} onChange={(e) => set({ stop_timeout: e.target.value === '' ? undefined : int(e.target.value) })} /></label>
+    <Num label="Stop timeout (seconds, empty for the default)" value={spec.stop_timeout ?? ''} onChange={(v) => set({ stop_timeout: v.trim() === '' ? undefined : int(v) })} />
     <Check label="Allocate a TTY" checked={spec.tty} onChange={(tty) => set({ tty })} />
     <Check label="Keep stdin open" checked={spec.stdin_open} onChange={(stdin_open) => set({ stdin_open })} />
   </Group>;

@@ -23,7 +23,7 @@ const config = (over: Partial<ContainerConfiguration> = {}): ContainerConfigurat
   log: { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '3' } }, stop_signal: '', unsupported: [], ...over,
 });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-const edit = (over: Partial<ContainerConfiguration> = {}, props: object = {}) => render(<ContainerConfigurationForm base={base} mode="edit" initial={config(over)} container={container} onSettled={() => {}} {...props} />);
+const edit = (over: Partial<ContainerConfiguration> = {}, props: object = {}) => render(<ContainerConfigurationForm base={base} org="a" endpoint="ep_1" mode="edit" initial={config(over)} container={container} onSettled={() => {}} {...props} />);
 const save = () => screen.getByRole('button', { name: 'Save and recreate' }) as HTMLButtonElement;
 const confirmName = (name: string) => fireEvent.change(screen.getByLabelText(/^Type the container name/), { target: { value: name } });
 
@@ -42,6 +42,9 @@ it('masks environment values until revealed and names env in the diff', () => {
   edit();
   const value = screen.getByLabelText('Value of SECRET') as HTMLInputElement;
   expect(value.type).toBe('password');
+  expect(value.getAttribute('autocomplete')).toBe('new-password');
+  expect(value.hasAttribute('data-1p-ignore')).toBe(true);
+  expect(value.getAttribute('data-lpignore')).toBe('true');
   fireEvent.change(value, { target: { value: 'changed' } });
   expect(screen.getByText('Changes: env')).toBeTruthy();
   expect(document.body.textContent).not.toContain('changed');
@@ -148,7 +151,7 @@ it('maps refusals to fixed texts', async () => {
 it('runs a new container from an empty form once image and name are set', async () => {
   const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json({ id: 'cmd2', action: 'container.run', outcome: '' }, 202));
   vi.stubGlobal('fetch', fetcher);
-  render(<ContainerConfigurationForm base={base} mode="run" onSettled={() => {}} />);
+  render(<ContainerConfigurationForm base={base} org="a" endpoint="ep_1" mode="run" onSettled={() => {}} />);
   const run = screen.getByRole('button', { name: 'Run container' }) as HTMLButtonElement;
   expect((screen.getByLabelText('Image reference') as HTMLInputElement).value).toBe('');
   expect(run.disabled).toBe(true);
@@ -165,4 +168,46 @@ it('runs a new container from an empty form once image and name are set', async 
   expect(body.confirm).toBe('api');
   expect(body.spec.name).toBe('api');
   expect(body.spec.image).toEqual({ reference: 'nginx:1', digest: '' });
+});
+
+const postedSpec = async (fetcher: ReturnType<typeof vi.fn>) => {
+  confirmName('web');
+  await act(async () => { fireEvent.click(save()); });
+  return JSON.parse(String((fetcher.mock.calls[0] as [unknown, RequestInit])[1].body)).spec;
+};
+const accept = () => { const f = vi.fn(async (_i: RequestInfo | URL, _init?: RequestInit) => json({ id: 'c', action: 'container.recreate', outcome: '' }, 202)); vi.stubGlobal('fetch', f); return f; };
+
+it('clears the image ID with the digest when pulling the current digest', async () => {
+  const fetcher = accept();
+  edit();
+  fireEvent.click(screen.getByLabelText("Pull the reference's current digest"));
+  const spec = await postedSpec(fetcher);
+  expect(spec.image_id).toBe('');
+  expect(spec.image.digest).toBe('');
+});
+
+it('keeps Save disabled while a row is incomplete', () => {
+  edit();
+  fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+  confirmName('web');
+  expect(save().disabled).toBe(true);
+  expect(screen.getByText('Complete every row: variable names, container ports and device paths.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Remove variable 3' }));
+  fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'box' } });
+  expect(save().disabled).toBe(false);
+});
+
+it('accepts a typed -1 and an empty draft in numeric fields', async () => {
+  const fetcher = accept();
+  edit({ resources: { nano_cpus: 0, memory_bytes: 268435456, memory_swap_bytes: 536870912, pids_limit: 0 } });
+  const swap = screen.getByLabelText('Memory and swap (MiB)') as HTMLInputElement;
+  expect(swap.type).toBe('text');
+  fireEvent.change(swap, { target: { value: '' } });
+  expect(swap.value).toBe('');
+  fireEvent.change(swap, { target: { value: '-' } });
+  expect(swap.value).toBe('-');
+  expect(save().disabled).toBe(true);
+  fireEvent.change(swap, { target: { value: '-1' } });
+  const spec = await postedSpec(fetcher);
+  expect(spec.resources.memory_swap_bytes).toBe(-1);
 });
