@@ -3,10 +3,10 @@ import { Play, RotateCw, ScrollText, Square, Terminal, Trash2 } from 'lucide-rea
 import { Link } from './Link';
 import { containerPath } from '../router';
 import { secureFetch } from '../api';
-import type { Container } from '../tenant';
+import type { Container, DirectCommand } from '../tenant';
 import { displayName } from './Endpoints';
 
-interface Command { id: string; action: string; outcome: string; detail?: string }
+export type Command = DirectCommand;
 export function ContainerControls({ base, container, active, scope, onRefresh, canExec, org, endpoint, onStatus }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void; canExec: boolean; org: string; endpoint: string; onStatus?: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [inline, setInline] = useState('');

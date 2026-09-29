@@ -166,3 +166,33 @@ export async function tenantWrite(url: string, method: string, body?: unknown, t
     return offlineWrite;
   }
 }
+
+// Wire shapes of internal/agent/protocol/configuration.go and the explicit-edit command result.
+export interface ConfigTarget { container_id: string; image_id: string; created_unix: number }
+export interface ConfigPort { host_ip?: string; host: number; container: number; protocol: string }
+export interface ConfigMount { kind: 'volume' | 'bind' | 'tmpfs'; source: string; target: string; read_only: boolean }
+export interface ConfigNetwork { name: string; aliases: string[]; ip: string }
+export interface ConfigHealthcheck { test: string[]; interval_seconds: number; timeout_seconds: number; start_period_seconds: number; retries: number }
+export interface ContainerConfiguration {
+  target: ConfigTarget; observed_at: string; name: string;
+  image: { reference: string; digest: string; tag?: string }; image_id: string;
+  command: string[]; entrypoint: string[]; user: string; working_dir: string; hostname: string;
+  env: { name: string; value: string }[]; labels: Record<string, string>;
+  restart: string; restart_retries: number; ports: ConfigPort[]; mounts: ConfigMount[];
+  network_mode: string; networks: ConfigNetwork[];
+  resources: { nano_cpus: number; memory_bytes: number; memory_swap_bytes: number; pids_limit: number };
+  healthcheck: ConfigHealthcheck | null;
+  privileged: boolean; read_only_rootfs: boolean; init: boolean; tty: boolean; stdin_open: boolean;
+  cap_add: string[]; cap_drop: string[]; security_opt: string[]; extra_hosts: string[]; dns: string[];
+  devices: { host: string; container: string; permissions: string }[];
+  log: { driver: string; options: Record<string, string> };
+  stop_signal: string; stop_timeout?: number; unsupported: string[];
+}
+// ExplicitSpec is what the edit form submits: the configuration without its read-time identity.
+export type ExplicitSpec = Omit<ContainerConfiguration, 'target' | 'observed_at'>;
+export interface DirectResult {
+  code?: string;
+  steps: { service: string; step: string; outcome: string; code?: string; detail: string }[];
+  services: { service: string; container_id: string; image_id: string; created_unix: number; image_digest?: string }[];
+}
+export interface DirectCommand { id: string; action: string; outcome: string; detail?: string; result?: DirectResult }

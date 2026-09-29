@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { ApplicationDeploymentPlan, CLAIM_RETAINED, CLUSTER_FAILED, CLUSTER_STOPPED, STEP_CODES, stepText } from './ApplicationDeploymentPlan';
+import { ApplicationDeploymentPlan, StepTable, CLAIM_RETAINED, CLUSTER_FAILED, CLUSTER_STOPPED, STEP_CODES, stepText } from './ApplicationDeploymentPlan';
 import { messages } from './ApplicationPreflight';
 import { K8S_VOLUME_CHOICE, unsupportedNames } from './ApplicationInspection';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -593,4 +593,12 @@ it('explains a failed cluster row in cluster terms, never the Docker rename', as
   fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
   expect(await screen.findByText(CLUSTER_STOPPED)).toBeTruthy();
   expect(document.body.textContent).not.toContain('mapped container');
+});
+it('StepTable renders the rollback step texts', () => {
+  render(<StepTable steps={[
+    { service: 'web', step: 'rollback', outcome: 'failed', code: 'start_failed_rolled_back', detail: '' },
+    { service: 'db', step: 'rollback', outcome: 'failed', code: 'rollback_failed', detail: '' },
+  ]} />);
+  expect(screen.getByText('The new container did not start; the previous one was restored.')).toBeTruthy();
+  expect(screen.getByText('The new container did not start and the previous one could not be restored; check the host.')).toBeTruthy();
 });
