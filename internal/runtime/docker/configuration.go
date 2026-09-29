@@ -118,6 +118,9 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 			out.Unsupported = append(out.Unsupported, code)
 		}
 	}
+	if out.tmpfsOptions && !slices.Contains(out.Unsupported, "mount_options") {
+		out.Unsupported = append(out.Unsupported, "mount_options")
+	}
 	out.Unsupported = append(out.Unsupported, out.truncated...)
 	out.Target, out.ImageID, out.ObservedAt = target, target.ImageID, time.Now().UTC()
 	if out.Validate(target, time.Now()) != nil {
@@ -128,7 +131,8 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 
 type configurationRead struct {
 	protocol.ContainerConfiguration
-	truncated []string // codes for what was cut to fit the protocol's bounds
+	truncated    []string // codes for what was cut to fit the protocol's bounds
+	tmpfsOptions bool     // a tmpfs mount carries options the mount list cannot
 }
 
 func (o *configurationRead) cut(code string) {
@@ -223,18 +227,26 @@ func cmpOr(s, def string) string {
 	return s
 }
 
-// env splits KEY=VALUE on the first "="; an entry the protocol would refuse is cut.
+// env splits KEY=VALUE on the first "="; a later duplicate wins, as in Docker, and an entry
+// the protocol would refuse is cut.
 func env(o *configurationRead, l []string) []protocol.EnvEntry {
-	out, total := []protocol.EnvEntry{}, 0
-	seen := map[string]bool{}
+	var names []string
+	values := map[string]string{}
 	for _, kv := range l {
 		k, v, _ := strings.Cut(kv, "=")
-		total += len(k) + len(v)
-		if k == "" || len(k) > 128 || !utf8.ValidString(k) || strings.ContainsRune(k, 0) || seen[k] || len(v) > protocol.MaxDeploymentEnvValueBytes || !utf8.ValidString(v) || strings.ContainsRune(v, 0) || total > protocol.MaxDeploymentEnvBytes || len(out) == protocol.MaxDeploymentEnvEntries {
+		if _, dup := values[k]; !dup {
+			names = append(names, k)
+		}
+		values[k] = v
+	}
+	out, total := []protocol.EnvEntry{}, 0
+	for _, k := range names {
+		v := values[k]
+		if !protocol.ValidConfigurationEnvName(k) || len(v) > protocol.MaxDeploymentEnvValueBytes || !utf8.ValidString(v) || strings.ContainsRune(v, 0) || total+len(k)+len(v) > protocol.MaxDeploymentEnvBytes || len(out) == protocol.MaxDeploymentEnvEntries {
 			o.cut("env_truncated")
 			continue
 		}
-		seen[k] = true
+		total += len(k) + len(v)
 		out = append(out, protocol.EnvEntry{Name: k, Value: v})
 	}
 	return out
@@ -273,6 +285,7 @@ func ports(o *configurationRead, in inspectedConfiguration) []protocol.Port {
 		for _, b := range bindings {
 			hostPort := b.HostPort
 			if hostPort == "" {
+				o.cut("list_truncated:ports") // a dynamic binding is pinned or dropped
 				for _, a := range in.NetworkSettings.Ports[key] {
 					if a.HostIp == b.HostIp {
 						hostPort = a.HostPort
@@ -340,7 +353,10 @@ func mounts(o *configurationRead, in inspectedConfiguration) []protocol.Mount {
 		targets[m.Destination] = true
 	}
 	// The Engine may report --tmpfs only in HostConfig.Tmpfs.
-	for target := range in.HostConfig.Tmpfs {
+	for target, options := range in.HostConfig.Tmpfs {
+		if options != "" && options != "rw" {
+			o.tmpfsOptions = true
+		}
 		if !targets[target] {
 			out = append(out, protocol.Mount{Kind: protocol.MountTmpfs, Target: target})
 		}
@@ -367,7 +383,7 @@ func networks(o *configurationRead, in inspectedConfiguration) []protocol.Networ
 		}
 		n := in.NetworkSettings.Networks[name]
 		aliases := slices.DeleteFunc(slices.Clone(n.Aliases), func(a string) bool { return a == in.ID[:min(12, len(in.ID))] })
-		spec := protocol.NetworkAttachmentSpec{Name: name, Aliases: list(o, "networks", aliases)}
+		spec := protocol.NetworkAttachmentSpec{Name: name, Aliases: list(o, "aliases", aliases)}
 		if n.IPAMConfig != nil {
 			spec.IP = n.IPAMConfig.IPv4Address
 		}

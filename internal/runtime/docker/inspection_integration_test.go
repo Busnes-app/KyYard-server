@@ -175,7 +175,7 @@ func TestInspectionRealDocker(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.Contains(cfg.Env, protocol.EnvEntry{Name: "A", Value: "1"}) || !slices.Contains(cfg.Env, protocol.EnvEntry{Name: "B", Value: "x=y"}) || cfg.Labels["t"] != "1" ||
-		cfg.Resources.MemoryBytes != 67108864 || !slices.ContainsFunc(cfg.CapAdd, func(c string) bool { return strings.TrimPrefix(c, "CAP_") == "NET_ADMIN" }) || cfg.Restart != "on-failure" || cfg.RestartRetries != 2 || cfg.StopTimeout == nil || *cfg.StopTimeout != 7 || len(cfg.Unsupported) != 0 {
+		cfg.Resources.MemoryBytes != 67108864 || !slices.ContainsFunc(cfg.CapAdd, func(c string) bool { return strings.TrimPrefix(c, "CAP_") == "NET_ADMIN" }) || cfg.Restart != "on-failure" || cfg.RestartRetries != 2 || cfg.StopTimeout == nil || *cfg.StopTimeout != 7 || !slices.Equal(cfg.Unsupported, []string{"list_truncated:ports"}) { // the dynamic binding is pinned
 		t.Fatalf("configuration: %+v", cfg)
 	}
 	i80 := slices.IndexFunc(cfg.Ports, func(p protocol.Port) bool { return p.Container == 80 })

@@ -286,6 +286,9 @@ func configurationEnvName(n string) bool {
 	return n != "" && len(n) <= 128 && utf8.ValidString(n) && !strings.ContainsAny(n, "=\x00")
 }
 
+// ValidConfigurationEnvName is the name rule Validate applies to a container's environment.
+func ValidConfigurationEnvName(name string) bool { return configurationEnvName(name) }
+
 func (c *ContainerConfiguration) validEnv() error {
 	if len(c.Env) > MaxDeploymentEnvEntries {
 		return configErr("env")

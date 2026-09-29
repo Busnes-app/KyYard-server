@@ -72,7 +72,7 @@ func TestReadConfigurationMapsEverything(t *testing.T) {
 	if !slices.Equal(got.Env, wantEnv) {
 		t.Fatalf("env %+v", got.Env)
 	}
-	if !slices.Equal(got.Unsupported, []string{"volumes_from", "sysctls"}) {
+	if !slices.Equal(got.Unsupported, []string{"volumes_from", "sysctls", "mount_options"}) {
 		t.Fatalf("unsupported %v", got.Unsupported)
 	}
 	wantPorts := []protocol.Port{{Container: 80, Host: 8080, Protocol: "tcp", HostIP: "127.0.0.1"}, {Container: 9000, Protocol: "tcp"}}
@@ -162,5 +162,65 @@ func TestReadConfigurationRefusesADriftingContainer(t *testing.T) {
 	c = fakeInspection(t, serve(container, image))
 	if _, err := c.ReadConfiguration(context.Background(), target); !errors.Is(err, ErrInspectionChanged) {
 		t.Fatalf("wrong identity: %v", err)
+	}
+}
+
+func readFixture(t *testing.T, edit func(container map[string]any)) *protocol.ContainerConfiguration {
+	t.Helper()
+	target, container, image := configurationFixture()
+	edit(container)
+	got, err := fakeInspection(t, serve(container, image)).ReadConfiguration(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestReadConfigurationFlagsTmpfsOptionsOnly(t *testing.T) {
+	plain := readFixture(t, func(c map[string]any) {
+		h := c["HostConfig"].(map[string]any)
+		h["Tmpfs"] = map[string]string{"/run": "", "/var": "rw"}
+		delete(h, "VolumesFrom")
+		delete(h, "Sysctls")
+	})
+	if len(plain.Unsupported) != 0 {
+		t.Fatalf("plain tmpfs: %v", plain.Unsupported)
+	}
+}
+
+func TestReadConfigurationFlagsDynamicPortBindings(t *testing.T) {
+	stopped := readFixture(t, func(c map[string]any) {
+		c["HostConfig"].(map[string]any)["PortBindings"] = map[string]any{"80/tcp": []any{map[string]string{"HostIp": "127.0.0.1", "HostPort": ""}}}
+		c["NetworkSettings"].(map[string]any)["Ports"] = map[string]any{}
+	})
+	if !slices.Contains(stopped.Unsupported, "list_truncated:ports") || slices.ContainsFunc(stopped.Ports, func(p protocol.Port) bool { return p.Host != 0 }) {
+		t.Fatalf("stopped: %v %+v", stopped.Unsupported, stopped.Ports)
+	}
+	running := readFixture(t, func(c map[string]any) {
+		c["HostConfig"].(map[string]any)["PortBindings"] = map[string]any{"80/tcp": []any{map[string]string{"HostIp": "127.0.0.1", "HostPort": ""}}}
+	})
+	if !slices.Contains(running.Unsupported, "list_truncated:ports") || running.Ports[0].Host != 8080 {
+		t.Fatalf("running: %v %+v", running.Unsupported, running.Ports)
+	}
+	if fixed := readFixture(t, func(map[string]any) {}); slices.Contains(fixed.Unsupported, "list_truncated:ports") {
+		t.Fatalf("a fixed binding was flagged: %v", fixed.Unsupported)
+	}
+}
+
+func TestReadConfigurationEnvLastWins(t *testing.T) {
+	got := readFixture(t, func(c map[string]any) {
+		c["Config"].(map[string]any)["Env"] = []string{"A=1", "B=2", "A=3"}
+	})
+	if !slices.Equal(got.Env, []protocol.EnvEntry{{Name: "A", Value: "3"}, {Name: "B", Value: "2"}}) || slices.Contains(got.Unsupported, "env_truncated") {
+		t.Fatalf("env %+v %v", got.Env, got.Unsupported)
+	}
+}
+
+func TestReadConfigurationNamesAliasOverflow(t *testing.T) {
+	got := readFixture(t, func(c map[string]any) {
+		c["NetworkSettings"].(map[string]any)["Networks"] = map[string]any{"shop_default": map[string]any{"Aliases": slices.Repeat([]string{"a"}, 33)}}
+	})
+	if !slices.Contains(got.Unsupported, "list_truncated:aliases") || slices.Contains(got.Unsupported, "list_truncated:networks") {
+		t.Fatalf("%v", got.Unsupported)
 	}
 }
