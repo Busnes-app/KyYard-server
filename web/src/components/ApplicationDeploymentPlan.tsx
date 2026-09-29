@@ -5,7 +5,7 @@ import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 import { knownBlockers, messages, serviceFindings, MountList, type Mount } from './ApplicationPreflight';
-import { unsupportedNames } from './ApplicationInspection';
+import { unsupportedLabel } from './containerConfiguration';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
 type ClaimMount = { claim: string; mount_path: string; read_only?: boolean };
@@ -33,7 +33,7 @@ const LEGACY_OUTCOME = 'The agent did not classify this outcome; upgrade the age
 export const STEP_CODES: Record<string, string> = {
   runtime_unreadable: "The daemon's default runtime could not be read.",
   container_missing: 'The container no longer exists.',
-  exited_early: 'The new container exited right after starting.',
+  exited_early: 'The new container exited or restarted right after starting.',
   identity_mismatch: 'The container is not the one this plan was decided about.',
   image_identity_mismatch: 'The host reported a different image identity than the plan pinned.',
   configuration_unreported: "The runtime did not report the container's full configuration.",
@@ -104,7 +104,7 @@ export function stepText(s: { step?: string; outcome?: string; code?: string; de
   const detail = s.detail ?? '';
   switch (code) {
     case 'unsupported': {
-      const names = detail.split(',').filter(c => Object.hasOwn(unsupportedNames, c)).map(c => unsupportedNames[c]);
+      const names = detail.split(',').map(unsupportedLabel).filter(Boolean);
       return names.length ? `${text}: ${names.join(', ')}.` : `${text}.`;
     }
     case 'identity_unreadable':

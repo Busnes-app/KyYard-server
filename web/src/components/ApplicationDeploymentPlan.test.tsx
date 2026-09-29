@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ApplicationDeploymentPlan, StepTable, CLAIM_RETAINED, CLUSTER_FAILED, CLUSTER_STOPPED, STEP_CODES, stepText } from './ApplicationDeploymentPlan';
+import { unsupportedLabel } from './containerConfiguration';
 import { messages } from './ApplicationPreflight';
 import { K8S_VOLUME_CHOICE, unsupportedNames } from './ApplicationInspection';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -603,5 +604,12 @@ it('StepTable renders the rollback step texts', () => {
 
 it('StepTable renders exited_early', () => {
   render(<StepTable steps={[{ service: 'web', step: 'start', outcome: 'failed', code: 'exited_early', detail: '' }]} />);
-  expect(screen.getByText('The new container exited right after starting.')).toBeTruthy();
+  expect(screen.getByText('The new container exited or restarted right after starting.')).toBeTruthy();
+});
+
+it('names agent-side unsupported codes and drops unknown ones', () => {
+  const t = stepText({ step: 'precondition', outcome: 'denied', code: 'unsupported', detail: 'resource_limits,host_config:ShmSize,bogus' });
+  expect(t).toContain(unsupportedLabel('resource_limits'));
+  expect(t).toContain('host setting ShmSize');
+  expect(t).not.toContain('bogus');
 });
