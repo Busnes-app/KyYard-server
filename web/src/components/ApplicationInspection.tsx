@@ -46,7 +46,7 @@ export const unsupportedNames: Record<string, string> = {
 };
 // K8S_VOLUME_CHOICE replaces k8s_volume's sentence when its detail is choice_required.
 export const K8S_VOLUME_CHOICE = "mounts a named volume with no storage choice. Each revision keeps the previous one's choices, and a volume newly declared on a destination cannot receive one in this release, so remove it from the definition";
-type Inspection = {
+export type Inspection = {
   observed_at: string; state: string; image_platform: { os: string; architecture: string; variant?: string };
   restart_policy: string; restart_retries: number; ports: Port[];
   mounts: { bind: number; volume: number; tmpfs: number; other: number; read_only: number };
@@ -57,7 +57,7 @@ type Result = { kind: 'loading' } | { kind: 'error'; message: string } | { kind:
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 64;
 const token = (value: unknown): value is string => typeof value === 'string' && /^[a-z0-9][a-z0-9_.-]{0,63}$/.test(value);
 function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
-function parseInspection(value: unknown, target: InspectionTarget): Inspection | null {
+export function parseInspection(value: unknown, target: InspectionTarget): Inspection | null {
   if (!object(value) || !object(value.target) || value.target.container_id !== target.container_id || value.target.image_id !== target.image_id || value.target.created_unix !== target.created_unix) return null;
   const { observed_at, state, image_platform, restart_policy, restart_retries, ports, mounts, network_mode, network_count, privileged, read_only_rootfs, auto_remove, configuration_verified, unsupported } = value;
   if (typeof observed_at !== 'string' || !Number.isFinite(Date.parse(observed_at)) || typeof state !== 'string' || !['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'].includes(state)) return null;
