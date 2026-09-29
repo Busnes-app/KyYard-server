@@ -56,6 +56,9 @@ type Server struct {
 	logs        *logRegistry
 	execs       execRegistry
 	inspections inspectionRegistry
+	// configurations admits configuration reads; configurationNotes remembers incomplete ones.
+	configurations     inspectionRegistry
+	configurationNotes configurationNotes
 	// imageChecks holds "org/env/app" while an update check runs; one process is the supported
 	// deployment, so an in-memory guard is enough.
 	imageChecks sync.Map
@@ -317,6 +320,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands", s.tenantRoute(s.handleListCommands))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/commands/{command}", s.tenantRoute(s.handleReadCommand))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/inspection", s.tenantRoute(s.handleContainerInspection))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/configuration", s.tenantRoute(s.handleContainerConfiguration))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/logs", s.tenantRoute(s.handleContainerLogs))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/pods/{namespace}/{pod}/logs", s.tenantRoute(s.handlePodLogs))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/exec", s.tracked(s.tenantRoute(s.handleContainerExec)))

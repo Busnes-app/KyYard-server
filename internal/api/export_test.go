@@ -91,3 +91,8 @@ var ErrInspectionInvalidForTest = errInspectionInvalid
 func StillAllowedForTest(s *Server, r *http.Request, a store.TenantAccess, endpointID string) bool {
 	return s.stillAllowed(r, a, endpointID)
 }
+
+// ConfigurationIncompleteForTest reports whether actor's last read of container listed unsupported fields.
+func ConfigurationIncompleteForTest(s *Server, actor, container string) bool {
+	return s.configurationIncomplete(actor, container)
+}

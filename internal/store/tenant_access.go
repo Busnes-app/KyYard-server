@@ -55,13 +55,18 @@ func (t *tenancyStore) readTenant(ctx context.Context, a TenantAccess, action pe
 // run audits target as the resource when set; op may rewrite it, for an operation that learns
 // its row only inside the transaction.
 func (t *tenancyStore) run(ctx context.Context, a TenantAccess, action permissions.Action, target *string, details *string, lock bool, op func(*sql.Tx) error) error {
+	return t.runAs(ctx, a, action, string(action), target, details, lock, op)
+}
+
+// runAs is run whose audit rows are named name rather than after the permission action.
+func (t *tenancyStore) runAs(ctx context.Context, a TenantAccess, action permissions.Action, name string, target *string, details *string, lock bool, op func(*sql.Tx) error) error {
 	if (a.ActorID == "" && a.ServiceTokenID == "") || a.OrganizationID == "" {
 		return ErrForbidden
 	}
 	if a.CorrelationID == "" {
 		a.CorrelationID = uuid.NewString()
 	}
-	record := &AuditRecord{UserID: a.actor(), Action: string(action), Resource: a.OrganizationID, IPAddress: a.IPAddress, Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, CorrelationID: a.CorrelationID, CreatedAt: time.Now().UTC()}
+	record := &AuditRecord{UserID: a.actor(), Action: name, Resource: a.OrganizationID, IPAddress: a.IPAddress, Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: a.EnvironmentID, CorrelationID: a.CorrelationID, CreatedAt: time.Now().UTC()}
 	if a.EnvironmentID != "" {
 		record.Resource = a.EnvironmentID
 	}

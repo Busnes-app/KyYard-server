@@ -18,11 +18,13 @@ import (
 type pendingInspection struct {
 	id, actor, organization string
 	agent                   *agentConn
-	result                  chan protocol.InspectionResult
+	result                  chan any
 	done                    chan struct{}
 	once                    sync.Once
 	delivered               bool
 }
+
+// inspectionRegistry admits and routes one family of agent reads (inspection, configuration).
 type inspectionRegistry struct {
 	mu      sync.Mutex
 	pending map[string]*pendingInspection
@@ -52,7 +54,7 @@ func (r *inspectionRegistry) open(agent *agentConn, actor, org string) *pendingI
 	if endpointCount >= protocol.MaxInspectionsPerEndpoint || orgCount >= 16 {
 		return nil
 	}
-	p := &pendingInspection{id: uuid.NewString(), actor: actor, organization: org, agent: agent, result: make(chan protocol.InspectionResult, 1), done: make(chan struct{})}
+	p := &pendingInspection{id: uuid.NewString(), actor: actor, organization: org, agent: agent, result: make(chan any, 1), done: make(chan struct{})}
 	r.pending[p.id] = p
 	return p
 }
@@ -70,15 +72,29 @@ func (r *inspectionRegistry) closeAgent(c *agentConn) {
 		}
 	}
 }
-func (r *inspectionRegistry) deliver(c *agentConn, result protocol.InspectionResult) {
+
+// deliver hands a strictly decoded InspectionResult or ConfigurationResult to its waiter.
+func (r *inspectionRegistry) deliver(c *agentConn, reply any) {
+	request, _ := replyHead(reply)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p := r.pending[result.Request]
+	p := r.pending[request]
 	if p == nil || p.agent != c || p.delivered {
 		return
 	}
 	p.delivered = true
-	p.result <- result
+	p.result <- reply
+}
+
+// replyHead names the request and status of an agent answer.
+func replyHead(reply any) (request, status string) {
+	switch r := reply.(type) {
+	case protocol.InspectionResult:
+		return r.Request, r.Status
+	case protocol.ConfigurationResult:
+		return r.Request, r.Status
+	}
+	return "", ""
 }
 func (s *Server) inspectionAgentCurrent(c *agentConn) bool {
 	s.agents.mu.Lock()
@@ -113,36 +129,56 @@ var (
 	errInspectionInvalid     = errors.New("invalid inspection response")
 )
 
-// inspect asks agent for one validated observation of target on behalf of actor. It holds an
-// admission slot throughout, expires the grant at the earlier of ctx's deadline and
-// InspectionLifetime, re-checks the agent and allowed every second and on the answer, and
-// cancels the grant on the agent only when it gave up before an answer. health is whether the
-// endpoint advertises container.inspect.health, which decides what a valid answer carries.
+// askFrames is one family of agent reads: its registry, frame names and grant lifetime.
+type askFrames struct {
+	registry     *inspectionRegistry
+	open, cancel string
+	lifetime     time.Duration
+}
+
+// inspect asks agent for one validated observation of target on behalf of actor. health is
+// whether the endpoint advertises container.inspect.health, which decides what a valid answer
+// carries.
 func (s *Server) inspect(ctx context.Context, agent *agentConn, actor, org string, target protocol.InspectionTarget, health bool, allowed func() bool) (protocol.ContainerInspection, error) {
-	var none protocol.ContainerInspection
-	p := s.inspections.open(agent, actor, org)
+	answer, err := s.ask(ctx, agent, actor, org, target, askFrames{&s.inspections, protocol.TypeInspectionOpen, protocol.TypeInspectionCancel, protocol.InspectionLifetime}, allowed)
+	if err != nil {
+		return protocol.ContainerInspection{}, err
+	}
+	if reply, ok := answer.(protocol.InspectionResult); ok && reply.Result != nil && reply.Result.Validate(target, time.Now(), health) == nil {
+		return *reply.Result, nil
+	}
+	return protocol.ContainerInspection{}, errInspectionInvalid
+}
+
+// ask sends one grant for target on behalf of actor and returns the agent's ok answer, the
+// family's decoded result frame. It holds an admission slot throughout, expires the grant at
+// the earlier of ctx's deadline and the family's lifetime, re-checks the agent and allowed every
+// second and on the answer, and cancels the grant on the agent only when it gave up before an
+// answer.
+func (s *Server) ask(ctx context.Context, agent *agentConn, actor, org string, target protocol.InspectionTarget, frames askFrames, allowed func() bool) (any, error) {
+	p := frames.registry.open(agent, actor, org)
 	if p == nil {
-		return none, errInspectionCapacity
+		return nil, errInspectionCapacity
 	}
-	defer s.inspections.release(p)
+	defer frames.registry.release(p)
 	if s.stopping.Load() {
-		return none, errInspectionStopping
+		return nil, errInspectionStopping
 	}
-	expires := time.Now().UTC().Add(protocol.InspectionLifetime)
+	expires := time.Now().UTC().Add(frames.lifetime)
 	if deadline, ok := ctx.Deadline(); ok && deadline.Before(expires) {
 		expires = deadline.UTC()
 	}
 	ctx, cancel := context.WithDeadline(ctx, expires)
 	defer cancel()
 	if !s.inspectionAgentCurrent(agent) || !allowed() {
-		return none, errInspectionForbidden
+		return nil, errInspectionForbidden
 	}
 	// Agents accept [a-zA-Z0-9_-] only; a service principal's "service:" becomes "service-".
 	grant := protocol.InspectionOpen{Request: p.id, Endpoint: agent.endpointID, Actor: strings.Replace(actor, ":", "-", 1), Connection: agent.nonce, Expires: expires, Target: target}
 	select {
-	case agent.send <- envelope(protocol.TypeInspectionOpen, grant):
+	case agent.send <- envelope(frames.open, grant):
 	default:
-		return none, errInspectionSend
+		return nil, errInspectionSend
 	}
 	answered := false
 	defer func() {
@@ -150,7 +186,7 @@ func (s *Server) inspect(ctx context.Context, agent *agentConn, actor, org strin
 			return
 		}
 		select {
-		case agent.send <- envelope(protocol.TypeInspectionCancel, protocol.InspectionCancel{Request: p.id}):
+		case agent.send <- envelope(frames.cancel, protocol.InspectionCancel{Request: p.id}):
 		default:
 		}
 	}()
@@ -159,34 +195,33 @@ func (s *Server) inspect(ctx context.Context, agent *agentConn, actor, org strin
 	for {
 		select {
 		case <-ctx.Done():
-			return none, errInspectionTimeout
+			return nil, errInspectionTimeout
 		case <-p.done:
-			return none, errInspectionGone
+			return nil, errInspectionGone
 		case <-agent.closed:
-			return none, errInspectionGone
+			return nil, errInspectionGone
 		case <-ticker.C:
 			if !s.inspectionAgentCurrent(agent) {
-				return none, errInspectionGone
+				return nil, errInspectionGone
 			}
 			if !allowed() {
-				return none, errInspectionForbidden
+				return nil, errInspectionForbidden
 			}
 		case reply := <-p.result:
 			answered = true
 			if !allowed() {
-				return none, errInspectionForbidden
+				return nil, errInspectionForbidden
 			}
-			switch reply.Status {
+			_, status := replyHead(reply)
+			switch status {
 			case "busy":
-				return none, errInspectionBusy
+				return nil, errInspectionBusy
 			case "unavailable":
-				return none, errInspectionUnavailable
+				return nil, errInspectionUnavailable
 			case "ok":
-				if reply.Result != nil && reply.Result.Validate(target, time.Now(), health) == nil {
-					return *reply.Result, nil
-				}
+				return reply, nil
 			}
-			return none, errInspectionInvalid
+			return nil, errInspectionInvalid
 		}
 	}
 }
@@ -228,39 +263,50 @@ func (s *Server) handleContainerInspection(w http.ResponseWriter, r *http.Reques
 	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(protocol.InspectionLifetime + 2*time.Second))
 	result, err := s.inspect(r.Context(), agent, a.Principal(), a.OrganizationID, target, slices.Contains(ep.Capabilities, protocol.CapabilityContainerInspectHealth), func() bool { return s.inspectionAllowed(r, a, endpoint) })
+	if s.askSettled(w, r, a, endpoint, target, agent, err, "inspection") {
+		s.writeJSON(w, 200, result)
+	}
+}
+
+// askSettled maps an ask's outcome to a response and reports whether the caller may publish its
+// result: only when err is nil and target is still the one recorded, on the same agent. noun
+// names the read in messages.
+func (s *Server) askSettled(w http.ResponseWriter, r *http.Request, a store.TenantAccess, endpoint string, target protocol.InspectionTarget, agent *agentConn, err error, noun string) bool {
+	Noun := strings.ToUpper(noun[:1]) + noun[1:]
 	switch err {
 	case nil, errInspectionBusy, errInspectionUnavailable, errInspectionInvalid:
 		// The agent answered: the answer counts only for the target still recorded.
 		fresh, err := s.store.Tenancy().ReadInspectionTarget(r.Context(), a, endpoint, target.ContainerID)
 		if err != nil {
 			s.tenantError(w, err)
-			return
+			return false
 		}
 		if fresh != target || !s.inspectionAgentCurrent(agent) {
-			s.writeError(w, 409, "Inspection target changed; refresh before retrying")
-			return
+			s.writeError(w, 409, Noun+" target changed; refresh before retrying")
+			return false
 		}
 	}
 	switch err {
 	case nil:
-		s.writeJSON(w, 200, result)
+		return true
 	case errInspectionCapacity:
-		s.writeError(w, 429, "Inspection capacity reached")
+		s.writeError(w, 429, Noun+" capacity reached")
 	case errInspectionStopping:
 		s.writeError(w, 503, "Server shutting down")
 	case errInspectionForbidden:
-		s.writeError(w, 403, "Inspection access changed")
+		s.writeError(w, 403, Noun+" access changed")
 	case errInspectionSend:
-		s.writeError(w, 503, "Inspection unavailable")
+		s.writeError(w, 503, Noun+" unavailable")
 	case errInspectionTimeout:
-		s.writeError(w, 504, "Inspection did not complete")
+		s.writeError(w, 504, Noun+" did not complete")
 	case errInspectionGone:
 		s.writeError(w, 409, "The agent disconnected; refresh before retrying")
 	case errInspectionBusy:
-		s.writeError(w, 429, "Agent inspection capacity reached")
+		s.writeError(w, 429, "Agent "+noun+" capacity reached")
 	case errInspectionUnavailable:
-		s.writeError(w, 409, "Runtime inspection unavailable; refresh before retrying")
+		s.writeError(w, 409, "Runtime "+noun+" unavailable; refresh before retrying")
 	default:
-		s.writeError(w, 502, "Invalid inspection response")
+		s.writeError(w, 502, "Invalid "+noun+" response")
 	}
+	return false
 }

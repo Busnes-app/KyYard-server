@@ -229,6 +229,7 @@ admitted:
 	defer s.agents.remove(c)
 	defer s.execs.closeAgent(c)
 	defer s.inspections.closeAgent(c)
+	defer s.configurations.closeAgent(c)
 	if s.stopping.Load() {
 		conn.Close(websocket.StatusGoingAway, protocol.CloseShutdown)
 		return
@@ -404,8 +405,9 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		c.conn.Close(websocket.StatusPolicyViolation, agentStoreCloseReason(err))
 		return true
 	}
-	if f.Type == protocol.TypeInspectionResult && len(f.Payload) > protocol.MaxInspectionFrameBytes {
+	if (f.Type == protocol.TypeInspectionResult && len(f.Payload) > protocol.MaxInspectionFrameBytes) || (f.Type == protocol.TypeConfigurationResult && len(f.Payload) > protocol.MaxConfigurationFrameBytes) {
 		s.inspections.closeAgent(c)
+		s.configurations.closeAgent(c)
 		c.close(protocol.CloseProtocol)
 		_ = c.conn.CloseNow()
 		return true
@@ -424,7 +426,7 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 		return true
 	}
-	if f.Type != protocol.TypeInventory && f.Type != protocol.TypeLogChunk && f.Type != protocol.TypeDeploymentResult && len(f.Payload) > maxControlPayload {
+	if f.Type != protocol.TypeInventory && f.Type != protocol.TypeLogChunk && f.Type != protocol.TypeDeploymentResult && f.Type != protocol.TypeConfigurationResult && len(f.Payload) > maxControlPayload {
 		c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
 		return true
 	}
@@ -535,6 +537,15 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 			return true
 		}
 		s.inspections.deliver(c, result)
+	case protocol.TypeConfigurationResult:
+		var result protocol.ConfigurationResult
+		if pending || execJSON(f.Payload, &result) != nil || result.Validate() != nil {
+			s.configurations.closeAgent(c)
+			c.close(protocol.CloseProtocol)
+			_ = c.conn.CloseNow()
+			return true
+		}
+		s.configurations.deliver(c, result)
 	case protocol.TypeExecReady, protocol.TypeExecOutput, protocol.TypeExecClose:
 		if !pending {
 			s.handleExecFrame(c, f)

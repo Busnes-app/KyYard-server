@@ -171,6 +171,10 @@ type SettingsStore interface {
 // below Initialize are trusted persistence helpers for bootstrap and management.
 type TenancyStore interface {
 	ReadInspectionTarget(context.Context, TenantAccess, string, string) (protocol.InspectionTarget, error)
+	// ContainerManaged (endpoint.read) reports whether an adopted application instance owns the container.
+	ContainerManaged(ctx context.Context, access TenantAccess, endpointID, containerID string) (bool, error)
+	// RecordConfigurationRead writes the container.configuration.read row under container.configure.
+	RecordConfigurationRead(ctx context.Context, access TenantAccess, endpointID string, target protocol.InspectionTarget, unsupported int) error
 	PreviewApplicationAdoption(context.Context, TenantAccess, string, string, string) (*AdoptionPreview, error)
 	AdoptApplication(context.Context, TenantAccess, string, AdoptionRequest) (*ApplicationInstance, error)
 	ReleaseApplication(context.Context, TenantAccess, string, string, string) error

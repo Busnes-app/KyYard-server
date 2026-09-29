@@ -12,6 +12,7 @@ func (s *Server) BeginShutdown() {
 	s.stopping.Store(true)
 	s.execs.closeAll()
 	s.inspections.closeAgent(nil)
+	s.configurations.closeAgent(nil)
 	// Agent sockets are hijacked connections http.Server.Shutdown does not know about.
 	s.agents.closeAll(protocol.CloseShutdown)
 }
