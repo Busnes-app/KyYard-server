@@ -1,6 +1,9 @@
 package protocol
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSplitImageReference(t *testing.T) {
 	for _, c := range []struct{ in, name, tag string }{
@@ -39,5 +42,11 @@ func TestValidImageReference(t *testing.T) {
 		if ValidImageReference(bad) {
 			t.Fatalf("%q was accepted as an image reference", bad)
 		}
+	}
+}
+
+func TestValidContainerHexID(t *testing.T) {
+	if !ValidContainerHexID(strings.Repeat("a", 64)) || ValidContainerHexID("web") || ValidContainerHexID(strings.Repeat("A", 64)) || ValidContainerHexID(strings.Repeat("a", 65)) {
+		t.Fatal("only a lowercase 64-hex ID is valid")
 	}
 }

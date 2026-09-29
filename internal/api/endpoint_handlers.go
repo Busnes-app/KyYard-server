@@ -511,7 +511,7 @@ func (s *Server) handleListCommands(w http.ResponseWriter, r *http.Request, a st
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	container := r.URL.Query().Get("container")
-	if container != "" && !protocol.ValidContainerID(container) {
+	if container != "" && !protocol.ValidContainerHexID(container) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid container", "code": "invalid_container"})
 		return
 	}

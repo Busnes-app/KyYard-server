@@ -31,6 +31,11 @@ var containerID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 // ValidContainerID reports whether s can name a container.
 func ValidContainerID(s string) bool { return containerID.MatchString(s) }
 
+var containerHexID = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// ValidContainerHexID reports whether s is a full 64-hex container ID, not a name.
+func ValidContainerHexID(s string) bool { return containerHexID.MatchString(s) }
+
 // IsImageAction reports whether an action names an image rather than a container.
 func IsImageAction(action string) bool {
 	return action == ActionImagePull || action == ActionImageRemove

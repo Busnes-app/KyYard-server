@@ -103,6 +103,18 @@ func TestCommandDispatchSettlesAndIsScoped(t *testing.T) {
 	if w := tenantRequest(s, viewer, "GET", path, "", true); w.Code != 200 {
 		t.Fatalf("a reader could not list commands: %d", w.Code)
 	}
+	// The container filter takes a full ID only, and reaches the store.
+	if w := tenantRequest(s, admin, "GET", path+"?container=bad/id", "", true); w.Code != 400 || !strings.Contains(w.Body.String(), `"invalid_container"`) {
+		t.Fatalf("a malformed container filter: %d %s", w.Code, w.Body.String())
+	}
+	if w := tenantRequest(s, admin, "GET", path+"?container=web", "", true); w.Code != 400 {
+		t.Fatalf("a container name is not an ID: %d", w.Code)
+	}
+	w = tenantRequest(s, admin, "GET", path+"?container="+strings.Repeat("a", 64), "", true)
+	var filtered []store.Command
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &filtered) != nil || len(filtered) != 0 {
+		t.Fatalf("a filter matching nothing: %d %s", w.Code, w.Body.String())
+	}
 	if w := tenantRequest(s, viewer, "POST", path, body, true); w.Code != 403 {
 		t.Fatalf("a read-only member dispatched a command: %d", w.Code)
 	}
