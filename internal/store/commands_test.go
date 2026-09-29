@@ -53,7 +53,7 @@ func TestADestructiveCommandCarriesTheConfirmedIdentity(t *testing.T) {
 	st, a := tenantAtomicStore(t)
 	ctx := context.Background()
 	ts := st.Tenancy()
-	endpointID := activeEndpointWith(t, ts, a, []protocol.Container{{ID: "c1", Name: "web", State: "exited", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}}, nil)
+	endpointID := activeEndpointWith(t, ts, a, []protocol.Container{{ID: "c1", Name: "web", State: "exited", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}}, nil)
 
 	cmd, err := ts.CreateCommand(ctx, a, endpointID, protocol.ActionRemove, "web", "web", protocol.Expectation{State: "exited"})
 	if err != nil {

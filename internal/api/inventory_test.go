@@ -46,7 +46,7 @@ func TestInventoryIsStoredAndReadWithFreshness(t *testing.T) {
 	}
 	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
 	observed := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
-	snap := protocol.Snapshot{Generation: 5, ObservedAt: observed, Engine: protocol.Engine{Runtime: "docker", Version: "29.7.2"}, Containers: []protocol.Container{{ID: "c1", Name: "web", Image: "nginx:1", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
+	snap := protocol.Snapshot{Generation: 5, ObservedAt: observed, Engine: protocol.Engine{Runtime: "docker", Version: "29.7.2"}, Containers: []protocol.Container{{ID: "c1", Name: "web", Image: "nginx:1", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, snap)
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 	// A stale generation with different contents must not replace the stored snapshot.
@@ -110,7 +110,7 @@ func TestInventoryIsStoredAndReadWithFreshness(t *testing.T) {
 	huge.Generation = 7
 	huge.Containers = nil
 	for i := 0; i < 6000; i++ {
-		huge.Containers = append(huge.Containers, protocol.Container{ID: strings.Repeat("x", 64), Name: strings.Repeat("n", 100), Status: strings.Repeat("s", 40), Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}})
+		huge.Containers = append(huge.Containers, protocol.Container{ID: strings.Repeat("x", 64), Name: strings.Repeat("n", 100), Status: strings.Repeat("s", 40), Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}})
 	}
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, huge)
 	if e := readEnvelope(t, ctx, sock.conn); e.Type != protocol.TypeError || !strings.Contains(string(e.Payload), "snapshot_too_large") {

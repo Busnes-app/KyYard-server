@@ -32,7 +32,7 @@ func connectedAgentWithContainer(t *testing.T, ctx context.Context, s *api.Serve
 	sock, _ := connect(t, ctx, httpURL, ag, ag.priv, protocol.Version)
 	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{
 		Generation: uint64(time.Now().Unix()),
-		Containers: []protocol.Container{{ID: "c1abc", Name: "web", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}},
+		Containers: []protocol.Container{{ID: "c1abc", Name: "web", State: "running", Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []protocol.NetworkAttachment{}}},
 		Images:     []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
 	})
 	waitFor(t, func() bool {

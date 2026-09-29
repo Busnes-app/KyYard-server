@@ -109,3 +109,56 @@ func TestShrinkDropsMountsBeforeContainers(t *testing.T) {
 		t.Fatalf("%d bytes, %d containers, %d mounts", len(raw), len(s.Containers), len(s.Containers[0].Mounts))
 	}
 }
+
+func TestContainerNetworksDecodeBothShapes(t *testing.T) {
+	old := []byte(`{"containers":[{"id":"c1","name":"web","networks":["shop_default","bridge"]}]}`)
+	var s Snapshot
+	if err := UnmarshalSnapshotBounded(old, &s); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Containers[0].Networks) != 2 || s.Containers[0].Networks[0] != (NetworkAttachment{Name: "shop_default"}) {
+		t.Fatalf("string networks: %+v", s.Containers[0].Networks)
+	}
+	if !s.Containers[0].StartedAt.IsZero() || s.Containers[0].Health != "" {
+		t.Fatalf("old agent must report no start or health: %+v", s.Containers[0])
+	}
+	current := []byte(`{"containers":[{"id":"c1","name":"web","started_at":"2026-09-29T10:00:00Z","health":"healthy","restart_policy":"unless-stopped","networks":[{"name":"shop_default","ip":"172.18.0.3","ip6":""}]}]}`)
+	s = Snapshot{}
+	if err := UnmarshalSnapshotBounded(current, &s); err != nil {
+		t.Fatal(err)
+	}
+	c := s.Containers[0]
+	if c.Networks[0] != (NetworkAttachment{Name: "shop_default", IP: "172.18.0.3"}) || c.Health != "healthy" || c.RestartPolicy != "unless-stopped" || c.StartedAt.Year() != 2026 {
+		t.Fatalf("attachment networks: %+v", c)
+	}
+	var n NetworkAttachment
+	if err := json.Unmarshal([]byte(`42`), &n); err == nil {
+		t.Fatal("a number is neither shape")
+	}
+}
+
+func TestClampBoundsNewContainerFields(t *testing.T) {
+	var nets []NetworkAttachment
+	for i := 0; i < MaxNetworkAttachments+3; i++ {
+		nets = append(nets, NetworkAttachment{Name: "n", IP: "not an ip"})
+	}
+	s := Snapshot{Containers: []Container{{ID: "c1", Health: "bogus\x00", RestartPolicy: strings.Repeat("r", 40), Networks: nets}}}
+	Clamp(&s)
+	c := s.Containers[0]
+	if len(c.Networks) != MaxNetworkAttachments || c.Networks[0].IP != "" {
+		t.Fatalf("networks not bounded or ip not validated: %d %q", len(c.Networks), c.Networks[0].IP)
+	}
+	if c.Health != "" || len(c.RestartPolicy) != 32 {
+		t.Fatalf("health %q policy %q", c.Health, c.RestartPolicy)
+	}
+	s = Snapshot{Containers: []Container{{ID: "c1", Health: "unhealthy", Networks: []NetworkAttachment{{Name: "b", IP: "10.0.0.2", IP6: "fd00::2"}}}}}
+	Clamp(&s)
+	if s.Containers[0].Health != "unhealthy" || s.Containers[0].Networks[0].IP != "10.0.0.2" || s.Containers[0].Networks[0].IP6 != "fd00::2" {
+		t.Fatalf("valid values must survive: %+v", s.Containers[0])
+	}
+	s = Snapshot{Containers: []Container{{ID: "c1"}}}
+	Clamp(&s)
+	if s.Containers[0].Networks == nil {
+		t.Fatal("nil networks must become an empty list")
+	}
+}

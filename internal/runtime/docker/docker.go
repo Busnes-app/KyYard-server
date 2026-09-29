@@ -160,7 +160,10 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 			Type        string `json:"Type"`
 		} `json:"Ports"`
 		NetworkSettings struct {
-			Networks map[string]json.RawMessage `json:"Networks"`
+			Networks map[string]struct {
+				IPAddress         string `json:"IPAddress"`
+				GlobalIPv6Address string `json:"GlobalIPv6Address"`
+			} `json:"Networks"`
 		} `json:"NetworkSettings"`
 		Mounts []struct {
 			Type, Name, Source, Destination string
@@ -175,14 +178,14 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		if len(ct.Names) > 0 {
 			name = strings.TrimPrefix(ct.Names[0], "/")
 		}
-		pc := protocol.Container{ID: ct.ID, Name: bound(name, 255), Image: bound(ct.Image, 512), ImageID: ct.ImageID, State: ct.State, Status: bound(ct.Status, 128), CreatedAt: time.Unix(ct.Created, 0).UTC(), Ports: []protocol.Port{}, Labels: boundLabels(ct.Labels), Networks: []string{}}
+		pc := protocol.Container{ID: ct.ID, Name: bound(name, 255), Image: bound(ct.Image, 512), ImageID: ct.ImageID, State: ct.State, Status: bound(ct.Status, 128), CreatedAt: time.Unix(ct.Created, 0).UTC(), Ports: []protocol.Port{}, Labels: boundLabels(ct.Labels), Networks: []protocol.NetworkAttachment{}}
 		for _, p := range ct.Ports {
 			pc.Ports = append(pc.Ports, protocol.Port{HostIP: p.IP, Host: p.PublicPort, Container: p.PrivatePort, Protocol: p.Type})
 		}
-		for n := range ct.NetworkSettings.Networks {
-			pc.Networks = append(pc.Networks, n)
+		for n, settings := range ct.NetworkSettings.Networks {
+			pc.Networks = append(pc.Networks, protocol.NetworkAttachment{Name: n, IP: settings.IPAddress, IP6: settings.GlobalIPv6Address})
 		}
-		sort.Strings(pc.Networks)
+		sort.Slice(pc.Networks, func(i, j int) bool { return pc.Networks[i].Name < pc.Networks[j].Name })
 		pc.Mounts = []protocol.Mount{}
 		for _, m := range ct.Mounts {
 			mount := protocol.Mount{Kind: protocol.MountOther, Source: m.Source, Target: m.Destination, ReadOnly: !m.RW}

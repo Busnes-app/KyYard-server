@@ -45,7 +45,7 @@ func migrationFleet(t *testing.T) (clusterHost, string, string) {
 		if name == "db" {
 			mounts = append(mounts, protocol.Mount{Kind: protocol.MountVolume, Source: "shop_data", Target: "/var/lib/db"})
 		}
-		snapshot.Containers = append(snapshot.Containers, protocol.Container{ID: id, Name: "shop-" + name, ImageID: image, ComposeProject: "shop", CreatedAt: created, Mounts: mounts, Networks: []string{"shop_default"}})
+		snapshot.Containers = append(snapshot.Containers, protocol.Container{ID: id, Name: "shop-" + name, ImageID: image, ComposeProject: "shop", CreatedAt: created, Mounts: mounts, Networks: []protocol.NetworkAttachment{{Name: "shop_default"}}})
 		snapshot.Images = append(snapshot.Images, protocol.Image{ID: image, Tags: []string{"ghcr.io/org/" + name + ":1"}})
 		bindings[name] = id
 	}

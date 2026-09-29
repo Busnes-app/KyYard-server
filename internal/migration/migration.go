@@ -242,7 +242,7 @@ func chosen(choices store.MigrationChoices, classes []protocol.StorageClass, vol
 // network. Analyze adds how other services address it.
 func networking(c protocol.Container, in protocol.ContainerInspection, inspected bool) []Finding {
 	switch {
-	case slices.Contains(c.Networks, "host") || (inspected && in.NetworkMode == "host"):
+	case slices.ContainsFunc(c.Networks, func(n protocol.NetworkAttachment) bool { return n.Name == "host" }) || (inspected && in.NetworkMode == "host"):
 		return []Finding{{AxisNetworking, Blocked, "network_host", ""}}
 	case len(c.Networks) > 1 || (inspected && (in.NetworkCount > 1 || slices.ContainsFunc(in.Unsupported, func(code string) bool { return networkCodes[code] }))):
 		return []Finding{{AxisNetworking, Supported, "networks_multiple", ""}}

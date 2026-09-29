@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -173,17 +174,49 @@ type Port struct {
 	Protocol  string `json:"protocol"`
 }
 
+// NetworkAttachment is one network a container is joined to. An agent older than the IP
+// fields sent a bare name; UnmarshalJSON accepts both so a report never fails on shape.
+type NetworkAttachment struct {
+	Name string `json:"name"`
+	IP   string `json:"ip,omitempty"`  // IPv4 as the runtime reports it, "" when none
+	IP6  string `json:"ip6,omitempty"` // global IPv6, "" when none
+}
+
+func (n *NetworkAttachment) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		return json.Unmarshal(b, &n.Name)
+	}
+	type plain NetworkAttachment
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*n = NetworkAttachment(p)
+	return nil
+}
+
+// MaxNetworkAttachments bounds a container's reported networks.
+const MaxNetworkAttachments = 32
+
+// HealthStates is the closed vocabulary of Container.Health and ContainerInspection.Health.
+var HealthStates = map[string]bool{"none": true, "starting": true, "healthy": true, "unhealthy": true}
+
 type Container struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Image     string            `json:"image"`
-	ImageID   string            `json:"image_id"`
-	State     string            `json:"state"`  // created, running, paused, restarting, exited, dead
-	Status    string            `json:"status"` // human text from the runtime, bounded
-	CreatedAt time.Time         `json:"created_at"`
-	Ports     []Port            `json:"ports"`
-	Labels    map[string]string `json:"labels"`
-	Networks  []string          `json:"networks"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Image     string    `json:"image"`
+	ImageID   string    `json:"image_id"`
+	State     string    `json:"state"`  // created, running, paused, restarting, exited, dead
+	Status    string    `json:"status"` // human text from the runtime, bounded
+	CreatedAt time.Time `json:"created_at"`
+	// StartedAt is zero when the container is not running or the agent could not read it in
+	// budget; the UI derives uptime from it and never parses Status.
+	StartedAt     time.Time           `json:"started_at,omitzero"`
+	Health        string              `json:"health,omitempty"` // HealthStates, "" when not reported
+	RestartPolicy string              `json:"restart_policy,omitempty"`
+	Ports         []Port              `json:"ports"`
+	Labels        map[string]string   `json:"labels"`
+	Networks      []NetworkAttachment `json:"networks"`
 	// Managed is the Compose project label when present; ownership arrives with M6.
 	ComposeProject string `json:"compose_project,omitempty"`
 	// Mounts is nil when the agent did not report them (older than mounts), empty when there
@@ -294,11 +327,22 @@ func Clamp(s *Snapshot) {
 		for j := range c.Ports {
 			c.Ports[j].HostIP, c.Ports[j].Protocol = CleanText(c.Ports[j].HostIP, 64), CleanText(c.Ports[j].Protocol, 8)
 		}
-		if len(c.Networks) > 32 {
-			c.Networks = c.Networks[:32]
+		if !HealthStates[c.Health] {
+			c.Health = ""
+		}
+		c.RestartPolicy = CleanText(c.RestartPolicy, 32)
+		if len(c.Networks) > MaxNetworkAttachments {
+			c.Networks = c.Networks[:MaxNetworkAttachments]
 		}
 		for j := range c.Networks {
-			c.Networks[j] = CleanText(c.Networks[j], MaxNameBytes)
+			n := &c.Networks[j]
+			n.Name = CleanText(n.Name, MaxNameBytes)
+			if _, err := netip.ParseAddr(n.IP); err != nil {
+				n.IP = ""
+			}
+			if _, err := netip.ParseAddr(n.IP6); err != nil {
+				n.IP6 = ""
+			}
 		}
 		if len(c.Mounts) > MaxMounts {
 			c.Mounts, c.MountsTruncated = c.Mounts[:MaxMounts], true
@@ -317,7 +361,7 @@ func Clamp(s *Snapshot) {
 			c.Ports = []Port{}
 		}
 		if c.Networks == nil {
-			c.Networks = []string{}
+			c.Networks = []NetworkAttachment{}
 		}
 	}
 	if len(s.Images) > MaxImages {

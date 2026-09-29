@@ -28,7 +28,7 @@ func stateful(choices store.MigrationChoices) Input {
 			{Name: "db", Image: "ghcr.io/org/db:1", Restart: "unless-stopped", Volumes: []store.ApplicationVolume{{Kind: "named", Source: "data", Target: "/var/lib/db"}}},
 		}},
 		Project:     "shop",
-		Containers:  map[string]protocol.Container{"web": {Name: "shop-web", Networks: []string{"shop_default"}}, "db": {Name: "shop-db", Networks: []string{"shop_default"}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: "shop_data", Target: "/var/lib/db"}}}},
+		Containers:  map[string]protocol.Container{"web": {Name: "shop-web", Networks: []protocol.NetworkAttachment{{Name: "shop_default"}}}, "db": {Name: "shop-db", Networks: []protocol.NetworkAttachment{{Name: "shop_default"}}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: "shop_data", Target: "/var/lib/db"}}}},
 		Inspections: map[string]protocol.ContainerInspection{"web": verified(), "db": verified()},
 		Volumes:     []protocol.Volume{{Name: "shop_data"}},
 		Destination: Destination{Namespace: "shop", Project: "shop-on-cluster", StorageClasses: classes},
@@ -48,7 +48,7 @@ func blocked() Input {
 			{Name: "worker", Image: "ghcr.io/org/worker:1", Volumes: []store.ApplicationVolume{{Kind: "named", Source: "cache", Target: "/cache"}}},
 		}},
 		Project:     "shop",
-		Containers:  map[string]protocol.Container{"api": {Networks: []string{"shop_default", "proxy"}}, "worker": {Networks: []string{"host"}}},
+		Containers:  map[string]protocol.Container{"api": {Networks: []protocol.NetworkAttachment{{Name: "shop_default"}, {Name: "proxy"}}}, "worker": {Networks: []protocol.NetworkAttachment{{Name: "host"}}}},
 		Inspections: map[string]protocol.ContainerInspection{"api": privileged},
 		Volumes:     []protocol.Volume{{Name: "shop_cache"}},
 		Destination: Destination{Namespace: "shop", Project: "shop-on-cluster", StorageClasses: classes},
@@ -178,7 +178,7 @@ func TestChecklistRefusesAnUnsafeHostVolumeName(t *testing.T) {
 	in.Project = "shop;touch /tmp/pwned;"
 	host := in.Project + "_data"
 	in.Volumes = []protocol.Volume{{Name: host}}
-	in.Containers["db"] = protocol.Container{Networks: []string{"shop_default"}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: host, Target: "/var/lib/db"}}}
+	in.Containers["db"] = protocol.Container{Networks: []protocol.NetworkAttachment{{Name: "shop_default"}}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: host, Target: "/var/lib/db"}}}
 	r := Analyze(in)
 	if r.Ready || !slices.Contains(r.Services[0].Findings, Finding{AxisStorage, Blocked, "volume_unverified", "data"}) {
 		t.Fatalf("db %+v", r.Services[0].Findings)
@@ -234,9 +234,9 @@ func TestVocabularyIsExact(t *testing.T) {
 	extra.Spec.Volumes = append(extra.Spec.Volumes, store.DeclaredVolume{Name: "ext", External: true})
 	extra.Spec.Services[0].Volumes = []store.ApplicationVolume{{Kind: "named", Source: "ext", Target: "/ext"}}
 	extra.Inspections["web"] = scheduling
-	extra.Containers["web"] = protocol.Container{Networks: []string{"shop_default"}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: "ext", Target: "/ext"}}}
+	extra.Containers["web"] = protocol.Container{Networks: []protocol.NetworkAttachment{{Name: "shop_default"}}, Mounts: []protocol.Mount{{Kind: protocol.MountVolume, Source: "ext", Target: "/ext"}}}
 	unverified := stateful(chosenData)
-	unverified.Containers["db"] = protocol.Container{Networks: []string{"shop_default"}}
+	unverified.Containers["db"] = protocol.Container{Networks: []protocol.NetworkAttachment{{Name: "shop_default"}}}
 	single := stateful(chosenData)
 	single.Spec.Services = single.Spec.Services[1:]
 	seen := map[string]bool{}

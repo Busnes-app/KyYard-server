@@ -67,7 +67,7 @@ func TestSnapshotMapsAndBoundsEngineData(t *testing.T) {
 	if snap.Engine.Version != "29.7.2" || snap.Engine.APIVersion != "1.55" || snap.Engine.CPUs != 8 {
 		t.Fatalf("engine: %+v", snap.Engine)
 	}
-	if len(snap.Containers) != 3 || snap.Containers[0].Name != "weba" || snap.Containers[0].Ports[0].Host != 8080 || snap.Containers[0].ComposeProject != "shop" || snap.Containers[0].Networks[0] != "shop_default" {
+	if len(snap.Containers) != 3 || snap.Containers[0].Name != "weba" || snap.Containers[0].Ports[0].Host != 8080 || snap.Containers[0].ComposeProject != "shop" || snap.Containers[0].Networks[0].Name != "shop_default" {
 		t.Fatalf("containers: %+v", snap.Containers)
 	}
 	if len(snap.Images) != 1 || snap.Images[0].Digests == nil || len(snap.Networks) != 1 || len(snap.Volumes) != 1 || snap.Volumes[0].CreatedAt.IsZero() {
