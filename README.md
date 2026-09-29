@@ -449,7 +449,7 @@ no published port gets no Service, so nothing can reach it; publish every port a
 calls. A name longer than 63 characters, or two services whose names collide, carry a six-hex
 suffix: the plan shows each service's object name.
 
-Container, image, network, volume, terminal, inspection and adoption actions are refused for a
+Container, image, network, volume, terminal, inspection, configuration and adoption actions are refused for a
 cluster (`409 runtime_unsupported`) and not shown. Uninstall with
 `kubectl delete -f kyyard-agent-<name>.yaml`, then revoke the endpoint. To enroll the same
 cluster again after a revocation, delete the Secret `kyyard-agent-identity` (or uninstall)
@@ -733,6 +733,21 @@ without input or eight hours total. Slow-client buffer limits also disconnect ra
 than silently lose terminal data. Audit records who connected, the target, selected
 user, duration and known exit status, without recording commands or terminal contents.
 An interrupted session without an inspected exit code remains unknown.
+
+### Edit or run a container
+
+An organization administrator edits a container that no application owns on its
+**Configuration** tab: KyYard reads the full configuration from the host, environment values
+included (masked until **Reveal**), and **Save and recreate** replaces the container with the
+edited copy after you type its name. The host agent must advertise `container.configure`.
+Settings KyYard cannot read (listed on the tab) block saving, so a recreate never drops them
+silently. A new host path bind needs its own acknowledgement. A container whose start fails is
+rolled back to the old one. **Run a container** on a Docker host's page creates a new one the
+same way. A container an adopted application owns is edited through that application.
+Environment values travel only inside the agent's TLS session and the HTTPS response and are
+never stored, audited or logged; audit records who read or changed which container and the
+names of the settings set. Reads, recreates and runs share a budget of 12 per administrator
+per minute.
 
 ## Import a Compose draft
 

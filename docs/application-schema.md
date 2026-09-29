@@ -82,8 +82,8 @@ A service's `volumes` (at most 32) are named volumes and bind mounts; top-level 
 
 ## Adoption and import
 
-- Discovery lists Compose projects on an endpoint and distinguishes recorded adoption from unmanaged observations. The endpoint UI groups the existing authorized snapshot by exact project name, shows observed container/running counts and lets the operator filter the existing container controls. Empty and truncated reports describe only the reported inventory; freshness remains visible. Inspection exposes container name, image and state, not arbitrary labels, environment values or host configuration files. Discovery itself creates no application records and changes no runtime ownership. Inspect, import and adopt are distinct actions.
-- **Import** reads the project into a new application and revision without changing the runtime. **Adopt** additionally marks the running resources as owned by the instance. Neither happens implicitly; unmanaged lifecycle actions (restart, logs) remain allowed by permission.
+- Discovery lists Compose projects on an endpoint and distinguishes recorded adoption from unmanaged observations. The endpoint UI groups the existing authorized snapshot by exact project name, shows observed container/running counts and lets the operator filter the existing container controls. Empty and truncated reports describe only the reported inventory; freshness remains visible. Discovery exposes container name, image and state, not arbitrary labels, environment values or host configuration files; environment values leave a host only in the organization-administrator configuration read of an unmanaged container (`container.configure`, agent-protocol.md Container configuration). Discovery itself creates no application records and changes no runtime ownership. Inspect, import and adopt are distinct actions.
+- **Import** reads the project into a new application and revision without changing the runtime. **Adopt** additionally marks the running resources as owned by the instance. Neither happens implicitly; unmanaged lifecycle actions (restart, logs) remain allowed by permission, and an organization administrator edits an unmanaged container directly (recreate or run, `container.configure`) without adopting it. An adopted container changes only through its application.
 - Adopted resources keep their names; the deploy preview shows what a first deploy would recreate.
 
 ## Implemented adoption
@@ -225,7 +225,7 @@ An organization administrator (`application.migrate`) analyzes an application ad
 |---|---|---|
 | Secret representation | reference-only specs, encrypted per-revision bundles in sealed backups; internal audited resolution | implemented for draft import and deploy resolution |
 | Compose subset | list above | proposed |
-| Unmanaged edits | require adoption | proposed (plan default) |
+| Unmanaged edits | direct recreate or run from the full configuration under `container.configure` (organization administrators); adopted containers only through their application | implemented |
 | Preview validity | 10 minutes, preconditions on touched resources only | implemented (plans) |
 | Apply | resolve values internally, CAS `planned → applying`, settle rebinds resources and advances revisions, `unknown` non-terminal | implemented |
 | `env_file` values | secret references by default, plain only by explicit choice | proposed |

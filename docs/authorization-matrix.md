@@ -80,13 +80,14 @@ A service token authenticates as `service:<id>` with the fixed role `pulse_reade
 | `container.operate` (start, stop, restart, pause) | ✓ | ✓ | ✓ | – | – | no | success/failure/unknown |
 | `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |
 | `container.exec` (implemented) | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |
+| `container.configure` (implemented: read a container's full configuration, recreate it from an edited copy, run a new one) | ✓ | – | – | – | – | environment values in the read response and the frame only; in memory, never stored, audited or logged | read: `container.configuration.read` success with `image=<id> unsupported=<n>`; recreate/run: `container.configure` with `image= binds= fields=` (setting names only) plus one `container.bind.acknowledged` row per used bind path; denials |
 | `image.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
-| `image.pull` (endpoint image controls; operators keep it for host-level pulls) | ✓ | ✓ | ✓ | – | – | sends no registry credential: a registry that needs one is refused (`credentialsMissing`); credentialed pulls go only through a deployment under `application.deploy` | success/failure |
+| `image.pull` (endpoint image controls; operators keep it for host-level pulls) | ✓ | ✓ | ✓ | – | – | sends no registry credential: a registry that needs one is refused (`credentialsMissing`); credentialed pulls go only through a deployment under `application.deploy` or a direct recreate or run (`container.configure`, resolved under `image.pull`), in the frame only | success/failure |
 | `image.destroy` | ✓ | ✓ | – | – | – | no | success/failure |
 | `volume.read`, `network.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
 | `volume.destroy` | ✓ | – | – | – | – | no | success/failure, separate explicit confirmation naming data loss |
 
-Unmanaged containers: lifecycle actions above apply by permission; configuration editing requires explicit adoption into an application (`application.adopt`).
+Unmanaged containers: lifecycle actions above apply by permission, and an organization administrator edits configuration directly (`container.configure`). A container an adopted application owns is refused (`409 application_managed`) and changes through its application. Service tokens never hold `container.configure`.
 
 ### Applications (M6–M7)
 
@@ -133,7 +134,7 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Successful reads audited | stopped with the inventory API (M4) except `organization.audit.read` and `organization.members.manage`, which keep a success row; denials always audited | implemented |
 | Platform grant expiry | enforced in the membership lookup, not by cleanup; excluded from the administrator quorum | proposed |
 | Organization creation | platform administrators; a first organization administrator is seeded in the same transaction; the creator gets no membership unless named | implemented |
-| Unmanaged containers | lifecycle by permission, configuration edit needs adoption | proposed (plan default) |
+| Unmanaged containers | lifecycle by permission; direct configuration edit and run under `container.configure` (organization administrators); adopted containers only through their application | implemented |
 | Developer scope | deploy plus logs, no exec, no destructive | proposed |
 | Exec | organization administrators only in 0.1; the UI offers Terminal only to them | implemented |
 | Per-environment grants | not in 0.1 | proposed |

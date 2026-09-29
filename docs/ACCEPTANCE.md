@@ -50,6 +50,9 @@ in the results table.
 - Recreated containers show their image ID, not the tag, in `docker ps` on the host: the
   recreate pins by ID.
 - The agent container itself carries an anonymous volume for the image's declared `/data`.
+- Making a read-only bind writable on a container's Configuration tab shows no acknowledgement
+  checkbox, and Save answers "Acknowledge every new host path.": the server counts it as a new
+  bind and the form does not.
 
 ## Prerequisites
 
@@ -188,7 +191,7 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   Type the name in "Type the new container name to confirm", then "Run container". Expect the
   step table and "Open the new container".
 - Edit: on that container's Configuration tab (admin), change `ACCEPT_KEY` to `two`. The
-  save area lists "Changes: environment". Type the container name, "Save and recreate". Expect
+  save area lists "Changes: env". Type the container name, "Save and recreate". Expect
   the step table and a container with a new ID; its Configuration tab shows `two`.
 - Pass: both commands succeed, the old ID is gone from `docker ps -a`, and Activity lists
   `container.run` and `container.recreate`.
