@@ -416,15 +416,11 @@ details[open] > summary { margin-bottom: 16px; }
 .ky-resource-name { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
 .ky-resource-name strong { font-weight: 600; }
 .ky-resource-name > span, .ky-resource-name small { color: var(--ink); font-size: 12px; overflow-wrap: anywhere; }
-.ky-container-actions { min-width: 100px; max-width: 180px; }
-.ky-container-actions > summary { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-hover); font-size: 12px; }
-.ky-container-actions[open] > summary { margin-bottom: 6px; }
-.ky-container-action-list { display: grid; gap: 4px; }
-.ky-container-action-list button { justify-content: flex-start; }
+.ky-container-actions { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .ky-container-ports { list-style: none; display: grid; gap: 6px; font-size: 12px; }
 .ky-container-ports li { display: grid; gap: 1px; }
 .ky-container-ports small, .ky-muted { color: var(--ink); }
-.ky-container-actions button { font-size: 12px; padding: 6px 10px; min-height: 34px; }
+.ky-icon-button { min-height: 34px; min-width: 34px; padding: 6px; display: inline-flex; align-items: center; justify-content: center; }
 .badge { font-weight: 500; border-radius: 6px; padding: 3px 9px; white-space: nowrap; }
 .badge-secondary { color: var(--ink); background: var(--bg); border: 1px solid var(--line); }
 .ky-facts { gap: 14px 24px; padding-top: 16px; }
@@ -466,8 +462,7 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
  .ky-responsive-table td { border: 0; padding: 7px 0; }
  .ky-responsive-table td::before { content: attr(data-label); display: block; font-size: 11px; color: var(--ink); margin-bottom: 4px; }
  .ky-responsive-table td:first-child::before { display: none; }
- .ky-container-actions { max-width: none; }
- .ky-container-actions button { min-height: 40px; padding: 8px 12px; }
+ .ky-icon-button { min-height: 40px; min-width: 40px; }
  .ky-facts { grid-template-columns: 1fr; gap: 4px; }
  .ky-facts dd { margin-bottom: 12px; }
  .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

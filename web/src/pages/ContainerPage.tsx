@@ -48,7 +48,7 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
   const requested = useSearchParam('tab');
   const tabs = TABS.filter((t) => t !== 'terminal' || exec);
   const tab: Tab = (tabs as readonly string[]).includes(requested) ? requested as Tab : 'overview';
-  const [status] = useState('');
+  const [status, setStatus] = useState('');
   useEffect(() => {
     if (inventory.state === 'denied') return;
     const t = window.setInterval(() => { if (!document.hidden) inventory.reload(); }, 30_000);
@@ -66,7 +66,7 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
         {c && <span className={stateBadge(c.state)} title={c.status}>{displayName(c.state)}</span>}
         {health && <span className={`badge ${health.className}`}>{health.text}</span>}
       </h1>
-      {c && <ContainerControls key={c.id} base={base} container={c} active={active} scope={scope} onRefresh={inventory.reload} canExec={exec} />}
+      {c && <ContainerControls key={c.id} base={base} container={c} active={active} scope={scope} onRefresh={inventory.reload} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} />}
     </div>
     {c && <p style={{ color: 'var(--ink)' }} title={c.image}>{displayName(c.image)}</p>}
     {status && <p role="status">{status}</p>}

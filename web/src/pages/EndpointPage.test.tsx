@@ -2,13 +2,6 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EndpointPage } from './EndpointPage';
 
-// Counts terminal mounts: a remount would have ended the exec session.
-const terminal = vi.hoisted(() => ({ mounts: 0 }));
-vi.mock('../components/ContainerTerminal', async () => {
-  const { useEffect } = await import('react');
-  return { ContainerTerminal: () => { useEffect(() => { terminal.mounts++; }, []); return <p>terminal stub</p>; } };
-});
-
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const endpoint = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime: 'docker', state: 'active', facts: { hostname: 'h1' }, fingerprint: 'ab'.repeat(32), capabilities: ['docker.containers'], alerts: [], created_at: '' };
@@ -126,36 +119,26 @@ function pollingHost() {
   return { now, web, fetcher, polled, poll: (next: () => Response) => { answer = next; } };
 }
 
-it('keeps an open terminal and log viewer through a failed poll and a container added ahead', async () => {
+it('keeps a row\'s controls through a failed poll and a container added ahead', async () => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: vi.fn() });
   try {
     const host = pollingHost();
     render(<EndpointPage org="a" endpoint="ep_1" />);
-    fireEvent.click(await screen.findByLabelText('Actions for web'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Terminal' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
-    await screen.findByText('terminal stub');
+    const group = await screen.findByRole('group', { name: 'Actions for web' });
     const table = screen.getByRole('table');
-    const logs = document.querySelector('dialog[aria-label="Logs for web"]');
-    expect(logs).not.toBeNull();
     const api = { ...host.web, id: 'c0', name: 'api' };
     host.poll(() => json({ endpoint_id: 'ep_1', state: 'active', generation: 2, observed_at: host.now, received_at: host.now, snapshot: { ...terminalSnapshot(host.now), generation: 2, containers: [api, host.web] } }));
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     await screen.findByText('api');
-    // Rows keyed by index would remount web's controls here and close its terminal.
-    expect(screen.queryByText('terminal stub')).not.toBeNull();
-    expect(terminal.mounts).toBe(1);
+    // Rows keyed by index would remount web's controls here.
+    expect(screen.getByRole('group', { name: 'Actions for web' })).toBe(group);
     host.poll(() => json({ error: 'boom' }, 500));
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(screen.queryByRole('table')).toBe(table);
-    expect(document.querySelector('dialog[aria-label="Logs for web"]')).toBe(logs);
-    expect(screen.queryByText('terminal stub')).not.toBeNull();
-    expect(terminal.mounts).toBe(1);
+    expect(screen.getByRole('group', { name: 'Actions for web' })).toBe(group);
     await screen.findByText(/Last refresh failed/);
   } finally {
     vi.useRealTimers();
-    Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
   }
 });
 
@@ -219,10 +202,10 @@ function stubHost(organizations: () => Promise<Response>) {
 }
 async function terminalOffered(org: string, fetcher: ReturnType<typeof stubHost>) {
   render(<EndpointPage org={org} endpoint="ep_1" />);
-  fireEvent.click(await screen.findByLabelText('Actions for web'));
+  await screen.findByRole('group', { name: 'Actions for web' });
   expect(fetcher).toHaveBeenCalledWith('/api/organizations');
   await new Promise((resolve) => setTimeout(resolve, 0));
-  return screen.queryByRole('button', { name: 'Terminal' }) !== null;
+  return screen.queryByRole('link', { name: 'Terminal for web' }) !== null;
 }
 it.each([['organization_admin', true], ['environment_admin', false], ['operator', false], ['developer', false], ['read_only', false], ['', false]])('offers Terminal to %s: %s', async (role, want) => {
   const fetcher = stubHost(async () => json(role ? [{ id: 'a', name: 'Team', role }] : []));
