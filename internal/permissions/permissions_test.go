@@ -3,12 +3,12 @@ package permissions
 import "testing"
 
 func TestFixedRoleMatrix(t *testing.T) {
-	actions := []Action{OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, PlatformAdmin, "unknown"}
+	actions := []Action{OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, ContainerConfigure, PlatformAdmin, "unknown"}
 	for _, tc := range []struct {
 		role    string
 		allowed []Action
 	}{
-		{"organization_admin", []Action{OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead}},
+		{"organization_admin", []Action{OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, ContainerConfigure}},
 		{"environment_admin", []Action{OrganizationRead, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete}},
 		{"operator", []Action{OrganizationRead, EnvironmentRead}},
 		{"developer", []Action{OrganizationRead, EnvironmentRead}},
@@ -58,6 +58,17 @@ func TestExecIsOrganizationAdminOnly(t *testing.T) {
 	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer", "read_only", "admin", "unknown", ""} {
 		if Allows(role, ContainerExec) != (role == "organization_admin") {
 			t.Errorf("unexpected exec permission: %s", role)
+		}
+	}
+}
+
+func TestConfigureIsOrganizationAdminOnly(t *testing.T) {
+	if ContainerConfigure != "container.configure" {
+		t.Fatal("the audit identifier changed")
+	}
+	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer", "read_only", RolePulseReader, "admin", "unknown", ""} {
+		if Allows(role, ContainerConfigure) != (role == "organization_admin") {
+			t.Errorf("unexpected configure permission: %s", role)
 		}
 	}
 }
@@ -129,7 +140,7 @@ func TestPulseReaderIsReadOnly(t *testing.T) {
 			t.Errorf("pulse_reader must hold %s", a)
 		}
 	}
-	for _, a := range []Action{ApplicationRead, MembersManage, EnvironmentCreate, EndpointEnroll, ContainerOperate, ContainerExec, ImagePull, RegistryRead, ServiceTokensManage, ApplicationDeploy} {
+	for _, a := range []Action{ApplicationRead, MembersManage, EnvironmentCreate, EndpointEnroll, ContainerOperate, ContainerExec, ContainerConfigure, ImagePull, RegistryRead, ServiceTokensManage, ApplicationDeploy} {
 		if Allows(RolePulseReader, a) {
 			t.Errorf("pulse_reader must not hold %s", a)
 		}

@@ -72,6 +72,9 @@ export const NAMESPACE_RULE = 'List at most 32 namespaces by name: lower-case le
 // Mirrors permissions.Allows(role, ContainerExec): only organization admins may exec.
 export const canExec = (role: string | undefined) => role === 'organization_admin';
 
+// Mirrors permissions.Allows(role, ContainerConfigure): only organization admins may configure.
+export const canConfigure = (role: string | undefined) => role === 'organization_admin';
+
 // Mirrors permissions.Allows(role, ApplicationMigrate): only organization admins migrate applications.
 export const canMigrate = (role: string | undefined) => role === 'organization_admin';
 
