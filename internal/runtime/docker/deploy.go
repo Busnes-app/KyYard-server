@@ -50,9 +50,10 @@ const (
 // old container still runs means a name conflict or a refused create costs no downtime. The
 // first step that is not a success ends the run and every later step is recorded as skipped.
 // Only an explicit recreate puts the host back: a failed create or stop is undone, and a failed
-// start, which includes a new container that stops running within startWatch, is rolled back
-// (a rollback step); otherwise the steps say where the old container was left. An explicit run (no Replaces) is image, create, start. No volume
-// is ever removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
+// start, which includes a new container that stops running or restarts within startWatch when
+// the old one was running, is rolled back (a rollback step); otherwise the steps say where the
+// old container was left. An explicit run (no Replaces) is image, create, start. No volume is
+// ever removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
 // 2026-09-23-pull-step-design.md and 2026-09-24-volumes-design.md.
 // started is called once, immediately before the first phase-two call (after the first recheck's
 // deadline guard, or an explicit run's create guard); a run that ends in phase one never calls it.
@@ -64,11 +65,11 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
 	r := &deployRun{c: c, parent: parent, req: req, res: res, ensured: map[string]bool{}, keepOnly: map[string]bool{}, started: started}
-	// The daemon default runtime is what a container created without one gets; read once per run.
+	// The daemon's defaults are what a container created without a setting gets; read once per run.
 	ictx, icancel := context.WithTimeout(ctx, callBudget)
-	var info struct{ DefaultRuntime string }
+	var info daemon
 	if r.c.get(ictx, "/info", &info) == nil && info.DefaultRuntime != "" {
-		r.defaultRuntime = info.DefaultRuntime
+		r.defaultRuntime, r.cgroupVersion = info.DefaultRuntime, info.CgroupVersion
 	}
 	icancel()
 	remaining := time.Until(req.Deadline)
@@ -97,6 +98,7 @@ type deployRun struct {
 	req            protocol.DeploymentRequest
 	res            protocol.DeploymentResult
 	defaultRuntime string          // "" when it could not be read; the first precondition then fails
+	cgroupVersion  string          // /info CgroupVersion; "" reads as 2
 	pullDeadline   time.Time       // shared by every pull; see pullPhase
 	ensured        map[string]bool // volumes whose step is recorded
 	keepOnly       map[string]bool // existing volumes not the project's own: each service may only keep its mounts of them
@@ -378,11 +380,13 @@ type prepared struct {
 	name        string                     // the old container's name, without the leading slash
 	networkMode string
 	before      inspectedForDeploy // the precondition's read; recheck compares against it
+	raw         rawInspection      // the same read by key; an explicit recheck compares it too
 }
 
 func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) prepared {
 	old := url.PathEscape(s.Replaces.ContainerID)
 	var before inspectedForDeploy
+	var raw rawInspection
 	var networkMode string
 	var oldMounts []inspectedMount
 	if run(r.req, s) {
@@ -396,7 +400,7 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
-		if err := r.c.get(cctx, "/containers/"+old+"/json", &before); err != nil {
+		if err := r.c.get(cctx, "/containers/"+old+"/json", &before, &raw); err != nil {
 			if statusOf(err) == http.StatusNotFound {
 				return deny("container_missing")
 			}
@@ -408,11 +412,18 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		if !reported(before) {
 			return deny("configuration_unreported")
 		}
-		// An explicit frame carries every setting the operator saw and kept, so only what it
-		// cannot express is refused.
+		// An explicit frame carries every setting the configuration read carries, so only what
+		// that read would name is refused: the same codes, whatever the frame's sender claimed.
 		codes := undescribed(before, r.req.Project+"_default", r.defaultRuntime)
 		if r.req.Explicit {
-			codes = slices.DeleteFunc(codes, func(c string) bool { return !slices.Contains(protocol.ConfigurationOnlyCodes, c) })
+			set := map[string]bool{}
+			for _, c := range codes {
+				set[c] = slices.Contains(protocol.ConfigurationOnlyCodes, c)
+			}
+			if !raw.uncarried(r.cgroupVersion, set) {
+				return deny("configuration_unreported")
+			}
+			codes = orderedCodes(set)
 		}
 		if len(codes) > 0 {
 			return unsupported(codes)
@@ -450,7 +461,7 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 	})
 	r.ensureVolumes(ctx, s, oldMounts)
 	r.image(ctx, &s)
-	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode, before: before}
+	return prepared{s: s, name: strings.TrimPrefix(before.Name, "/"), networkMode: networkMode, before: before, raw: raw}
 }
 
 // run reports an explicit frame that creates a container rather than replacing one.
@@ -491,7 +502,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
 	if run(r.req, s) {
 		created := r.create(ctx, p)
-		if r.start(ctx, s, created) {
+		if r.start(ctx, s, created, false) {
 			r.discard(ctx, created) // part of the failed start: a retry must find the name free
 		}
 		return
@@ -509,13 +520,16 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var now inspectedForDeploy
-		if err := r.c.get(cctx, "/containers/"+old+"/json", &now); err != nil {
+		var raw rawInspection
+		if err := r.c.get(cctx, "/containers/"+old+"/json", &now, &raw); err != nil {
 			if statusOf(err) == http.StatusNotFound {
 				return deny("container_missing")
 			}
 			return r.outcomeFor(cctx, err, statusOf(err))
 		}
-		if now.ID != s.Replaces.ContainerID || now.Image != s.Replaces.ImageID || now.Created.Unix() != s.Replaces.CreatedUnix || !sameConfiguration(p.before, now) {
+		// An explicit frame's precondition checked every key, so every key must still hold.
+		if now.ID != s.Replaces.ContainerID || now.Image != s.Replaces.ImageID || now.Created.Unix() != s.Replaces.CreatedUnix || !sameConfiguration(p.before, now) ||
+			(r.req.Explicit && !p.raw.sameKeys(raw)) {
 			return deny("configuration_drift")
 		}
 		return succeeded()
@@ -553,7 +567,9 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		running = status != http.StatusNotModified
 		return succeeded()
 	})
-	if r.start(ctx, s, created) && r.req.Explicit {
+	// A recreate's container must keep running only if the old one was: a stopped job's
+	// replacement may exit as the old one did.
+	if r.start(ctx, s, created, r.req.Explicit && running) && r.req.Explicit {
 		r.rollback(ctx, p, created, running)
 	}
 	r.step(s.Name, protocol.StepRemove, func() (string, string, string) {
@@ -628,8 +644,9 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 	return created
 }
 
-// start records the start step and reports whether it ran and did not succeed.
-func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, created string) (failed bool) {
+// start records the start step and reports whether it ran and did not succeed. A watched start
+// must keep running through the watch.
+func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, created string, watched bool) (failed bool) {
 	r.step(s.Name, protocol.StepStart, func() (outcome, code, detail string) {
 		defer func() { failed = outcome != protocol.OutcomeSucceeded }()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
@@ -638,8 +655,7 @@ func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, cre
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
 			return r.outcomeFor(cctx, err, status)
 		}
-		// A recreate's container must keep running; a run's may be a job that exits.
-		if r.req.Explicit && !run(r.req, s) {
+		if watched {
 			if outcome, code, detail := r.watch(ctx, created); outcome != protocol.OutcomeSucceeded {
 				return outcome, code, detail
 			}
@@ -665,19 +681,24 @@ func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, cre
 }
 
 // watch reads a started container every startPoll for startWatch and fails the start
-// (exited_early) once it is no longer running: exited, dead or restarting. A healthcheck leaving
-// starting ends the watch early; one still starting at its end does not fail it.
+// (exited_early) once it is no longer running (exited, dead or restarting) or has been restarted
+// by its restart policy. A healthcheck leaving starting ends the watch early; one still starting
+// at its end does not fail it. No poll sleeps past the window's end and the last read ends within
+// callBudget of it, so the watch fits watchBudget.
 func (r *deployRun) watch(ctx context.Context, id string) (string, string, string) {
 	end := time.Now().Add(cmp.Or(r.c.startWatch, startWatch))
+	wctx, wcancel := context.WithDeadline(ctx, end.Add(callBudget))
+	defer wcancel()
 	for {
 		var in struct {
-			State *struct {
+			RestartCount *int
+			State        *struct {
 				Status  string
 				Running bool
 				Health  *struct{ Status string }
 			}
 		}
-		cctx, cancel := context.WithTimeout(ctx, callBudget)
+		cctx, cancel := context.WithTimeout(wctx, callBudget)
 		err := r.c.get(cctx, "/containers/"+url.PathEscape(id)+"/json", &in)
 		if err != nil {
 			defer cancel()
@@ -685,7 +706,7 @@ func (r *deployRun) watch(ctx context.Context, id string) (string, string, strin
 		}
 		cancel()
 		switch st := in.State; {
-		case st == nil || !st.Running || st.Status == "exited" || st.Status == "dead" || st.Status == "restarting":
+		case st == nil || in.RestartCount == nil || *in.RestartCount > 0 || !st.Running || st.Status == "exited" || st.Status == "dead" || st.Status == "restarting":
 			return fail("exited_early")
 		case st.Health != nil && st.Health.Status != "" && st.Health.Status != "starting" && st.Health.Status != "none":
 			return succeeded()
@@ -695,7 +716,7 @@ func (r *deployRun) watch(ctx context.Context, id string) (string, string, strin
 		select {
 		case <-ctx.Done():
 			return r.outcomeFor(ctx, ctx.Err(), 0)
-		case <-time.After(cmp.Or(r.c.startPoll, startPoll)):
+		case <-time.After(min(cmp.Or(r.c.startPoll, startPoll), time.Until(end))):
 		}
 	}
 }

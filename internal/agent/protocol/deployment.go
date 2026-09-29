@@ -81,7 +81,7 @@ type detailRule int
 
 const (
 	detailNone        detailRule = iota
-	detailUnsupported            // one to MaxUnsupported distinct UnsupportedCodes, joined by ","
+	detailUnsupported            // one to MaxUnsupported distinct UnsupportedCodes or host_config:<Key>, joined by ","
 	detailContainerID            // a full 64-hex Docker ID
 	detailStatus                 // a 3-digit status
 	detailObject                 // empty, or a Kubernetes object's Kind/name
@@ -129,7 +129,7 @@ func validStepCode(code, detail string) bool {
 	case !ok:
 		return false
 	case rule == detailUnsupported:
-		return knownCodes(strings.Split(detail, ","))
+		return unsupportedDetail(strings.Split(detail, ","))
 	case rule == detailContainerID:
 		return fullDockerID.MatchString(detail)
 	case rule == detailStatus:
@@ -142,6 +142,19 @@ func validStepCode(code, detail string) bool {
 		return podSecurityDetail[detail]
 	}
 	return detail == ""
+}
+
+// unsupportedDetail reports one to MaxUnsupported distinct codes, each an UnsupportedCodes entry
+// or a host_config:<Key> the configuration read would also name.
+func unsupportedDetail(codes []string) bool {
+	seen := map[string]bool{}
+	for _, c := range codes {
+		if seen[c] || !(hostConfig.MatchString(c) || knownCodes([]string{c})) {
+			return false
+		}
+		seen[c] = true
+	}
+	return len(codes) <= MaxUnsupported
 }
 
 var (

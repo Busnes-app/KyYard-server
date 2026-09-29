@@ -29,8 +29,13 @@ in the results table.
   the old image's values.
 - Recreating the KyYard server container, or a host agent's own container, through KyYard is
   unsupported: the stop step stops the agent running the recreate.
-- A recreate waits five seconds for the new container to keep running; a healthcheck that
-  fails later is not awaited.
+- A recreate of a running container waits five seconds for the new one to keep running
+  without a restart; a healthcheck that fails later is not awaited. A stopped container's
+  replacement is started and not watched.
+- A daemon configured with `default-cgroupns-mode` or `default-shm-size` makes every container
+  read `host_config:CgroupnsMode` or `host_config:ShmSize`, which blocks the edit, until the
+  adapter learns the daemon default. The read assumes Docker's own defaults: cgroup namespace
+  `host` on a cgroup v1 host, `private` otherwise, and 64 MiB of shm.
 - A source build (`docker-compose.build.yml`) shows an enrollment token and a "Source
   installation" note instead of the one-line command: the image has no published digest to
   pin. Set `KY_AGENT_IMAGE` (README) or compose the `docker run` by hand from the token.

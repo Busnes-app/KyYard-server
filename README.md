@@ -745,8 +745,8 @@ Settings KyYard cannot read (listed on the tab) block saving, so a recreate neve
 silently. A new host path bind needs its own acknowledgement. Host-level settings (privileged,
 devices, extra capabilities, host networking, system path binds) are refused unless
 `KY_CONTAINER_ALLOW_PRIVILEGED` is on; that guards against mistakes, not against an
-administrator (see the variable). A container whose start fails, or that stops within five
-seconds, is rolled back to the old one. Environment, labels and command a container inherited
+administrator (see the variable). A container whose start fails, or that stops or restarts
+within five seconds of replacing a running one, is rolled back to the old one. Environment, labels and command a container inherited
 from its image are kept as they were read, even when you change the image. Do not recreate the
 KyYard server's own container, or a host agent's, through KyYard: stopping it stops the agent
 doing the recreate. **Run a container** on a Docker host's page creates a new one the

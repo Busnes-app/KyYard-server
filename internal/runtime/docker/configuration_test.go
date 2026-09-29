@@ -302,3 +302,41 @@ func TestReadConfigurationFlagsTmpfsMountOptions(t *testing.T) {
 		t.Fatalf("unsupported %v", got.Unsupported)
 	}
 }
+
+// The daemon's own defaults are not settings: the cgroup namespace mode follows the host's cgroup
+// version (/info CgroupVersion: 1 is host, otherwise private), and a shm size of 0 or 64 MiB is
+// Docker's. Anything else is named.
+func TestReadConfigurationKnowsTheDaemonDefaults(t *testing.T) {
+	for _, c := range []struct {
+		cgroup, mode string
+		shm          int64
+		want         []string
+	}{
+		{"2", "private", 67108864, nil},
+		{"2", "private", 0, nil},
+		{"", "private", 67108864, nil},
+		{"1", "host", 67108864, nil},
+		{"1", "host", 0, nil},
+		{"1", "private", 67108864, []string{"host_config:CgroupnsMode"}},
+		{"2", "host", 67108864, []string{"host_config:CgroupnsMode"}},
+		{"2", "private", 128 << 20, []string{"host_config:ShmSize"}},
+	} {
+		target, container, image := configurationFixture()
+		h := container["HostConfig"].(map[string]any)
+		delete(h, "VolumesFrom")
+		delete(h, "Sysctls")
+		h["Tmpfs"] = map[string]string{}
+		h["CgroupnsMode"], h["ShmSize"] = c.mode, c.shm
+		info := map[string]string{"DefaultRuntime": "runc"}
+		if c.cgroup != "" {
+			info["CgroupVersion"] = c.cgroup
+		}
+		got, err := fakeInspectionInfo(t, info, serve(container, image)).ReadConfiguration(context.Background(), target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(got.Unsupported, c.want) && !(len(got.Unsupported) == 0 && len(c.want) == 0) {
+			t.Errorf("cgroup v%q mode %s shm %d: %v, want %v", c.cgroup, c.mode, c.shm, got.Unsupported, c.want)
+		}
+	}
+}

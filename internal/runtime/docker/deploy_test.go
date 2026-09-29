@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +44,7 @@ type fakeDeployEngine struct {
 	createdID        string         // the Id POST /containers/create answers; newID default
 	startedImage     string         // the Image GET /containers/{new}/json reports; newImage default
 	defaultRuntime   string         // GET /info DefaultRuntime; "runc" default
+	cgroupVersion    string         // GET /info CgroupVersion; "2" default
 	stopStatus       int            // 204 default; 304 allowed
 	stopDelay        time.Duration
 	renameStatus     int
@@ -55,6 +57,7 @@ type fakeDeployEngine struct {
 	onStart          func()   // runs on the handler before POST /containers/{new}/start answers
 	newStates        []string // State of each GET /containers/{new}/json in turn, the last repeating; running default
 	newReads         int
+	newRestarts      int                                            // RestartCount of GET /containers/{new}/json
 	pullStatus       int                                            // POST /images/create; 200 default
 	pullStatusFor    map[string]int                                 // per fromImage, overriding pullStatus
 	pullBody         string                                         // its progress stream
@@ -74,7 +77,7 @@ type fakeDeployEngine struct {
 func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 	t.Helper()
 	f := &fakeDeployEngine{oldStatus: 200, oldImageStatus: 200, imageStatus: 200, inspectNewStatus: 200, defaultRuntime: "runc", stopStatus: 204, renameStatus: 204, createStatus: 201, startStatus: 204, removeStatus: 204, oldStartStatus: 204, removeNewStatus: 204, connectStatus: 200, pullStatus: 200, pulledStatus: 200, tagStatus: 201, volumeStatus: 201, reads: map[string]int{},
-		imageReportedID: newImage, createdID: newID, startedImage: newImage,
+		imageReportedID: newImage, createdID: newID, startedImage: newImage, cgroupVersion: "2",
 		pullBody: `{"status":"Pulling from org/app"}` + "\n" + `{"status":"Digest: ` + pullDigest + `"}` + "\n",
 		pulled:   map[string]any{"Id": newImage, "RepoDigests": []string{"ghcr.io/org/app@" + pullDigest}}}
 	f.oldContainer = map[string]any{"Id": oldID, "Image": oldImage, "Name": "/shop-web-1", "Created": "2023-11-14T22:13:20Z", "Mounts": []any{},
@@ -93,7 +96,7 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		p := r.URL.EscapedPath()
 		switch {
 		case r.Method == "GET" && strings.HasSuffix(p, "/info"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"DefaultRuntime": f.defaultRuntime})
+			_ = json.NewEncoder(w).Encode(map[string]any{"DefaultRuntime": f.defaultRuntime, "CgroupVersion": f.cgroupVersion})
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+oldID+"/json"):
 			body := f.oldRead(oldID, f.oldContainer)
 			w.WriteHeader(f.oldStatus)
@@ -177,7 +180,7 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			f.newReads++
 			f.mu.Unlock()
 			w.WriteHeader(f.inspectNewStatus)
-			_, _ = w.Write([]byte(`{"Id":"` + newID + `","Image":"` + f.startedImage + `","Created":"2024-01-01T00:00:01Z","Name":"/shop-web-1","State":` + state + `}`))
+			_, _ = w.Write([]byte(`{"Id":"` + newID + `","Image":"` + f.startedImage + `","Created":"2024-01-01T00:00:01Z","Name":"/shop-web-1","RestartCount":` + strconv.Itoa(f.newRestarts) + `,"State":` + state + `}`))
 		case r.Method == "DELETE" && (strings.HasSuffix(p, "/containers/"+oldID) || strings.HasSuffix(p, "/containers/"+otherOldID)):
 			w.WriteHeader(f.removeStatus)
 		default:
@@ -1460,5 +1463,75 @@ func TestDeployExplicitStartWatch(t *testing.T) {
 	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
 	if res := f.client().Deploy(context.Background(), explicitRequest(s), func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("run: %s", explicitSteps(res))
+	}
+}
+
+// The watch fails a container its restart policy restarted, runs only when the old container was
+// running, and never sleeps past its window.
+func TestDeployExplicitWatchRules(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.newRestarts = 1
+	if got := explicitSteps(f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})); !strings.HasSuffix(got, "start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped") {
+		t.Fatalf("restarted: %s", got)
+	}
+	// A stopped old container's replacement may exit as it did: only the identity read.
+	f = newFakeDeployEngine(t)
+	f.stopStatus, f.newStates = 304, []string{`{"Status":"exited","Running":false}`}
+	if res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {}); res.Outcome != protocol.OutcomeSucceeded || f.newReads != 1 {
+		t.Fatalf("stopped old: %s after %d reads", explicitSteps(res), f.newReads)
+	}
+	// A poll longer than the window is cut to the window.
+	f = newFakeDeployEngine(t)
+	c := docker.NewHTTP(f.srv.Client(), f.srv.URL).WatchStartFor(100*time.Millisecond, time.Minute)
+	begun := time.Now()
+	if res := c.Deploy(context.Background(), explicitRequest(explicitService()), func() {}); res.Outcome != protocol.OutcomeSucceeded || time.Since(begun) > 10*time.Second || f.newReads != 3 {
+		t.Fatalf("bounded: %s after %v and %d reads", explicitSteps(res), time.Since(begun), f.newReads)
+	}
+}
+
+// The explicit precondition refuses what the configuration read would have named, so a caller
+// that leaves spec.unsupported empty cannot drop a setting the frame does not carry.
+func TestDeployExplicitRefusesUncarriedSettings(t *testing.T) {
+	for name, c := range map[string]struct {
+		set    map[string]any
+		cgroup string
+		step   string
+	}{
+		"cpu shares":        {map[string]any{"CpuShares": 512}, "2", "unsupported: resource_limits"},
+		"unknown key":       {map[string]any{"UTSMode": "host"}, "2", "unsupported: host_config:UTSMode"},
+		"several":           {map[string]any{"UTSMode": "host", "DnsSearch": []string{"lan"}, "CpuPeriod": 100000}, "2", "unsupported: resource_limits,dns,host_config:UTSMode"},
+		"with volumes_from": {map[string]any{"VolumesFrom": []string{"x"}, "OomKillDisable": true}, "2", "unsupported: volumes_from,host_config:OomKillDisable"},
+		"daemon defaults":   {map[string]any{"CgroupnsMode": "host", "ShmSize": 67108864, "MemorySwappiness": -1}, "1", ""},
+	} {
+		f := newFakeDeployEngine(t)
+		f.cgroupVersion = c.cgroup
+		for k, v := range c.set {
+			f.oldContainer["HostConfig"].(map[string]any)[k] = v
+		}
+		res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+		if c.step == "" {
+			if res.Outcome != protocol.OutcomeSucceeded {
+				t.Errorf("%s: %s", name, explicitSteps(res))
+			}
+			continue
+		}
+		if res.Steps[0].Outcome != protocol.OutcomeDenied || stepText(res.Steps[0]) != c.step || len(f.steps()) != 2 || res.Validate() != nil {
+			t.Errorf("%s: %s calls %v", name, explicitSteps(res), f.steps())
+		}
+	}
+}
+
+// A docker update during the pull window changes a setting the typed read does not decode; the
+// explicit recheck compares every key.
+func TestDeployExplicitRecheckComparesEveryKey(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.drift = func(id string, read int, body map[string]any) {
+		if read > 1 {
+			body["HostConfig"].(map[string]any)["BlkioWeight"] = 300
+		}
+	}
+	res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+	if got := explicitSteps(res); !strings.Contains(got, "recheck=denied:configuration_drift") {
+		t.Fatalf("steps: %s", got)
 	}
 }

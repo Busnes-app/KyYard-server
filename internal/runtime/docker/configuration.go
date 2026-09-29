@@ -101,10 +101,20 @@ var (
 		"":      {"Aliases", "IPAMConfig", "NetworkID", "EndpointID", "Gateway", "IPAddress", "IPPrefixLen", "IPv6Gateway", "GlobalIPv6Address", "GlobalIPv6PrefixLen", "MacAddress", "DNSNames"},
 		"links": {"Links"},
 	})
-	// daemonDefaults are values the daemon gives a container that sets nothing.
-	daemonDefaults = map[string]string{"ShmSize": "67108864", "CgroupnsMode": `"private"`, "MemorySwappiness": "-1"}
-	engineKey      = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
+	engineKey = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
 )
+
+// daemonDefaults are values the daemon gives a container that sets nothing: 64 MiB of shm, no
+// swappiness, and the cgroup namespace mode of the host's cgroup version (/info CgroupVersion "1"
+// is host, v2 private). A daemon configured with default-shm-size or default-cgroupns-mode makes
+// every container name that key (docs/ACCEPTANCE.md, Known gaps).
+func daemonDefaults(cgroupVersion string) map[string]string {
+	cgroupns := `"private"`
+	if cgroupVersion == "1" {
+		cgroupns = `"host"`
+	}
+	return map[string]string{"ShmSize": "67108864", "CgroupnsMode": cgroupns, "MemorySwappiness": "-1"}
+}
 
 func keyCodes(byCode map[string][]string) map[string]string {
 	out := map[string]string{}
@@ -118,8 +128,8 @@ func keyCodes(byCode map[string][]string) map[string]string {
 
 // unset reports a value that sets nothing: null, false, 0, "", an empty list or map, or the
 // daemon's own default for key.
-func unset(key string, raw json.RawMessage) bool {
-	if d, ok := daemonDefaults[key]; ok && string(raw) == d {
+func unset(key string, raw json.RawMessage, defaults map[string]string) bool {
+	if d, ok := defaults[key]; ok && string(raw) == d {
 		return true
 	}
 	var v any
@@ -143,9 +153,46 @@ func unset(key string, raw json.RawMessage) bool {
 	return false
 }
 
-// uncarried adds to codes each set key of section the configuration does not carry. It reports
-// false for a key outside the Engine's grammar.
-func uncarried(section map[string]json.RawMessage, known map[string]string, codes map[string]bool) bool {
+// uncarried adds to codes every set key of the container the configuration does not carry. It
+// reports false for a key outside the Engine's grammar. The read names these; an explicit
+// precondition refuses them.
+func (in rawInspection) uncarried(cgroupVersion string, codes map[string]bool) bool {
+	if in.NetworkSettings == nil {
+		return false
+	}
+	defaults := daemonDefaults(cgroupVersion)
+	ok := uncarried(in.Config, configKeys, codes, defaults) && uncarried(in.HostConfig, hostConfigKeys, codes, defaults)
+	for _, n := range in.NetworkSettings.Networks {
+		ok = ok && uncarried(n, endpointKeys, codes, defaults)
+	}
+	return ok
+}
+
+// sameKeys reports two reads with equal Config and HostConfig, key by key.
+func (in rawInspection) sameKeys(other rawInspection) bool {
+	return reflect.DeepEqual(in.Config, other.Config) && reflect.DeepEqual(in.HostConfig, other.HostConfig)
+}
+
+// orderedCodes lists codes' known codes in their vocabulary's order, then at most
+// protocol.MaxListEntries Engine keys in theirs.
+func orderedCodes(codes map[string]bool) []string {
+	out := []string{}
+	for _, code := range protocol.UnsupportedCodes {
+		if codes[code] {
+			out = append(out, code)
+		}
+	}
+	var keys []string
+	for code, set := range codes {
+		if set && strings.HasPrefix(code, "host_config:") {
+			keys = append(keys, code)
+		}
+	}
+	slices.Sort(keys)
+	return append(out, keys[:min(len(keys), protocol.MaxListEntries)]...)
+}
+
+func uncarried(section map[string]json.RawMessage, known map[string]string, codes map[string]bool, defaults map[string]string) bool {
 	for k, raw := range section {
 		code, listed := known[k]
 		switch {
@@ -155,11 +202,11 @@ func uncarried(section map[string]json.RawMessage, known map[string]string, code
 			var ipam map[string]json.RawMessage
 			_ = json.Unmarshal(raw, &ipam)
 			for sub, v := range ipam {
-				if sub != "IPv4Address" && !unset(sub, v) {
+				if sub != "IPv4Address" && !unset(sub, v, defaults) {
 					codes["host_config:IPAMConfig"] = true
 				}
 			}
-		case unset(k, raw) || (listed && code == ""):
+		case unset(k, raw, defaults) || (listed && code == ""):
 		case listed:
 			codes[code] = true
 		default:
@@ -178,7 +225,7 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 	}
 	ctx, cancel := context.WithTimeout(parent, callBudget)
 	defer cancel()
-	daemonRuntime, err := c.inspectionRuntime(ctx)
+	daemon, err := c.daemonInfo(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -216,31 +263,13 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 	}
 	out := configurationFacts(before, im.RepoDigests)
 	codes := map[string]bool{}
-	for _, code := range undescribed(full, "", daemonRuntime) {
+	for _, code := range undescribed(full, "", daemon.DefaultRuntime) {
 		codes[code] = codes[code] || slices.Contains(protocol.ConfigurationOnlyCodes, code)
 	}
-	ok := raw.NetworkSettings != nil && uncarried(raw.Config, configKeys, codes) && uncarried(raw.HostConfig, hostConfigKeys, codes)
-	for _, n := range raw.NetworkSettings.Networks {
-		ok = ok && uncarried(n, endpointKeys, codes)
-	}
-	if !ok {
+	if !raw.uncarried(daemon.CgroupVersion, codes) {
 		return nil, ErrInspectionInvalid
 	}
-	// Known codes in their vocabulary's order, then Engine keys in theirs.
-	for _, code := range protocol.UnsupportedCodes {
-		if codes[code] {
-			out.Unsupported = append(out.Unsupported, code)
-		}
-	}
-	var keys []string
-	for code, set := range codes {
-		if set && strings.HasPrefix(code, "host_config:") {
-			keys = append(keys, code)
-		}
-	}
-	slices.Sort(keys)
-	out.Unsupported = append(out.Unsupported, keys[:min(len(keys), protocol.MaxListEntries)]...)
-	out.Unsupported = append(out.Unsupported, out.truncated...)
+	out.Unsupported = append(orderedCodes(codes), out.truncated...)
 	out.Target, out.ImageID, out.ObservedAt = target, target.ImageID, time.Now().UTC()
 	if out.Validate(target, time.Now()) != nil {
 		return nil, ErrInspectionInvalid

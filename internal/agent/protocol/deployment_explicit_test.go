@@ -159,3 +159,23 @@ func TestRollbackStepCodes(t *testing.T) {
 		t.Fatal("rollback_failed takes no detail")
 	}
 }
+
+// An explicit precondition names an Engine key it cannot carry the way the configuration read
+// does, host_config:<Key>, beside the known codes.
+func TestUnsupportedStepNamesEngineKeys(t *testing.T) {
+	for detail, ok := range map[string]bool{
+		"resource_limits,dns,host_config:UTSMode": true,
+		"host_config:OomKillDisable":              true,
+		"host_config:Oom-Kill":                    false,
+		"host_config:UTSMode,host_config:UTSMode": false,
+		"list_truncated:ports":                    false,
+		"bogus":                                   false,
+	} {
+		r := goodResult()
+		r.Outcome, r.Code = OutcomeDenied, ResultStepFailed
+		r.Steps = []DeploymentStep{{Service: "web", Step: StepPrecondition, Outcome: OutcomeDenied, Code: "unsupported", Detail: detail}}
+		if err := r.Validate(); (err == nil) != ok {
+			t.Errorf("%s: %v", detail, err)
+		}
+	}
+}
