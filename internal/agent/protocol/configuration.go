@@ -252,7 +252,7 @@ func (c *ContainerConfiguration) Validate(target InspectionTarget, now time.Time
 	}
 	seen := map[string]bool{}
 	for _, n := range c.Networks {
-		if n.Name == "" || !text(n.Name, 256) || seen[n.Name] || !textList(n.Aliases, 256) || !validIPOrEmpty(n.IP) {
+		if n.Name == "" || !text(n.Name, 256) || NamespaceNetwork(n.Name) || seen[n.Name] || !textList(n.Aliases, 256) || !validIPOrEmpty(n.IP) {
 			return configErr("networks")
 		}
 		seen[n.Name] = true

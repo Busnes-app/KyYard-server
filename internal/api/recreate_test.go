@@ -439,8 +439,24 @@ func TestDirectCommandsGateHostLevelSettings(t *testing.T) {
 	f := directFixture(t, directCaps)
 	spec := directSpec("web")
 	spec.CapAdd = []string{"NET_BIND_SERVICE", "CAP_CHOWN"} // within Docker's defaults
+	spec.SecurityOpt = []string{"no-new-privileges"}        // hardening
 	if w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true); w.Code != 202 {
 		t.Fatalf("plain spec: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The host's or another container's namespace is a network mode, never an attachment: an
+// attachment named so is refused before the host-level gate, with the opt-in or without.
+func TestDirectCommandsRefuseANamespaceAttachment(t *testing.T) {
+	for _, name := range []string{"host", "container:" + strings.Repeat("a", 64)} {
+		for _, allow := range []bool{false, true} {
+			f := directFixture(t, directCaps)
+			api.SetAllowPrivilegedForTest(f.s, allow)
+			spec := directSpec("web")
+			spec.NetworkMode, spec.Networks = "", []protocol.NetworkAttachmentSpec{{Name: name}}
+			blockers(t, tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true), "spec_invalid:networks")
+			assertNoFrame(t, f)
+		}
 	}
 }
 

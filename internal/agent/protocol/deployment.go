@@ -251,6 +251,12 @@ type ExplicitService struct {
 	AcknowledgedBinds []string                `json:"acknowledged_binds"` // host paths the operator confirmed
 }
 
+// NamespaceNetwork reports a name that is a network namespace mode rather than a network: the
+// host's, or another container's. Only network_mode may name one; an attachment may not.
+func NamespaceNetwork(name string) bool {
+	return name == "host" || strings.HasPrefix(name, "container:")
+}
+
 // valid bounds an explicit service. Paired with ContainerConfiguration.Validate in
 // configuration.go: the two check the same fields, so change them together.
 func (e ExplicitService) valid() bool {
@@ -269,7 +275,7 @@ func (e ExplicitService) valid() bool {
 	}
 	seen := map[string]bool{}
 	for _, n := range e.Networks {
-		if n.Name == "" || !text(n.Name, 256) || seen[n.Name] || !textList(n.Aliases, 256) || !validIPOrEmpty(n.IP) {
+		if n.Name == "" || !text(n.Name, 256) || NamespaceNetwork(n.Name) || seen[n.Name] || !textList(n.Aliases, 256) || !validIPOrEmpty(n.IP) {
 			return false
 		}
 		seen[n.Name] = true

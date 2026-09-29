@@ -910,7 +910,7 @@ func explicitBody(body *containerCreate, e *protocol.ExplicitService) {
 	}
 	h.NetworkMode = e.NetworkMode
 	if first, _ := attachments(e); first != nil {
-		if h.NetworkMode == "" {
+		if h.NetworkMode == "" && !protocol.NamespaceNetwork(first.Name) {
 			h.NetworkMode = first.Name
 		}
 		body.NetworkingConfig = &networkingConfig{EndpointsConfig: map[string]endpointSettings{first.Name: endpoint(*first)}}

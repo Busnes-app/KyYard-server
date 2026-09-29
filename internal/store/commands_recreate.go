@@ -280,15 +280,21 @@ var dockerDefaultCaps = []string{"CHOWN", "DAC_OVERRIDE", "FSETID", "FOWNER", "M
 
 // hostPaths are host paths a bind reaches only with the opt-in: the path and every parent, and
 // for all but / and /etc (whose files, like /etc/localtime, containers commonly read) anything
-// beneath it too.
-var hostPaths = []string{"/", "/etc", "/var/run/docker.sock", "/run/docker.sock", "/proc", "/sys", "/dev", "/boot", "/root", "/var/lib/docker"}
+// beneath it too. /var/run is /run on every current distribution.
+var hostPaths = []string{"/", "/etc", "/run", "/var/run", "/var/spool", "/var/lib", "/usr", "/lib", "/lib64", "/bin", "/sbin", "/proc", "/sys", "/dev", "/boot", "/root"}
+
+// hardening are the security_opt entries that only take privilege away.
+var hardening = []string{"no-new-privileges", "no-new-privileges:true"}
 
 // hostLevel reports a setting that reaches past the container into the host, which
-// KY_CONTAINER_ALLOW_PRIVILEGED gates: privileged, devices, security options, capabilities
-// beyond Docker's defaults, the host's or another container's network, or a bind of hostPaths.
+// KY_CONTAINER_ALLOW_PRIVILEGED gates: privileged, devices, a security option other than
+// hardening, capabilities beyond Docker's defaults, the host's or another container's network
+// (as the mode or an attachment), or a bind of hostPaths.
 func hostLevel(svc *protocol.DeploymentService) bool {
 	e := svc.Explicit
-	if e.Privileged || len(e.Devices) > 0 || len(e.SecurityOpt) > 0 || e.NetworkMode == "host" || strings.HasPrefix(e.NetworkMode, "container:") {
+	if e.Privileged || len(e.Devices) > 0 || protocol.NamespaceNetwork(e.NetworkMode) ||
+		slices.ContainsFunc(e.Networks, func(n protocol.NetworkAttachmentSpec) bool { return protocol.NamespaceNetwork(n.Name) }) ||
+		slices.ContainsFunc(e.SecurityOpt, func(o string) bool { return !slices.Contains(hardening, o) }) {
 		return true
 	}
 	if slices.ContainsFunc(e.CapAdd, func(c string) bool {

@@ -91,6 +91,12 @@ func TestExplicitDeploymentRequest(t *testing.T) {
 		"too many networks": {func(r *DeploymentRequest) {
 			r.Services[0].Explicit.Networks = make([]NetworkAttachmentSpec, MaxConfigurationNetworks+1)
 		}, false},
+		"host network as an attachment": {func(r *DeploymentRequest) {
+			r.Services[0].Explicit.Networks = []NetworkAttachmentSpec{{Name: "host"}}
+		}, false},
+		"container network as an attachment": {func(r *DeploymentRequest) {
+			r.Services[0].Explicit.Networks = []NetworkAttachmentSpec{{Name: "container:db"}}
+		}, false},
 		"bad network ip": {func(r *DeploymentRequest) {
 			r.Services[0].Explicit.Networks = []NetworkAttachmentSpec{{Name: "n", IP: "x"}}
 		}, false},

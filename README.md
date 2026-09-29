@@ -638,7 +638,7 @@ refused deposit does not remove the local copy.
 | `KY_BACKUP_DEPOSIT_INTERVAL` | `24h` | Default schedule only. The admin screen's setting wins; `0` is off; 15 minutes to 366 days otherwise. |
 | `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on an RFC1918 or CGNAT address behind your own TLS proxy. Loopback, link-local and other reserved ranges stay refused; HTTPS stays required. Logged at startup and on the pairing audit row. |
 | `KY_REGISTRY_ALLOW_PRIVATE` | `false` | Let organization administrators mark a registry `allow_private`, admitting RFC1918 and CGNAT registry addresses. Off, the server refuses the flag, so a tenant cannot aim the server at your network. Loopback and link-local stay refused. Logged at startup. |
-| `KY_CONTAINER_ALLOW_PRIVILEGED` | `false` | Let a container edit or run set host-level settings: privileged, devices, security options, capabilities beyond Docker's defaults, host or `container:` network mode, or a bind of `/`, `/etc`, the Docker socket, `/proc`, `/sys`, `/dev`, `/boot`, `/root`, `/var/lib/docker` or a parent of one. Off, those are refused. On, every organization administrator is root on every Docker host; the bind acknowledgement then guards against mistakes, not attackers. Logged at startup. |
+| `KY_CONTAINER_ALLOW_PRIVILEGED` | `false` | Let a container edit or run set host-level settings: privileged, devices, security options other than `no-new-privileges`, capabilities beyond Docker's defaults, the host's or another container's network (as the mode or an attachment), or a bind of a system path: `/`, `/etc`, `/run`, `/var/run`, `/var/spool`, `/var/lib`, `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/proc`, `/sys`, `/dev`, `/boot` or `/root`, a parent of one, or anything beneath one other than `/` and `/etc`. Off blocks these as a guard against mistakes and the obvious escalations. It is not a boundary against an organization administrator holding `container.configure`, who can still acknowledge a bind of any other host path; each acknowledged bind is audited per path. On makes that administrator root on every Docker host. Logged at startup. |
 | `KY_DNS` | unset | Only in `docker-compose.lan-dns.yml`: the container's resolver, for names that exist only on your LAN. |
 
 Reach a KyRecovery that only your LAN's DNS knows:
@@ -744,7 +744,8 @@ edited copy after you type its name. The host agent must advertise `container.co
 Settings KyYard cannot read (listed on the tab) block saving, so a recreate never drops them
 silently. A new host path bind needs its own acknowledgement. Host-level settings (privileged,
 devices, extra capabilities, host networking, system path binds) are refused unless
-`KY_CONTAINER_ALLOW_PRIVILEGED` is on. A container whose start fails, or that stops within five
+`KY_CONTAINER_ALLOW_PRIVILEGED` is on; that guards against mistakes, not against an
+administrator (see the variable). A container whose start fails, or that stops within five
 seconds, is rolled back to the old one. Environment, labels and command a container inherited
 from its image are kept as they were read, even when you change the image. Do not recreate the
 KyYard server's own container, or a host agent's, through KyYard: stopping it stops the agent

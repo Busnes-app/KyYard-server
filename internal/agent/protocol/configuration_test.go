@@ -81,7 +81,9 @@ func TestConfigurationRefusals(t *testing.T) {
 				c.Networks[i].Name = fmt.Sprintf("n%d", i)
 			}
 		},
-		"network ip": func(c *ContainerConfiguration) { c.Networks[1].IP = "nope" },
+		"network ip":             func(c *ContainerConfiguration) { c.Networks[1].IP = "nope" },
+		"host network name":      func(c *ContainerConfiguration) { c.Networks[1].Name = "host" },
+		"container network name": func(c *ContainerConfiguration) { c.Networks[1].Name = "container:db" },
 		"labels": func(c *ContainerConfiguration) {
 			c.Labels = map[string]string{}
 			for i := range 33 {

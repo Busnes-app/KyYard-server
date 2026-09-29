@@ -268,14 +268,30 @@ func TestDirectBlockersHostLevel(t *testing.T) {
 		"devices": {func(s *protocol.DeploymentService) {
 			s.Explicit.Devices = []protocol.Device{{Host: "/dev/fuse", Container: "/dev/fuse"}}
 		}, true},
-		"security_opt": {func(s *protocol.DeploymentService) { s.Explicit.SecurityOpt = []string{"no-new-privileges"} }, true},
+		"security_opt": {func(s *protocol.DeploymentService) { s.Explicit.SecurityOpt = []string{"seccomp=unconfined"} }, true},
+		"no-new-privileges": {func(s *protocol.DeploymentService) {
+			s.Explicit.SecurityOpt = []string{"no-new-privileges", "no-new-privileges:true"}
+		}, false},
+		"no-new-privileges off": {func(s *protocol.DeploymentService) { s.Explicit.SecurityOpt = []string{"no-new-privileges:false"} }, true},
+		"hardening beside another": {func(s *protocol.DeploymentService) {
+			s.Explicit.SecurityOpt = []string{"no-new-privileges", "apparmor=unconfined"}
+		}, true},
 		"default caps": {func(s *protocol.DeploymentService) {
 			s.Explicit.CapAdd = []string{"CHOWN", "cap_net_bind_service", "CAP_KILL"}
 		}, false},
-		"cap beyond":                   {func(s *protocol.DeploymentService) { s.Explicit.CapAdd = []string{"NET_ADMIN"} }, true},
-		"host network":                 {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "host" }, true},
-		"container network":            {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "container:db" }, true},
-		"bridge":                       {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "bridge" }, false},
+		"cap beyond":        {func(s *protocol.DeploymentService) { s.Explicit.CapAdd = []string{"NET_ADMIN"} }, true},
+		"host network":      {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "host" }, true},
+		"container network": {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "container:db" }, true},
+		"bridge":            {func(s *protocol.DeploymentService) { s.Explicit.NetworkMode = "bridge" }, false},
+		"host attachment": {func(s *protocol.DeploymentService) {
+			s.Explicit.Networks = []protocol.NetworkAttachmentSpec{{Name: "host"}}
+		}, true},
+		"container attachment": {func(s *protocol.DeploymentService) {
+			s.Explicit.NetworkMode, s.Explicit.Networks = "bridge", []protocol.NetworkAttachmentSpec{{Name: "bridge"}, {Name: "container:db"}}
+		}, true},
+		"user network attachment": {func(s *protocol.DeploymentService) {
+			s.Explicit.Networks = []protocol.NetworkAttachmentSpec{{Name: "hostile"}}
+		}, false},
 		"bind root":                    {bind("/"), true},
 		"bind /etc":                    {bind("/etc"), true},
 		"bind /etc/localtime":          {bind("/etc/localtime"), false},
@@ -286,7 +302,20 @@ func TestDirectBlockersHostLevel(t *testing.T) {
 		"bind /root/.ssh":              {bind("/root/.ssh"), true},
 		"bind /var/lib/docker/volumes": {bind("/var/lib/docker/volumes"), true},
 		"bind /srv/data":               {bind("/srv/data"), false},
-		"bind /var/lib/app":            {bind("/var/lib/app"), false},
+		"bind /var/lib/app":            {bind("/var/lib/app"), true},
+		"bind /var/lib":                {bind("/var/lib"), true},
+		"bind /run":                    {bind("/run"), true},
+		"bind /run/containerd":         {bind("/run/containerd/containerd.sock"), true},
+		"bind /var/run/crio":           {bind("/var/run/crio/crio.sock"), true},
+		"bind /var/spool/cron":         {bind("/var/spool/cron"), true},
+		"bind /usr/local/bin":          {bind("/usr/local/bin"), true},
+		"bind /lib/modules":            {bind("/lib/modules"), true},
+		"bind /lib64":                  {bind("/lib64"), true},
+		"bind /bin":                    {bind("/bin"), true},
+		"bind /sbin/init":              {bind("/sbin/init"), true},
+		"bind /var/log/app":            {bind("/var/log/app"), false},
+		"bind /library":                {bind("/library"), false},
+		"bind /home/me/app":            {bind("/home/me/app"), false},
 		"bind /devices":                {bind("/devices"), false},
 	} {
 		for _, allow := range []bool{false, true} {
