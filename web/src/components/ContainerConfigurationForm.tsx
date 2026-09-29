@@ -3,9 +3,8 @@ import { secureFetch } from '../api';
 import { refusal, type Container, type ContainerConfiguration, type DirectCommand, type ExplicitSpec, type WriteTexts } from '../tenant';
 import { Link } from './Link';
 import { containerPath } from '../router';
-import { useCommand } from './ContainerControls';
 import { RESULT_CODES, StepTable } from './ApplicationDeploymentPlan';
-import { diff, toSpec, unsupportedLabel } from './containerConfiguration';
+import { diff, needsAck, toSpec, unsupportedLabel } from './containerConfiguration';
 import { CommandGroup, HealthGroup, ImageGroup, MiscGroup, ResourcesGroup, RestartGroup } from './configurationGroups/basics';
 import { EnvironmentGroup } from './configurationGroups/environment';
 import { NetworkGroup, PortsGroup, VolumesGroup } from './configurationGroups/mounts';
@@ -14,11 +13,10 @@ import { LoggingGroup, SecurityGroup } from './configurationGroups/security';
 type Props = {
   base: string; mode: 'edit' | 'run';
   initial?: ContainerConfiguration; container?: Container;
-  managed?: { application: string; link: string };
-  // onSent runs when a new command is accepted; onSettled when it has an outcome. The caller
-  // renders the settled result (CommandResult), so it survives the form unmounting.
-  onSent?: () => void;
-  onSettled: (command: DirectCommand) => void;
+  // onSent hands an accepted command to the caller, which polls it and renders the result, so
+  // both survive the form unmounting; pending keeps the form locked while it is unsettled.
+  onSent: (command: DirectCommand) => void;
+  pending?: boolean;
 };
 
 const EMPTY_SPEC: ExplicitSpec = {
@@ -74,7 +72,7 @@ const BLOCKERS: Record<string, string> = {
   configuration_incomplete: 'The configuration read was incomplete, so this container cannot be recreated from it.',
   name_taken: 'Another container already uses that name.',
   port_conflict: 'Another container already publishes one of these host ports.',
-  image_unresolved: "The image is no longer on the host. Tick \"Pull the reference's current digest\".",
+  image_unresolved: "The image could not be resolved. Check the reference and the organization's registries.",
   bind_unacknowledged: 'Acknowledge every new host path.',
 };
 // spec_invalid:<field> names the setting the server's configuration rules refused.
@@ -104,7 +102,7 @@ const OUTCOMES: Record<string, string> = {
   unknown: 'The outcome is unknown: the host may or may not have acted. Check the container before trying again.',
 };
 
-export function ContainerConfigurationForm({ base, mode, initial, container, managed, onSent, onSettled }: Props) {
+export function ContainerConfigurationForm({ base, mode, initial, container, onSent, pending = false }: Props) {
   const start = initial ? toSpec(initial) : EMPTY_SPEC;
   const [draft, setDraft] = useState<ExplicitSpec>(start);
   const [logOptions, setLogOptions] = useState<[string, string][]>(Object.entries(start.log.options));
@@ -113,23 +111,21 @@ export function ContainerConfigurationForm({ base, mode, initial, container, man
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [lost, setLost] = useState(false);
-  const [sent, setSent] = useState<DirectCommand | null>(null);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  const { command, error: pollError } = useCommand(base, sent, onSettled);
   const run = mode === 'run';
   const before = buildSpec(start, Object.entries(start.log.options));
   const spec = buildSpec(draft, logOptions);
   const changes = diff(before, spec);
-  const known = run ? [] : start.mounts.filter((m) => m.kind === 'bind').map((m) => m.source);
-  const newBinds = [...new Set(spec.mounts.filter((m) => m.kind === 'bind' && !known.includes(m.source)).map((m) => m.source))];
+  const known = run ? [] : start.mounts;
+  const newBinds = [...new Set(spec.mounts.filter((m) => needsAck(known, m)).map((m) => m.source))];
   const expected = run ? spec.name : container?.name ?? '';
-  const pending = command !== null && !command.outcome;
-  const incomplete = spec.env.some((e) => e.name === '') || spec.ports.some((p) => p.container === 0) || spec.devices.some((d) => d.host === '' || d.container === '');
   const r = spec.resources, h = spec.healthcheck;
+  const incomplete = spec.env.some((e) => e.name === '') || spec.ports.some((p) => p.container === 0) || spec.devices.some((d) => d.host === '' || d.container === '')
+    || (!!h && (h.test[0] === 'CMD' || h.test[0] === 'CMD-SHELL') && h.test.length < 2);
   const numbers = [r.nano_cpus, r.memory_bytes, r.memory_swap_bytes, r.pids_limit, spec.restart_retries, spec.stop_timeout ?? 0, ...(h ? [h.interval_seconds, h.timeout_seconds, h.start_period_seconds, h.retries] : [])];
   const malformed = numbers.some((n) => !Number.isFinite(n));
-  const ready = !managed && !incomplete && !malformed && spec.unsupported.length === 0 && (run ? spec.name !== '' && spec.image.reference !== '' : changes.length > 0 && !!container)
+  const ready = !incomplete && !malformed && spec.unsupported.length === 0 && (run ? spec.name !== '' && spec.image.reference !== '' : changes.length > 0 && !!container)
     && expected !== '' && confirm === expected && newBinds.every((b) => b !== '' && acks.has(b));
   const set = (patch: Partial<ExplicitSpec>) => setDraft((d) => ({ ...d, ...patch }));
   const submit = async () => {
@@ -143,20 +139,18 @@ export function ContainerConfigurationForm({ base, mode, initial, container, man
       if (!resp.ok) { setError(await failure(resp)); return; }
       const cmd: DirectCommand = await resp.json();
       if (!alive.current) return;
-      setConfirm(''); setSent(cmd); onSent?.();
-      if (cmd.outcome) onSettled(cmd);
+      setConfirm(''); onSent(cmd);
     } catch {
       if (alive.current) { setLost(true); setError('Connection lost. The change may have been sent. Check recent activity and refresh before trying again.'); }
     } finally { if (alive.current) setBusy(false); }
   };
   const groupProps = { spec: draft, set };
   return <section className="ky-config-form" aria-label={run ? 'Run a container' : 'Edit configuration'}>
-    {managed && <p className="dr-alert dr-alert-warn">Managed by application {managed.application}. <Link to={managed.link}>Edit it there.</Link></p>}
     {spec.unsupported.length > 0 && <div className="dr-alert dr-alert-warn">
       <p>This container has settings KyYard cannot carry over, so saving is disabled. The container:</p>
       <ul className="ky-list">{spec.unsupported.map((c) => <li key={c}>{unsupportedLabel(c)}</li>)}</ul>
     </div>}
-    {(run || initial) && <fieldset className="ky-config-groups" disabled={!!managed || busy || pending}>
+    {(run || initial) && <fieldset className="ky-config-groups" disabled={busy || pending}>
       <ImageGroup {...groupProps} initial={start} run={run} />
       <CommandGroup {...groupProps} />
       <EnvironmentGroup {...groupProps} />
@@ -170,19 +164,17 @@ export function ContainerConfigurationForm({ base, mode, initial, container, man
       <LoggingGroup {...groupProps} options={logOptions} onOptions={setLogOptions} />
       <MiscGroup {...groupProps} />
     </fieldset>}
-    {!managed && <div className="ky-config-save">
+    <div className="ky-config-save">
       {run ? <p>Running creates and starts a new container on this host.</p> : <>
         <p>Saving replaces the container with a new one built from this configuration; its ID changes. If the new one does not start, the host tries to restore the previous one.</p>
         <p>{changes.length ? `Changes: ${changes.join(', ')}` : 'No changes.'}</p>
       </>}
-      {incomplete && <p>Complete every row: variable names, container ports and device paths.</p>}
+      {incomplete && <p>Complete every row: variable names, container ports, device paths and the health check command.</p>}
       {malformed && <p>Enter a number in every numeric field.</p>}
       <label>{run ? 'Type the new container name to confirm' : `Type the container name ${expected} to confirm`}<input value={confirm} autoComplete="off" onChange={(e) => setConfirm(e.target.value)} /></label>
       <div><button type="button" disabled={!ready || busy || pending || lost} onClick={() => void submit()}>{run ? 'Run container' : 'Save and recreate'}</button></div>
-    </div>}
+    </div>
     {error && <p role="alert" className="dr-alert dr-alert-error">{error}</p>}
-    {pending && <p role="status">Command sent; waiting for the host. Do not retry while its outcome is unknown.</p>}
-    {pollError && <p role="alert" className="dr-alert dr-alert-error">Could not read the command result. Check recent activity before trying again.</p>}
   </section>;
 }
 

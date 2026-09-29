@@ -14,10 +14,11 @@ export function ImageGroup({ spec, set, initial, run }: GroupProps & { initial: 
   return <Group title="Image">
     <Text label="Container name" value={spec.name} onChange={(name) => set({ name })} />
     <Text label="Image reference" value={spec.image.reference} placeholder="nginx:1.27" onChange={(reference) => { const same = reference === initial.image.reference; set({ image: { ...spec.image, reference, digest: same ? spec.image.digest : '' }, image_id: same ? spec.image_id : '' }); }} />
-    {!run && (kept ? <>
-      <p>Digest <code style={{ overflowWrap: 'anywhere' }}>{kept}</code></p>
-      <Check label="Pull the reference's current digest" checked={spec.image.digest === ''} onChange={(pull) => { const keep = !pull && sameReference; set({ image: { ...spec.image, digest: keep ? kept : '' }, image_id: keep ? initial.image_id : '' }); }} />
-    </> : <p>No repository digest was reported; saving pulls the reference.</p>)}
+    {!run && <>
+      {kept && <p>Digest <code style={{ overflowWrap: 'anywhere' }}>{kept}</code></p>}
+      <Check label="Pull the reference's current digest" checked={spec.image_id === ''} onChange={(pull) => { const keep = !pull && sameReference; set({ image: { ...spec.image, digest: keep ? kept : '' }, image_id: keep ? initial.image_id : '' }); }} />
+      {spec.image_id !== '' && <p>The host's image is kept; tick to pull the reference's current digest instead.</p>}
+    </>}
   </Group>;
 }
 

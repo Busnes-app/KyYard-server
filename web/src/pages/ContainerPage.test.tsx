@@ -96,7 +96,8 @@ it('shows an organization administrator the editable configuration, values maske
   window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
   render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
   expect(((await screen.findByLabelText('Hostname')) as HTMLInputElement).value).toBe('box');
-  expect((screen.getByLabelText('Value of TOKEN') as HTMLInputElement).type).toBe('password');
+  expect(screen.getByRole('button', { name: 'Reveal value of TOKEN' }).textContent).toBe('••••••');
+  expect(document.body.innerHTML).not.toContain('s3cret');
   expect(fetcher.mock.calls.some(([u]) => String(u).endsWith('/inspection'))).toBe(false);
 });
 
@@ -108,12 +109,15 @@ it('asks for an agent upgrade before editing when the host lacks container.confi
   expect(await screen.findByText(/Network mode/)).toBeTruthy();
 });
 
-it('shows a managed container read-only with a link to its application', async () => {
+it('shows the redacted configuration of a managed container with a link to its application', async () => {
   const fetcher = stub('organization_admin', [container()], { ...configurable, applications: [{ id: 'i1', application_id: 'app1', endpoint_id: 'ep_1', project: 'shop', containers: [{ id, name: 'web', image_id: 'sha256:1', created_at: '' }] }] });
   window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
   render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
   expect((await screen.findByRole('link', { name: 'Edit it there.' })).getAttribute('href')).toBe('/organizations/a/environments/env-a');
   expect(screen.getByText(/Managed by application shop/)).toBeTruthy();
+  expect(await screen.findByText(/Network mode/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Save and recreate' })).toBeNull();
+  expect(screen.queryByLabelText('Hostname')).toBeNull();
   expect(fetcher.mock.calls.some(([u]) => String(u).endsWith('/configuration'))).toBe(false);
 });
 
@@ -151,6 +155,23 @@ it('keeps the result and the link once the inventory drops the replaced containe
   expect(within(screen.getByRole('table')).getByText('start')).toBeTruthy();
   expect(screen.getByText('Done.')).toBeTruthy();
   expect(screen.getAllByRole('link', { name: 'Open the new container' }).map((l) => l.getAttribute('href'))).toEqual([`/organizations/a/endpoints/ep_1/containers/${next}?tab=configuration`]);
+});
+
+it('keeps polling a sent recreate after the operator switches tabs', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  stub('organization_admin', [container()], { ...configurable, command: { id: 'cmd9', action: 'container.recreate', outcome: 'failed', result: { code: 'step_failed', steps: [{ service: 'direct', step: 'rollback', outcome: 'succeeded', code: 'start_failed_rolled_back', detail: '' }], services: [] } } });
+  window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  fireEvent.change(await screen.findByLabelText('Hostname'), { target: { value: 'other' } });
+  fireEvent.change(screen.getByLabelText(/^Type the container name/), { target: { value: 'web' } });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Save and recreate' })); });
+  expect(within(screen.getByRole('region', { name: 'Last change' })).getByText(/waiting for the host/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Activity' }));
+  await act(async () => { vi.advanceTimersByTime(1500); });
+  await act(async () => {});
+  const panel = screen.getByRole('region', { name: 'Last change' });
+  expect(within(panel).getByText('The host did not complete the change; the steps say which.')).toBeTruthy();
+  expect(within(within(panel).getByRole('table')).getByText('rollback')).toBeTruthy();
 });
 
 it('says a run needs a Docker host, and shows only the load error when the host cannot be read', async () => {

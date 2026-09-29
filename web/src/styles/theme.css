@@ -345,7 +345,9 @@ input:focus, select:focus, textarea:focus {
 .ky-config-group label.ky-config-check { flex-direction: row; align-items: center; gap: 8px; }
 .ky-config-check input { width: auto; }
 .ky-config-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.ky-config-row input, .ky-config-row select { flex: 1 1 140px; min-width: 0; }
+.ky-config-row input, .ky-config-row select, .ky-config-row textarea, .ky-config-masked { flex: 1 1 140px; min-width: 0; }
+.ky-config-row textarea { resize: vertical; field-sizing: content; }
+.ky-config-masked { text-align: left; }
 .ky-config-save { display: flex; flex-direction: column; gap: 8px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
