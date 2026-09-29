@@ -236,8 +236,8 @@ parameter, never a sentence, and is bounded by `MaxDeploymentStepDetailBytes`.
 | `start_failed_rolled_back` | an explicit recreate's start failed and the rollback restored the old container | none |
 | `rollback_failed` | the rollback after a failed start did not restore the old container (on the `rollback` step) | none |
 
-The per-code detail shape is validated: `unsupported` requires one to thirty-two distinct
-`UnsupportedCodes` entries, joined by `,`, as many whole codes as 256 bytes
+The per-code detail shape is validated: `unsupported` requires one to `MaxUnsupported` (40) distinct
+codes, each an `UnsupportedCodes` entry or `host_config:<Key>`, joined by `,`, as many whole codes as 256 bytes
 (`MaxDeploymentStepDetailBytes`) hold, none repeated; `identity_unreadable` and
 `identity_unverified` require a full 64-hex Docker ID; `runtime_status` requires
 `[1-5][0-9]{2}`; every other code requires an empty detail. A step whose detail has another
