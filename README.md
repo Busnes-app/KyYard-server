@@ -401,8 +401,10 @@ namespace by design, and a namespace dropped from the list keeps its Role until 
 
 To change the namespaces of an enrolled cluster, an organization or environment administrator
 opens the cluster (or an application's Kubernetes card), selects **Regenerate manifest**, types
-the list and applies the file shown with `kubectl apply -f`. It carries the RBAC only: no
-enrollment link, no agent Deployment. A namespace you drop keeps its Role until you run
+the list and applies the file shown with `kubectl apply -f`. It carries the RBAC and the agent
+Deployment on this server's agent image (discovered, or `KY_AGENT_IMAGE`; without one the
+request is refused `agent_image_unpinned`), but no enrollment Secret or link, so applying it
+also upgrades the enrolled agent in place. A namespace you drop keeps its Role until you run
 `kubectl -n <namespace> delete role,rolebinding kyyard-agent-deploy`. The list only decides
 where KyYard lets you map applications; before every apply the agent asks the API server
 whether it may create Deployments there and stops (`forbidden`) if the manifest was not
@@ -459,14 +461,21 @@ administrators restart and scale a workload (0 to 1000 replicas; a DaemonSet has
 organization and environment administrators delete a workload or a pod by typing its name;
 organization administrators edit a workload's images, commands, arguments, environment, CPU and
 memory and replicas on its Configuration tab, and open a terminal in a running pod's container
-(the shell you name; stderr is merged into the output). An edit applies at the version it read,
-so a change someone made in between is refused as a conflict; a workload with a setting the form
-cannot carry (an environment entry from a `fieldRef`, say) cannot be saved. A Deployment's
+(the shell you name; stderr is merged into the output). Edits and terminals need the namespace to
+enforce Pod Security `baseline` or `restricted`, as deploying does: otherwise they stop with
+`pod_security`, because editing or entering a privileged workload is host access. An edit is sent
+as a strategic merge patch of only the fields it changed, at the version it read: a change
+someone made in between is refused as a conflict, and every field the form does not show is
+left as it was; a workload with a setting the form cannot carry (an environment entry from a
+`fieldRef`, say) cannot be saved. Before a terminal attaches, the agent asks the API server
+whether it may `create pods/exec` on that pod; a refusal ends the terminal with the reason
+`forbidden`. A Deployment's
 rollout after an edit is awaited unless it is paused; a StatefulSet's or DaemonSet's is not. Environment entries
-from a Secret or ConfigMap show as references and are kept, but an edit can reference any Secret
-in a granted namespace: whoever may edit workloads there can read its Secrets. A workload KyYard
-deployed says which application manages it and changes through that application; restart and
-scale still work. The workload's and the cluster's Activity tabs list every command. An agent
+from a Secret or ConfigMap show as references and are kept, but an apply request can reference
+any Secret key in a granted namespace: whoever may edit workloads there can read its Secrets. A
+workload KyYard deployed says which application manages it and changes through that
+application (the server and the agent both refuse to edit or delete it:
+`application_managed`); restart and scale still work. The workload's and the cluster's Activity tabs list every command. An agent
 whose Role predates these actions answers `forbidden`: **Regenerate manifest** and apply it.
 
 Docker container, image, network, volume, terminal, inspection, configuration and adoption routes
@@ -476,17 +485,16 @@ cluster again after a revocation, delete the Secret `kyyard-agent-identity` (or 
 before applying a new manifest: an identity from an old enrollment refuses a new link.
 
 Upgrade in this order: the KyYard server first (a newer agent is refused by an older server at
-hello and loses even its inventory); then **Regenerate manifest** and `kubectl apply -f` the file
-(a newer agent may need grants the old ClusterRole or Roles lack, and without them every apply
-and workload action stops `forbidden`); then the agent image, in place with
-`kubectl -n kyyard-agent set image deploy/kyyard-agent agent=ghcr.io/busnes-app/kyyard@sha256:<digest>`.
-The identity Secret survives the new pod, so no re-enrollment is needed. The regenerated file
-carries only RBAC, so a Deployment from an enrollment before the scratch volume existed lacks it:
-the agent then logs that its scratch directory is not writable and keeps its command ledgers in
-memory (a restart forgets which commands finished). Add the volume once:
-`kubectl -n kyyard-agent patch deploy/kyyard-agent --type=json -p '[{"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"scratch","emptyDir":{}}},{"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"scratch","mountPath":"/var/lib/kyyard-agent"}}]'`. A new enrollment token
-mints a new enrollment link, which an already-enrolled identity refuses: to change namespaces,
-use **Regenerate manifest**, which carries no link.
+hello and loses even its inventory, and workload actions, edits and pod terminals need a server
+that knows them); then **Regenerate manifest** and `kubectl apply -f` the file. It carries the
+Roles a newer agent needs (without them every apply and workload action stops `forbidden`) and
+the agent Deployment on the server's agent image with its `scratch` volume, so the apply upgrades
+the agent in place. The identity Secret survives the new pod, so no re-enrollment is needed.
+Until it is applied, an agent from an enrollment before the scratch volume existed logs that its
+scratch directory is not writable and keeps its command ledgers in memory (a restart forgets
+which commands finished). A new enrollment token mints a new enrollment link, which an
+already-enrolled identity refuses: to change namespaces, use **Regenerate manifest**, which
+carries no link.
 
 ### Static internal IPs for proxy backends
 

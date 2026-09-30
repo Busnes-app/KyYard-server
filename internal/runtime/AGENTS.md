@@ -1,7 +1,7 @@
 # Runtime adapters
 
 ## Purpose
-Adapters that speak to a container runtime and return product types only. `docker` for Docker hosts and `kubernetes` for clusters (M8: inventory and pod logs in PR 20, stateless deployment in PR 21; workload actions, workload read and apply, and pod exec).
+Adapters that speak to a container runtime and return product types only: `docker` for Docker hosts and `kubernetes` for clusters (inventory, pod logs, stateless deployment, workload actions, workload read and apply, pod exec).
 
 ## Ownership
 Owns the Engine API client (`docker.New` over the Unix socket, `docker.NewHTTP` for tests and TCP daemons), the mapping into `protocol.Snapshot`, and the bounds on what a snapshot may carry. SDK or wire types never leave this package; the protocol package owns the product types.

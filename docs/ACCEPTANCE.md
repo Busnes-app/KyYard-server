@@ -65,20 +65,25 @@ in the results table.
 - Making a read-only bind writable on a container's Configuration tab shows no acknowledgement
   checkbox, and Save answers "Acknowledge every new host path.": the server counts it as a new
   bind and the form does not.
-- A cluster agent whose Role predates workload actions shows Restart, Scale, Delete, Save and
-  Terminal as usual; the command then answers "The agent's role does not allow this.
-  Regenerate and apply the cluster manifest, then retry." Nothing warns before the attempt.
+- A cluster agent whose Role predates workload actions shows Restart, Scale, Delete and Save
+  as usual; the command then answers "The agent's role does not allow this. Regenerate and
+  apply the cluster manifest, then retry." Nothing warns before the attempt.
 - A DaemonSet has no Scale button.
 - After a workload edit, a StatefulSet's, DaemonSet's or paused Deployment's rollout is not
   awaited: the step table shows the rollout step skipped.
 - A pod terminal's 15-minute idle timeout counts only typing and resizing: a session that
   only prints output (`top`) closes after 15 minutes.
-- A pod terminal shows "Connected. Terminal contents are not recorded." before the cluster
-  accepts the attachment; a refused one (no `pods/exec` grant) then ends with "Terminal
-  ended or was refused. …" rather than a start error.
-- A cluster agent enrolled before this release has no scratch volume, and **Regenerate
-  manifest** adds none: it logs that its scratch directory is not writable and keeps its
-  command ledgers in memory until the volume is added (README, Kubernetes endpoints).
+- A pod terminal the agent refuses before attaching ends with the `exec.close` reason
+  `forbidden` (its Role lacks `create pods/exec`: regenerate and apply the manifest) or
+  `pod_security` (the namespace does not enforce Pod Security baseline or restricted). Other
+  failures after "Connected. Terminal contents are not recorded." (the pod replaced under
+  its name, a lost connection) end with the generic "Terminal ended or was refused. …".
+- A cluster agent enrolled before this release has no scratch volume until the regenerated
+  manifest is applied: until then it logs that its scratch directory is not writable and
+  keeps its command ledgers in memory.
+- The real-cluster tests are unproven on this branch: `TestManifestOnARealCluster` and
+  `TestPodExecOnARealCluster` run only with `KY_TEST_KUBECONFIG` against a disposable cluster,
+  and none was available. Every other Kubernetes test runs against the fake clientset.
 
 ## Prerequisites
 
@@ -131,8 +136,11 @@ preflight shows the clock blocker and no plan is made.
 environment with namespace `acc` granted and labelled
 `pod-security.kubernetes.io/enforce=baseline`. In `acc`, create with `kubectl` (not through
 KyYard) a one-replica Deployment `acc-web` of a digest-pinned image that has `/bin/sh` and keeps
-running, with one environment variable `ACCEPT_KEY=one`. After a server upgrade, apply the
-regenerated manifest before the step.
+running, with one environment variable `ACCEPT_KEY=one`. Workload edits and pod terminals are
+refused (`pod_security`) in a namespace without that label. If the cluster was enrolled
+before this release, upgrade the server first, then **Regenerate manifest** and apply it: it
+carries the new Role rules and the agent Deployment (with its scratch volume) on the server's
+agent image, so the enrolled agent is upgraded in place.
 
 **Accounts and two organizations**, all through the UI, signed in as the bootstrap `admin`
 (a platform administrator and the administrator of the initial organization, `org_initial`):
@@ -249,8 +257,8 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   $ACCEPT_KEY` prints `two`; `exit` ends with "Process exited with code 0."
 - Overview, a pod's Delete icon: type the pod name. The Deployment replaces it.
 - Pass: every command succeeds; the workload's Activity tab lists restart, scale and apply; the
-  cluster's Activity tab also lists the pod delete. As reader, the workload page shows no
-  action icons, no Configuration form and no Terminal tab.
+  cluster's Activity tab also lists the pod delete. As reader, the workload page shows each
+  pod's Logs link but no Restart, Scale, Delete or Terminal controls and no Configuration form.
 - Record: whether the operator found the workload page and the typed-name confirmations
   unaided.
 
