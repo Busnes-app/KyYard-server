@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Applications } from './Applications';
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.cookie = 'ky_csrf=; Max-Age=0'; });
@@ -109,7 +109,7 @@ it('says a removal was sent and reloads the instances', async () => {
   const before = instanceReads;
   fireEvent.click(screen.getByRole('button', { name: 'Remove application' }));
   expect(await screen.findByText('Removal sent; watch Deployment history for progress.')).toBeTruthy();
-  expect(instanceReads).toBeGreaterThan(before);
+  await waitFor(() => expect(instanceReads).toBeGreaterThan(before));
 });
 it('lists each service volume with its kind and a read-only mark', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
