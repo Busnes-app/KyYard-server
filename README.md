@@ -356,7 +356,9 @@ settings retain platform authorization; tenant settings and credentials are not 
 A Kubernetes cluster enrolls as an endpoint the way a Docker host does. KyYard reads the whole
 cluster (inventory, cluster health, pod logs), deploys stateless applications into the
 namespaces you grant it, and there restarts, scales, edits and deletes workloads, deletes pods
-and opens pod terminals. Prerequisites: `KY_APP_URL` on HTTPS, a digest-pinned agent image
+and opens pod terminals. An organization administrator can also run a Deployment from an image in
+a granted namespace (**Run a workload** on the cluster page); it is an ordinary unmanaged workload
+afterwards, edited and deleted like any other. Prerequisites: `KY_APP_URL` on HTTPS, a digest-pinned agent image
 (discovered from the installed server image, or `KY_AGENT_IMAGE`), and a cluster-admin
 kubeconfig for `kubectl apply`. Upgrade the KyYard server before any cluster agent, never the
 reverse: an older server refuses a newer agent at hello (the full order closes this section).
