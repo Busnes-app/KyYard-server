@@ -1020,7 +1020,13 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	{Version: 35, Name: "application_migrations", SQLite: applicationMigrations, Postgres: strings.ReplaceAll(applicationMigrations, "DATETIME", "TIMESTAMPTZ")},
 	{Version: 36, Name: "service_tokens", SQLite: serviceTokens, Postgres: strings.ReplaceAll(serviceTokens, "DATETIME", "TIMESTAMPTZ")},
 	{Version: 37, Name: "pairing_secret_only", SQLite: pairingSecretOnlySQLite, Postgres: pairingSecretOnlyPostgres},
+	// A direct recreate or run keeps the agent's step table, bounded like deployments.result, and
+	// the container it made, so that container's Activity lists it.
+	{Version: 38, Name: "endpoint_command_result", SQLite: commandResult, Postgres: commandResult},
 }
+
+const commandResult = `ALTER TABLE endpoint_commands ADD COLUMN result TEXT NOT NULL DEFAULT '' CHECK(length(result)<=163840);
+ALTER TABLE endpoint_commands ADD COLUMN result_container_id TEXT NOT NULL DEFAULT '';`
 
 // Pairings live 90 seconds, so dropping pending rows on upgrade loses nothing. Only the
 // 24-byte QR secret redeems a pairing; the guessable 6-digit code column goes.

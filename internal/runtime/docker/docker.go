@@ -29,10 +29,12 @@ type Client struct {
 	base    string
 	cpuMu   sync.Mutex
 	cpuPrev map[string]cpuPoint
-	// The daemon's default runtime for inspections, read at most once a minute.
-	runtimeMu   sync.Mutex
-	runtimeName string
-	runtimeRead time.Time
+	// The daemon's defaults for inspections, read at most once a minute.
+	infoMu   sync.Mutex
+	info     daemon
+	infoRead time.Time
+	// startWatch and startPoll override the package's for tests; zero is the default.
+	startWatch, startPoll time.Duration
 }
 
 // callBudget bounds a call whose caller set no deadline of its own.
@@ -70,7 +72,8 @@ func NewHTTP(c *http.Client, base string) *Client {
 	return &Client{http: c, base: strings.TrimRight(base, "/") + "/" + apiVersion}
 }
 
-func (c *Client) get(ctx context.Context, path string, out any) error {
+// get decodes one JSON answer into every out.
+func (c *Client) get(ctx context.Context, path string, outs ...any) error {
 	ctx, cancel := c.bounded(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
@@ -89,7 +92,12 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		return &statusError{path: path, status: resp.StatusCode}
 	}
-	return json.Unmarshal(body, out)
+	for _, out := range outs {
+		if err := json.Unmarshal(body, out); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // statusError carries the daemon's status so callers branch on the code rather than on a

@@ -75,6 +75,7 @@ func main() {
 	var operate func(context.Context, protocol.Command) (string, string)
 	var logs func(context.Context, protocol.LogRequest, func([]byte) error) error
 	var inspect func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error)
+	var configure func(context.Context, protocol.InspectionTarget) (*protocol.ContainerConfiguration, error)
 	var exec func(context.Context, protocol.ExecSpec) (client.ExecSession, error)
 	var deploy func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult
 	var remove func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult
@@ -109,7 +110,7 @@ func main() {
 		metrics = engine.Stats
 		operate = func(cctx context.Context, cmd protocol.Command) (string, string) { return engine.Operate(cctx, cmd) }
 		logs = engine.Logs
-		inspect = engine.InspectContainer
+		inspect, configure = engine.InspectContainer, engine.ReadConfiguration
 		deploy = engine.Deploy
 		remove = engine.Remove
 		exec = func(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
@@ -156,7 +157,7 @@ func main() {
 	if *enrollOnly {
 		return
 	}
-	opts := client.Options{HTTPClient: httpClient, Version: version, Identities: identities, Kubernetes: *kube, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, Deploy: deploy, Remove: remove, InventoryEvery: *inventoryEvery}
+	opts := client.Options{HTTPClient: httpClient, Version: version, Identities: identities, Kubernetes: *kube, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, Configure: configure, Deploy: deploy, Remove: remove, InventoryEvery: *inventoryEvery}
 	if !*kube {
 		// The command ledger lives beside a host's identity; a cluster agent runs no commands.
 		opts.IdentityDir = *dir

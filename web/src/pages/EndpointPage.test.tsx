@@ -194,9 +194,9 @@ it('pages host containers and resets pagination when searching', async () => {
 
 const terminalSnapshot = (now: string) => ({ generation: 1, observed_at: now, engine: { runtime: 'docker', version: '1', api_version: '1', os: 'linux', arch: 'x', kernel: 'k', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers: [{ id: 'c1', name: 'web', image: 'i', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: [] }], images: [], networks: [], volumes: [], truncated: [] });
 // organizations answers GET /api/organizations; every other request is a ready host with one running container.
-function stubHost(organizations: () => Promise<Response>) {
+function stubHost(organizations: () => Promise<Response>, ep: object = endpoint) {
   const now = new Date().toISOString();
-  const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/organizations' ? organizations() : String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: terminalSnapshot(now) }) : String(input).endsWith('/samples') || String(input).includes('/commands') || String(input).endsWith('/applications') ? json([]) : json(endpoint));
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/organizations' ? organizations() : String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: terminalSnapshot(now) }) : String(input).endsWith('/samples') || String(input).includes('/commands') || String(input).endsWith('/applications') ? json([]) : json(ep));
   vi.stubGlobal('fetch', fetcher);
   return fetcher;
 }
@@ -301,4 +301,18 @@ it('lists uptime, IP and health and links each container to its page', async () 
   expect(within(web).getByText('unhealthy')).toBeTruthy();
   expect(old.querySelectorAll('td')[2].textContent?.replace('Uptime', '').trim()).toBe('—');
   expect(old.querySelectorAll('td')[3].textContent?.replace('IP', '').trim()).toBe('—');
+});
+
+it.each([['organization_admin', true], ['environment_admin', false], ['operator', false]])('offers Run a container to %s: %s', async (role, want) => {
+  const fetcher = stubHost(async () => json([{ id: 'a', name: 'Team', role }]), { ...endpoint, capabilities: ['container.configure', 'deployment.pull'] });
+  await terminalOffered('a', fetcher);
+  const link = screen.queryByRole('link', { name: 'Run a container' });
+  expect(link !== null).toBe(want);
+  if (link) expect(link.getAttribute('href')).toBe('/organizations/a/endpoints/ep_1/containers/new');
+});
+
+it.each([['missing deployment.pull', ['container.configure']], ['missing container.configure', ['deployment.pull']]])('hides Run a container when the agent is %s', async (_why, capabilities) => {
+  const fetcher = stubHost(async () => json([{ id: 'a', name: 'Team', role: 'organization_admin' }]), { ...endpoint, capabilities });
+  await terminalOffered('a', fetcher);
+  expect(screen.queryByRole('link', { name: 'Run a container' })).toBeNull();
 });

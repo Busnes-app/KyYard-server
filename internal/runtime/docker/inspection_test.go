@@ -30,9 +30,15 @@ func inspectionFixture() (protocol.InspectionTarget, map[string]any, map[string]
 }
 func fakeInspection(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *Client {
 	t.Helper()
+	return fakeInspectionInfo(t, map[string]string{"DefaultRuntime": "runc"}, handler)
+}
+
+// fakeInspectionInfo is fakeInspection with the daemon's GET /info answer.
+func fakeInspectionInfo(t *testing.T, info map[string]string, handler func(http.ResponseWriter, *http.Request)) *Client {
+	t.Helper()
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1.41/info" {
-			json.NewEncoder(w).Encode(map[string]string{"DefaultRuntime": "runc"})
+			json.NewEncoder(w).Encode(info)
 			return
 		}
 		handler(w, r)

@@ -41,6 +41,10 @@ type Command struct {
 	CreatedAt      time.Time            `json:"created_at"`
 	DispatchedAt   *time.Time           `json:"dispatched_at,omitempty"`
 	SettledAt      *time.Time           `json:"settled_at,omitempty"`
+	// Result is a direct recreate or run's step table; nil for every other command.
+	Result *storedDeploymentResult `json:"result,omitempty"`
+	// ResultContainerID is the container a direct command created; ContainerID stays its target.
+	ResultContainerID string `json:"result_container_id,omitempty"`
 }
 
 // InFlight reports whether the command is still waiting for an answer.
@@ -59,6 +63,9 @@ var commandActions = map[string]permissions.Action{
 
 // CommandPermission is the permission a command action needs; false for an unknown action.
 func CommandPermission(action string) (permissions.Action, bool) {
+	if directActions[action] {
+		return permissions.ContainerConfigure, true
+	}
 	p, ok := commandActions[action]
 	return p, ok
 }
@@ -200,6 +207,7 @@ func (t *tenancyStore) MarkCommandDispatched(ctx context.Context, id string) err
 
 // SettleCommand records an outcome once. The first answer wins: a late duplicate from an agent
 // that retried, or an unknown written when the socket dropped, must not overwrite a real one.
+// A direct command is not its to settle (SettleDirectCommand, FailDirectCommand).
 func (t *tenancyStore) SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error {
 	switch outcome {
 	case protocol.OutcomeSucceeded, protocol.OutcomeFailed, protocol.OutcomeDenied, protocol.OutcomeTimedOut, protocol.OutcomeUnknown:
@@ -212,22 +220,39 @@ func (t *tenancyStore) SettleCommand(ctx context.Context, endpointID, id, outcom
 	if !displaySafe(detail) {
 		detail = ""
 	}
-	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=? AND endpoint_id=? AND outcome=''`),
-		outcome, detail, time.Now().UTC(), id, endpointID)
+	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=? AND endpoint_id=? AND outcome='' AND action NOT IN (?,?)`),
+		outcome, detail, time.Now().UTC(), id, endpointID, ActionRecreate, ActionRun)
 	return err
 }
 
 // AbandonCommands settles everything still in flight for an endpoint as unknown. The socket
 // going is not evidence that the work did not happen, so the outcome says exactly that rather
-// than guessing at failure, and nothing is retried on its own.
+// than guessing at failure, and nothing is retried on its own. A direct command gets its
+// outcome audit row (code disconnected) like any other settle.
 func (t *tenancyStore) AbandonCommands(ctx context.Context, endpointID string) (int64, error) {
-	result, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE endpoint_id=? AND outcome='' AND dispatched_at IS NOT NULL`),
-		protocol.OutcomeUnknown, "the connection ended before a result arrived", time.Now().UTC(), endpointID)
+	tx, err := t.store.beginTx(ctx, true)
 	if err != nil {
 		return 0, err
 	}
+	defer tx.Rollback()
+	const inFlight = `endpoint_id=? AND outcome='' AND dispatched_at IS NOT NULL`
+	direct, err := t.directIDs(ctx, tx, inFlight, endpointID)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE `+inFlight),
+		protocol.OutcomeUnknown, "the connection ended before a result arrived", now, endpointID)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range direct {
+		if err := t.auditDirect(ctx, tx, endpointID, id, protocol.OutcomeUnknown, "disconnected", "", now); err != nil {
+			return 0, err
+		}
+	}
 	n, _ := result.RowsAffected()
-	return n, nil
+	return n, tx.Commit()
 }
 
 // ReadCommand returns one command in the caller's scope.
@@ -261,7 +286,7 @@ func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpoin
 		}
 		query, args := commandColumns+` WHERE endpoint_id=? ORDER BY created_at DESC LIMIT ?`, []any{endpointID, limit}
 		if containerID != "" {
-			query, args = commandColumns+` WHERE endpoint_id=? AND container_id=? ORDER BY created_at DESC LIMIT ?`, []any{endpointID, containerID, limit}
+			query, args = commandColumns+` WHERE endpoint_id=? AND (container_id=? OR result_container_id=?) ORDER BY created_at DESC LIMIT ?`, []any{endpointID, containerID, containerID, limit}
 		}
 		rows, err := tx.QueryContext(ctx, t.store.rebind(query), args...)
 		if err != nil {
@@ -283,16 +308,16 @@ func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpoin
 	return out, nil
 }
 
-const commandColumns = `SELECT id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,outcome,detail,created_at,dispatched_at,settled_at FROM endpoint_commands`
+const commandColumns = `SELECT id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,outcome,detail,created_at,dispatched_at,settled_at,result,result_container_id FROM endpoint_commands`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanCommand(row scanner) (*Command, error) {
 	var c Command
-	var expects string
+	var expects, result string
 	var deadline, created any
 	var dispatched, settled sql.NullTime
-	if err := row.Scan(&c.ID, &c.EndpointID, &c.OrganizationID, &c.EnvironmentID, &c.ActorID, &c.RequestID, &c.Action, &c.ContainerID, &c.Reference, &expects, &deadline, &c.Outcome, &c.Detail, &created, &dispatched, &settled); err != nil {
+	if err := row.Scan(&c.ID, &c.EndpointID, &c.OrganizationID, &c.EnvironmentID, &c.ActorID, &c.RequestID, &c.Action, &c.ContainerID, &c.Reference, &expects, &deadline, &c.Outcome, &c.Detail, &created, &dispatched, &settled, &result, &c.ResultContainerID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -315,6 +340,11 @@ func scanCommand(row scanner) (*Command, error) {
 	}
 	if err := json.Unmarshal([]byte(expects), &c.Expects); err != nil {
 		return nil, err
+	}
+	if result != "" {
+		if err := json.Unmarshal([]byte(result), &c.Result); err != nil {
+			return nil, err
+		}
 	}
 	return &c, nil
 }

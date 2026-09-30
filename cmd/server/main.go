@@ -86,6 +86,9 @@ func runServer() {
 	if cfg.Registry.AllowPrivate {
 		log.Printf("[REGISTRY] KY_REGISTRY_ALLOW_PRIVATE is on: organization admins may admit RFC1918 and CGNAT registry destinations; loopback and link-local remain refused")
 	}
+	if cfg.Container.AllowPrivileged {
+		log.Printf("[CONTAINER] KY_CONTAINER_ALLOW_PRIVILEGED is on: organization admins may recreate or run containers with host-level settings, which is root on the host")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

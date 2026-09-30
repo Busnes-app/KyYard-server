@@ -426,12 +426,12 @@ The acceptance test is not merely that every API works. A person familiar with c
 - One agent implementation with runtime adapters unless evidence requires separation.
 - Multi-tenancy and scoped authorization precede workload management.
 - Desired state is central to managed applications.
+- Unmanaged containers are edited directly: an organization administrator recreates or runs one from its full configuration (`container.configure`); adopted containers change only through their application.
 
 ### Decide during the relevant design milestone
 
 - Agent transport: outbound WebSocket, gRPC stream, or another transport supported cleanly by the one-binary deployment and ordinary reverse proxies.
 - Public API versioning convention.
-- Whether external/unmanaged containers can be edited directly or must first be adopted into an application definition.
 - Minimum historical retention that remains practical on SQLite.
 - How Compose secrets and environment variables are represented without leaking them through previews or backups.
 - Exact TLS default and onboarding guidance.

@@ -122,7 +122,16 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 		s.writeJSON(w, http.StatusConflict, body)
 		return
 	}
+	var spec *store.InvalidSpecError
+	if errors.As(err, &spec) {
+		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "The configuration cannot be applied as it stands", "code": "invalid_spec", "blockers": spec.Blockers})
+		return
+	}
 	switch {
+	case errors.Is(err, store.ErrCommandInProgress):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A container recreate or run on this endpoint is waiting for its result", "code": "command_in_progress"})
+	case errors.Is(err, store.ErrContainerManaged):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "This container belongs to an adopted application; change it through the application", "code": "application_managed"})
 	case errors.Is(err, store.ErrForbidden):
 		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Tenant access denied", "code": "tenant_access_denied"})
 	case errors.Is(err, store.ErrNotFound):

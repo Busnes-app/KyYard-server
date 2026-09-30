@@ -30,9 +30,12 @@ var (
 type Options struct {
 	inspectionSlots chan struct{}
 	Inspect         func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error)
-	HTTPClient      *http.Client
-	Version         string
-	Log             *log.Logger
+	// Configure reads a container's full configuration (Docker only); it advertises container.configure.
+	Configure          func(context.Context, protocol.InspectionTarget) (*protocol.ContainerConfiguration, error)
+	configurationSlots chan struct{}
+	HTTPClient         *http.Client
+	Version            string
+	Log                *log.Logger
 	// Identities is where the rising inventory generation and rotation state are written back.
 	// Nil falls back to IdentityDir.
 	Identities IdentityStore
@@ -104,6 +107,9 @@ func helloCapabilities(opts *Options) []string {
 	}
 	if opts.Inspect != nil {
 		capabilities = append(capabilities, protocol.CapabilityContainerInspect, protocol.CapabilityContainerInspectVerdict, protocol.CapabilityContainerInspectHealth)
+	}
+	if opts.Configure != nil {
+		capabilities = append(capabilities, protocol.CapabilityContainerConfigure)
 	}
 	if opts.Exec != nil {
 		capabilities = append(capabilities, "container.exec")
@@ -181,6 +187,7 @@ func Run(ctx context.Context, id *Identity, opts Options) error {
 	running := newBudget()
 	execRunning := &execBudget{}
 	opts.inspectionSlots = make(chan struct{}, protocol.MaxInspectionsPerEndpoint)
+	opts.configurationSlots = make(chan struct{}, 1)
 	delay := time.Second
 	for {
 		err := session(ctx, id, target, &opts, commands, deployments, running, execRunning)
@@ -295,6 +302,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	live := newStreams()
 	terminals := newExecStreams(ctx, id.EndpointID, ch.Nonce, execRunning, opts, outbound)
 	inspections := newInspections(ctx, id.EndpointID, ch.Nonce, opts, outbound)
+	configurations := newConfigurations(ctx, id.EndpointID, ch.Nonce, opts, outbound)
 	var hello protocol.Hello
 	if f.Type != protocol.TypeHello || json.Unmarshal(f.Payload, &hello) != nil {
 		return errors.New("bad hello")
@@ -478,6 +486,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				}(cmd)
 			case protocol.TypeInspectionOpen, protocol.TypeInspectionCancel:
 				if err := inspections.handle(f, hello.State == "active" || hello.State == "approved" || hello.State == "offline"); err != nil {
+					return err
+				}
+			case protocol.TypeConfigurationOpen, protocol.TypeConfigurationCancel:
+				if err := configurations.handle(f, hello.State == "active" || hello.State == "approved" || hello.State == "offline"); err != nil {
 					return err
 				}
 			case protocol.TypeExecOpen, protocol.TypeExecInput, protocol.TypeExecResize, protocol.TypeExecCancel:

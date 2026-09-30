@@ -89,7 +89,7 @@ func (c *Client) InspectContainer(parent context.Context, target protocol.Inspec
 	}
 	ctx, cancel := context.WithTimeout(parent, callBudget)
 	defer cancel()
-	daemonRuntime, err := c.inspectionRuntime(ctx)
+	daemon, err := c.daemonInfo(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +141,7 @@ func (c *Client) InspectContainer(parent context.Context, target protocol.Inspec
 	if labels.Config != nil && labels.Config.Labels["com.docker.compose.project"] != "" {
 		projectNetwork = labels.Config.Labels["com.docker.compose.project"] + "_default"
 	}
-	out.Unsupported = undescribed(full, projectNetwork, daemonRuntime)
+	out.Unsupported = undescribed(full, projectNetwork, daemon.DefaultRuntime)
 	if full.Config.differs(im.Config) {
 		out.Unsupported = append(out.Unsupported, "image_config")
 	}
@@ -192,23 +192,26 @@ func (c *Client) inspectionGet(ctx context.Context, path string, outs ...any) er
 	return nil
 }
 
-// inspectionRuntime is the daemon's DefaultRuntime, what a container created without one gets,
-// read at most once a minute per client.
-func (c *Client) inspectionRuntime(ctx context.Context) (string, error) {
-	c.runtimeMu.Lock()
-	defer c.runtimeMu.Unlock()
-	if c.runtimeName != "" && time.Since(c.runtimeRead) < time.Minute {
-		return c.runtimeName, nil
+// daemon is what /info says about defaults: the runtime a container created without one gets,
+// and the host's cgroup version ("1" or "2"), which decides the default cgroup namespace mode.
+type daemon struct{ DefaultRuntime, CgroupVersion string }
+
+// daemonInfo reads /info at most once a minute per client.
+func (c *Client) daemonInfo(ctx context.Context) (daemon, error) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	if c.info.DefaultRuntime != "" && time.Since(c.infoRead) < time.Minute {
+		return c.info, nil
 	}
-	var info struct{ DefaultRuntime string }
+	var info daemon
 	if err := c.inspectionGet(ctx, "/info", &info); err != nil {
-		return "", err
+		return daemon{}, err
 	}
 	if info.DefaultRuntime == "" {
-		return "", ErrInspectionUnavailable
+		return daemon{}, ErrInspectionUnavailable
 	}
-	c.runtimeName, c.runtimeRead = info.DefaultRuntime, time.Now()
-	return c.runtimeName, nil
+	c.info, c.infoRead = info, time.Now()
+	return info, nil
 }
 
 func inspectionFacts(raw inspectedContainer) (*protocol.ContainerInspection, error) {

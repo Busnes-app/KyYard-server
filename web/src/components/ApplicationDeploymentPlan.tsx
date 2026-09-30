@@ -5,7 +5,7 @@ import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 import { knownBlockers, messages, serviceFindings, MountList, type Mount } from './ApplicationPreflight';
-import { unsupportedNames } from './ApplicationInspection';
+import { unsupportedLabel } from './containerConfiguration';
 import type { ApplicationInstance } from './ApplicationAdoption';
 
 type ClaimMount = { claim: string; mount_path: string; read_only?: boolean };
@@ -33,6 +33,7 @@ const LEGACY_OUTCOME = 'The agent did not classify this outcome; upgrade the age
 export const STEP_CODES: Record<string, string> = {
   runtime_unreadable: "The daemon's default runtime could not be read.",
   container_missing: 'The container no longer exists.',
+  exited_early: 'The new container exited or restarted right after starting.',
   identity_mismatch: 'The container is not the one this plan was decided about.',
   image_identity_mismatch: 'The host reported a different image identity than the plan pinned.',
   configuration_unreported: "The runtime did not report the container's full configuration.",
@@ -68,6 +69,8 @@ export const STEP_CODES: Record<string, string> = {
   service_ip_immutable: 'The Service already has another internal IP; use its assigned address',
   service_ip_unavailable: 'Kubernetes refused the internal IP: it may be outside the service range or already allocated; choose an available address in the cluster service range',
   claim_immutable: 'The claim exists with another StorageClass, size or access mode, and KyYard never changes a claim; delete it deliberately or choose its current settings',
+  start_failed_rolled_back: 'The new container did not start; the previous one was restored.',
+  rollback_failed: 'The new container did not start and the previous one could not be restored; check the host.',
   legacy: LEGACY_OUTCOME,
 };
 // CLAIM_RETAINED is a removal's skipped volume step with detail retained.
@@ -101,7 +104,7 @@ export function stepText(s: { step?: string; outcome?: string; code?: string; de
   const detail = s.detail ?? '';
   switch (code) {
     case 'unsupported': {
-      const names = detail.split(',').filter(c => Object.hasOwn(unsupportedNames, c)).map(c => unsupportedNames[c]);
+      const names = detail.split(',').map(unsupportedLabel).filter(Boolean);
       return names.length ? `${text}: ${names.join(', ')}.` : `${text}.`;
     }
     case 'identity_unreadable':
@@ -200,6 +203,14 @@ function isExpired(d: Deployment): boolean {
 function Correlation({ id }: { id?: string }) {
   return id ? <p>Correlation ID <code>{id}</code>: search the audit log for it.</p> : null;
 }
+export function StepTable({ steps }: { steps: DeployStep[] }) {
+  return <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Step</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>{steps.map((s, i) => <tr key={`${s.service}-${s.step}-${i}`}>
+    <td data-label="Service">{s.service}</td>
+    <td data-label="Step">{s.step}</td>
+    <td data-label="Outcome">{s.outcome}</td>
+    <td data-label="Detail">{stepText(s)}</td>
+  </tr>)}</tbody></table>;
+}
 function ResultSection({ current }: { current: Deployment }) {
   const steps = usePagination(current.result?.steps ?? [], `${current.id}-steps`);
   const explanation = explanationFor(current);
@@ -214,12 +225,7 @@ function ResultSection({ current }: { current: Deployment }) {
     {current.validation && <p><ValidationLine v={current.validation} /></p>}
     {current.result && <>
       {steps.controls}
-      <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Step</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>{steps.rows.map((s, i) => <tr key={`${s.service}-${s.step}-${i}`}>
-        <td data-label="Service">{s.service}</td>
-        <td data-label="Step">{s.step}</td>
-        <td data-label="Outcome">{s.outcome}</td>
-        <td data-label="Detail">{stepText(s)}</td>
-      </tr>)}</tbody></table>
+      <StepTable steps={steps.rows} />
       <KeptClaims d={current} />
       {current.result.services.length > 0 && <ul className="ky-list">{current.result.services.map(s => <li key={s.service} style={{ overflowWrap: 'anywhere' }}><strong>{s.service}</strong><br />{s.kind === 'Deployment' ? <><span>Deployment {s.namespace}/{s.name}</span><br /><span>{s.uid}</span></> : <><span>{s.container_id}</span><br /><span>{s.image_id}</span></>}</li>)}</ul>}
     </>}

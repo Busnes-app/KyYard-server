@@ -449,7 +449,7 @@ no published port gets no Service, so nothing can reach it; publish every port a
 calls. A name longer than 63 characters, or two services whose names collide, carry a six-hex
 suffix: the plan shows each service's object name.
 
-Container, image, network, volume, terminal, inspection and adoption actions are refused for a
+Container, image, network, volume, terminal, inspection, configuration and adoption actions are refused for a
 cluster (`409 runtime_unsupported`) and not shown. Uninstall with
 `kubectl delete -f kyyard-agent-<name>.yaml`, then revoke the endpoint. To enroll the same
 cluster again after a revocation, delete the Secret `kyyard-agent-identity` (or uninstall)
@@ -638,6 +638,7 @@ refused deposit does not remove the local copy.
 | `KY_BACKUP_DEPOSIT_INTERVAL` | `24h` | Default schedule only. The admin screen's setting wins; `0` is off; 15 minutes to 366 days otherwise. |
 | `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on an RFC1918 or CGNAT address behind your own TLS proxy. Loopback, link-local and other reserved ranges stay refused; HTTPS stays required. Logged at startup and on the pairing audit row. |
 | `KY_REGISTRY_ALLOW_PRIVATE` | `false` | Let organization administrators mark a registry `allow_private`, admitting RFC1918 and CGNAT registry addresses. Off, the server refuses the flag, so a tenant cannot aim the server at your network. Loopback and link-local stay refused. Logged at startup. |
+| `KY_CONTAINER_ALLOW_PRIVILEGED` | `false` | Let a container edit or run set host-level settings: privileged, devices, security options other than `no-new-privileges`, capabilities beyond Docker's defaults, the host's or another container's network (as the mode or an attachment), or a bind of a system path: `/`, `/etc`, `/run`, `/var/run`, `/var/spool`, `/var/lib`, `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/proc`, `/sys`, `/dev`, `/boot` or `/root`, a parent of one, or anything beneath one other than `/` and `/etc`. Off blocks these as a guard against mistakes and the obvious escalations. It is not a boundary against an organization administrator holding `container.configure`, who can still acknowledge a bind of any other host path; each acknowledged bind is audited per path. On makes that administrator root on every Docker host. Logged at startup. |
 | `KY_DNS` | unset | Only in `docker-compose.lan-dns.yml`: the container's resolver, for names that exist only on your LAN. |
 
 Reach a KyRecovery that only your LAN's DNS knows:
@@ -733,6 +734,27 @@ without input or eight hours total. Slow-client buffer limits also disconnect ra
 than silently lose terminal data. Audit records who connected, the target, selected
 user, duration and known exit status, without recording commands or terminal contents.
 An interrupted session without an inspected exit code remains unknown.
+
+### Edit or run a container
+
+An organization administrator edits a container that no application owns on its
+**Configuration** tab: KyYard reads the full configuration from the host, environment values
+included (masked until **Reveal**), and **Save and recreate** replaces the container with the
+edited copy after you type its name. The host agent must advertise `container.configure`.
+Settings KyYard cannot read (listed on the tab) block saving, so a recreate never drops them
+silently. A new host path bind needs its own acknowledgement. Host-level settings (privileged,
+devices, extra capabilities, host networking, system path binds) are refused unless
+`KY_CONTAINER_ALLOW_PRIVILEGED` is on; that guards against mistakes, not against an
+administrator (see the variable). A container whose start fails, or that stops or restarts
+within five seconds of replacing a running one, is rolled back to the old one. Environment, labels and command a container inherited
+from its image are kept as they were read, even when you change the image. Do not recreate the
+KyYard server's own container, or a host agent's, through KyYard: stopping it stops the agent
+doing the recreate. **Run a container** on a Docker host's page creates a new one the
+same way. A container an adopted application owns is edited through that application.
+Environment values travel only inside the agent's TLS session and the HTTPS response and are
+never stored, audited or logged; audit records who read or changed which container and the
+names of the settings set. Reads, recreates and runs share a budget of 12 per administrator
+per minute.
 
 ## Import a Compose draft
 

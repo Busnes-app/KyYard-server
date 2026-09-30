@@ -23,10 +23,57 @@ type inspections struct {
 	nonce    []byte
 	opts     *Options
 	out      chan<- outFrame
+	frames   frameFamily
+}
+
+// frameFamily is what differs between the inspection and configuration handlers: frame names,
+// size and grant bounds, whether the runtime call exists, and how an answer is built.
+type frameFamily struct {
+	cancel, result string
+	maxBytes       int
+	lifetime       time.Duration
+	ready          bool
+	reply          func(ctx context.Context, req protocol.InspectionOpen) any
+	refusal        func(request, status string) any
 }
 
 func newInspections(ctx context.Context, endpoint string, nonce []byte, opts *Options, out chan<- outFrame) *inspections {
-	return &inspections{live: map[string]context.CancelFunc{}, seen: map[string]time.Time{}, slots: opts.inspectionSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
+	s := &inspections{live: map[string]context.CancelFunc{}, seen: map[string]time.Time{}, slots: opts.inspectionSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
+	s.frames = frameFamily{
+		cancel: protocol.TypeInspectionCancel, result: protocol.TypeInspectionResult,
+		maxBytes: protocol.MaxInspectionFrameBytes, lifetime: protocol.InspectionLifetime, ready: opts.Inspect != nil,
+		refusal: func(request, status string) any { return protocol.InspectionResult{Request: request, Status: status} },
+		reply: func(ctx context.Context, req protocol.InspectionOpen) any {
+			reply := protocol.InspectionResult{Request: req.Request, Status: "unavailable"}
+			if result, err := opts.Inspect(ctx, req.Target); err == nil && result != nil && result.Validate(req.Target, time.Now(), true) == nil {
+				reply.Status = "ok"
+				reply.Result = result
+			}
+			return reply
+		},
+	}
+	return s
+}
+
+// newConfigurations serves configuration.open with its own one-slot admission and 20 s grants.
+func newConfigurations(ctx context.Context, endpoint string, nonce []byte, opts *Options, out chan<- outFrame) *inspections {
+	s := &inspections{live: map[string]context.CancelFunc{}, seen: map[string]time.Time{}, slots: opts.configurationSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
+	s.frames = frameFamily{
+		cancel: protocol.TypeConfigurationCancel, result: protocol.TypeConfigurationResult,
+		maxBytes: protocol.MaxConfigurationFrameBytes, lifetime: protocol.ConfigurationLifetime, ready: opts.Configure != nil,
+		refusal: func(request, status string) any {
+			return protocol.ConfigurationResult{Request: request, Status: status}
+		},
+		reply: func(ctx context.Context, req protocol.InspectionOpen) any {
+			reply := protocol.ConfigurationResult{Request: req.Request, Status: "unavailable"}
+			if result, err := opts.Configure(ctx, req.Target); err == nil && result != nil && result.Validate(req.Target, time.Now()) == nil {
+				reply.Status = "ok"
+				reply.Result = result
+			}
+			return reply
+		},
+	}
+	return s
 }
 
 // runtime is the target shape this agent answers: a cluster agent reads Deployments.
@@ -38,10 +85,10 @@ func (s *inspections) runtime() string {
 }
 func (s *inspections) handle(f protocol.Envelope, active bool) error {
 	invalid := errors.New("invalid inspection frame")
-	if len(f.Payload) > protocol.MaxInspectionFrameBytes {
+	if len(f.Payload) > s.frames.maxBytes {
 		return invalid
 	}
-	if f.Type == protocol.TypeInspectionCancel {
+	if f.Type == s.frames.cancel {
 		var req protocol.InspectionCancel
 		if json.Unmarshal(f.Payload, &req) != nil || req.Request == "" {
 			return invalid
@@ -55,7 +102,7 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 		return nil
 	}
 	var req protocol.InspectionOpen
-	if json.Unmarshal(f.Payload, &req) != nil || req.ValidateFor(time.Now(), s.runtime()) != nil || !active || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
+	if json.Unmarshal(f.Payload, &req) != nil || req.ValidateWithin(time.Now(), s.frames.lifetime, s.runtime()) != nil || !active || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
 		return invalid
 	}
 	s.mu.Lock()
@@ -73,7 +120,7 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 	}
 	s.seen[req.Request] = req.Expires
 	status := ""
-	if s.opts.Inspect == nil {
+	if !s.frames.ready {
 		status = "unavailable"
 	} else {
 		select {
@@ -85,7 +132,7 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 	if status != "" {
 		// Refusals cannot block the heartbeat loop behind a slow connection.
 		select {
-		case s.out <- outFrame{protocol.TypeInspectionResult, protocol.InspectionResult{Request: req.Request, Status: status}}:
+		case s.out <- outFrame{s.frames.result, s.frames.refusal(req.Request, status)}:
 		default:
 			return errors.New("inspection result queue full")
 		}
@@ -98,15 +145,10 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 }
 func (s *inspections) run(ctx context.Context, req protocol.InspectionOpen, stop context.CancelFunc) {
 	defer func() { stop(); s.mu.Lock(); delete(s.live, req.Request); s.mu.Unlock(); <-s.slots }()
-	result, err := s.opts.Inspect(ctx, req.Target)
-	reply := protocol.InspectionResult{Request: req.Request, Status: "unavailable"}
-	if err == nil && result != nil && result.Validate(req.Target, time.Now(), true) == nil {
-		reply.Status = "ok"
-		reply.Result = result
-	}
+	reply := s.frames.reply(ctx, req)
 	// The server closes the socket on an oversized answer: one that does not fit is unavailable.
-	if raw, err := json.Marshal(reply); err != nil || len(raw) > protocol.MaxInspectionFrameBytes {
-		reply = protocol.InspectionResult{Request: req.Request, Status: "unavailable"}
+	if raw, err := json.Marshal(reply); err != nil || len(raw) > s.frames.maxBytes {
+		reply = s.frames.refusal(req.Request, "unavailable")
 	}
 	if ctx.Err() != nil {
 		return
@@ -114,7 +156,7 @@ func (s *inspections) run(ctx context.Context, req protocol.InspectionOpen, stop
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	select {
-	case s.out <- outFrame{protocol.TypeInspectionResult, reply}:
+	case s.out <- outFrame{s.frames.result, reply}:
 	case <-ctx.Done():
 	case <-timer.C:
 	}

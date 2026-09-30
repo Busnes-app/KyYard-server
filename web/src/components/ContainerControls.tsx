@@ -3,32 +3,47 @@ import { Play, RotateCw, ScrollText, Square, Terminal, Trash2 } from 'lucide-rea
 import { Link } from './Link';
 import { containerPath } from '../router';
 import { secureFetch } from '../api';
-import type { Container } from '../tenant';
+import type { Container, DirectCommand } from '../tenant';
 import { displayName } from './Endpoints';
 
-interface Command { id: string; action: string; outcome: string; detail?: string }
+export type Command = DirectCommand;
+
+// useCommand polls a sent command every 1.5 s until it has an outcome or a read fails; it never
+// resends. onSettled runs once, for the polled answer that carries the outcome.
+export function useCommand(base: string, sent: Command | null, onSettled?: (command: Command) => void): { command: Command | null; error: string } {
+  const [state, setState] = useState<{ sent: Command | null; command: Command | null; error: string }>({ sent, command: sent, error: '' });
+  const current = state.sent === sent ? state : { sent, command: sent, error: '' };
+  if (current !== state) setState(current);
+  const settled = useRef(onSettled);
+  useEffect(() => { settled.current = onSettled; });
+  const id = current.command?.id;
+  const waiting = !!id && !current.command?.outcome && !current.error;
+  useEffect(() => {
+    if (!id || !waiting) return;
+    const abort = new AbortController();
+    const timer = window.setInterval(() => {
+      fetch(`${base}/commands/${encodeURIComponent(id)}`, { signal: abort.signal }).then(async (r) => {
+        if (!r.ok) throw new Error('Could not read command result. Check recent activity before trying again.');
+        const data: Command = await r.json();
+        if (abort.signal.aborted) return;
+        setState((s) => ({ ...s, command: data }));
+        if (data.outcome) settled.current?.(data);
+      }).catch((e: unknown) => { if (!abort.signal.aborted) { setState((s) => ({ ...s, error: e instanceof Error ? e.message : 'Command result unavailable.' })); window.clearInterval(timer); } });
+    }, 1500);
+    return () => { window.clearInterval(timer); abort.abort(); };
+  }, [base, id, waiting]);
+  return { command: current.command, error: current.error };
+}
 export function ContainerControls({ base, container, active, scope, onRefresh, canExec, org, endpoint, onStatus }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void; canExec: boolean; org: string; endpoint: string; onStatus?: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [inline, setInline] = useState('');
-  const [command, setCommand] = useState<Command | null>(null);
+  const [sent, setSent] = useState<Command | null>(null);
   // The shared status line serves a whole table, so it names the container.
   const setMessage = (text: string) => { if (onStatus) onStatus(text ? `${displayName(container.name)} · ${text}` : ''); else setInline(text); };
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  useEffect(() => {
-    if (!command || command.outcome) return;
-    const abort = new AbortController();
-    const timer = window.setInterval(() => {
-      fetch(`${base}/commands/${encodeURIComponent(command.id)}`, { signal: abort.signal }).then(async (r) => {
-        if (!r.ok) throw new Error('Could not read command result. Check recent activity before trying again.');
-        const data: Command = await r.json();
-        if (abort.signal.aborted) return;
-        setCommand(data);
-        if (data.outcome) { setMessage(`${data.action}: ${data.outcome}${data.detail ? ` — ${data.detail}` : ''}`); onRefresh(); }
-      }).catch((e: unknown) => { if (!abort.signal.aborted) { setMessage(e instanceof Error ? e.message : 'Command result unavailable.'); window.clearInterval(timer); } });
-    }, 1500);
-    return () => { window.clearInterval(timer); abort.abort(); };
-  }, [base, command?.id, command?.outcome, onRefresh]);
+  const { command, error } = useCommand(base, sent, (data) => { setMessage(`${data.action}: ${data.outcome}${data.detail ? ` — ${data.detail}` : ''}`); onRefresh(); });
+  useEffect(() => { if (error) setMessage(error); }, [error]);
   const act = async (action: 'start' | 'stop' | 'restart' | 'remove') => {
     setBusy(true); setMessage('');
     let confirm = '';
@@ -46,7 +61,7 @@ export function ContainerControls({ base, container, active, scope, onRefresh, c
       if (!response.ok) { setMessage(response.status === 403 ? 'You do not have permission for this action.' : response.status === 409 ? 'The endpoint or container changed. Refresh before trying again.' : `Action refused (${response.status}).`); return; }
       const result: Command = await response.json();
       if (!alive.current) return;
-      setCommand(result); setMessage(result.outcome ? `${result.action}: ${result.outcome}` : 'Command sent; waiting for the endpoint. Do not retry while its outcome is unknown.');
+      setSent(result); setMessage(result.outcome ? `${result.action}: ${result.outcome}` : 'Command sent; waiting for the endpoint. Do not retry while its outcome is unknown.');
     } catch { if (alive.current) setMessage('Connection lost. The action may have run. Check recent activity before trying again.'); }
     finally { if (alive.current) setBusy(false); }
   };

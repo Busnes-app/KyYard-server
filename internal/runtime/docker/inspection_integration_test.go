@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -142,5 +143,68 @@ func TestInspectionRealDocker(t *testing.T) {
 	}
 	if addr, err := netip.ParseAddr(got.NetworkAttachments[0].IP); err != nil || !addr.Is4() || got.NetworkAttachments[0].Name != got.Networks[0] {
 		t.Fatalf("network attachment %+v: %v", got.NetworkAttachments[0], err)
+	}
+
+	// A configuration read returns the values the fixture was created with.
+	raw, err = exec.CommandContext(ctx, "docker", "run", "-d", "--pull", "never", "--no-healthcheck", "-e", "A=1", "-e", "B=x=y", "--memory", "64m", "--cap-add", "NET_ADMIN", "-p", "127.0.0.1::80", "--label", "t=1", "--restart", "on-failure:2", "--stop-timeout", "7", image, "sh", "-c", "sleep 120").CombinedOutput()
+	if err != nil {
+		t.Fatalf("configuration fixture: %v: %s", err, raw)
+	}
+	configured := strings.TrimSpace(string(raw))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, "docker", "rm", "-fv", configured).CombinedOutput(); err != nil {
+			t.Errorf("configuration fixture cleanup: %v: %s", err, out)
+		}
+	})
+	raw, err = exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .}}", configured).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(raw, &identity); err != nil {
+		t.Fatal("configuration fixture identity unreadable")
+	}
+	target = protocol.InspectionTarget{ContainerID: configured, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}
+	cfg, err := c.ReadConfiguration(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostPort, err := exec.CommandContext(ctx, "docker", "port", configured, "80/tcp").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cfg.Env, protocol.EnvEntry{Name: "A", Value: "1"}) || !slices.Contains(cfg.Env, protocol.EnvEntry{Name: "B", Value: "x=y"}) || cfg.Labels["t"] != "1" ||
+		cfg.Resources.MemoryBytes != 67108864 || !slices.ContainsFunc(cfg.CapAdd, func(c string) bool { return strings.TrimPrefix(c, "CAP_") == "NET_ADMIN" }) || cfg.Restart != "on-failure" || cfg.RestartRetries != 2 || cfg.StopTimeout == nil || *cfg.StopTimeout != 7 || !slices.Equal(cfg.Unsupported, []string{"list_truncated:ports"}) { // the dynamic binding is pinned
+		t.Fatalf("configuration: %+v", cfg)
+	}
+	i80 := slices.IndexFunc(cfg.Ports, func(p protocol.Port) bool { return p.Container == 80 })
+	if i80 < 0 || cfg.Ports[i80].HostIP != "127.0.0.1" || !strings.HasSuffix(strings.TrimSpace(string(hostPort)), ":"+strconv.Itoa(cfg.Ports[i80].Host)) || cfg.Ports[i80].Host == 0 {
+		t.Fatalf("ports %+v, docker says %s", cfg.Ports, hostPort)
+	}
+	if cfg.Validate(target, time.Now()) != nil {
+		t.Fatalf("real configuration invalid: %+v", cfg)
+	}
+
+	// Settings the configuration cannot carry are named, not dropped; a read-only tmpfs is carried.
+	// (A cgroup v2 kernel discards --oom-kill-disable; --oom-score-adj stands in for an unknown key.)
+	raw, err = exec.CommandContext(ctx, "docker", "create", "--pull", "never", "--cpu-shares", "512", "--cpuset-cpus", "0", "--memory-reservation", "32m", "--dns-search", "lan",
+		"--shm-size", "128m", "--uts", "host", "--oom-score-adj", "100", "--tmpfs", "/scratch:ro", image, "true").Output()
+	if err != nil {
+		t.Fatalf("unsupported fixture: %v: %s", err, raw)
+	}
+	flagged := strings.TrimSpace(string(raw))
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", flagged).Run() })
+	raw, err = exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .}}", flagged).Output()
+	if err != nil || json.Unmarshal(raw, &identity) != nil {
+		t.Fatalf("unsupported fixture identity: %v", err)
+	}
+	target = protocol.InspectionTarget{ContainerID: flagged, ImageID: identity.Image, CreatedUnix: identity.Created.Unix()}
+	if cfg, err = c.ReadConfiguration(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"resource_limits", "dns", "host_config:OomScoreAdj", "host_config:ShmSize", "host_config:UTSMode"}
+	if !slices.Equal(cfg.Unsupported, want) || !slices.Contains(cfg.Mounts, protocol.Mount{Kind: protocol.MountTmpfs, Target: "/scratch", ReadOnly: true}) {
+		t.Fatalf("unsupported %v mounts %+v", cfg.Unsupported, cfg.Mounts)
 	}
 }

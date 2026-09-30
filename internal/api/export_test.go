@@ -47,6 +47,9 @@ func RegisterDetachedForTest(s *Server) func() {
 // SetDigestResolverForTest replaces the registry resolver behind update checks. Test-only.
 func SetDigestResolverForTest(s *Server, r store.DigestResolver) { s.digestResolver = r }
 
+// SetAllowPrivilegedForTest sets KY_CONTAINER_ALLOW_PRIVILEGED. Test-only.
+func SetAllowPrivilegedForTest(s *Server, on bool) { s.config.Container.AllowPrivileged = on }
+
 // SetPlanInspectorForTest replaces the agent round trip of each plan-time inspection. Test-only.
 func SetPlanInspectorForTest(s *Server, f func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error)) {
 	s.planInspector = f

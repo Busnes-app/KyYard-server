@@ -9,7 +9,7 @@ import { Organization } from './pages/Organization';
 import { Members } from './pages/Members';
 import { Environment } from './pages/Environment';
 import { EndpointPage } from './pages/EndpointPage';
-import { ContainerPage } from './pages/ContainerPage';
+import { ContainerPage, ContainerRunPage } from './pages/ContainerPage';
 import { AuditList } from './components/AuditList';
 import { Link } from './components/Link';
 import './styles/theme.css';
@@ -118,6 +118,7 @@ const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, s
     case 'members': return <Members org={route.org} />;
     case 'environment': return <Environment key={`${route.org}/${route.env}`} org={route.org} env={route.env} />;
     case 'endpoint': return <EndpointPage key={`${route.org}/${route.endpoint}`} org={route.org} endpoint={route.endpoint} />;
+    case 'container-new': return <ContainerRunPage key={`${route.org}/${route.endpoint}/new`} org={route.org} endpoint={route.endpoint} />;
     case 'container': return <ContainerPage key={`${route.org}/${route.endpoint}/${route.container}`} org={route.org} endpoint={route.endpoint} container={route.container} />;
     case 'audit': return (
       <div className="ky-page">

@@ -42,6 +42,8 @@ const (
 	// stops it at the developer and audits every session.
 	ContainerLogs Action = "container.logs"
 	ContainerExec Action = "container.exec"
+	// ContainerConfigure reads a container's full configuration and recreates or runs one; it exposes environment values, so it sits with exec.
+	ContainerConfigure Action = "container.configure"
 	// ApplicationDeploy mints and, in a later slice, applies a deployment plan. The matrix gives
 	// it to developers because a plan is desired state made concrete, not host authority.
 	ApplicationDeploy Action = "application.deploy"
@@ -75,7 +77,7 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage, ServiceTokensManage:
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, ContainerConfigure, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage, ServiceTokensManage:
 			return true
 		}
 	case "environment_admin":
