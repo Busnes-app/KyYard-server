@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -239,5 +240,22 @@ func TestConfigurationAcceptsHostConfigCodesAndReadOnlyTmpfs(t *testing.T) {
 	c.Mounts[2].ReadOnly = true
 	if err := c.Validate(configTarget(), configNow); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A refusal names its field as a FieldError; the text is the wire's, unchanged.
+func TestConfigurationRefusalNamesItsField(t *testing.T) {
+	for field, mutate := range map[string]func(*ContainerConfiguration){
+		"restart":                       func(c *ContainerConfiguration) { c.Restart = "sometimes" },
+		"networks":                      func(c *ContainerConfiguration) { c.Networks[1].Name = "host" },
+		"user, working_dir or hostname": func(c *ContainerConfiguration) { c.User = strings.Repeat("u", 257) },
+	} {
+		c := validConfiguration()
+		mutate(&c)
+		err := c.Validate(configTarget(), configNow)
+		var fe *FieldError
+		if !errors.As(err, &fe) || fe.Field != field || err.Error() != "invalid container configuration: "+field {
+			t.Fatalf("%s: %#v", field, err)
+		}
 	}
 }

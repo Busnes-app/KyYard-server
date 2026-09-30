@@ -127,6 +127,7 @@ var (
 	errInspectionBusy        = errors.New("agent inspection capacity reached")
 	errInspectionUnavailable = errors.New("runtime inspection unavailable")
 	errInspectionInvalid     = errors.New("invalid inspection response")
+	errInspectionChanged     = errors.New("inspection target changed")
 )
 
 // askFrames is one family of agent reads: its registry, frame names and grant lifetime.
@@ -272,18 +273,16 @@ func (s *Server) handleContainerInspection(w http.ResponseWriter, r *http.Reques
 // result: only when err is nil and target is still the one recorded, on the same agent. noun
 // names the read in messages.
 func (s *Server) askSettled(w http.ResponseWriter, r *http.Request, a store.TenantAccess, endpoint string, target protocol.InspectionTarget, agent *agentConn, err error, noun string) bool {
-	Noun := strings.ToUpper(noun[:1]) + noun[1:]
 	switch err {
 	case nil, errInspectionBusy, errInspectionUnavailable, errInspectionInvalid:
 		// The agent answered: the answer counts only for the target still recorded.
-		fresh, err := s.store.Tenancy().ReadInspectionTarget(r.Context(), a, endpoint, target.ContainerID)
-		if err != nil {
-			s.tenantError(w, err)
+		fresh, readErr := s.store.Tenancy().ReadInspectionTarget(r.Context(), a, endpoint, target.ContainerID)
+		if readErr != nil {
+			s.tenantError(w, readErr)
 			return false
 		}
 		if fresh != target || !s.inspectionAgentCurrent(agent) {
-			s.writeError(w, 409, Noun+" target changed; refresh before retrying")
-			return false
+			err = errInspectionChanged
 		}
 	}
 	return s.askStatus(w, err, noun)
@@ -307,6 +306,8 @@ func (s *Server) askStatus(w http.ResponseWriter, err error, noun string) bool {
 		s.writeError(w, 504, Noun+" did not complete")
 	case errInspectionGone:
 		s.writeError(w, 409, "The agent disconnected; refresh before retrying")
+	case errInspectionChanged:
+		s.writeError(w, 409, Noun+" target changed; refresh before retrying")
 	case errInspectionBusy:
 		s.writeError(w, 429, "Agent "+noun+" capacity reached")
 	case errInspectionUnavailable:

@@ -83,12 +83,23 @@ func (t *tenancyStore) ContainerManaged(ctx context.Context, a TenantAccess, end
 	return managed, err
 }
 
-// RecordConfigurationRead re-authorizes container.configure and writes the
-// container.configuration.read success row. Details name the image and how many fields the
-// agent could not express, never a configuration value.
+// RecordConfigurationRead re-authorizes container.configure, refuses a container adopted since
+// the read began, and writes the container.configuration.read success row. Details name the
+// image and how many fields the agent could not express, never a configuration value.
 func (t *tenancyStore) RecordConfigurationRead(ctx context.Context, a TenantAccess, endpoint string, target protocol.InspectionTarget, unsupported int) error {
 	resource, details := endpoint+"/"+target.ContainerID, fmt.Sprintf("image=%s unsupported=%d", target.ImageID, unsupported)
 	return t.runAs(ctx, a, permissions.ContainerConfigure, "container.configuration.read", &resource, &details, true, func(tx *sql.Tx) error {
-		return t.endpointInScope(ctx, tx, a, endpoint)
+		if err := t.endpointInScope(ctx, tx, a, endpoint); err != nil {
+			return err
+		}
+		var one int
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM application_resources WHERE endpoint_id=? AND container_id=?`), endpoint, target.ContainerID).Scan(&one)
+		if err == nil {
+			return ErrContainerManaged
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
 	})
 }

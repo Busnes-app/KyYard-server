@@ -273,6 +273,9 @@ func TestRunRefusesTakenNamesPortsAndUnacknowledgedBinds(t *testing.T) {
 	bad := directSpec("fresh")
 	bad.Restart = "sometimes"
 	blockers(t, tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(bad), true), "spec_invalid:restart")
+	bad = directSpec("fresh")
+	bad.User = strings.Repeat("u", 257)
+	blockers(t, tenantRequest(f.s, f.admin, "POST", runPath(f), runBody(bad), true), "spec_invalid:user_working_dir_or_hostname")
 	spec.Mounts = append(spec.Mounts, protocol.Mount{Kind: protocol.MountBind, Source: "/srv/logs", Target: "/logs"})
 	taken := spec
 	taken.Name = "db"

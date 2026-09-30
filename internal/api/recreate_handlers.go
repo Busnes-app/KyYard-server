@@ -228,7 +228,10 @@ func specInvalid(spec protocol.ContainerConfiguration, target protocol.Inspectio
 		spec.ImageID = target.ImageID
 	}
 	if err := spec.Validate(target, spec.ObservedAt); err != nil {
-		_, field, _ := strings.Cut(err.Error(), ": ")
+		field := "spec"
+		if fe := new(protocol.FieldError); errors.As(err, &fe) {
+			field = fe.Field
+		}
 		return strings.NewReplacer(", ", "_", " ", "_").Replace(field)
 	}
 	return ""

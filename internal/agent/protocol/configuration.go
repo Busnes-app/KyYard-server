@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/netip"
 	"regexp"
@@ -147,9 +146,12 @@ var (
 	configRestarts = []string{"no", "always", "unless-stopped", "on-failure"}
 )
 
-var errConfiguration = errors.New("invalid container configuration")
+// FieldError is a refused configuration; Field names what was refused.
+type FieldError struct{ Field string }
 
-func configErr(field string) error { return fmt.Errorf("%w: %s", errConfiguration, field) }
+func (e *FieldError) Error() string { return "invalid container configuration: " + e.Field }
+
+func configErr(field string) error { return &FieldError{field} }
 
 // text is a displayable string: valid UTF-8 that CleanText leaves alone, at most max bytes.
 func text(s string, max int) bool {

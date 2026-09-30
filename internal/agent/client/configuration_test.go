@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,5 +208,90 @@ func TestConfigurationRoutedThroughTheSession(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("agent survived cancellation")
+	}
+}
+
+// configuration.cancel stops the read, sends no answer and frees the slot.
+func TestConfigurationCancelStopsTheRead(t *testing.T) {
+	out := make(chan outFrame, 8)
+	started, cancelled := make(chan struct{}, 1), make(chan struct{}, 1)
+	var blocked atomic.Bool
+	opts := &Options{Configure: func(ctx context.Context, target protocol.InspectionTarget) (*protocol.ContainerConfiguration, error) {
+		if !blocked.Swap(true) {
+			started <- struct{}{}
+			<-ctx.Done()
+			cancelled <- struct{}{}
+		}
+		return minimalConfiguration(target), nil
+	}}
+	req := configurationRequest(15 * time.Second)
+	s := newConfigurationsFor(req, opts, out)
+	if err := s.handle(execFrame(protocol.TypeConfigurationOpen, req), true); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := s.handle(execFrame(protocol.TypeConfigurationCancel, protocol.InspectionCancel{Request: req.Request}), true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("cancel not delivered")
+	}
+	next := configurationRequest(15 * time.Second)
+	next.Request = "next"
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := s.handle(execFrame(protocol.TypeConfigurationOpen, next), true); err != nil {
+			t.Fatal(err)
+		}
+		r := nextExecFrame(t, out, protocol.TypeConfigurationResult).Payload.(protocol.ConfigurationResult)
+		if r.Request == req.Request {
+			t.Fatalf("a cancelled read was answered: %+v", r)
+		}
+		if r.Status == "ok" {
+			break
+		}
+		// busy until the cancelled read has released its slot; a fresh request ID each try.
+		if r.Status != "busy" || time.Now().After(deadline) {
+			t.Fatalf("after cancel: %+v", r)
+		}
+		next.Request += "x"
+	}
+}
+
+// An answer that passes Validate but does not fit the frame with its envelope is sent as
+// unavailable: the server closes the socket on an oversized frame.
+func TestConfigurationOversizeAnswerIsUnavailable(t *testing.T) {
+	out := make(chan outFrame, 8)
+	req := configurationRequest(15 * time.Second)
+	// Full argv entries, then the last one trimmed so the configuration is one byte under the cap.
+	big := minimalConfiguration(req.Target)
+	full := strings.Repeat("a", protocol.MaxArgvEntryBytes)
+	size := func() int { raw, _ := json.Marshal(big); return len(raw) }
+	for size() < protocol.MaxConfigurationFrameBytes {
+		if len(big.Command) < protocol.MaxArgv {
+			big.Command = append(big.Command, full)
+		} else {
+			big.Entrypoint = append(big.Entrypoint, full)
+		}
+	}
+	last := &big.Entrypoint[len(big.Entrypoint)-1]
+	*last = (*last)[:len(*last)-(size()-protocol.MaxConfigurationFrameBytes+1)]
+	if n := size(); n != protocol.MaxConfigurationFrameBytes-1 {
+		t.Fatalf("fixture is %d bytes", n)
+	}
+	if err := big.Validate(req.Target, time.Now()); err != nil {
+		t.Fatalf("fixture invalid: %v", err)
+	}
+	opts := &Options{Configure: func(context.Context, protocol.InspectionTarget) (*protocol.ContainerConfiguration, error) {
+		return big, nil
+	}}
+	s := newConfigurationsFor(req, opts, out)
+	if err := s.handle(execFrame(protocol.TypeConfigurationOpen, req), true); err != nil {
+		t.Fatal(err)
+	}
+	if r := nextExecFrame(t, out, protocol.TypeConfigurationResult).Payload.(protocol.ConfigurationResult); r.Status != "unavailable" || r.Result != nil {
+		t.Fatalf("oversize answer: %s %v", r.Status, r.Result != nil)
 	}
 }
