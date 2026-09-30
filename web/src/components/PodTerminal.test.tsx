@@ -51,3 +51,17 @@ it('refuses to open a pod whose identity the inventory does not report', () => {
   expect(screen.getByText(/does not report this pod's identity/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: /Open terminal/ })).toBeNull();
 });
+
+it.each([
+  ['forbidden', "The agent's role does not allow a terminal here. Regenerate and apply the cluster manifest, then retry."],
+  ['pod_security', 'This namespace does not enforce Pod Security baseline or restricted, so terminals are refused.'],
+  ['<b>x</b>', 'Terminal ended or was refused. Process state may be unknown. Check access, target and agent version before opening another terminal.'],
+])('words the %s close reason in fixed text', (reason, text) => {
+  vi.stubGlobal('WebSocket', Socket);
+  render(<PodTerminal base="/api/x" pod={pod} scope="Cluster prod" />);
+  fireEvent.change(screen.getByLabelText('Confirm pod name'), { target: { value: 'web-7c9' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Open terminal in web' }));
+  act(() => Socket.current.onopen?.());
+  act(() => Socket.current.onmessage?.({ data: JSON.stringify({ v: 1, type: 'exec.close', payload: { stream: 's1', reason } }) }));
+  expect(screen.getByRole('status').textContent).toBe(text);
+});

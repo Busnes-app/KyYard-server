@@ -8,12 +8,13 @@ export const CONFLICT = 'The workload changed since you read it. Read again.';
 export const FORBIDDEN = "The agent's role does not allow this. Regenerate and apply the cluster manifest, then retry.";
 export const UNREPORTED = 'This workload has settings the form cannot carry; nothing was changed.';
 // The inventory names an application only on a Deployment KyYard applied; elsewhere it is unknown.
+export const POD_SECURITY = 'This namespace does not enforce Pod Security baseline or restricted; KyYard refuses to change workloads there.';
 export const MANAGED = 'Managed by a KyYard application. Edit it there.';
 
 // Step codes of a workload apply whose wording differs from an application deployment's.
 export const WORKLOAD_STEPS: Record<string, string> = {
   forbidden: FORBIDDEN, conflict: CONFLICT, not_found: NOT_FOUND, namespace_not_granted: NOT_GRANTED,
-  configuration_unreported: UNREPORTED, application_managed: MANAGED,
+  configuration_unreported: UNREPORTED, application_managed: MANAGED, pod_security: POD_SECURITY,
 };
 // Detail words of a settled workload or pod command (the cluster agent's Operate).
 const DETAILS: Record<string, string> = {

@@ -9,6 +9,11 @@ import type { Container } from '../tenant';
 export type Start = { spec: object; confirm: string };
 const maxChunk = 32 * 1024;
 const maxQueued = 256 * 1024;
+// Fixed refusals the agent may name in exec.close; any other reason keeps the generic text.
+const CLOSE_REASONS: Record<string, string> = {
+  forbidden: "The agent's role does not allow a terminal here. Regenerate and apply the cluster manifest, then retry.",
+  pod_security: 'This namespace does not enforce Pod Security baseline or restricted, so terminals are refused.',
+};
 
 export function ContainerTerminal({ base, container, scope }: { base: string; container: Container; scope: string }) {
   const [user, setUser] = useState('');
@@ -100,7 +105,8 @@ export function LiveTerminal({ path, start, label }: { path: string; start: Star
           terminal.write(chunk, () => { queued -= chunk.length; });
         } else if (frame.type === 'exec.close') {
           const code = 'exit_code' in payload ? payload.exit_code : undefined;
-          stop(typeof code === 'number' && Number.isInteger(code) ? `Process exited with code ${code}.` : 'Terminal ended or was refused. Process state may be unknown. Check access, target and agent version before opening another terminal.');
+          const reason = 'reason' in payload && typeof payload.reason === 'string' && Object.hasOwn(CLOSE_REASONS, payload.reason) ? CLOSE_REASONS[payload.reason] : '';
+          stop(typeof code === 'number' && Number.isInteger(code) ? `Process exited with code ${code}.` : reason || 'Terminal ended or was refused. Process state may be unknown. Check access, target and agent version before opening another terminal.');
         } else throw new Error();
       } catch { stop('Disconnected: invalid terminal response. Process state is unknown.'); }
     };

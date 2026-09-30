@@ -31,7 +31,7 @@ export function ManifestRegeneration({ org, endpoint, onSaved }: { org: string; 
     try {
       const r = await secureFetch(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint.id)}/manifest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ namespaces: parseNamespaces(text) }) });
       if (r.ok) { setResult(await r.json() as Manifest); onSaved(); return; }
-      setError(await refusal(r, { forbidden: 'Only an administrator can change the namespaces a cluster deploys to.', invalid: NAMESPACE_RULE }));
+      setError(await refusal(r, { forbidden: 'Only an administrator can change the namespaces a cluster deploys to.', invalid: NAMESPACE_RULE, conflict: { agent_image_unpinned: 'The server\'s agent image is not pinned by digest, so a manifest cannot be generated. Set KY_AGENT_IMAGE to a digest.' } }));
     } catch { setError(offlineWrite); } finally { setBusy(false); }
   };
   return <section className="dr-stack" aria-label="Deploy namespaces">
@@ -39,6 +39,7 @@ export function ManifestRegeneration({ org, endpoint, onSaved }: { org: string; 
     {open && <form className="dr-stack" onSubmit={(e) => { e.preventDefault(); void save(); }}>
       <label>Namespaces to deploy to<input value={text} onChange={(e) => setText(e.target.value)} disabled={busy} autoComplete="off" placeholder="shop billing" /></label>
       <p>Saving replaces the list. KyYard maps applications only to listed namespaces, and the agent checks its own access in the cluster before every apply, so nothing is deployed until the manifest is applied.</p>
+      <p>Apply it to update RBAC and the agent Deployment; identity and enrollment are untouched.</p>
       <button disabled={busy}>Save and show manifest</button>
       {error && <p role="alert">{error}</p>}
     </form>}

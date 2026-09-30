@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { WorkloadControls } from './WorkloadControls';
 import { PodControls } from './PodControls';
 import type { Pod, Workload } from '../tenant';
+import { commandLine } from './workloadTexts';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); document.cookie = 'ky_csrf=; Max-Age=0'; });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -173,4 +174,9 @@ it('renders no controls for a name the route rejects', () => {
   posts();
   controls({ workload: { ...web, name: 'web.v2' } });
   expect(screen.queryByRole('group')).toBeNull();
+});
+
+it('words a managed delete the agent settled as denied and a Pod Security refusal', () => {
+  expect(commandLine({ action: 'workload.delete', outcome: 'denied', detail: 'application_managed' })).toBe('Delete refused. Managed by a KyYard application. Edit it there.');
+  expect(commandLine({ action: 'workload.apply', outcome: 'denied', detail: 'pod_security' })).toBe('Apply refused. This namespace does not enforce Pod Security baseline or restricted; KyYard refuses to change workloads there.');
 });

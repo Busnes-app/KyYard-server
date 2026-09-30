@@ -114,6 +114,14 @@ it('shows a settled apply with the workload step texts', () => {
   expect(screen.getAllByRole('row')).toHaveLength(3);
 });
 
+it('words a Pod Security precondition without the raw detail', () => {
+  render(<WorkloadResult command={{ id: 'k8', action: 'workload.apply', outcome: 'denied', result: { code: 'step_failed', steps: [
+    { service: 'workload', step: 'precondition', outcome: 'denied', code: 'pod_security', detail: 'privileged' },
+  ], services: [] } }} />);
+  expect(screen.getByText('This namespace does not enforce Pod Security baseline or restricted; KyYard refuses to change workloads there.')).toBeTruthy();
+  expect(document.body.textContent).not.toContain('privileged');
+});
+
 it('offers Read again after a lost connection and never resubmits', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
   const onReread = vi.fn();
