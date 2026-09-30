@@ -244,7 +244,7 @@ it.each([
   [json({ code: 'invalid_spec', blockers: ['name_taken'] }, 422), 'A workload with this name already exists in the namespace. Choose another name.'],
   [json({ code: 'namespace_not_granted' }, 422), 'This namespace is not granted to KyYard on this cluster.'],
   [json({ code: 'command_in_progress' }, 409), 'A workload apply or run, or a container change, on this cluster is waiting for its result.'],
-  [json({ error: 'no inventory' }, 404), 'The cluster has not reported its inventory yet. Try again shortly.'],
+  [json({ error: 'Resource not found in this organization' }, 404), 'The endpoint or its inventory was not found.'],
 ])('renders a refused run as fixed text', async (response, text) => {
   vi.stubGlobal('fetch', vi.fn(async () => response));
   runForm(['shop']);
@@ -262,4 +262,13 @@ it('words a run command and a name_taken step', () => {
     { service: 'workload', step: 'precondition', outcome: 'denied', code: 'name_taken', detail: '' },
   ], services: [] } }} />);
   expect(screen.getByText('A workload with this name already exists in the namespace. Choose another name.')).toBeTruthy();
+});
+
+it('says Running for a succeeded run and Applied for a succeeded apply', () => {
+  const { unmount } = render(<WorkloadResult command={{ id: 'k10', action: 'workload.run', outcome: 'succeeded' }} />);
+  expect(screen.getByText('Running.')).toBeTruthy();
+  expect(screen.queryByText('Applied.')).toBeNull();
+  unmount();
+  render(<WorkloadResult command={{ id: 'k11', action: 'workload.apply', outcome: 'succeeded' }} />);
+  expect(screen.getByText('Applied.')).toBeTruthy();
 });

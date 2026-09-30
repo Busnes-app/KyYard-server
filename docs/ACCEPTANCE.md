@@ -36,8 +36,6 @@ in the results table.
   read `host_config:CgroupnsMode` or `host_config:ShmSize`, which blocks the edit, until the
   adapter learns the daemon default. The read assumes Docker's own defaults: cgroup namespace
   `host` on a cgroup v1 host, `private` otherwise, and 64 MiB of shm.
-- A run labels its Deployment, selector and pods with `app.kubernetes.io/name` and `instance`
-  only, so its pod count can include foreign pods of a workload carrying the same two labels.
 - The run's behaviour on a real cluster is unproven: CI covers it with a fake clientset only.
 - A source build (`docker-compose.build.yml`) shows an enrollment token and a "Source
   installation" note instead of the one-line command: the image has no published digest to
@@ -263,9 +261,10 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   "Applied." and the steps precondition, apply and rollout.
 - Run a workload (admin): the namespace toolbar's "Run a workload". Pick `acc`, name `acc-run`,
   replicas `1`, one container `web` with a pinned image, type `acc-run`, and run. The Last change
-  panel shows the steps precondition, create and rollout; "Open the new workload" opens `acc-run`.
+  panel shows "Running." and the steps precondition, create and rollout; "Open the new workload" opens `acc-run`.
   Configuration tab: change the replicas to `2` and apply; then Delete it (type `acc-run`).
-  Running the name of an existing Deployment stops with "name_taken".
+  Running the name of an existing Deployment stops with "A workload with this name already
+  exists in the namespace. Choose another name."
 - Terminal tab (admin): pick a pod and its container, shell `/bin/sh`, type the pod name in
   "Confirm pod name", open. Expect "Connected. Terminal contents are not recorded."; `echo
   $ACCEPT_KEY` prints `two`; `exit` ends with "Process exited with code 0."

@@ -7,7 +7,7 @@ import { diffWorkload, parseWorkloadConfiguration, toWorkloadSpec, workloadUnsup
 import { Group, int, Lines, Num, Text } from './configurationGroups/fields';
 import { EnvRows } from './configurationGroups/environment';
 import { displayName } from './Endpoints';
-import { NO_INVENTORY, NOT_FOUND, NOT_GRANTED, UPGRADE_CLUSTER, WORKLOAD_STEPS, workloadRefusal } from './workloadTexts';
+import { NOT_FOUND, NOT_GRANTED, RUN_NOT_FOUND, UPGRADE_CLUSTER, WORKLOAD_STEPS, workloadRefusal } from './workloadTexts';
 
 export const KIND_NAMES: Record<string, string> = { deployment: 'Deployment', statefulset: 'StatefulSet', daemonset: 'DaemonSet' };
 export const workloadURL = (base: string, t: WorkloadRef) => `${base}/workloads/${encodeURIComponent(t.namespace)}/${encodeURIComponent(t.kind)}/${encodeURIComponent(t.name)}`;
@@ -63,7 +63,7 @@ export function WorkloadConfigurationForm(props: FormProps) {
     try {
       const resp = await secureFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!alive.current) return;
-      if (!resp.ok) { const text = await workloadRefusal(resp, run ? NO_INVENTORY : NOT_FOUND); if (alive.current) setError(text); return; }
+      if (!resp.ok) { const text = await workloadRefusal(resp, run ? RUN_NOT_FOUND : NOT_FOUND); if (alive.current) setError(text); return; }
       const cmd: DirectCommand = await resp.json();
       if (!alive.current) return;
       setConfirm(''); onSent(cmd, target);
@@ -127,10 +127,12 @@ const OUTCOMES: Record<string, string> = {
   timed_out: "The cluster agent did not answer in time; check the cluster's Activity tab before trying again.",
   unknown: 'The outcome is unknown: the agent may or may not have applied it. Read the workload again before retrying.',
 };
-// WorkloadResult is a settled apply: outcome, result code and the step table in workload words.
+// WorkloadResult is a settled apply or run: outcome, result code and the step table in workload words.
 export function WorkloadResult({ command }: { command: DirectCommand }) {
+  const outcome = command.action === 'workload.run' && command.outcome === 'succeeded' ? 'Running.'
+    : Object.hasOwn(OUTCOMES, command.outcome) ? OUTCOMES[command.outcome] : 'Unrecognised outcome.';
   return <div role="status">
-    <p>{Object.hasOwn(OUTCOMES, command.outcome) ? OUTCOMES[command.outcome] : 'Unrecognised outcome.'}</p>
+    <p>{outcome}</p>
     {command.result?.code && Object.hasOwn(RESULT_CODES, command.result.code) && <p>{RESULT_CODES[command.result.code]}</p>}
     {command.result && command.result.steps.length > 0 && <StepTable steps={command.result.steps} texts={WORKLOAD_STEPS} />}
   </div>;

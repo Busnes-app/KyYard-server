@@ -12,7 +12,8 @@ export const POD_SECURITY = 'This namespace does not enforce Pod Security baseli
 export const MANAGED = 'Managed by a KyYard application. Edit it there.';
 export const PVC_RETENTION = "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).";
 export const NAME_TAKEN = 'A workload with this name already exists in the namespace. Choose another name.';
-export const NO_INVENTORY = 'The cluster has not reported its inventory yet. Try again shortly.';
+// A run's 404 is the endpoint or its inventory; the server's body does not say which.
+export const RUN_NOT_FOUND = 'The endpoint or its inventory was not found.';
 
 // Step codes of a workload apply whose wording differs from an application deployment's.
 export const WORKLOAD_STEPS: Record<string, string> = {
