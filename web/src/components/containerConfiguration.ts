@@ -28,7 +28,7 @@ const strMap = (v: unknown, max: number): v is Record<string, string> => obj(v) 
 const RESTARTS = ['no', 'always', 'unless-stopped', 'on-failure'];
 
 function ports(v: unknown): ConfigPort[] | null {
-  if (!Array.isArray(v) || v.length > 128) return null;
+  if (!Array.isArray(v) || v.length > 64) return null;
   const out: ConfigPort[] = [];
   for (const p of v) {
     if (!obj(p) || !int(p.container) || p.container < 1 || p.container > 65535 || (p.protocol !== 'tcp' && p.protocol !== 'udp')) return null;
@@ -64,15 +64,16 @@ function healthcheck(v: unknown): ConfigHealthcheck | null | undefined {
 }
 
 // parseConfiguration is the boundary check on a configuration read: a payload that is not
-// exactly this container's, or not the wire shape, is refused whole.
+// exactly this container's, or not the wire shape, is refused whole. List caps are the Go protocol's
+// (MaxDeploymentEnvEntries, MaxLabels, MaxDeploymentPorts, MaxMounts, MaxListEntries, MaxArgv, ...).
 export function parseConfiguration(value: unknown, target: InspectionTarget): ContainerConfiguration | null {
   if (!obj(value) || !obj(value.target) || value.target.container_id !== target.container_id || value.target.image_id !== target.image_id || value.target.created_unix !== target.created_unix) return null;
   const v = value;
   if (typeof v.observed_at !== 'string' || !Number.isFinite(Date.parse(v.observed_at)) || typeof v.name !== 'string' || typeof v.image_id !== 'string') return null;
   if (!obj(v.image) || typeof v.image.reference !== 'string' || typeof v.image.digest !== 'string' || (v.image.tag !== undefined && typeof v.image.tag !== 'string')) return null;
   if (!strs(v.command, 64) || !strs(v.entrypoint, 64) || typeof v.user !== 'string' || typeof v.working_dir !== 'string' || typeof v.hostname !== 'string') return null;
-  if (!Array.isArray(v.env) || v.env.length > 512 || !v.env.every(e => obj(e) && typeof e.name === 'string' && typeof e.value === 'string')) return null;
-  if (!strMap(v.labels, 256) || typeof v.restart !== 'string' || !RESTARTS.includes(v.restart) || !int(v.restart_retries) || v.restart_retries < 0) return null;
+  if (!Array.isArray(v.env) || v.env.length > 128 || !v.env.every(e => obj(e) && typeof e.name === 'string' && typeof e.value === 'string')) return null;
+  if (!strMap(v.labels, 32) || typeof v.restart !== 'string' || !RESTARTS.includes(v.restart) || !int(v.restart_retries) || v.restart_retries < 0) return null;
   const p = ports(v.ports), m = mounts(v.mounts), n = networks(v.networks), h = healthcheck(v.healthcheck);
   if (!p || !m || !n || h === undefined || typeof v.network_mode !== 'string') return null;
   const r = v.resources;
@@ -85,7 +86,7 @@ export function parseConfiguration(value: unknown, target: InspectionTarget): Co
   if (!obj(log) || typeof log.driver !== 'string' || !strMap(options, 16)) return null;
   if (typeof v.stop_signal !== 'string' || (v.stop_timeout !== undefined && (!int(v.stop_timeout) || v.stop_timeout < 0))) return null;
   const u = v.unsupported;
-  if (!strs(u, 128) || new Set(u).size !== u.length || !u.every(knownCode)) return null;
+  if (!strs(u, 107) || new Set(u).size !== u.length || !u.every(knownCode)) return null;
   const devices = (v.devices as Obj[]).map(d => ({ host: d.host as string, container: d.container as string, permissions: d.permissions as string }));
   const config: ContainerConfiguration = {
     target: { container_id: target.container_id, image_id: target.image_id, created_unix: target.created_unix },

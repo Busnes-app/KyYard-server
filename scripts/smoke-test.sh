@@ -295,51 +295,54 @@ print(d)' "$1"; }
       done
       api GET "/containers/$1/configuration"
     }
-    smoke_container_cleanup() {
-      if [ -n "$SMOKE_CID" ]; then docker rm -f "$SMOKE_CID" >/dev/null 2>&1 || :; fi
-      docker rm -f ky-smoke-run >/dev/null 2>&1 || :
+    smoke_container_cleanup() { # by label, so a container created after a timeout goes too
+      docker ps -aq --filter label=kyyard.smoke=1 | xargs -r docker rm -f >/dev/null 2>&1 || :
     }
     trap 'smoke_container_cleanup; cleanup' EXIT
     smoke_spec() { # smoke_spec <env value>
       python3 -c 'import json,sys
 print(json.dumps({"name":"ky-smoke-run","image":{"reference":sys.argv[1]},"image_id":sys.argv[2],"command":["sleep","60"],"entrypoint":[],
-"env":[{"name":"SMOKE_KEY","value":sys.argv[3]}],"labels":{},"restart":"no","ports":[],"mounts":[],"network_mode":"bridge",
+"env":[{"name":"SMOKE_KEY","value":sys.argv[3]}],"labels":{"kyyard.smoke":"1"},"restart":"no","ports":[],"mounts":[],"network_mode":"bridge",
 "networks":[{"name":"bridge"}],"cap_add":[],"cap_drop":[],"security_opt":[],"extra_hosts":[],"dns":[],"devices":[],"unsupported":[]}))' \
         "$SMOKE_IMAGE" "$SMOKE_IMAGE_ID" "$1"
     }
     RUN_CMD="$(api POST /containers "{\"spec\":$(smoke_spec one),\"acknowledge_binds\":[],\"confirm\":\"ky-smoke-run\"}")"
     RUN_ID="$(printf '%s' "$RUN_CMD" | jget id 2>/dev/null || :)"
     check "run accepts a new container" "$(test -n "$RUN_ID" && echo yes || echo no)" "yes"
-    check "run command succeeds" "$(wait_command "$RUN_ID")" "succeeded"
-    SMOKE_CID="$(api GET "/commands/$RUN_ID" | jget result_container_id 2>/dev/null || :)"
-    check "run reports the new container id" "$(printf '%s' "$SMOKE_CID" | grep -Ec '^[0-9a-f]{64}$')" "1"
-    CFG="$(read_configuration "$SMOKE_CID")"
-    contains "configuration names the container" "$CFG" '"name":"ky-smoke-run"'
-    contains "configuration carries the env it was given" "$CFG" '"name":"SMOKE_KEY","value":"one"'
-    RECREATE="$(printf '%s' "$CFG" | python3 -c '
+    if [ -z "$RUN_ID" ]; then
+      pass "skipped: no run command, so no configuration read, recreate, stop or remove"
+    else
+      check "run command succeeds" "$(wait_command "$RUN_ID")" "succeeded"
+      SMOKE_CID="$(api GET "/commands/$RUN_ID" | jget result_container_id 2>/dev/null || :)"
+      check "run reports the new container id" "$(printf '%s' "$SMOKE_CID" | grep -Ec '^[0-9a-f]{64}$')" "1"
+      CFG="$(read_configuration "$SMOKE_CID")"
+      contains "configuration names the container" "$CFG" '"name":"ky-smoke-run"'
+      contains "configuration carries the env it was given" "$CFG" '"name":"SMOKE_KEY","value":"one"'
+      contains "configuration carries the cleanup label" "$CFG" '"kyyard.smoke":"1"'
+      RECREATE="$(printf '%s' "$CFG" | python3 -c '
 import json, sys
 c = json.load(sys.stdin)
 t = c.pop("target")
 c.pop("observed_at")
 c["env"] = [{"name": e["name"], "value": "two" if e["name"] == "SMOKE_KEY" else e["value"]} for e in c["env"]]
 print(json.dumps({"expects": {"image_id": t["image_id"], "created_unix": t["created_unix"], "state": "running"}, "spec": c, "acknowledge_binds": [], "confirm": c["name"]}))')"
-    REC_CMD="$(api POST "/containers/$SMOKE_CID/recreate" "$RECREATE")"
-    REC_ID="$(printf '%s' "$REC_CMD" | jget id 2>/dev/null || :)"
-    check "recreate accepts the edit" "$(test -n "$REC_ID" && echo yes || echo no)" "yes"
-    check "recreate command succeeds" "$(wait_command "$REC_ID")" "succeeded"
-    NEW_CID="$(api GET "/commands/$REC_ID" | jget result_container_id 2>/dev/null || :)"
-    check "recreate yields a different container" "$(test -n "$NEW_CID" && test "$NEW_CID" != "$SMOKE_CID" && echo yes || echo no)" "yes"
-    [ -n "$NEW_CID" ] && SMOKE_CID="$NEW_CID"
-    CFG="$(read_configuration "$SMOKE_CID")"
-    contains "recreated configuration carries the new env" "$CFG" '"name":"SMOKE_KEY","value":"two"'
-    check "old env value is gone" "$(if printf '%s' "$CFG" | grep -Fq '"value":"one"'; then echo stale; else echo gone; fi)" "gone"
-    STOP_CMD="$(api POST /commands "{\"action\":\"container.stop\",\"container\":\"$SMOKE_CID\",\"confirm\":\"ky-smoke-run\",\"expects\":{\"state\":\"running\"}}")"
-    check "stop succeeds" "$(wait_command "$(printf '%s' "$STOP_CMD" | jget id 2>/dev/null || :)")" "succeeded"
-    RM_CMD="$(api POST /commands "{\"action\":\"container.remove\",\"container\":\"$SMOKE_CID\",\"confirm\":\"ky-smoke-run\",\"expects\":{\"state\":\"exited\"}}")"
-    check "remove succeeds" "$(wait_command "$(printf '%s' "$RM_CMD" | jget id 2>/dev/null || :)")" "succeeded"
-    check "container is gone from Docker" "$(docker ps -aq --filter name=ky-smoke-run | wc -l | tr -d ' ')" "0"
+      REC_CMD="$(api POST "/containers/$SMOKE_CID/recreate" "$RECREATE")"
+      REC_ID="$(printf '%s' "$REC_CMD" | jget id 2>/dev/null || :)"
+      check "recreate accepts the edit" "$(test -n "$REC_ID" && echo yes || echo no)" "yes"
+      check "recreate command succeeds" "$(wait_command "$REC_ID")" "succeeded"
+      NEW_CID="$(api GET "/commands/$REC_ID" | jget result_container_id 2>/dev/null || :)"
+      check "recreate yields a different container" "$(test -n "$NEW_CID" && test "$NEW_CID" != "$SMOKE_CID" && echo yes || echo no)" "yes"
+      [ -n "$NEW_CID" ] && SMOKE_CID="$NEW_CID"
+      CFG="$(read_configuration "$SMOKE_CID")"
+      contains "recreated configuration carries the new env" "$CFG" '"name":"SMOKE_KEY","value":"two"'
+      check "old env value is gone" "$(if printf '%s' "$CFG" | grep -Fq '"value":"one"'; then echo stale; else echo gone; fi)" "gone"
+      STOP_CMD="$(api POST /commands "{\"action\":\"container.stop\",\"container\":\"$SMOKE_CID\",\"confirm\":\"ky-smoke-run\",\"expects\":{\"state\":\"running\"}}")"
+      check "stop succeeds" "$(wait_command "$(printf '%s' "$STOP_CMD" | jget id 2>/dev/null || :)")" "succeeded"
+      RM_CMD="$(api POST /commands "{\"action\":\"container.remove\",\"container\":\"$SMOKE_CID\",\"confirm\":\"ky-smoke-run\",\"expects\":{\"state\":\"exited\"}}")"
+      check "remove succeeds" "$(wait_command "$(printf '%s' "$RM_CMD" | jget id 2>/dev/null || :)")" "succeeded"
+      check "container is gone from Docker" "$(docker ps -aq --filter label=kyyard.smoke=1 | wc -l | tr -d ' ')" "0"
+    fi
     smoke_container_cleanup
-    SMOKE_CID=""
     trap cleanup EXIT
   fi
   check "revoke closes the live agent" \

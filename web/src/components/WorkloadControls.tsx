@@ -31,7 +31,7 @@ export function useClusterCommand(base: string, label: string, onStatus: (text: 
     } catch { if (alive.current) say("Connection lost. The action may have run. Check the cluster's Activity tab before trying again."); }
     finally { if (alive.current) setBusy(false); }
   };
-  return { send, say, busy: busy || (command !== null && !command.outcome) };
+  return { send, say, busy: busy || (command !== null && !command.outcome && !error) };
 }
 
 type Props = { base: string; org: string; endpoint: string; workload: Workload; active: boolean; role: string | undefined; capabilities: string[]; scope: string; open?: boolean; onStatus: (text: string) => void; onRefresh?: () => void };

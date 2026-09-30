@@ -72,11 +72,15 @@ func TestClampAndShrinkKubernetes(t *testing.T) {
 		}
 		k.Pods = append(k.Pods, p)
 	}
+	k.Pods[0].UID, k.Pods[1].UID = "not-a-uid", "0e8b1f6a-2c3d-4e5f-8a9b-0c1d2e3f4a5b"
 	k.Workloads = []Workload{{Kind: "Deployment", Namespace: "shop", Name: "web‮evil\nline", Images: []string{image}}}
 	s := &Snapshot{Kubernetes: k, Truncated: []string{"services"}}
 	Clamp(s)
 	if k.Workloads[0].Name != "webevilline" || len(k.Workloads[0].Images[0]) != MaxKubeImageBytes || k.Nodes == nil || k.Services == nil || k.Claims == nil || k.Namespaces == nil {
 		t.Fatalf("clamp: %+v", k.Workloads[0])
+	}
+	if k.Pods[0].UID != "" || k.Pods[1].UID != "0e8b1f6a-2c3d-4e5f-8a9b-0c1d2e3f4a5b" {
+		t.Fatalf("pod UIDs after clamp: %q %q", k.Pods[0].UID, k.Pods[1].UID)
 	}
 	if !slices.Contains(s.Truncated, "services") {
 		t.Fatalf("clamp dropped the adapter's truncation: %v", s.Truncated)
@@ -129,6 +133,7 @@ func TestLogRequestValidateFor(t *testing.T) {
 		{RuntimeKubernetes, LogRequest{Pod: pod, Container: id}, false},
 		{RuntimeKubernetes, LogRequest{Container: id}, false},
 		{RuntimeKubernetes, LogRequest{Pod: &PodTarget{Namespace: "shop", Name: "Web"}}, false},
+		{RuntimeKubernetes, LogRequest{Pod: &PodTarget{Namespace: "shop", Name: "web", UID: "0e8b1f6a-2c3d-4e5f-8a9b-0c1d2e3f4a5b"}}, false},
 		{RuntimeDocker, LogRequest{Container: id}, true},
 		{RuntimeDocker, LogRequest{Container: id, Pod: pod}, false},
 		{RuntimeDocker, LogRequest{Pod: pod}, false},

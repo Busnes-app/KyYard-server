@@ -23,7 +23,7 @@ in the results table.
 - The audit Actor column shows user IDs (`usr_…`), not names. Keep the list of which ID is
   which account from the prerequisites for step 8.
 - Container command results (restart, start, stop, remove) are not audited as results; the
-  audit row is the request, under its permission.
+  audit row is the request, under its permission. Run and recreate results are audited.
 - A container edit keeps the environment, labels and command the old image gave the container:
   the read cannot tell them from the operator's, so after an image change they are pinned to
   the old image's values.
@@ -365,7 +365,7 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   `container.exec.open`, `application.deploy`, `registry.manage`, and reader's Restart and
   Logs refusals with result `denied`. There is no `container.restart` row: that name appears
   only in the container row's status. Enrollment, connection, key rotation and deployment results carry
-  actor `agent:<endpoint id>`; reconciled commands carry `system`. Container command results
+  actor `agent:<endpoint id>`; reconciled commands carry `system`. Container restart, start, stop and remove results
   are not audited.
 - Pass: every privileged action from steps 2 to 7 and every refusal from step 4 is there, and
   its Actor (a user ID) is the ID of the account that did it.

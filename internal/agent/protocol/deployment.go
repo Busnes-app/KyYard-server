@@ -43,7 +43,7 @@ const (
 	StepStart                       = "start"
 	StepRemove                      = "remove"
 	StepRecheck                     = "recheck"  // re-inspects the old container at the start of its replacement
-	StepRollback                    = "rollback" // restores the replaced container after a failed start
+	StepRollback                    = "rollback" // restores the replaced container after a failed start; also reports a failed create or stop undo
 	StepApply                       = "apply"    // a workload apply's update of the object
 	StepRollout                     = "rollout"  // a workload apply's wait for the rollout
 	// ExplicitProject and ExplicitRevision are the fixed identity of a direct (edit or run) frame.

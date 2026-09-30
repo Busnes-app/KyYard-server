@@ -479,9 +479,16 @@ func (t *tenancyStore) sweepDirect(ctx context.Context, tx *sql.Tx, endpointID s
 		return err
 	}
 	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=?`),
-			protocol.OutcomeUnknown, "no result arrived before the deadline", now, id); err != nil {
+		// A real answer may have committed since the list was read.
+		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=? AND outcome=''`),
+			protocol.OutcomeUnknown, "no result arrived before the deadline", now, id)
+		if err != nil {
 			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			continue
 		}
 		if err := t.auditDirect(ctx, tx, endpointID, id, protocol.OutcomeUnknown, "deadline", "", now); err != nil {
 			return err

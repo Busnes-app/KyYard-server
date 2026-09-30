@@ -100,26 +100,41 @@ func (c *Client) Running(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// restarts reads the runtime's restart counter for one container. The stats endpoint does not
-// carry it, so this is a second call, and it inherits the caller's per-container deadline
-// rather than opening its own; a runtime that does not answer in time yields -1, which reads
-// as "no data" rather than "never restarted".
+// restarts reads the runtime's restart counter for one container: the one the last snapshot's
+// inspect read, once, or else a second call. The stats endpoint does not carry it. The call
+// inherits the caller's per-container deadline rather than opening its own; a runtime that
+// does not answer in time yields -1, which reads as "no data" rather than "never restarted".
 func (c *Client) restarts(ctx context.Context, id string) int64 {
-	var inspected struct {
-		State struct {
-			RestartCount *int64 `json:"RestartCount"`
-		} `json:"State"`
-		RestartCount *int64 `json:"RestartCount"`
+	c.inspectMu.Lock()
+	n, ok := c.restartSeen[id]
+	delete(c.restartSeen, id)
+	c.inspectMu.Unlock()
+	if ok {
+		return n
 	}
+	var inspected restartCounter
 	if err := c.get(ctx, "/containers/"+id+"/json", &inspected); err != nil {
 		return -1
 	}
-	// Engine API keeps the counter at the top level; some runtimes report it under State.
+	return inspected.count()
+}
+
+// restartCounter is where a container inspect carries the restart counter.
+type restartCounter struct {
+	State struct {
+		RestartCount *int64 `json:"RestartCount"`
+	} `json:"State"`
+	RestartCount *int64 `json:"RestartCount"`
+}
+
+// count is the counter, or -1 when the inspect had none. Engine API keeps it at the top level;
+// some runtimes report it under State.
+func (r restartCounter) count() int64 {
 	switch {
-	case inspected.RestartCount != nil:
-		return *inspected.RestartCount
-	case inspected.State.RestartCount != nil:
-		return *inspected.State.RestartCount
+	case r.RestartCount != nil:
+		return *r.RestartCount
+	case r.State.RestartCount != nil:
+		return *r.State.RestartCount
 	}
 	return -1
 }

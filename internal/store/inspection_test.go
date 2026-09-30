@@ -48,3 +48,28 @@ func TestInspectionTargetScopeIdentityAndFreshness(t *testing.T) {
 		t.Fatal("stale inventory allowed")
 	}
 }
+
+// A container adopted while its configuration was being read is refused when the read is
+// recorded, in the same transaction.
+func TestConfigurationReadRefusesAContainerAdoptedMeanwhile(t *testing.T) {
+	st, a, app, endpoint, snapshot := adoptionFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	target, err := ts.ReadInspectionTarget(ctx, a, endpoint, snapshot.Containers[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.RecordConfigurationRead(ctx, a, endpoint, target, 0); err != nil {
+		t.Fatalf("unmanaged: %v", err)
+	}
+	p, err := ts.PreviewApplicationAdoption(ctx, a, app.ID, endpoint, "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AdoptApplication(ctx, a, app.ID, AdoptionRequest{EndpointID: endpoint, Project: "shop", Digest: p.Digest, Confirm: "shop"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.RecordConfigurationRead(ctx, a, endpoint, target, 0); !errors.Is(err, ErrContainerManaged) {
+		t.Fatalf("adopted meanwhile: %v", err)
+	}
+}

@@ -8,17 +8,18 @@ const id = 'c'.repeat(64);
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const endpoint = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime: 'docker', state: 'active', facts: {}, fingerprint: '', capabilities: ['container.inspect'], alerts: [], created_at: '' };
 const container = (over: object = {}) => ({ id, name: 'web', image: 'nginx:1', image_id: 'sha256:1', state: 'running', status: 'Up', created_at: '2026-09-29T08:00:00Z', started_at: '2026-09-29T09:00:00Z', health: 'healthy', restart_policy: 'always', ports: [{ host: 8080, container: 80, protocol: 'tcp' }], labels: { tier: 'web' }, networks: ['bridge'], network_attachments: [{ name: 'bridge', ip: '172.17.0.2' }], mounts: [{ kind: 'volume', source: 'data', target: '/data', read_only: false }], ...over });
-function stub(role = 'organization_admin', containers: object[] = [container()], opts: { ep?: object; inventoryStatus?: number; rollups?: object[]; commands?: object[]; applications?: object[]; command?: object; epStatus?: number } = {}) {
+function stub(role = 'organization_admin', containers: object[] = [container()], opts: { ep?: object; inventoryStatus?: number; rollups?: object[]; commands?: object[]; applications?: object[]; command?: object; epStatus?: number; orgStatus?: number; configurationStatus?: number; run?: object } = {}) {
   const now = '2026-09-29T10:00:00Z';
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role }]);
+    if (url === '/api/organizations') return opts.orgStatus ? json({}, opts.orgStatus) : json([{ id: 'a', name: 'Team', role }]);
+    if (url.endsWith('/ep_1/containers') && opts.run) return json(opts.run, 202);
     if (url.endsWith('/inventory') && opts.inventoryStatus) return json({}, opts.inventoryStatus);
     if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, observed_at: now, engine: { runtime: 'docker', version: '29', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers, images: [], networks: [], volumes: [] } });
     if (url.endsWith('/recreate')) return json({ id: 'cmd9', action: 'container.recreate', outcome: '' }, 202);
     if (url.endsWith('/commands/cmd9') && opts.command) return json(opts.command);
     if (url.endsWith('/applications')) return json(opts.applications ?? []);
-    if (url.endsWith('/configuration')) return json(configuration);
+    if (url.endsWith('/configuration')) return opts.configurationStatus ? json({}, opts.configurationStatus) : json(configuration);
     if (url.includes('/commands') && opts.commands) return json(opts.commands);
     if (url.includes('/commands')) return json([{ id: 'cmd1', action: 'container.restart', outcome: 'succeeded', container_id: id, created_at: now }]);
     if (url.endsWith('/rollups?hours=24') && opts.rollups) return json(opts.rollups);
@@ -289,4 +290,54 @@ it('renders activity detail as inert display text', async () => {
   window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=activity`);
   render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
   expect((await screen.findByText(/container.stop/)).textContent).not.toContain('\u0007');
+});
+
+it('says the organizations could not be read instead of refusing the role', async () => {
+  stub('organization_admin', [container()], { ...configurable, orgStatus: 500 });
+  render(<ContainerRunPage org="a" endpoint="ep_1" />);
+  expect(await screen.findByText('Something went wrong on the server. Retry, or check the server log.')).toBeTruthy();
+  expect(screen.queryByText('Only an organization administrator can run containers.')).toBeNull();
+});
+
+it.each([['succeeded', true], ['denied', false]])('locks the run form after a %s run: %s', async (outcome, locked) => {
+  stub('organization_admin', [container()], { ...configurable, run: { id: 'run1', action: 'container.run', outcome, result: { steps: [], services: [] } } });
+  render(<ContainerRunPage org="a" endpoint="ep_1" />);
+  fireEvent.change(await screen.findByLabelText('Image reference'), { target: { value: 'nginx:1' } });
+  fireEvent.change(screen.getByLabelText('Container name'), { target: { value: 'api' } });
+  const typeName = () => fireEvent.change(screen.getByLabelText(/^Type the new container name/), { target: { value: 'api' } });
+  typeName();
+  const run = screen.getByRole('button', { name: 'Run container' }) as HTMLButtonElement;
+  expect(run.disabled).toBe(false);
+  await act(async () => { fireEvent.click(run); });
+  expect(await screen.findByText(outcome === 'succeeded' ? 'Done.' : 'The host refused the change; nothing was replaced.')).toBeTruthy();
+  expect(screen.getByLabelText('Image reference').matches(':disabled')).toBe(locked);
+  typeName();
+  expect(run.disabled).toBe(locked);
+});
+
+it('refreshes the host details with the inventory every 30 s', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const fetcher = stub();
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  await act(async () => {});
+  const detailCalls = () => fetcher.mock.calls.filter(([u]) => String(u) === '/api/organizations/a/endpoints/ep_1').length;
+  const before = detailCalls();
+  expect(before).toBeGreaterThan(0);
+  await act(async () => { vi.advanceTimersByTime(30_000); });
+  await act(async () => {});
+  expect(detailCalls()).toBe(before + 1);
+});
+
+it.each([
+  [401, 'Your session has expired. Sign in again.'],
+  [403, 'You do not have permission to edit this container.'],
+  [429, 'Too many configuration requests. Wait a minute and try again.'],
+  [501, 'Upgrade the host agent to enable editing.'],
+  [504, 'The host did not answer in time. Try again.'],
+])('maps a %i configuration read to a fixed text with Read again', async (status, text) => {
+  stub('organization_admin', [container()], { ...configurable, configurationStatus: status });
+  window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  expect(await screen.findByText(text)).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Read again' })).toBeTruthy();
 });

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { CommandResult, ContainerConfigurationForm } from './ContainerConfigurationForm';
+import { buildSpec, CommandResult, ContainerConfigurationForm } from './ContainerConfigurationForm';
 import type { DirectCommand } from '../tenant';
 import type { Container, ContainerConfiguration } from '../tenant';
 
@@ -315,4 +315,82 @@ it('round-trips a read-only tmpfs mount', async () => {
   fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'box' } });
   const spec = await postedSpec(fetcher);
   expect(spec.mounts).toEqual([{ kind: 'tmpfs', source: '', target: '/scratch', read_only: true }]);
+});
+
+it('keeps the Reveal all label and reports its state with aria-pressed', () => {
+  edit();
+  const all = screen.getByRole('button', { name: 'Reveal all' });
+  expect(all.getAttribute('aria-pressed')).toBe('false');
+  fireEvent.click(all);
+  expect(screen.getByRole('button', { name: 'Reveal all' }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByLabelText('Value of MODE')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Reveal all' }));
+  expect(screen.queryByLabelText('Value of MODE')).toBeNull();
+});
+
+it('offers no Reveal all without variables', () => {
+  edit({ env: [] });
+  expect(screen.queryByRole('button', { name: 'Reveal all' })).toBeNull();
+});
+
+it('moves focus to the next row, or to Add, after a removal', () => {
+  edit();
+  fireEvent.click(screen.getByRole('button', { name: 'Remove variable 1' }));
+  expect(document.activeElement).toBe(screen.getByLabelText('Variable 1 name'));
+  expect((document.activeElement as HTMLInputElement).value).toBe('MODE');
+  fireEvent.click(screen.getByRole('button', { name: 'Remove variable 1' }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add variable' }));
+});
+
+it('asks for whole-number retries with a numeric keyboard', () => {
+  edit({ healthcheck: { test: ['CMD', 'true'], interval_seconds: 0, timeout_seconds: 0, start_period_seconds: 0, retries: 0 } });
+  expect(screen.getByLabelText('Maximum retries').getAttribute('inputmode')).toBe('numeric');
+  expect(screen.getByLabelText('Retries').getAttribute('inputmode')).toBe('numeric');
+  expect(screen.getByLabelText('CPUs').getAttribute('inputmode')).toBe('decimal');
+});
+
+it.each([
+  ['CPUs', '-1'],
+  ['Memory (MiB)', '-1'],
+  ['Maximum retries', '-1'],
+  ['PIDs limit', '-2'],
+  ['Memory and swap (MiB)', '-5'],
+])('refuses a negative %s of %s', (label, value) => {
+  edit();
+  confirmName('web');
+  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  expect(save().disabled).toBe(true);
+  expect(screen.getByText('Numbers cannot be negative, except -1 (unlimited) for Memory and swap or PIDs limit.')).toBeTruthy();
+});
+
+it('accepts -1 for the PIDs limit', () => {
+  edit();
+  confirmName('web');
+  fireEvent.change(screen.getByLabelText('PIDs limit'), { target: { value: '-1' } });
+  expect(save().disabled).toBe(false);
+});
+
+it('builds the canonical spec from a draft', () => {
+  const draft = config({
+    name: ' web ', image: { reference: ' nginx:2 ', digest: '' }, command: ['nginx', '', ''], entrypoint: [''],
+    labels: { z: '1', a: '2' }, restart: 'always', restart_retries: 5,
+    mounts: [{ kind: 'tmpfs', source: '/ignored', target: '/scratch', read_only: false }],
+    networks: [{ name: 'n', aliases: [' a ', '', 'b'], ip: '' }], cap_add: [' CAP_A ', ''], dns: ['', '1.1.1.1'],
+    healthcheck: { test: ['CMD', 'true', ''], interval_seconds: 1, timeout_seconds: 2, start_period_seconds: 3, retries: 4 },
+  });
+  const spec = buildSpec(draft, [['max-size', '10m'], ['', 'x'], ['a', 'b']]);
+  expect(spec.name).toBe('web');
+  expect(spec.image).toEqual({ reference: 'nginx:2', digest: '' });
+  expect(spec.command).toEqual(['nginx']);
+  expect(spec.entrypoint).toEqual([]);
+  expect(Object.keys(spec.labels)).toEqual(['a', 'z']);
+  expect(spec.restart_retries).toBe(0);
+  expect(spec.mounts).toEqual([{ kind: 'tmpfs', source: '', target: '/scratch', read_only: false }]);
+  expect(spec.networks).toEqual([{ name: 'n', aliases: ['a', 'b'], ip: '' }]);
+  expect(spec.cap_add).toEqual(['CAP_A']);
+  expect(spec.dns).toEqual(['1.1.1.1']);
+  expect(spec.healthcheck?.test).toEqual(['CMD', 'true']);
+  expect(spec.log).toEqual({ driver: 'json-file', options: { a: 'b', 'max-size': '10m' } });
+  expect(spec).not.toHaveProperty('target');
+  expect(spec).not.toHaveProperty('stop_timeout');
 });

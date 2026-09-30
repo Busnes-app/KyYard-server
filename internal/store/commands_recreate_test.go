@@ -380,3 +380,87 @@ func TestDirectBlockersHostLevel(t *testing.T) {
 		}
 	}
 }
+
+// A recreate target adopted after the API's pre-check is refused when the command row is created.
+func TestCreateDirectCommandRefusesATargetAdoptedMeanwhile(t *testing.T) {
+	st, a, app, endpoint, snapshot := adoptionFixture(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	snapshot.Containers[0].State = "running"
+	putAdoptionSnapshot(t, st, endpoint, snapshot)
+	c := snapshot.Containers[0]
+	dc := directRun("shop-web", c.ImageID)
+	dc.Action, dc.State = ActionRecreate, "running"
+	dc.Frame.Services[0].Replaces = protocol.InspectionTarget{ContainerID: c.ID, ImageID: c.ImageID, CreatedUnix: c.CreatedAt.Unix()}
+	if err := ts.CheckDirectCommand(ctx, a, endpoint, dc); err != nil {
+		t.Fatalf("unmanaged: %v", err)
+	}
+	p, err := ts.PreviewApplicationAdoption(ctx, a, app.ID, endpoint, "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AdoptApplication(ctx, a, app.ID, AdoptionRequest{EndpointID: endpoint, Project: "shop", Digest: p.Digest, Confirm: "shop"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ts.CreateDirectCommand(ctx, a, endpoint, dc); err != ErrContainerManaged {
+		t.Fatalf("adopted meanwhile: %v", err)
+	}
+}
+
+// A real answer committed while the deadline sweep waits on the row keeps its outcome, and the
+// sweep writes no outcome row for it.
+func TestSweepLeavesARowSettledMeanwhile(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	if st.driver != "postgres" {
+		t.Skip("interleaving needs real row locks")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	endpointID := activeEndpointWith(t, st.Tenancy(), a, nil, nil)
+	id := "5d0c2a4e-6f1b-4e7a-9c3d-8b2f1a0e9d7c"
+	if _, err := st.db.ExecContext(ctx, st.rebind(`INSERT INTO endpoint_commands (id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,expects,deadline,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`),
+		id, endpointID, a.OrganizationID, a.EnvironmentID, a.ActorID, "sweep-race", ActionRun, "", "{}", time.Now().UTC().Add(-time.Minute), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	// The settle holds the row, uncommitted; the sweep lists it as unsettled and waits on it.
+	settle, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer settle.Rollback()
+	if _, err := settle.ExecContext(ctx, st.rebind(`UPDATE endpoint_commands SET outcome=? WHERE id=?`), protocol.OutcomeSucceeded, id); err != nil {
+		t.Fatal(err)
+	}
+	swept := make(chan error, 1)
+	go func() {
+		tx, err := st.db.BeginTx(ctx, nil)
+		if err != nil {
+			swept <- err
+			return
+		}
+		defer tx.Rollback()
+		if err := (&tenancyStore{store: st}).sweepDirect(ctx, tx, endpointID, time.Now().UTC()); err != nil {
+			swept <- err
+			return
+		}
+		swept <- tx.Commit()
+	}()
+	for waiting := 0; waiting == 0; {
+		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND datname = current_database() AND query LIKE 'UPDATE endpoint_commands SET outcome=%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := settle.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-swept; err != nil {
+		t.Fatal(err)
+	}
+	if cmd, err := st.Tenancy().ReadCommand(ctx, a, endpointID, id); err != nil || cmd.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("settled meanwhile: %+v %v", cmd, err)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM audit_records WHERE correlation_id=? AND details LIKE 'code=deadline%'`, "sweep-race"); n != 0 {
+		t.Fatalf("%d deadline rows for a settled command", n)
+	}
+}

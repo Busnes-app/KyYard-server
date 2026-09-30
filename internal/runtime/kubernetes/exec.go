@@ -163,7 +163,12 @@ var (
 	baselineSELinuxTypes = []string{"", "container_t", "container_init_t", "container_kvm_t", "container_engine_t"}
 )
 
-const appArmorAnnotation = "container.apparmor.security.beta.kubernetes.io/"
+const (
+	appArmorAnnotation = "container.apparmor.security.beta.kubernetes.io/"
+	// Legacy seccomp annotations: ignored since Kubernetes 1.27, still refused at unconfined.
+	seccompPodAnnotation       = "seccomp.security.alpha.kubernetes.io/pod"
+	seccompContainerAnnotation = "container.seccomp.security.alpha.kubernetes.io/"
+)
 
 // baselineViolation is the first Pod Security baseline control pod breaks, as a fixed detail
 // word, or "" when it meets baseline. Every container, init and ephemeral included, is checked.
@@ -178,6 +183,9 @@ func baselineViolation(pod *corev1.Pod) string {
 	for k, v := range pod.Annotations {
 		if strings.HasPrefix(k, appArmorAnnotation) && v != "" && v != "runtime/default" && !strings.HasPrefix(v, "localhost/") {
 			return "apparmor"
+		}
+		if (k == seccompPodAnnotation || strings.HasPrefix(k, seccompContainerAnnotation)) && v == "unconfined" {
+			return "seccomp"
 		}
 	}
 	if p := s.SecurityContext; p != nil {

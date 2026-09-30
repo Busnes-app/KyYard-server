@@ -193,7 +193,8 @@ func TestOperateRestartsEachKind(t *testing.T) {
 			return s.Spec.Template
 		}},
 	} {
-		c, cs := workloadCluster(t, false, true, webDeployment(), dbStatefulSet(), agentDaemonSet())
+		c, cs := scaleCluster(t, webDeployment(), dbStatefulSet(), agentDaemonSet())
+		before := time.Now()
 		outcome, detail := c.Operate(context.Background(), command(protocol.ActionWorkloadRestart, tc.ref))
 		if outcome != protocol.OutcomeSucceeded || detail != "" {
 			t.Fatalf("%s: %s %q", tc.ref, outcome, detail)
@@ -204,10 +205,26 @@ func TestOperateRestartsEachKind(t *testing.T) {
 		if got := reviews(cs); !reflect.DeepEqual(got, []string{"patch apps/" + tc.resource}) {
 			t.Fatalf("%s: reviews %v", tc.ref, got)
 		}
+		// Sub-second precision: a second restart within the same second still changes the template.
 		stamp := tc.template(cs).Annotations[restartedAt]
-		if at, err := time.Parse(time.RFC3339, stamp); err != nil || time.Since(at) > time.Minute {
+		if at, err := time.Parse(time.RFC3339Nano, stamp); err != nil || at.Before(before) || time.Since(at) > time.Minute {
 			t.Fatalf("%s: restart annotation %q", tc.ref, stamp)
 		}
+		for _, a := range cs.Actions() {
+			if p, ok := a.(k8stesting.PatchAction); ok && !strings.HasPrefix(string(p.GetPatch()), `{"metadata":{"resourceVersion":"`) {
+				t.Fatalf("%s: restart patch not bound to the read: %s", tc.ref, p.GetPatch())
+			}
+		}
+	}
+	// Another writer moves the object between the read and the patch: 409, reported conflict.
+	c, cs := scaleCluster(t, webDeployment())
+	cs.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		d := webDeployment()
+		d.ResourceVersion = "40"
+		return true, d, nil
+	})
+	if outcome, detail := c.Operate(context.Background(), command(protocol.ActionWorkloadRestart, "shop/deployment/web")); outcome != protocol.OutcomeDenied || detail != "conflict" {
+		t.Fatalf("stale read: %s %q", outcome, detail)
 	}
 }
 
@@ -713,12 +730,12 @@ func TestPodCarriesItsUID(t *testing.T) {
 	}
 }
 
-// scaleCluster is workloadCluster whose JSON merge patches answer 409 when the patch carries a
+// scaleCluster is workloadCluster whose JSON merge patches (scale, restart) answer 409 when the patch carries a
 // metadata.resourceVersion other than the stored one, as the API server does.
 func scaleCluster(t *testing.T, objects ...runtime.Object) (*Client, *fake.Clientset) {
 	t.Helper()
 	c, cs := workloadCluster(t, false, true, objects...)
-	for _, res := range []string{"deployments", "statefulsets"} {
+	for _, res := range []string{"deployments", "statefulsets", "daemonsets"} {
 		cs.PrependReactor("patch", res, func(action k8stesting.Action) (bool, runtime.Object, error) {
 			p := action.(k8stesting.PatchAction)
 			if p.GetPatchType() != types.MergePatchType {

@@ -194,13 +194,11 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	}
 	switch {
 	case cmd.Action == protocol.ActionWorkloadRestart:
-		err = h.patch(ctx, mergePatch(map[string]any{"template": map[string]any{"metadata": map[string]any{"annotations": map[string]string{restartedAt: time.Now().UTC().Format(time.RFC3339)}}}}))
+		err = h.patch(ctx, boundPatch(h.meta.ResourceVersion, map[string]any{"template": map[string]any{"metadata": map[string]any{"annotations": map[string]string{restartedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}}))
 	case scale && h.scaleDeletesClaims(n):
 		return protocol.OutcomeDenied, "pvc_retention"
 	case scale:
-		// The read's resourceVersion makes a change since the check above a 409.
-		body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": h.meta.ResourceVersion}, "spec": map[string]any{"replicas": *n}})
-		err = h.patch(ctx, body)
+		err = h.patch(ctx, boundPatch(h.meta.ResourceVersion, map[string]any{"replicas": *n}))
 	case cmd.Action == protocol.ActionWorkloadDelete && h.meta.Labels[render.LabelManagedBy] == render.ManagedBy:
 		// A KyYard-managed workload is removed through its application.
 		return protocol.OutcomeDenied, "application_managed"
@@ -227,9 +225,10 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	return protocol.OutcomeSucceeded, ""
 }
 
-// mergePatch is a JSON merge patch of spec.
-func mergePatch(spec map[string]any) []byte {
-	b, _ := json.Marshal(map[string]any{"spec": spec})
+// boundPatch is a merge patch of spec carrying the read's resourceVersion, so a change since
+// the checks above is a 409.
+func boundPatch(resourceVersion string, spec map[string]any) []byte {
+	b, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": resourceVersion}, "spec": spec})
 	return b
 }
 

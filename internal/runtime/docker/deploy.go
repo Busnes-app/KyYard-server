@@ -300,6 +300,69 @@ func reported(in inspectedForDeploy) bool {
 	return h != nil && in.Config != nil && in.NetworkSettings != nil && in.Mounts != nil && h.Privileged != nil && h.AutoRemove != nil && h.ReadonlyRootfs != nil
 }
 
+// cappedLists decodes the capped lists of a configuration read that inspectedForDeploy does not.
+type cappedLists struct {
+	Config     struct{ ExposedPorts map[string]struct{} }
+	HostConfig struct {
+		PortBindings map[string][]struct{ HostPort string }
+		LogConfig    struct{ Config map[string]string }
+		Devices      []device
+	}
+	NetworkSettings struct {
+		Networks map[string]struct{ Aliases []string }
+	}
+}
+
+// overCap reports a list ReadConfiguration would cut (list_truncated:<field>): an explicit frame
+// built from that read cannot carry all of it. in must be reported.
+func (l cappedLists) overCap(in inspectedForDeploy) bool {
+	o, h, entry := &configurationRead{}, in.HostConfig, fits(protocol.MaxListEntryBytes)
+	for _, strs := range [][]string{h.CapAdd, h.CapDrop, h.SecurityOpt, h.ExtraHosts, h.Dns} {
+		list(o, "", strs, entry)
+	}
+	list(o, "", l.HostConfig.Devices, deviceFits)
+	if m := h.NetworkMode; m != "host" && m != "none" && !strings.HasPrefix(m, "container:") {
+		for _, n := range l.NetworkSettings.Networks {
+			list(o, "", slices.DeleteFunc(slices.Clone(n.Aliases), func(a string) bool { return a == in.ID[:min(12, len(in.ID))] }), fits(256))
+		}
+		if len(l.NetworkSettings.Networks) > protocol.MaxConfigurationNetworks {
+			return true
+		}
+	}
+	ports, bound := 0, map[string]bool{}
+	for key, bindings := range l.HostConfig.PortBindings {
+		if _, _, ok := parsePortKey(key); !ok {
+			return true
+		}
+		for _, b := range bindings {
+			if b.HostPort == "" {
+				return true // pinned or dropped by the read
+			}
+			ports, bound[key] = ports+1, true
+		}
+	}
+	for key := range l.Config.ExposedPorts {
+		if _, _, ok := parsePortKey(key); !ok {
+			return true
+		}
+		if !bound[key] {
+			ports++
+		}
+	}
+	mounts := len(*in.Mounts)
+	for _, m := range *in.Mounts {
+		if m.Type != "volume" && m.Type != "bind" && m.Type != "tmpfs" {
+			return true
+		}
+	}
+	for target := range h.Tmpfs {
+		if !slices.ContainsFunc(*in.Mounts, func(m inspectedMount) bool { return m.Destination == target }) {
+			mounts++
+		}
+	}
+	return len(o.truncated) > 0 || len(l.HostConfig.LogConfig.Config) > protocol.MaxLogOptions || ports > protocol.MaxDeploymentPorts || mounts > protocol.MaxMounts
+}
+
 // sameConfiguration compares what recreation depends on: Config, HostConfig and Mounts. State
 // and NetworkSettings change on their own (a restart) and are not compared.
 func sameConfiguration(a, b inspectedForDeploy) bool {
@@ -390,8 +453,11 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 	var networkMode string
 	var oldMounts []inspectedMount
 	if run(r.req, s) {
-		r.ensureVolumes(ctx, s, nil)
-		r.image(ctx, &s)
+		// An unacknowledged bind is denied at create; nothing is pulled or created first.
+		if !unacknowledgedBind(s) {
+			r.ensureVolumes(ctx, s, nil)
+			r.image(ctx, &s)
+		}
 		return prepared{s: s}
 	}
 	r.step(s.Name, protocol.StepPrecondition, func() (string, string, string) {
@@ -400,7 +466,8 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
-		if err := r.c.get(cctx, "/containers/"+old+"/json", &before, &raw); err != nil {
+		var lists cappedLists
+		if err := r.c.get(cctx, "/containers/"+old+"/json", &before, &raw, &lists); err != nil {
 			if statusOf(err) == http.StatusNotFound {
 				return deny("container_missing")
 			}
@@ -420,7 +487,7 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 			for _, c := range codes {
 				set[c] = slices.Contains(protocol.ConfigurationOnlyCodes, c)
 			}
-			if !raw.uncarried(r.cgroupVersion, set) {
+			if !raw.uncarried(r.cgroupVersion, set) || lists.overCap(before) {
 				return deny("configuration_unreported")
 			}
 			codes = orderedCodes(set)
@@ -469,6 +536,13 @@ func run(req protocol.DeploymentRequest, s protocol.DeploymentService) bool {
 	return req.Explicit && s.Replaces == (protocol.InspectionTarget{})
 }
 
+// unacknowledgedBind reports a run's bind whose host path the operator did not confirm.
+func unacknowledgedBind(s protocol.DeploymentService) bool {
+	return slices.ContainsFunc(s.Mounts, func(m protocol.Mount) bool {
+		return m.Kind == protocol.MountBind && !slices.Contains(s.Explicit.AcknowledgedBinds, m.Source)
+	})
+}
+
 // image records the pull step, or checks the pinned image is present. A pull sets s.ImageID.
 func (r *deployRun) image(ctx context.Context, s *protocol.DeploymentService) {
 	if s.Pull != nil {
@@ -502,7 +576,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
 	if run(r.req, s) {
 		created := r.create(ctx, p)
-		if r.start(ctx, s, created, false) {
+		if failed, up := r.start(ctx, s, created, false); failed && !up {
 			r.discard(ctx, created) // part of the failed start: a retry must find the name free
 		}
 		return
@@ -511,6 +585,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	if r.req.Explicit {
 		budget += rollbackBudget + watchBudget
 	}
+	paused := false // the old container was paused at the recheck, the last read before stop: a rollback pauses it again
 	// The pull window can be minutes: re-read the container right before touching it.
 	r.step(s.Name, protocol.StepRecheck, func() (string, string, string) {
 		if time.Until(r.req.Deadline) < budget {
@@ -521,7 +596,8 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		defer cancel()
 		var now inspectedForDeploy
 		var raw rawInspection
-		if err := r.c.get(cctx, "/containers/"+old+"/json", &now, &raw); err != nil {
+		var state struct{ State *struct{ Paused bool } }
+		if err := r.c.get(cctx, "/containers/"+old+"/json", &now, &raw, &state); err != nil {
 			if statusOf(err) == http.StatusNotFound {
 				return deny("container_missing")
 			}
@@ -532,6 +608,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 			(r.req.Explicit && !p.raw.sameKeys(raw)) {
 			return deny("configuration_drift")
 		}
+		paused = state.State != nil && state.State.Paused
 		return succeeded()
 	})
 	r.step(s.Name, protocol.StepRename, func() (string, string, string) {
@@ -551,11 +628,11 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		return succeeded()
 	})
 	created := r.create(ctx, p)
-	running := false // the old container was running when stopped: a rollback starts it again
+	running, restored := false, true // running: the old container was running when stopped, and a rollback starts it again
 	r.step(s.Name, protocol.StepStop, func() (outcome, code, detail string) {
 		defer func() {
 			if outcome != protocol.OutcomeSucceeded && r.req.Explicit {
-				r.undo(ctx, p, created)
+				restored = r.undo(ctx, p, created)
 			}
 		}()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
@@ -567,10 +644,13 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		running = status != http.StatusNotModified
 		return succeeded()
 	})
+	if !restored {
+		r.rollbackFailed(s.Name)
+	}
 	// A recreate's container must keep running only if the old one was: a stopped job's
 	// replacement may exit as the old one did.
-	if r.start(ctx, s, created, r.req.Explicit && running) && r.req.Explicit {
-		r.rollback(ctx, p, created, running)
+	if failed, _ := r.start(ctx, s, created, r.req.Explicit && running); failed && r.req.Explicit {
+		r.rollback(ctx, p, created, running, paused)
 	}
 	r.step(s.Name, protocol.StepRemove, func() (string, string, string) {
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
@@ -588,18 +668,17 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 func (r *deployRun) create(ctx context.Context, p prepared) string {
 	s := p.s
 	var created string
+	restored := true
 	r.step(s.Name, protocol.StepCreate, func() (outcome, code, detail string) {
 		defer func() {
 			if outcome != protocol.OutcomeSucceeded && r.req.Explicit {
-				r.undo(ctx, p, created)
+				restored = r.undo(ctx, p, created)
 			}
 		}()
 		if run(r.req, s) {
 			// A run has no precondition: its binds are checked here, before any daemon call.
-			for _, m := range s.Mounts {
-				if m.Kind == protocol.MountBind && !slices.Contains(s.Explicit.AcknowledgedBinds, m.Source) {
-					return deny("bind_missing")
-				}
+			if unacknowledgedBind(s) {
+				return deny("bind_missing")
 			}
 			if time.Until(r.req.Deadline) < replaceBudget {
 				return protocol.OutcomeTimedOut, "deadline", ""
@@ -641,12 +720,16 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 		}
 		return succeeded()
 	})
+	if !restored {
+		r.rollbackFailed(s.Name)
+	}
 	return created
 }
 
-// start records the start step and reports whether it ran and did not succeed. A watched start
-// must keep running through the watch.
-func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, created string, watched bool) (failed bool) {
+// start records the start step and reports whether it ran and did not succeed, and whether the
+// container was up (started, through any watch) so only its identity read failed. A watched
+// start must keep running through the watch.
+func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, created string, watched bool) (failed, up bool) {
 	r.step(s.Name, protocol.StepStart, func() (outcome, code, detail string) {
 		defer func() { failed = outcome != protocol.OutcomeSucceeded }()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
@@ -660,6 +743,7 @@ func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, cre
 				return outcome, code, detail
 			}
 		}
+		up = true
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
 		defer icancel()
 		var after inspectedForDeploy
@@ -677,13 +761,13 @@ func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, cre
 		r.res.Services = append(r.res.Services, id)
 		return succeeded()
 	})
-	return failed
+	return failed, up
 }
 
 // watch reads a started container every startPoll for startWatch and fails the start
-// (exited_early) once it is no longer running (exited, dead or restarting) or has been restarted
-// by its restart policy. A healthcheck leaving starting ends the watch early; one still starting
-// at its end does not fail it. No poll sleeps past the window's end and the last read ends within
+// (exited_early) once it is no longer running (exited, dead or restarting), has been restarted
+// by its restart policy or is unhealthy. A healthcheck turning healthy ends the watch early; one
+// still starting at its end does not fail it. No poll sleeps past the window's end and the last read ends within
 // callBudget of it, so the watch fits watchBudget.
 func (r *deployRun) watch(ctx context.Context, id string) (string, string, string) {
 	end := time.Now().Add(cmp.Or(r.c.startWatch, startWatch))
@@ -706,7 +790,8 @@ func (r *deployRun) watch(ctx context.Context, id string) (string, string, strin
 		}
 		cancel()
 		switch st := in.State; {
-		case st == nil || in.RestartCount == nil || *in.RestartCount > 0 || !st.Running || st.Status == "exited" || st.Status == "dead" || st.Status == "restarting":
+		case st == nil || in.RestartCount == nil || *in.RestartCount > 0 || !st.Running || st.Status == "exited" || st.Status == "dead" || st.Status == "restarting" ||
+			(st.Health != nil && st.Health.Status == "unhealthy"):
 			return fail("exited_early")
 		case st.Health != nil && st.Health.Status != "" && st.Health.Status != "starting" && st.Health.Status != "none":
 			return succeeded()
@@ -722,10 +807,11 @@ func (r *deployRun) watch(ctx context.Context, id string) (string, string, strin
 }
 
 // rollback undoes an explicit recreate whose start failed: the new container is removed by
-// force, the old one renamed back and, if it was running, started. It is recorded after the
-// failed start, which the skip rule in step would otherwise swallow. Success recodes the start
-// start_failed_rolled_back; failure is rollback_failed and the start keeps its code.
-func (r *deployRun) rollback(ctx context.Context, p prepared, created string, running bool) {
+// force, the old one renamed back and, if it was running, started, and paused again if it was
+// paused. It is recorded after the failed start, which the skip rule in step would otherwise
+// swallow. Success recodes the start start_failed_rolled_back; failure is rollback_failed and
+// the start keeps its code.
+func (r *deployRun) rollback(ctx context.Context, p prepared, created string, running, paused bool) {
 	restore := func() bool {
 		if !r.discard(ctx, created) || !r.unpark(ctx, p) {
 			return false
@@ -735,17 +821,28 @@ func (r *deployRun) rollback(ctx context.Context, p prepared, created string, ru
 		}
 		cctx, cancel := restoring(ctx)
 		defer cancel()
-		status, err := r.c.post(cctx, "/containers/"+url.PathEscape(p.s.Replaces.ContainerID)+"/start")
-		return err == nil && (status < 400 || status == http.StatusNotModified)
+		old := "/containers/" + url.PathEscape(p.s.Replaces.ContainerID)
+		if status, err := r.c.post(cctx, old+"/start"); err != nil || status >= 400 {
+			return false
+		}
+		if !paused {
+			return true
+		}
+		status, err := r.c.post(cctx, old+"/pause")
+		return err == nil && status < 400
 	}
-	s := protocol.DeploymentStep{Service: p.s.Name, Step: protocol.StepRollback, Outcome: protocol.OutcomeSucceeded}
-	if restore() {
-		failed := &r.res.Steps[len(r.res.Steps)-1]
-		failed.Code, failed.Detail = "start_failed_rolled_back", ""
-	} else {
-		s.Outcome, s.Code = protocol.OutcomeFailed, "rollback_failed"
+	if !restore() {
+		r.rollbackFailed(p.s.Name)
+		return
 	}
-	r.res.Steps = append(r.res.Steps, s)
+	failed := &r.res.Steps[len(r.res.Steps)-1]
+	failed.Code, failed.Detail = "start_failed_rolled_back", ""
+	r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: p.s.Name, Step: protocol.StepRollback, Outcome: protocol.OutcomeSucceeded})
+}
+
+// rollbackFailed records that the old container was not put back, after the step that failed.
+func (r *deployRun) rollbackFailed(service string) {
+	r.res.Steps = append(r.res.Steps, protocol.DeploymentStep{Service: service, Step: protocol.StepRollback, Outcome: protocol.OutcomeFailed, Code: "rollback_failed"})
 }
 
 // parkedSuffix marks an old container renamed aside for a deployment's replacement.
@@ -764,11 +861,10 @@ func restoring(ctx context.Context) (context.Context, context.CancelFunc) {
 
 // undo puts the host back after an explicit step failed before the new container started, so a
 // retry is not wedged on the name: the new container, if any, is removed and the old one given
-// its name back.
-func (r *deployRun) undo(ctx context.Context, p prepared, created string) {
-	if (created == "" || r.discard(ctx, created)) && !run(r.req, p.s) {
-		r.unpark(ctx, p)
-	}
+// its name back. It reports false when a recreate's old container did not get its name back.
+func (r *deployRun) undo(ctx context.Context, p prepared, created string) bool {
+	discarded := created == "" || r.discard(ctx, created)
+	return run(r.req, p.s) || (discarded && r.unpark(ctx, p))
 }
 
 // discard force-removes a container this run created; gone already counts.

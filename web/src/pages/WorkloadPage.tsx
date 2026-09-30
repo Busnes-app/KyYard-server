@@ -158,9 +158,11 @@ function Summary({ workload: w, children }: { workload: Workload; children: Reac
 // PodPicker selects one of the workload's pods, starting at the ?pod= link's when it is one of them.
 function PodPicker({ pods, initial, children }: { pods: Pod[]; initial: string; children: (pod: Pod) => ReactNode }) {
   const [chosen, setChosen] = useState(initial);
-  const pod = pods.find((p) => p.name === chosen) ?? pods[0];
+  const found = pods.find((p) => p.name === chosen);
+  const pod = found ?? pods[0];
   if (!pod) return <EmptyNotice>No pods reported for this workload.</EmptyNotice>;
   return <>
+    {!found && chosen !== '' && <p role="status">The selected pod is no longer reported; showing another pod of this workload.</p>}
     <div className="ky-toolbar"><label>Pod <select value={pod.name} onChange={(e) => setChosen(e.target.value)}>{pods.map((p) => <option key={p.name} value={p.name}>{p.name} ({p.phase})</option>)}</select></label></div>
     {children(pod)}
   </>;

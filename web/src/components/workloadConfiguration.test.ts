@@ -78,3 +78,32 @@ it('mirrors the server roles', () => {
     expect(canDestroy(role), String(role)).toBe(destroy);
   }
 });
+
+it('labels no container code a workload read never carries', () => {
+  expect(workloadUnsupportedLabel('privileged')).toBe('');
+  expect(workloadUnsupportedLabel('host_config:Runtime')).toBe('');
+  expect(workloadUnsupportedLabel('labels_truncated')).toBe('');
+  expect(parseWorkloadConfiguration({ ...payload(), unsupported: ['privileged'] }, target)).toBeNull();
+});
+
+it('diffs a kept or cleared image_id', () => {
+  const a = toWorkloadSpec(parseWorkloadConfiguration(payload(), target)!);
+  const b = structuredClone(a);
+  b.containers[0]!.image_id = 'sha256:abc';
+  expect(diffWorkload(a, b)).toEqual(['containers.web.image_id']);
+});
+
+it('checks replicas and strategy per kind', () => {
+  const as = (kind: string, over: Record<string, unknown>) => {
+    const p = { ...payload(), ...over, target: { ...target, kind } };
+    return parseWorkloadConfiguration(p, { ...target, kind });
+  };
+  expect(as('daemonset', { replicas: 2 })).toBeNull();
+  expect(as('daemonset', { replicas: undefined, strategy: 'OnDelete' })).not.toBeNull();
+  expect(as('daemonset', { replicas: undefined, strategy: 'Recreate' })).toBeNull();
+  expect(as('statefulset', { strategy: 'OnDelete' })).not.toBeNull();
+  expect(as('statefulset', { strategy: 'Recreate' })).toBeNull();
+  expect(as('deployment', { strategy: 'Recreate' })).not.toBeNull();
+  expect(as('deployment', { strategy: 'OnDelete' })).toBeNull();
+  expect(as('deployment', { strategy: '' })).not.toBeNull();
+});

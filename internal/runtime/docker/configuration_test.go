@@ -19,7 +19,7 @@ func configurationFixture() (protocol.InspectionTarget, map[string]any, map[stri
 	target, container, image := inspectionFixture()
 	container["Name"] = "/web"
 	container["Config"] = map[string]any{
-		"Image": "docker.io/library/nginx:1.27", "Env": []string{"A=1", "B=x=y", "C=line1\nline2", "NOEQ"},
+		"Image": "docker.io/library/nginx:1.27", "Env": []string{"A=1", "B=x=y", "C=line1\nline2"},
 		"Cmd": []string{"nginx", "-g", "daemon off;"}, "Entrypoint": []string{"/docker-entrypoint.sh"},
 		"User": "101:101", "WorkingDir": "/srv", "Hostname": "web-host",
 		"Labels":       map[string]string{"com.docker.compose.project": "shop", "tier": "front"},
@@ -68,7 +68,7 @@ func TestReadConfigurationMapsEverything(t *testing.T) {
 	if err := got.Validate(target, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	wantEnv := []protocol.EnvEntry{{Name: "A", Value: "1"}, {Name: "B", Value: "x=y"}, {Name: "C", Value: "line1\nline2"}, {Name: "NOEQ"}}
+	wantEnv := []protocol.EnvEntry{{Name: "A", Value: "1"}, {Name: "B", Value: "x=y"}, {Name: "C", Value: "line1\nline2"}}
 	if !slices.Equal(got.Env, wantEnv) {
 		t.Fatalf("env %+v", got.Env)
 	}
@@ -207,6 +207,16 @@ func TestReadConfigurationFlagsDynamicPortBindings(t *testing.T) {
 	}
 }
 
+// An entry with no "=" has no value to carry: a recreate would set it to "", so it is cut and named.
+func TestReadConfigurationCutsEnvWithoutValue(t *testing.T) {
+	got := readFixture(t, func(c map[string]any) {
+		c["Config"].(map[string]any)["Env"] = []string{"A=1", "NOEQ", "B="}
+	})
+	if !slices.Equal(got.Env, []protocol.EnvEntry{{Name: "A", Value: "1"}, {Name: "B"}}) || !slices.Contains(got.Unsupported, "env_truncated") {
+		t.Fatalf("env %+v %v", got.Env, got.Unsupported)
+	}
+}
+
 func TestReadConfigurationEnvLastWins(t *testing.T) {
 	got := readFixture(t, func(c map[string]any) {
 		c["Config"].(map[string]any)["Env"] = []string{"A=1", "B=2", "A=3"}
@@ -337,6 +347,25 @@ func TestReadConfigurationKnowsTheDaemonDefaults(t *testing.T) {
 		}
 		if !slices.Equal(got.Unsupported, c.want) && !(len(got.Unsupported) == 0 && len(c.want) == 0) {
 			t.Errorf("cgroup v%q mode %s shm %d: %v, want %v", c.cgroup, c.mode, c.shm, got.Unsupported, c.want)
+		}
+	}
+}
+
+// A list entry longer than the protocol allows is cut and named, not a failed read.
+func TestReadConfigurationCutsOversizedListEntries(t *testing.T) {
+	long := strings.Repeat("a", protocol.MaxListEntryBytes+1)
+	got := readFixture(t, func(c map[string]any) {
+		h := c["HostConfig"].(map[string]any)
+		h["Dns"] = []string{"1.1.1.1", long}
+		h["Devices"] = []any{map[string]string{"PathOnHost": "/dev/" + long, "PathInContainer": "/dev/fuse", "CgroupPermissions": "rwm"}}
+		c["NetworkSettings"].(map[string]any)["Networks"] = map[string]any{"shop_default": map[string]any{"Aliases": []string{"web", strings.Repeat("b", 257)}}}
+	})
+	if !slices.Equal(got.DNS, []string{"1.1.1.1"}) || len(got.Devices) != 0 || !slices.Equal(got.Networks[0].Aliases, []string{"web"}) {
+		t.Fatalf("dns %v devices %v aliases %v", got.DNS, got.Devices, got.Networks[0].Aliases)
+	}
+	for _, code := range []string{"list_truncated:dns", "list_truncated:devices", "list_truncated:aliases"} {
+		if !slices.Contains(got.Unsupported, code) {
+			t.Fatalf("%v lacks %s", got.Unsupported, code)
 		}
 	}
 }

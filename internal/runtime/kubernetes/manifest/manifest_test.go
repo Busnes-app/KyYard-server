@@ -220,7 +220,7 @@ func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
 		case *rbacv1.ClusterRole:
 			// Reads stay cluster-wide and read-only: workload writes are per namespace.
 			for _, r := range o.Rules {
-				if slices.ContainsFunc(r.Verbs, func(v string) bool { return v != "get" && v != "list" && v != "create" }) || (slices.Contains(r.Verbs, "create") && r.Resources[0] != "selfsubjectaccessreviews") {
+				if slices.ContainsFunc(r.Verbs, func(v string) bool { return v != "get" && v != "list" && v != "create" }) || (slices.Contains(r.Verbs, "create") && !slices.Equal(r.Resources, []string{"selfsubjectaccessreviews"})) {
 					t.Fatalf("cluster role rule %+v", r)
 				}
 			}

@@ -194,3 +194,42 @@ func TestConfigurationReadRateLimit(t *testing.T) {
 		}
 	}
 }
+
+// An answer for a target the inventory has since replaced is not published.
+func TestConfigurationReadRefusesAChangedTarget(t *testing.T) {
+	f := configurationFixture(t)
+	response := beginConfiguration(f)
+	req := configurationGrant(t, f)
+	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeInventory, protocol.Snapshot{Generation: uint64(time.Now().Unix()) + 3, ObservedAt: time.Now(), Engine: protocol.Engine{Version: "1"}, Containers: []protocol.Container{{ID: terminalSpec.Container, ImageID: "sha256:" + strings.Repeat("c", 64), CreatedAt: time.Unix(1700000000, 0), State: "running"}}})
+	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeConfigurationResult, configurationReply(req))
+	if w := <-response; w.Code != 409 || !strings.Contains(w.Body.String(), "Configuration read target changed") || strings.Contains(w.Body.String(), configurationSentinel) {
+		t.Fatalf("changed target: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// An agent that never answers is a 504, and the grant is cancelled.
+func TestConfigurationReadTimesOut(t *testing.T) {
+	f := configurationFixture(t)
+	ctx, cancel := context.WithTimeout(f.ctx, 1500*time.Millisecond)
+	defer cancel()
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRequestWithContext(ctx, "GET", configurationPath(f), nil)
+		r.AddCookie(f.admin)
+		w := httptest.NewRecorder()
+		f.s.ServeHTTP(w, r)
+		response <- w
+	}()
+	req := configurationGrant(t, f)
+	if w := <-response; w.Code != 504 || !strings.Contains(w.Body.String(), "Configuration read did not complete") {
+		t.Fatalf("timeout: %d %s", w.Code, w.Body.String())
+	}
+	frame := readEnvelope(t, f.ctx, f.ag.conn)
+	for frame.Type == protocol.TypeHeartbeat {
+		frame = readEnvelope(t, f.ctx, f.ag.conn)
+	}
+	var stop protocol.InspectionCancel
+	if frame.Type != protocol.TypeConfigurationCancel || json.Unmarshal(frame.Payload, &stop) != nil || stop.Request != req.Request {
+		t.Fatalf("no cancel: %+v", frame)
+	}
+}

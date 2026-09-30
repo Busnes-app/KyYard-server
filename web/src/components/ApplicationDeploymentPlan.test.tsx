@@ -602,7 +602,7 @@ it('StepTable renders the rollback step texts', () => {
 
 it('StepTable renders exited_early', () => {
   render(<StepTable steps={[{ service: 'web', step: 'start', outcome: 'failed', code: 'exited_early', detail: '' }]} />);
-  expect(screen.getByText('The new container exited or restarted right after starting.')).toBeTruthy();
+  expect(screen.getByText('The new container exited, restarted or turned unhealthy right after starting.')).toBeTruthy();
 });
 
 it('names agent-side unsupported codes and drops unknown ones', () => {

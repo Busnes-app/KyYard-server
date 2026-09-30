@@ -29,6 +29,11 @@ type Client struct {
 	base    string
 	cpuMu   sync.Mutex
 	cpuPrev map[string]cpuPoint
+	// The last snapshot's restart counters, each taken once by Stats, and where the next
+	// snapshot's inspects start.
+	inspectMu   sync.Mutex
+	restartSeen map[string]int64
+	inspectFrom int
 	// The daemon's defaults for inspections, read at most once a minute.
 	infoMu   sync.Mutex
 	info     daemon
@@ -312,8 +317,10 @@ func boundLabels(in map[string]string) map[string]string {
 }
 
 // The container list carries no start time or health, so each running container is inspected
-// once, bounded in count and time so a large host still reports. A container that cannot be
-// read (gone, or past the budget) keeps zero values: the UI shows "—", never a stale guess.
+// once, bounded in count and time so a large host still reports; past the count, each snapshot
+// starts where the last stopped. A container that cannot be read (gone, or past the budget)
+// keeps zero values: the UI shows "—", never a stale guess. The restart counter read here is
+// left for the Stats call that follows, so it does not inspect again.
 const (
 	maxSnapshotInspects   = 200
 	snapshotInspectBudget = 5 * time.Second
@@ -322,11 +329,21 @@ const (
 func (c *Client) enrichRunning(parent context.Context, containers []protocol.Container) {
 	ctx, cancel := context.WithTimeout(parent, snapshotInspectBudget)
 	defer cancel()
-	inspected := 0
+	var running []int
 	for i := range containers {
-		if containers[i].State != "running" || inspected >= maxSnapshotInspects || ctx.Err() != nil {
-			continue
+		if containers[i].State == "running" {
+			running = append(running, i)
 		}
+	}
+	c.inspectMu.Lock()
+	from := c.inspectFrom
+	c.inspectMu.Unlock()
+	seen, inspected := map[string]int64{}, 0
+	for k := range min(len(running), maxSnapshotInspects) {
+		if ctx.Err() != nil {
+			break
+		}
+		i := running[(from+k)%len(running)]
 		inspected++
 		var raw struct {
 			State struct {
@@ -338,8 +355,12 @@ func (c *Client) enrichRunning(parent context.Context, containers []protocol.Con
 				RestartPolicy struct{ Name string } `json:"RestartPolicy"`
 			} `json:"HostConfig"`
 		}
-		if err := c.get(ctx, "/containers/"+url.PathEscape(containers[i].ID)+"/json", &raw); err != nil {
+		var restarts restartCounter
+		if err := c.get(ctx, "/containers/"+url.PathEscape(containers[i].ID)+"/json", &raw, &restarts); err != nil {
 			continue
+		}
+		if n := restarts.count(); n >= 0 {
+			seen[containers[i].ID] = n
 		}
 		if started, err := time.Parse(time.RFC3339Nano, raw.State.StartedAt); err == nil && started.Year() > 1 {
 			containers[i].StartedAt = started.UTC().Truncate(time.Second)
@@ -350,4 +371,10 @@ func (c *Client) enrichRunning(parent context.Context, containers []protocol.Con
 		}
 		containers[i].RestartPolicy = raw.HostConfig.RestartPolicy.Name
 	}
+	c.inspectMu.Lock()
+	c.restartSeen = seen
+	if len(running) > 0 {
+		c.inspectFrom = (from + inspected) % len(running)
+	}
+	c.inspectMu.Unlock()
 }

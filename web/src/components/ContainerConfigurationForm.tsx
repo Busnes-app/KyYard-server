@@ -33,7 +33,7 @@ const argv = (items: string[]) => { const out = [...items]; while (out.length &&
 
 // buildSpec is the one canonical shape: the read and the draft both pass through it, so diff()
 // compares like with like (key order included) and a form nobody touched has no changes.
-function buildSpec(s: ExplicitSpec, logOptions: [string, string][]): ExplicitSpec {
+export function buildSpec(s: ExplicitSpec, logOptions: [string, string][]): ExplicitSpec {
   const spec: ExplicitSpec = {
     name: s.name.trim(), image: { reference: s.image.reference.trim(), digest: s.image.digest, ...(s.image.tag !== undefined ? { tag: s.image.tag } : {}) }, image_id: s.image_id,
     command: argv(s.command), entrypoint: argv(s.entrypoint), user: s.user, working_dir: s.working_dir, hostname: s.hostname,
@@ -126,7 +126,9 @@ export function ContainerConfigurationForm({ base, mode, initial, container, onS
     || (!!h && (h.test[0] === 'CMD' || h.test[0] === 'CMD-SHELL') && h.test.length < 2);
   const numbers = [r.nano_cpus, r.memory_bytes, r.memory_swap_bytes, r.pids_limit, spec.restart_retries, spec.stop_timeout ?? 0, ...(h ? [h.interval_seconds, h.timeout_seconds, h.start_period_seconds, h.retries] : [])];
   const malformed = numbers.some((n) => !Number.isFinite(n));
-  const ready = !incomplete && !malformed && spec.unsupported.length === 0 && (run ? spec.name !== '' && spec.image.reference !== '' : changes.length > 0 && !!container)
+  // The server's floors: -1 is unlimited swap or PIDs, nothing else goes below zero.
+  const negative = r.nano_cpus < 0 || r.memory_bytes < 0 || r.memory_swap_bytes < -1 || r.pids_limit < -1 || spec.restart_retries < 0;
+  const ready = !incomplete && !malformed && !negative && spec.unsupported.length === 0 && (run ? spec.name !== '' && spec.image.reference !== '' : changes.length > 0 && !!container)
     && expected !== '' && confirm === expected && newBinds.every((b) => b !== '' && acks.has(b));
   const set = (patch: Partial<ExplicitSpec>) => setDraft((d) => ({ ...d, ...patch }));
   const submit = async () => {
@@ -172,6 +174,7 @@ export function ContainerConfigurationForm({ base, mode, initial, container, onS
       </>}
       {incomplete && <p>Complete every row: variable names, container ports, device paths and the health check command.</p>}
       {malformed && <p>Enter a number in every numeric field.</p>}
+      {negative && <p>Numbers cannot be negative, except -1 (unlimited) for Memory and swap or PIDs limit.</p>}
       <label>{run ? 'Type the new container name to confirm' : `Type the container name ${expected} to confirm`}<input value={confirm} autoComplete="off" onChange={(e) => setConfirm(e.target.value)} /></label>
       <div><button type="button" disabled={!ready || busy || pending || lost} onClick={() => void submit()}>{run ? 'Run container' : 'Save and recreate'}</button></div>
     </div>
