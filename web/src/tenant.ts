@@ -24,7 +24,17 @@ export interface KubeNode { name: string; kubelet_version: string; os: string; a
 // application and instance are KyYard's labels on a Deployment it applied.
 export interface Workload { kind: string; namespace: string; name: string; desired: number; ready: number; updated: number; images: string[]; paused: boolean; application?: string; instance?: string }
 export interface PodContainer { name: string; image: string; image_id: string; state: string; reason: string; ready: boolean; restart_count: number }
-export interface Pod { namespace: string; name: string; phase: string; node: string; owner_kind: string; owner_name: string; started_at: string; containers: PodContainer[] }
+export interface Pod { uid?: string; namespace: string; name: string; phase: string; node: string; owner_kind: string; owner_name: string; started_at: string; containers: PodContainer[] }
+// A workload as the configuration read and apply name it (protocol.WorkloadRef, kinds lower-case).
+export interface WorkloadRef { namespace: string; kind: string; name: string }
+export interface WorkloadEnv { name: string; value?: string; secret_ref?: string; config_map_ref?: string }
+export interface WorkloadResources { cpu_request: string; cpu_limit: string; memory_request: string; memory_limit: string }
+export interface WorkloadContainer { name: string; image: string; image_id: string; command: string[]; args: string[]; env: WorkloadEnv[]; resources: WorkloadResources }
+// replicas is absent exactly for a DaemonSet; paused is a Deployment's only; managed is a workload KyYard deployed.
+export interface WorkloadConfiguration {
+  target: WorkloadRef; observed_at: string; resource_version: string; replicas?: number; paused: boolean; strategy: string;
+  containers: WorkloadContainer[]; init_containers: WorkloadContainer[]; env_from: string[]; managed: boolean; unsupported: string[];
+}
 export interface KubeService { namespace: string; name: string; type: string; cluster_ip: string; ports: string[]; instance?: string; service?: string }
 export interface Claim { namespace: string; name: string; phase: string; storage_class: string; capacity: string }
 // default is the cluster's is-default-class annotation; a migration's storage choices pick from these.
@@ -74,6 +84,12 @@ export const canExec = (role: string | undefined) => role === 'organization_admi
 
 // Mirrors permissions.Allows(role, ContainerConfigure): only organization admins may configure.
 export const canConfigure = (role: string | undefined) => role === 'organization_admin';
+
+// Mirrors permissions.Allows(role, ContainerOperate): organization and environment admins and operators.
+export const canOperate = (role: string | undefined) => role === 'organization_admin' || role === 'environment_admin' || role === 'operator';
+
+// Mirrors permissions.Allows(role, ContainerDestroy): organization and environment admins.
+export const canDestroy = (role: string | undefined) => role === 'organization_admin' || role === 'environment_admin';
 
 // A run needs a Docker host whose agent configures containers and pulls images.
 export const canRunContainers = (e: Endpoint | null | undefined) => e?.runtime === 'docker' && e.capabilities.includes('container.configure') && e.capabilities.includes('deployment.pull');

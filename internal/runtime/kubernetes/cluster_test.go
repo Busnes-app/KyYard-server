@@ -140,6 +140,14 @@ func TestManifestOnARealCluster(t *testing.T) {
 		{"delete", "", "persistentvolumeclaims", deployNamespace, false},
 		{"create", "", "persistentvolumeclaims", "default", false},
 		{"list", "storage.k8s.io", "storageclasses", "", true},
+		{"patch", "apps", "deployments", deployNamespace, true},
+		{"patch", "apps", "statefulsets", deployNamespace, true},
+		{"delete", "apps", "daemonsets", deployNamespace, true},
+		{"delete", "", "pods", deployNamespace, true},
+		{"create", "", "pods/exec", deployNamespace, true},
+		{"patch", "apps", "deployments", "default", false},
+		{"delete", "", "pods", "default", false},
+		{"create", "", "pods/exec", "default", false},
 	} {
 		review, err := as.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authorizationv1.ResourceAttributes{Verb: tc.verb, Group: tc.group, Resource: tc.resource, Namespace: tc.namespace}}}, metav1.CreateOptions{})
 		if err != nil {

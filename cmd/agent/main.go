@@ -42,6 +42,7 @@ func main() {
 	inventoryEvery := flag.Duration("inventory-every", time.Minute, "how often to report a fresh inventory snapshot")
 	kube := flag.Bool("kubernetes", false, "inventory the cluster this agent runs in, as its ServiceAccount (needs --docker-socket=)")
 	identitySecret := flag.String("identity-secret", "kyyard-agent-identity", "with --kubernetes: the Secret in the agent's namespace that holds its identity")
+	scratch := flag.String("scratch-dir", "/var/lib/kyyard-agent", "with --kubernetes: writable directory for the command ledgers (the identity stays in its Secret)")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	if err := checkFlags(*kube, *socket, *link, *linkFile); err != nil {
@@ -79,6 +80,8 @@ func main() {
 	var exec func(context.Context, protocol.ExecSpec) (client.ExecSession, error)
 	var deploy func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult
 	var remove func(context.Context, protocol.RemovalRequest, func()) protocol.DeploymentResult
+	var readWorkload func(context.Context, protocol.InspectionTarget) (*protocol.WorkloadConfiguration, error)
+	var applyWorkload func(context.Context, protocol.WorkloadApply, func()) protocol.DeploymentResult
 	runtimeVersion := ""
 	var identities client.IdentityStore = client.DirStore(*dir)
 	where := *dir
@@ -98,6 +101,10 @@ func main() {
 		}
 		identities, where = fatalOnConflict{secret}, "Secret "+namespace+"/"+*identitySecret
 		snapshot, logs, deploy, remove, inspect = cluster.Snapshot, cluster.Logs, cluster.Deploy, cluster.Remove, cluster.Inspect
+		operate, readWorkload, applyWorkload = cluster.Operate, cluster.ReadWorkload, cluster.ApplyWorkload
+		exec = func(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
+			return cluster.OpenExec(ctx, spec)
+		}
 		facts = cluster.Facts(ctx)
 	} else if *socket != "" {
 		engine := docker.New(*socket)
@@ -157,9 +164,11 @@ func main() {
 	if *enrollOnly {
 		return
 	}
-	opts := client.Options{HTTPClient: httpClient, Version: version, Identities: identities, Kubernetes: *kube, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, Configure: configure, Deploy: deploy, Remove: remove, InventoryEvery: *inventoryEvery}
-	if !*kube {
-		// The command ledger lives beside a host's identity; a cluster agent runs no commands.
+	opts := client.Options{HTTPClient: httpClient, Version: version, Identities: identities, Kubernetes: *kube, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, Configure: configure, Deploy: deploy, Remove: remove, ReadWorkload: readWorkload, ApplyWorkload: applyWorkload, InventoryEvery: *inventoryEvery}
+	if *kube {
+		opts.CommandDir = ledgerDir(*scratch, log.Printf)
+	} else {
+		// The command ledger lives beside a host's identity.
 		opts.IdentityDir = *dir
 	}
 	if err := client.Run(ctx, id, opts); err != nil {
@@ -177,6 +186,19 @@ func checkFlags(kube bool, socket, link, linkFile string) error {
 		return errors.New("kubernetes and docker are exclusive: pass --docker-socket= with --kubernetes")
 	}
 	return nil
+}
+
+// ledgerDir returns dir when the agent can write there, else "" (ledgers in memory) with one
+// log line: a cluster agent upgraded under a manifest without the scratch volume keeps running.
+func ledgerDir(dir string, logf func(string, ...any)) string {
+	f, err := os.CreateTemp(dir, ".probe-*")
+	if err != nil {
+		logf("scratch directory %s is not writable (%v); command and deployment ledgers stay in memory until the regenerated manifest is applied again", dir, err)
+		return ""
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return dir
 }
 
 // readLinkFile returns the link a mounted Secret holds, or "" when the file is absent: the

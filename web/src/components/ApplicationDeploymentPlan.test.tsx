@@ -124,9 +124,7 @@ it('refetches the instance when a polled deployment settles, and on Refresh plan
   fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
   expect(onChanged).not.toHaveBeenCalled();
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  for (let i = 0; i < 10 && !/succeeded/i.test(document.body.textContent ?? ''); i++) await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   expect(document.body.textContent).toMatch(/succeeded/i);
   expect(onChanged).toHaveBeenCalledTimes(1); // reached succeeded: the instance's revision may have moved
   fireEvent.click(screen.getByRole('button', { name: 'Refresh plan' }));

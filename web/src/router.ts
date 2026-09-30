@@ -6,6 +6,7 @@ export type Route =
   | { name: 'organization' | 'members' | 'audit'; org: string }
   | { name: 'environment'; org: string; env: string }
   | { name: 'endpoint' | 'container-new'; org: string; endpoint: string }
+  | { name: 'workload'; org: string; endpoint: string; namespace: string; kind: string; workload: string }
   | { name: 'container'; org: string; endpoint: string; container: string };
 
 const NAV_EVENT = 'ky:navigate';
@@ -13,6 +14,9 @@ const NAV_EVENT = 'ky:navigate';
 const segment = /^(?=.*[A-Za-z0-9_-])[A-Za-z0-9._-]{1,64}$/;
 // A Docker container ID as the inventory reports it: lowercase 64 hex, nothing else.
 const containerID = /^[0-9a-f]{64}$/;
+// Namespace and workload name are Kubernetes DNS labels; kind is one of the configurable three.
+export const dnsLabel = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+const workloadKinds = ['deployment', 'statefulset', 'daemonset'];
 
 // decodeURIComponent throws on malformed escapes; a bad link must land on not-found, not a blank page.
 function decodeSegments(pathname: string): string[] | null {
@@ -35,6 +39,7 @@ export function matchRoute(pathname: string): Route {
     if (parts.length === 4 && parts[2] === 'environments' && segment.test(parts[3])) return { name: 'environment', org, env: parts[3] };
     if (parts.length === 4 && parts[2] === 'endpoints' && segment.test(parts[3])) return { name: 'endpoint', org, endpoint: parts[3] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && parts[5] === 'new') return { name: 'container-new', org, endpoint: parts[3] };
+    if (parts.length === 8 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'workloads' && dnsLabel.test(parts[5]) && workloadKinds.includes(parts[6]) && dnsLabel.test(parts[7])) return { name: 'workload', org, endpoint: parts[3], namespace: parts[5], kind: parts[6], workload: parts[7] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && containerID.test(parts[5])) return { name: 'container', org, endpoint: parts[3], container: parts[5] };
   }
   return { name: 'notfound' };
@@ -73,3 +78,4 @@ export const envPath = (org: string, env: string) => orgPath(org, `/environments
 export const endpointPath = (org: string, endpoint: string) => orgPath(org, `/endpoints/${encodeURIComponent(endpoint)}`);
 export const containerPath = (org: string, endpoint: string, container: string, tab?: string) => endpointPath(org, endpoint) + `/containers/${encodeURIComponent(container)}` + (tab ? `?tab=${encodeURIComponent(tab)}` : '');
 export const runPath = (org: string, endpoint: string) => endpointPath(org, endpoint) + '/containers/new';
+export const workloadPath = (org: string, endpoint: string, namespace: string, kind: string, name: string, tab?: string) => endpointPath(org, endpoint) + `/workloads/${encodeURIComponent(namespace)}/${encodeURIComponent(kind)}/${encodeURIComponent(name)}` + (tab ? `?tab=${encodeURIComponent(tab)}` : '');

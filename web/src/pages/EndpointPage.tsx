@@ -13,6 +13,7 @@ import { canConfigure, canEnroll, canRunContainers, canExec, useTenantResource, 
 import { displayName } from '../components/Endpoints';
 import { IPCell, StateCell } from '../components/ContainerCells';
 import { KubernetesCluster } from '../components/KubernetesCluster';
+import { commandLine } from '../components/workloadTexts';
 import { ago, bytes, uptime, useNow } from '../components/containerFacts';
 
 
@@ -27,7 +28,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const [projectFilter, setProjectFilter] = useState<{ base: string; name: string } | null>(null);
   const details = useTenantResource<Endpoint>(base);
   const inventory = useTenantResource<Inventory>(`${base}/inventory`);
-  const commands = useTenantResource<{ id: string; action: string; outcome: string; detail?: string; container_id?: string; reference?: string }[]>(`${base}/commands?limit=20`);
+  const commands = useTenantResource<{ id: string; action: string; outcome: string; detail?: string; container_id?: string; reference?: string; created_at?: string }[]>(`${base}/commands?limit=50`);
   const ownership = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
   const samples = useTenantResource<Sample[]>(`${base}/samples`);
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
@@ -57,7 +58,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const inv = inventory.data;
   // A cluster has its own view; Docker tabs, and the controls under them, are never rendered.
   const cluster = e?.runtime === 'kubernetes';
-  const tabs = cluster ? ['cluster', 'details'] : ['containers', 'projects', 'images', 'networks', 'volumes', 'activity', 'details'];
+  const tabs = cluster ? ['cluster', 'activity', 'details'] : ['containers', 'projects', 'images', 'networks', 'volumes', 'activity', 'details'];
   const shown = tabs.includes(view) ? view : tabs[0];
   // A filter belongs to one endpoint and must not hide a refreshed or different host.
   const selectedProject = projectFilter?.base === base && inv?.snapshot.containers.some((c) => c.compose_project === projectFilter.name) ? projectFilter.name : null;
@@ -92,7 +93,9 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
           </dl>
         </section>
       )}
-      {shown === 'activity' && <section className="panel"><div className="panel-header"><h2>Recent activity</h2></div><button className="btn-secondary" onClick={commands.reload}>Refresh activity</button><StateNotice state={commands.state} onRetry={commands.reload} />{Array.isArray(commands.data) && <ul className="ky-list">{commands.data.map((c) => <li key={c.id}>{c.action} · {c.container_id || c.reference} · {c.outcome || 'pending'}{c.detail ? ` — ${c.detail}` : ''}</li>)}</ul>}{commands.state === 'ready' && Array.isArray(commands.data) && commands.data.length === 0 && <EmptyNotice>No recent activity on this host.</EmptyNotice>}</section>}
+      {shown === 'activity' && <section className="panel"><div className="panel-header"><h2>Recent activity</h2></div><button className="btn-secondary" onClick={commands.reload}>Refresh activity</button><StateNotice state={commands.state} onRetry={commands.reload} />{Array.isArray(commands.data) && <ul className="ky-list">{commands.data.map((c) => <li key={c.id}>{cluster
+        ? `${c.created_at ? `${new Date(c.created_at).toLocaleString()} · ` : ''}${displayName(c.reference ?? '')} · ${commandLine(c)}`
+        : <>{c.action} · {c.container_id || c.reference} · {c.outcome || 'pending'}{c.detail ? ` — ${c.detail}` : ''}</>}</li>)}</ul>}{commands.state === 'ready' && Array.isArray(commands.data) && commands.data.length === 0 && <EmptyNotice>No recent activity on this host.</EmptyNotice>}</section>}
       {inventory.state === 'notfound' && details.state === 'ready' && <EmptyNotice>No inventory yet. It arrives with the agent's first report after approval.</EmptyNotice>}
       {inventory.state !== 'notfound' && <StateNotice state={inventory.state} onRetry={inventory.reload} />}
       {inventory.state === 'ready' && inv && (
@@ -102,7 +105,8 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             {inventory.refreshFailed || samples.refreshFailed ? ' Last refresh failed; showing the previous report.' : ''}
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
-          {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
+          {cluster && shown === 'cluster' && e && status && <p role="status">{status}</p>}
+          {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} role={role} onStatus={setStatus} onRefresh={() => { inventory.reload(); commands.reload(); }} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
           {shown === 'projects' && <><StateNotice state={ownership.state} onRetry={ownership.reload} /><ComposeProjects ownership={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
             setProjectFilter({ base, name }); setView('containers');
             requestAnimationFrame(() => document.getElementById('endpoint-containers')?.focus());

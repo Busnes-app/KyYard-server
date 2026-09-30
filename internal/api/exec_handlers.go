@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -48,6 +49,22 @@ func (s *Server) execAllowed(r *http.Request, a store.TenantAccess, endpoint str
 	return s.store.Tenancy().StillAllowed(ctx, a, permissions.ContainerExec, endpoint) == nil
 }
 func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	s.serveExec(w, r, a, nil)
+}
+
+// handlePodExec is the pod terminal: the route names the pod, the start message names its
+// container and the UID the inventory reported, and confirm repeats the pod name.
+func (s *Server) handlePodExec(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	pod := protocol.PodTarget{Namespace: r.PathValue("namespace"), Name: r.PathValue("pod")}
+	if pod.Validate() != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	s.serveExec(w, r, a, &pod)
+}
+
+// serveExec runs a terminal on a Docker container (pod nil) or a pod container.
+func (s *Server) serveExec(w http.ResponseWriter, r *http.Request, a store.TenantAccess, pod *protocol.PodTarget) {
 	// An exec is an interactive session, not a bounded read; a service token never gets one.
 	// Refused first, before Origin is checked or the rate bucket is spent.
 	if a.ServiceTokenID != "" {
@@ -73,8 +90,24 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 		s.tenantError(w, err)
 		return
 	}
-	if !s.runtimeGate(w, r, a, endpoint, dockerRoute) {
+	kind := dockerRoute
+	if pod != nil {
+		kind = kubernetesRoute
+	}
+	ep, ok := s.runtimeEndpoint(w, r, a, endpoint, kind)
+	if !ok {
 		return
+	}
+	if pod != nil {
+		if !slices.Contains(ep.Capabilities, protocol.CapabilityPodExec) {
+			s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to open pod terminals")
+			return
+		}
+		// The store checks this again with the pod; here it can still be an HTTP status.
+		if !slices.Contains(ep.DeployNamespaces, pod.Namespace) {
+			s.tenantError(w, store.ErrNamespaceNotGranted)
+			return
+		}
 	}
 	s.agents.mu.Lock()
 	agent := s.agents.conns[endpoint]
@@ -106,8 +139,15 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 	typ, raw, err := conn.Read(firstCtx)
 	firstCancel()
 	var start browserExecStart
-	if err != nil || typ != websocket.MessageText || execJSON(raw, &start) != nil || start.Spec.Validate() != nil || start.Size.Validate() != nil || start.Spec.Container != r.PathValue("container") {
+	if err != nil || typ != websocket.MessageText || execJSON(raw, &start) != nil || start.Spec.ValidateFor(ep.Runtime) != nil || start.Size.Validate() != nil {
 		return
+	}
+	if pod == nil && start.Spec.Container != r.PathValue("container") || pod != nil && (start.Spec.Pod.Namespace != pod.Namespace || start.Spec.Pod.Name != pod.Name) {
+		return
+	}
+	resource, closeAction, who := endpoint+"/"+start.Spec.Container, "container.exec.close", fmt.Sprintf("user=%q", start.Spec.User)
+	if pod != nil {
+		resource, closeAction, who = store.ExecPodResource(endpoint, *start.Spec.Pod), "pod.exec.close", fmt.Sprintf("uid=%q", start.Spec.Pod.UID)
 	}
 	csrfRequest := r.Clone(ctx)
 	csrfRequest.Header.Set(auth.HeaderCSRF, start.CSRF)
@@ -127,11 +167,11 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request, a s
 	defer func() {
 		auditCtx, done := context.WithTimeout(context.Background(), 2*time.Second)
 		defer done()
-		details := fmt.Sprintf("stream=%q user=%q duration_ms=%d", stream.id, start.Spec.User, time.Since(began).Milliseconds())
+		details := fmt.Sprintf("stream=%q %s duration_ms=%d", stream.id, who, time.Since(began).Milliseconds())
 		if exit != nil {
 			details += fmt.Sprintf(" exit_code=%d", *exit)
 		}
-		if err := s.store.Audit().LogAudit(auditCtx, &store.AuditRecord{Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: environment, CorrelationID: stream.id, UserID: a.ActorID, IPAddress: a.IPAddress, Resource: endpoint + "/" + start.Spec.Container, Action: "container.exec.close", Result: outcome, Details: details, CreatedAt: time.Now().UTC()}); err != nil {
+		if err := s.store.Audit().LogAudit(auditCtx, &store.AuditRecord{Scope: "organization", OrganizationID: a.OrganizationID, EnvironmentID: environment, CorrelationID: stream.id, UserID: a.ActorID, IPAddress: a.IPAddress, Resource: resource, Action: closeAction, Result: outcome, Details: details, CreatedAt: time.Now().UTC()}); err != nil {
 			log.Printf("exec close audit failed for stream %s", stream.id)
 		}
 	}()
@@ -282,7 +322,8 @@ func writeExecBrowser(ctx context.Context, c *websocket.Conn, f protocol.Envelop
 }
 
 // Only well-formed, connection-scoped frames enter browser queues. Agent error
-// text is untrusted and can contain secrets; replace it with a fixed notice.
+// text is untrusted and can contain secrets; replace it with a fixed notice unless it is one
+// of the fixed exec refusals (protocol.IsExecRefusal).
 func (s *Server) handleExecFrame(c *agentConn, f protocol.Envelope) {
 	var id string
 	switch f.Type {
@@ -307,7 +348,9 @@ func (s *Server) handleExecFrame(c *agentConn, f protocol.Envelope) {
 			return
 		}
 		id = v.Stream
-		v.Reason = errExecEnded.Error()
+		if !protocol.IsExecRefusal(v.Reason) {
+			v.Reason = errExecEnded.Error()
+		}
 		f = envelope(f.Type, v)
 	}
 	s.execs.deliver(c, id, f)

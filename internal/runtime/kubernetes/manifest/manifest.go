@@ -1,4 +1,4 @@
-// Package manifest renders the one file an administrator applies to enroll a Kubernetes
+// Package manifest renders the file an administrator applies to enroll a Kubernetes
 // cluster. It imports no Kubernetes library: the server links this package, and the adapter's
 // client-go stays in the agent.
 package manifest
@@ -26,25 +26,27 @@ type Input struct {
 	Namespaces []string
 }
 
-// Render returns the multi-document YAML. The image must be digest-pinned: the same rule the
-// Docker command follows, because a tag can move after the administrator reviewed it.
+// Render returns the enrollment manifest: RBAC, the enrollment Secret and the agent Deployment.
+// The image must be digest-pinned: the same rule the Docker command follows, because a tag can
+// move after the administrator reviewed it.
 func Render(in Input) (string, error) {
-	if !config.IsPinnedAgentImage(in.Image) {
-		return "", errors.New("the agent image is not pinned to a digest")
-	}
 	if !strings.HasPrefix(in.Link, "https://") {
 		return "", errors.New("a manifest needs an HTTPS enrollment link")
 	}
 	return execute(in)
 }
 
-// RenderRBAC returns the manifest without the enrollment Secret and the agent Deployment: what
-// an administrator applies to change the namespaces an enrolled agent may write in.
-func RenderRBAC(name string, namespaces []string) (string, error) {
-	return execute(Input{Name: name, Namespaces: namespaces})
+// RenderRBAC returns the regenerated manifest: the RBAC for namespaces and the agent Deployment
+// on image, without the enrollment Secret. Applying it changes the namespaces an enrolled agent
+// may write in and upgrades the agent in place.
+func RenderRBAC(name, image string, namespaces []string) (string, error) {
+	return execute(Input{Name: name, Image: image, Namespaces: namespaces})
 }
 
 func execute(in Input) (string, error) {
+	if !config.IsPinnedAgentImage(in.Image) {
+		return "", errors.New("the agent image is not pinned to a digest")
+	}
 	if in.Name == "" {
 		return "", errors.New("a manifest needs an endpoint name")
 	}
@@ -94,6 +96,8 @@ var manifestTemplate = template.Must(template.New("manifest").Funcs(template.Fun
 {{- if .Namespaces}}
 # In each namespace listed below (Role kyyard-agent-deploy) it may create, update and delete
 # Deployments, Services, ConfigMaps and Secrets; Secrets are read by name, never listed. It may
+# get, list, patch, update and delete StatefulSets and DaemonSets (the cluster view's workload
+# actions and edits), delete pods and open exec sessions in them. It may
 # create PersistentVolumeClaims but never update or delete one: a claim KyYard created stays
 # until you delete it. Create the namespaces first. A namespace dropped from a later manifest
 # keeps its Role until you run
@@ -208,6 +212,17 @@ rules:
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [get, list, create, update, patch, delete]
+  # The cluster view restarts, scales, edits and deletes these; KyYard never creates them.
+  - apiGroups: [apps]
+    resources: [statefulsets, daemonsets]
+    verbs: [get, list, patch, update, delete]
+  # Deleting a pod restarts it; exec opens a shell in it.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
   - apiGroups: [""]
     resources: [services, configmaps]
     verbs: [get, list, create, update, patch, delete]
@@ -250,6 +265,7 @@ metadata:
 type: Opaque
 stringData:
   link: {{q .Link}}
+{{- end}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -303,6 +319,9 @@ spec:
             - name: enrollment
               mountPath: /etc/kyyard
               readOnly: true
+            # The root filesystem is read-only; the command ledgers live here.
+            - name: scratch
+              mountPath: /var/lib/kyyard-agent
       volumes:
         - name: enrollment
           secret:
@@ -310,5 +329,6 @@ spec:
             # Optional: the Secret is deleted once spent, and a restart must not wait for it.
             optional: true
             defaultMode: 0440
-{{- end}}
+        - name: scratch
+          emptyDir: {}
 `))

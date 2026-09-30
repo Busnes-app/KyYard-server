@@ -34,8 +34,8 @@ func (t InspectionTarget) ValidateFor(runtime string) error {
 	if runtime != RuntimeKubernetes {
 		return t.Validate()
 	}
-	if t.ContainerID != "" || t.ImageID != "" || t.CreatedUnix != 0 || !t.Workload.valid() {
-		return errors.New("a Kubernetes inspection names a Deployment's namespace, name and UID and no container")
+	if t.ContainerID != "" || t.ImageID != "" || t.CreatedUnix != 0 || !(t.Workload.valid() || t.Workload.validObject()) {
+		return errors.New("a Kubernetes target names a Deployment by UID or an object by kind, and no container")
 	}
 	return nil
 }
@@ -167,7 +167,7 @@ func (r ContainerInspection) Validate(target InspectionTarget, now time.Time, he
 		return invalid
 	}
 	if target.Workload != (WorkloadRef{}) {
-		if target.ValidateFor(RuntimeKubernetes) != nil || !r.dockerEmpty() || r.Workload == nil || r.Workload.validate() != nil {
+		if target.ValidateFor(RuntimeKubernetes) != nil || !target.Workload.valid() || !r.dockerEmpty() || r.Workload == nil || r.Workload.validate() != nil {
 			return invalid
 		}
 		return nil

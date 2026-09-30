@@ -81,6 +81,7 @@ type Workload struct {
 type Pod struct {
 	Namespace  string         `json:"namespace"`
 	Name       string         `json:"name"`
+	UID        string         `json:"uid,omitempty"`
 	Phase      string         `json:"phase"`
 	Node       string         `json:"node"`
 	OwnerKind  string         `json:"owner_kind"`
@@ -213,7 +214,7 @@ func clampKubernetes(k *KubernetesInventory, truncated map[string]bool) {
 	for i := range k.Pods {
 		p := &k.Pods[i]
 		p.Namespace, p.Name, p.Phase, p.Node = name(p.Namespace), name(p.Name), short(p.Phase), name(p.Node)
-		p.OwnerKind, p.OwnerName = short(p.OwnerKind), name(p.OwnerName)
+		p.OwnerKind, p.OwnerName, p.UID = short(p.OwnerKind), name(p.OwnerName), short(p.UID)
 		if len(p.Containers) > MaxPodContainers {
 			p.Containers, truncated["pods"] = p.Containers[:MaxPodContainers], true
 		}
@@ -317,7 +318,7 @@ func CheckRuntimeShape(runtime string, s *Snapshot) error {
 }
 
 // kubernetesCapabilities is everything a cluster agent may advertise.
-var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesClaims: true, CapabilityKubernetesServiceIPs: true, CapabilityKubernetesRemove: true, CapabilityKubernetesInspect: true}
+var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesClaims: true, CapabilityKubernetesServiceIPs: true, CapabilityKubernetesRemove: true, CapabilityKubernetesInspect: true, CapabilityKubernetesWorkloads: true, CapabilityPodExec: true}
 
 // CapabilitiesFit reports whether a hello's capabilities belong to the endpoint's runtime:
 // a cluster agent names only cluster capabilities, a Docker agent names none of them.
@@ -366,17 +367,19 @@ func ValidDNSLabel(s string) bool { return dnsLabel.MatchString(s) }
 // ValidDNSSubdomain is RFC 1123 subdomain syntax as Kubernetes applies it: pod names.
 func ValidDNSSubdomain(s string) bool { return len(s) <= 253 && dnsSubdomain.MatchString(s) }
 
-// PodTarget names one pod and, optionally, one of its containers. An empty Container asks the
-// agent to take the pod's only container; it refuses when there are several.
+// PodTarget names one pod and, optionally, one of its containers and the pod's UID. An empty
+// Container asks the agent to take the pod's only container; it refuses when there are several.
+// An exec names both (ExecSpec.Validate).
 type PodTarget struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 	Container string `json:"container,omitempty"`
+	UID       string `json:"uid,omitempty"`
 }
 
 func (p PodTarget) Validate() error {
-	if !ValidDNSLabel(p.Namespace) || !ValidDNSSubdomain(p.Name) || (p.Container != "" && !ValidDNSLabel(p.Container)) {
-		return errors.New("a pod target names a namespace, a pod and optionally a container, in Kubernetes name syntax")
+	if !ValidDNSLabel(p.Namespace) || !ValidDNSSubdomain(p.Name) || (p.Container != "" && !ValidDNSLabel(p.Container)) || (p.UID != "" && !deploymentUUID.MatchString(p.UID)) {
+		return errors.New("a pod target names a namespace, a pod and optionally a container and UID, in Kubernetes syntax")
 	}
 	return nil
 }

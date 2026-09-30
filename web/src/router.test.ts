@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { containerPath, matchRoute, runPath } from './router';
+import { containerPath, matchRoute, runPath, workloadPath } from './router';
 
 it('maps paths to routes and rejects unsafe segments', () => {
   expect(matchRoute('/')).toEqual({ name: 'dashboard' });
@@ -39,4 +39,19 @@ it('reads a search parameter and follows in-app navigation', async () => {
   const entries = window.history.length;
   act(() => navigate(window.location.pathname + '?tab=logs'));
   expect(window.history.length).toBe(entries);
+});
+
+it('routes a workload page on DNS-label grammar and encodes its path', () => {
+  const base = '/organizations/a/endpoints/ep_1/workloads';
+  expect(matchRoute(`${base}/default/deployment/web`)).toEqual({ name: 'workload', org: 'a', endpoint: 'ep_1', namespace: 'default', kind: 'deployment', workload: 'web' });
+  expect(matchRoute(`${base}/kube-x/statefulset/db-0`).name).toBe('workload');
+  expect(matchRoute(`${base}/default/daemonset/agent`).name).toBe('workload');
+  for (const bad of ['Default/deployment/web', '../deployment/web', 'default/deployment/..', 'default/pod/web', 'default/Deployment/web', `default/deployment/${'a'.repeat(64)}`, 'default/deployment', 'default/deployment/web/x', '-a/deployment/web', 'default/deployment/web-']) {
+    expect(matchRoute(`${base}/${bad}`).name).toBe('notfound');
+  }
+  expect(matchRoute(`${base}/default/deployment/${'a'.repeat(63)}`).name).toBe('workload');
+  expect(workloadPath('a', 'ep 1', 'default', 'deployment', 'web')).toBe('/organizations/a/endpoints/ep%201/workloads/default/deployment/web');
+  expect(workloadPath('a', 'ep_1', 'default', 'deployment', 'web', 'logs')).toBe(`${base}/default/deployment/web?tab=logs`);
+  const escaped = workloadPath('a', 'ep_1', 'x/y', 'deployment', 'web');
+  expect(matchRoute(escaped).name).toBe('notfound');
 });

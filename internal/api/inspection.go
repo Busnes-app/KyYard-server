@@ -286,6 +286,12 @@ func (s *Server) askSettled(w http.ResponseWriter, r *http.Request, a store.Tena
 			return false
 		}
 	}
+	return s.askStatus(w, err, noun)
+}
+
+// askStatus maps an ask's error to a response and reports whether there was none.
+func (s *Server) askStatus(w http.ResponseWriter, err error, noun string) bool {
+	Noun := strings.ToUpper(noun[:1]) + noun[1:]
 	switch err {
 	case nil:
 		return true

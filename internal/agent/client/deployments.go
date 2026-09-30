@@ -50,8 +50,13 @@ type sessionLink struct {
 	out chan<- outFrame
 }
 
+// newDeployer with no directory keeps its ledger in memory: a restart forgets it.
 func newDeployer(root context.Context, dir string, opts *Options) *deployer {
-	d := &deployer{root: root, opts: opts, path: filepath.Join(dir, "deployments.json"), done: map[string]deploymentEntry{}}
+	d := &deployer{root: root, opts: opts, done: map[string]deploymentEntry{}}
+	if dir == "" {
+		return d
+	}
+	d.path = filepath.Join(dir, "deployments.json")
 	if raw, err := os.ReadFile(d.path); err == nil {
 		var saved map[string]deploymentEntry
 		if json.Unmarshal(raw, &saved) == nil {
@@ -84,6 +89,9 @@ func (d *deployer) settleStarted() bool {
 
 // save writes the ledger durably. The caller holds mu, or owns d alone.
 func (d *deployer) save() error {
+	if d.path == "" {
+		return nil
+	}
 	raw, err := json.Marshal(d.done)
 	if err != nil {
 		return err
@@ -196,6 +204,31 @@ func (d *deployer) handleApply(sessionCtx context.Context, endpointID string, pa
 		}
 	}
 	d.run(sessionCtx, out, req.Deployment, req.RequestID, req.Endpoint, endpointID, func(now time.Time) error { return req.ValidateFor(d.runtime(), now) }, exec)
+}
+
+// handleWorkloadApply answers one workload.apply payload through the same slot and ledger as a
+// deployment; the frame carries no request ID, so neither does its result. See handleApply for
+// the unattributable-frame rule.
+func (d *deployer) handleWorkloadApply(sessionCtx context.Context, endpointID string, payload []byte, out chan<- outFrame) {
+	var req protocol.WorkloadApply
+	if json.Unmarshal(payload, &req) != nil || !protocol.ValidDeploymentID(req.Request) {
+		d.logf("workload apply frame ignored: no valid request id")
+		return
+	}
+	var exec func(context.Context) protocol.DeploymentResult
+	if apply := d.opts.ApplyWorkload; apply != nil && d.opts.Kubernetes {
+		exec = func(ctx context.Context) protocol.DeploymentResult {
+			res := apply(ctx, req, func() { d.begin(req.Request, "") })
+			for _, list := range [][]protocol.WorkloadContainer{req.Spec.Containers, req.Spec.InitContainers} {
+				for i := range list {
+					clear(list[i].Env)
+				}
+			}
+			return res
+		}
+	}
+	// A Docker agent has no exec here, so its answer is invalid_request.
+	d.run(sessionCtx, out, req.Request, "", req.Endpoint, endpointID, req.Validate, exec)
 }
 
 // runtime is the agent's: a frame for the other one is invalid_request, never run.

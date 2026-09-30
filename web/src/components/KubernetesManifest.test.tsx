@@ -53,3 +53,13 @@ it('says whether the namespace form is open', () => {
   fireEvent.click(toggle);
   expect(toggle.getAttribute('aria-expanded')).toBe('true');
 });
+
+it('words an unpinned agent image in fixed text and says the manifest carries the Deployment', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'secret-canary', code: 'agent_image_unpinned' }, 409)));
+  render(<ManifestRegeneration org="a" endpoint={endpoint} onSaved={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Regenerate manifest' }));
+  expect(document.body.textContent).toContain('Apply it to update RBAC and the agent Deployment; identity and enrollment are untouched.');
+  fireEvent.click(screen.getByRole('button', { name: 'Save and show manifest' }));
+  expect((await screen.findByRole('alert')).textContent).toBe("The server's agent image is not pinned by digest, so a manifest cannot be generated. Set KY_AGENT_IMAGE to a digest.");
+  expect(document.body.textContent).not.toContain('secret-canary');
+});

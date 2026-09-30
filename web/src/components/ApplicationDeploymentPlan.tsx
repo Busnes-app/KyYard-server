@@ -32,6 +32,9 @@ const LEGACY_OUTCOME = 'The agent did not classify this outcome; upgrade the age
 // renders only in the shape its code allows; an unknown code renders as inert text.
 export const STEP_CODES: Record<string, string> = {
   runtime_unreadable: "The daemon's default runtime could not be read.",
+  application_managed: 'This workload is managed by a KyYard application; change it through the application.',
+  namespace_not_granted: 'This namespace is not granted to KyYard on this cluster.',
+  pvc_retention: "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).",
   container_missing: 'The container no longer exists.',
   exited_early: 'The new container exited or restarted right after starting.',
   identity_mismatch: 'The container is not the one this plan was decided about.',
@@ -203,12 +206,13 @@ function isExpired(d: Deployment): boolean {
 function Correlation({ id }: { id?: string }) {
   return id ? <p>Correlation ID <code>{id}</code>: search the audit log for it.</p> : null;
 }
-export function StepTable({ steps }: { steps: DeployStep[] }) {
+// texts replaces a step code's sentence where a caller words it for its own target.
+export function StepTable({ steps, texts = {} }: { steps: DeployStep[]; texts?: Record<string, string> }) {
   return <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Step</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>{steps.map((s, i) => <tr key={`${s.service}-${s.step}-${i}`}>
     <td data-label="Service">{s.service}</td>
     <td data-label="Step">{s.step}</td>
     <td data-label="Outcome">{s.outcome}</td>
-    <td data-label="Detail">{stepText(s)}</td>
+    <td data-label="Detail">{s.code && Object.hasOwn(texts, s.code) ? texts[s.code] : stepText(s)}</td>
   </tr>)}</tbody></table>;
 }
 function ResultSection({ current }: { current: Deployment }) {

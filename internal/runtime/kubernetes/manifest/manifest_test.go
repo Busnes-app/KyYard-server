@@ -150,6 +150,10 @@ func TestManifestCarriesTheTokenOnceAndALockedDownAgent(t *testing.T) {
 			if m := c.VolumeMounts[0]; m.MountPath != "/etc/kyyard" || !m.ReadOnly || spec.Volumes[0].Secret.SecretName != "kyyard-agent-enrollment" || !*spec.Volumes[0].Secret.Optional {
 				t.Fatalf("mount %+v %+v", m, spec.Volumes[0])
 			}
+			// The root filesystem is read-only; the command ledgers need a writable directory.
+			if m := c.VolumeMounts[1]; m.Name != "scratch" || m.MountPath != "/var/lib/kyyard-agent" || m.ReadOnly || spec.Volumes[1].Name != "scratch" || spec.Volumes[1].EmptyDir == nil {
+				t.Fatalf("scratch %+v %+v", m, spec.Volumes[1])
+			}
 		}
 		labels := obj.(interface{ GetLabels() map[string]string }).GetLabels()
 		if labels["app.kubernetes.io/name"] != "kyyard-agent" || labels["app.kubernetes.io/managed-by"] != "kyyard" {
@@ -203,12 +207,22 @@ func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
 			namespaces = append(namespaces, o.Namespace)
 			want := []rbacv1.PolicyRule{
 				{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
+				{APIGroups: []string{"apps"}, Resources: []string{"statefulsets", "daemonsets"}, Verbs: []string{"get", "list", "patch", "update", "delete"}},
+				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
+				{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
 				{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "create", "update", "patch", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"get", "list", "create"}},
 			}
 			if !reflect.DeepEqual(o.Rules, want) {
 				t.Fatalf("deploy role in %s: %+v", o.Namespace, o.Rules)
+			}
+		case *rbacv1.ClusterRole:
+			// Reads stay cluster-wide and read-only: workload writes are per namespace.
+			for _, r := range o.Rules {
+				if slices.ContainsFunc(r.Verbs, func(v string) bool { return v != "get" && v != "list" && v != "create" }) || (slices.Contains(r.Verbs, "create") && r.Resources[0] != "selfsubjectaccessreviews") {
+					t.Fatalf("cluster role rule %+v", r)
+				}
 			}
 		case *rbacv1.RoleBinding:
 			if o.Name == "kyyard-agent-deploy" && (o.RoleRef.Name != "kyyard-agent-deploy" || len(o.Subjects) != 1 || o.Subjects[0].Name != "kyyard-agent" || o.Subjects[0].Namespace != "kyyard-agent") {
@@ -224,22 +238,46 @@ func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
 	}
 }
 
-// The regenerated manifest carries the RBAC and nothing that enrolls: no Secret, no link, no
-// Deployment.
-func TestManifestRBACOnly(t *testing.T) {
-	doc, err := manifest.RenderRBAC(name, []string{"shop"})
+// The regenerated manifest carries the RBAC and the agent Deployment, exactly as enrollment
+// renders it (image, scratch volume, security context), so re-applying it upgrades an enrolled
+// agent in place; nothing that enrolls: no Secret, no link.
+func TestManifestRegenerated(t *testing.T) {
+	doc, err := manifest.RenderRBAC(name, image, []string{"shop"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var kinds []string
+	var got *appsv1.Deployment
 	for _, obj := range decode(t, doc) {
 		kinds = append(kinds, obj.GetObjectKind().GroupVersionKind().Kind)
+		if d, ok := obj.(*appsv1.Deployment); ok {
+			got = d
+		}
 	}
-	if !slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Role", "RoleBinding"}) {
+	if !slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Role", "RoleBinding", "Deployment"}) {
 		t.Fatalf("kinds %v", kinds)
 	}
-	if strings.Contains(doc, "kyyard=") || strings.Contains(doc, "kyyard-agent-enrollment") {
-		t.Fatalf("an enrollment in the RBAC manifest:\n%s", doc)
+	if strings.Contains(doc, "kyyard=") || strings.Contains(doc, "stringData") || strings.Contains(doc, "kind: Secret") {
+		t.Fatalf("an enrollment in the regenerated manifest:\n%s", doc)
+	}
+	enrolled, err := manifest.Render(manifest.Input{Image: image, Link: link, Name: name, Namespaces: []string{"shop"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want *appsv1.Deployment
+	for _, obj := range decode(t, enrolled) {
+		if d, ok := obj.(*appsv1.Deployment); ok {
+			want = d
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("regenerated Deployment\n got %+v\nwant %+v", got, want)
+	}
+	if m := got.Spec.Template.Spec.Containers[0].VolumeMounts[1]; m.Name != "scratch" || m.MountPath != "/var/lib/kyyard-agent" {
+		t.Fatalf("scratch mount %+v", m)
+	}
+	if _, err := manifest.RenderRBAC(name, "ghcr.io/busnes-app/kyyard:latest", []string{"shop"}); err == nil {
+		t.Fatal("regenerated with an unpinned image")
 	}
 }
 
@@ -248,11 +286,11 @@ func TestManifestRefusesBadNamespaces(t *testing.T) {
 		if _, err := manifest.Render(manifest.Input{Image: image, Link: link, Name: name, Namespaces: list}); err == nil {
 			t.Errorf("rendered %v", list)
 		}
-		if _, err := manifest.RenderRBAC(name, list); err == nil {
+		if _, err := manifest.RenderRBAC(name, image, list); err == nil {
 			t.Errorf("rendered RBAC %v", list)
 		}
 	}
-	if _, err := manifest.RenderRBAC("", nil); err == nil {
+	if _, err := manifest.RenderRBAC("", image, nil); err == nil {
 		t.Error("rendered without a name")
 	}
 }
