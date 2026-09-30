@@ -316,3 +316,25 @@ it.each([['missing deployment.pull', ['container.configure']], ['missing contain
   await terminalOffered('a', fetcher);
   expect(screen.queryByRole('link', { name: 'Run a container' })).toBeNull();
 });
+
+it('reports a cluster workload command on the status line above the tables', async () => {
+  const now = new Date().toISOString();
+  const cluster = { ...endpoint, runtime: 'kubernetes', capabilities: ['kubernetes.inventory', 'kubernetes.workloads'], deploy_namespaces: ['shop'] };
+  const kubernetes = { nodes: [], namespaces: ['shop'], workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web', desired: 1, ready: 1, updated: 1, images: [], paused: false }], pods: [], services: [], claims: [] };
+  const snapshot = { generation: 1, observed_at: now, engine: { runtime: 'kubernetes', version: '', api_version: '', os: '', arch: '', kernel: '', cpus: 0, memory_bytes: 0, hostname: '' }, containers: [], images: [], networks: [], volumes: [], kubernetes };
+  const posted: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === 'POST') { posted.push(String(init.body)); return json({ id: 'k1', action: 'workload.restart', outcome: '' }, 202); }
+    if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot });
+    if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role: 'operator' }]);
+    if (url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications')) return json([]);
+    return json(cluster);
+  }));
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Restart shop/web' }));
+  await waitFor(() => expect(screen.getAllByRole('status').some((s) => s.textContent === 'shop/web · Command sent; waiting for the cluster agent. Do not retry while its outcome is unknown.')).toBe(true));
+  expect(posted).toEqual([JSON.stringify({ action: 'workload.restart', reference: 'shop/deployment/web' })]);
+  confirm.mockRestore();
+});

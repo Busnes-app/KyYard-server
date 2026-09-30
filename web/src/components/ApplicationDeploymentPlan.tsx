@@ -205,12 +205,13 @@ function isExpired(d: Deployment): boolean {
 function Correlation({ id }: { id?: string }) {
   return id ? <p>Correlation ID <code>{id}</code>: search the audit log for it.</p> : null;
 }
-export function StepTable({ steps }: { steps: DeployStep[] }) {
+// texts replaces a step code's sentence where a caller words it for its own target.
+export function StepTable({ steps, texts = {} }: { steps: DeployStep[]; texts?: Record<string, string> }) {
   return <table className="ky-table ky-responsive-table"><thead><tr><th>Service</th><th>Step</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>{steps.map((s, i) => <tr key={`${s.service}-${s.step}-${i}`}>
     <td data-label="Service">{s.service}</td>
     <td data-label="Step">{s.step}</td>
     <td data-label="Outcome">{s.outcome}</td>
-    <td data-label="Detail">{stepText(s)}</td>
+    <td data-label="Detail">{s.code && Object.hasOwn(texts, s.code) ? texts[s.code] : stepText(s)}</td>
   </tr>)}</tbody></table>;
 }
 function ResultSection({ current }: { current: Deployment }) {

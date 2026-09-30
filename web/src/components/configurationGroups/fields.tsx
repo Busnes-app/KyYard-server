@@ -34,12 +34,12 @@ export function Lines({ label, value, onChange }: { label: string; value: string
   return <label>{label}<textarea rows={Math.min(Math.max(value.length, 2), 8)} value={value.join('\n')} onChange={(e) => onChange(e.target.value === '' ? [] : e.target.value.split('\n'))} /></label>;
 }
 
-// Rows is a list of editable rows with an add and a per-row remove button.
-export function Rows<T>({ noun, rows, onChange, blank, render }: { noun: string; rows: T[]; onChange: (rows: T[]) => void; blank: T; render: (row: T, update: (row: T) => void, label: string, index: number) => ReactNode }) {
+// Rows is a list of editable rows with an add and a per-row remove button; a locked row has none.
+export function Rows<T>({ noun, rows, onChange, blank, render, locked }: { noun: string; rows: T[]; onChange: (rows: T[]) => void; blank: T; render: (row: T, update: (row: T) => void, label: string, index: number) => ReactNode; locked?: (row: T) => boolean }) {
   return <div className="dr-stack">
     {rows.map((row, i) => <div className="ky-config-row" key={i}>
       {render(row, (next) => onChange(rows.map((r, j) => j === i ? next : r)), `${noun} ${i + 1}`, i)}
-      <button type="button" className="btn-secondary" aria-label={`Remove ${noun.toLowerCase()} ${i + 1}`} onClick={() => onChange(rows.filter((_, j) => j !== i))}>Remove</button>
+      {!locked?.(row) && <button type="button" className="btn-secondary" aria-label={`Remove ${noun.toLowerCase()} ${i + 1}`} onClick={() => onChange(rows.filter((_, j) => j !== i))}>Remove</button>}
     </div>)}
     <div><button type="button" className="btn-secondary" onClick={() => onChange([...rows, blank])}>Add {noun.toLowerCase()}</button></div>
   </div>;

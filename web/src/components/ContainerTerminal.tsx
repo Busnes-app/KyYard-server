@@ -4,7 +4,9 @@ import '@xterm/xterm/css/xterm.css';
 import { cookieValue } from '../api';
 import type { Container } from '../tenant';
 
-type Start = { user: string; executable: string; confirm: string };
+// Start is the first WebSocket message without its CSRF token and size: the route's spec and
+// the typed confirmation.
+export type Start = { spec: object; confirm: string };
 const maxChunk = 32 * 1024;
 const maxQueued = 256 * 1024;
 
@@ -17,7 +19,7 @@ export function ContainerTerminal({ base, container, scope }: { base: string; co
     <h3>Terminal · {container.name}</h3>
     <p>{scope}</p><p className="font-mono" style={{ overflowWrap: 'anywhere' }}>Container {container.id}</p>
     <p>Organization administrators only. Choose the container user explicitly. Closing disconnects the terminal; it does not guarantee that the process stops. Sessions end after 15 minutes without input or 8 hours total.</p>
-    {start ? <LiveTerminal key={container.id} base={base} container={container} start={start} /> : <form onSubmit={(event) => { event.preventDefault(); setStart({ user, executable, confirm }); }}>
+    {start ? <LiveTerminal key={container.id} path={`${base}/containers/${encodeURIComponent(container.id)}/exec`} start={start} label="Container terminal" /> : <form onSubmit={(event) => { event.preventDefault(); setStart({ spec: { container: container.id, image_id: container.image_id, user, argv: [executable] }, confirm }); }}>
       <label>Container user <input required maxLength={128} value={user} placeholder="e.g. 1000 or app" onChange={(e) => setUser(e.target.value)} /></label>
       <label>Shell executable <input required maxLength={1024} value={executable} onChange={(e) => setExecutable(e.target.value)} /></label>
       <label>Confirm container name <input required value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" /></label>
@@ -26,7 +28,9 @@ export function ContainerTerminal({ base, container, scope }: { base: string; co
   </section>;
 }
 
-function LiveTerminal({ base, container, start }: { base: string; container: Container; start: Start }) {
+// LiveTerminal owns one exec socket and its emulator: the socket opens at path and its first
+// message is start with the CSRF token and the initial size.
+export function LiveTerminal({ path, start, label }: { path: string; start: Start; label: string }) {
   const host = useRef<HTMLDivElement>(null);
   const resize = useRef<(columns: number, rows: number) => void>(() => {});
   const disconnect = useRef<() => void>(() => {});
@@ -39,7 +43,7 @@ function LiveTerminal({ base, container, start }: { base: string; container: Con
     // or downloaded content is derived from a container's escape sequences.
     const terminal = new Terminal({ rows: 24, cols: 80, scrollback: 1000, screenReaderMode: true, minimumContrastRatio: 4.5, linkHandler: { activate: () => {} } });
     terminal.open(host.current);
-    const url = new URL(`${base}/containers/${encodeURIComponent(container.id)}/exec`, location.href);
+    const url = new URL(path, location.href);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(url);
     let stream = '';
@@ -74,7 +78,7 @@ function LiveTerminal({ base, container, start }: { base: string; container: Con
     };
     socket.onopen = () => {
       if (ended) { socket.close(); return; }
-      socket.send(JSON.stringify({ csrf: cookieValue('ky_csrf'), spec: { container: container.id, image_id: container.image_id, user: start.user, argv: [start.executable] }, confirm: start.confirm, size: { rows: 24, columns: 80 } }));
+      socket.send(JSON.stringify({ csrf: cookieValue('ky_csrf'), ...start, size: { rows: 24, columns: 80 } }));
     };
     socket.onmessage = (event: MessageEvent<unknown>) => {
       try {
@@ -108,7 +112,7 @@ function LiveTerminal({ base, container, start }: { base: string; container: Con
       socket.close(); dataSub.dispose(); binarySub.dispose(); terminal.dispose();
       resize.current = () => {}; disconnect.current = () => {};
     };
-  }, [base, container.id, container.image_id, start]);
+  }, [path, start]);
   return <>
     <p role="status">{notice}</p>
     <div className="ky-toolbar">
@@ -117,6 +121,6 @@ function LiveTerminal({ base, container, start }: { base: string; container: Con
       <button className="btn-secondary" onClick={() => resize.current(columns, rows)}>Resize terminal</button>
       <button className="btn-secondary" onClick={() => disconnect.current()}>Disconnect</button>
     </div>
-    <div ref={host} aria-label="Container terminal" style={{ overflow: 'auto', maxWidth: '80vw', padding: 8, background: '#000' }} />
+    <div ref={host} aria-label={label} style={{ overflow: 'auto', maxWidth: '80vw', padding: 8, background: '#000' }} />
   </>;
 }

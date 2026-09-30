@@ -5,14 +5,19 @@ import { ResourceTable } from './ResourceTable';
 import { ManifestRegeneration } from './KubernetesManifest';
 import { uptime, useNow } from './containerFacts';
 import type { ApplicationInstance } from './ApplicationAdoption';
-import type { Endpoint, KubernetesInventory, Pod, PodContainer } from '../tenant';
+import { Link } from './Link';
+import { WorkloadControls } from './WorkloadControls';
+import { PAGE_KINDS, PodControls } from './PodControls';
+import { workloadPath } from '../router';
+import { canOperate, type Endpoint, type KubernetesInventory, type Pod, type PodContainer } from '../tenant';
 
 const stateBadge: Record<string, string> = { running: 'badge-success', terminated: 'badge-danger' };
 
 // A Kubernetes endpoint shows health, nodes, workloads, pods with their logs, services, claims
 // and the applications mapped to it. No Docker control is rendered, and none would be accepted.
-// instances is null while the applications cannot be read.
-export function KubernetesCluster({ org, base, endpoint, inventory, instances, admin, onChanged }: { org: string; base: string; endpoint: Endpoint; inventory: KubernetesInventory; instances: ApplicationInstance[] | null; admin: boolean; onChanged: () => void }) {
+// instances is null while the applications cannot be read. Workload and pod toolbars need the
+// agent's kubernetes.workloads, a role that may operate, and onStatus for their results.
+export function KubernetesCluster({ org, base, endpoint, inventory, instances, admin, onChanged, role, onStatus }: { org: string; base: string; endpoint: Endpoint; inventory: KubernetesInventory; instances: ApplicationInstance[] | null; admin: boolean; onChanged: () => void; role?: string; onStatus?: (text: string) => void }) {
   const [namespace, setNamespace] = useState('');
   const [logs, setLogs] = useState<{ pod: Pod; container: PodContainer } | null>(null);
   const now = useNow();
@@ -25,6 +30,9 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
   const scoped = <T extends { namespace: string }>(rows: T[]) => rows.filter((r) => selected === '' || r.namespace === selected);
   const qualified = (r: { namespace: string; name: string }) => `${displayName(r.namespace)}/${displayName(r.name)}`;
   const active = endpoint.state === 'active';
+  const tools = onStatus && endpoint.capabilities.includes('kubernetes.workloads') && canOperate(role) ? onStatus : null;
+  const toolProps = { base, org, endpoint: endpoint.id, active, role, capabilities: endpoint.capabilities, scope: `Cluster ${displayName(endpoint.name)} · Endpoint ${endpoint.id}` };
+  const page = (namespace: string, kind: string, name: string, text: string) => Object.hasOwn(PAGE_KINDS, kind) ? <Link to={workloadPath(org, endpoint.id, namespace, PAGE_KINDS[kind] ?? '', name)}>{text}</Link> : text;
   return <>
     <section className="panel" aria-label="Cluster health">
       <h2 style={{ fontSize: 16 }}>Cluster health <span className={`badge ${healthBadge[health] ?? 'badge-secondary'}`}>{health}</span></h2>
@@ -41,16 +49,18 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
         {inventory.namespaces.map((ns) => <option key={ns} value={ns}>{displayName(ns)}</option>)}
       </select></label>
     </div>
-    <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images']} render={(w) => [
-      qualified(w), w.kind, `${w.ready}/${w.desired}${w.paused ? ' (paused)' : ''}`, w.images.map(displayName).join(', '),
+    <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images', ...(tools ? ['Actions'] : [])]} render={(w) => [
+      page(w.namespace, w.kind, w.name, qualified(w)), w.kind, `${w.ready}/${w.desired}${w.paused ? ' (paused)' : ''}`, w.images.map(displayName).join(', '),
+      ...(tools ? [Object.hasOwn(PAGE_KINDS, w.kind) && <WorkloadControls key={`${w.kind}/${w.namespace}/${w.name}`} {...toolProps} workload={w} open onStatus={tools} />] : []),
     ]} />
-    <ResourceTable key={`pods-${selected}`} title="Pods" rows={scoped(inventory.pods)} rowKey={(p) => `${p.namespace}/${p.name}`} empty="No pods." head={['Pod', 'Phase', 'Uptime', 'Node', 'Restarts', 'Containers']} render={(p) => [
-      <div className="ky-resource-name"><strong>{qualified(p)}</strong>{p.owner_kind && <small>{displayName(p.owner_kind)} {displayName(p.owner_name)}</small>}</div>,
+    <ResourceTable key={`pods-${selected}`} title="Pods" rows={scoped(inventory.pods)} rowKey={(p) => `${p.namespace}/${p.name}`} empty="No pods." head={['Pod', 'Phase', 'Uptime', 'Node', 'Restarts', 'Containers', ...(tools ? ['Actions'] : [])]} render={(p) => [
+      <div className="ky-resource-name"><strong>{qualified(p)}</strong>{p.owner_kind && <small>{page(p.namespace, p.owner_kind, p.owner_name, `${displayName(p.owner_kind)} ${displayName(p.owner_name)}`)}</small>}</div>,
       displayName(p.phase), uptime(p.started_at, now) || '—', displayName(p.node) || '—', p.containers.reduce((sum, c) => sum + c.restart_count, 0),
       <ul className="ky-list">{p.containers.map((c) => <li key={c.name}>
         {displayName(c.name)} <span className={`badge ${stateBadge[c.state] ?? 'badge-secondary'}`} title={c.image}>{displayName(c.state)}</span>{c.reason && ` ${displayName(c.reason)}`}{' '}
         <button className="btn-secondary" disabled={!active} aria-label={`Logs for ${p.namespace}/${p.name}/${c.name}`} onClick={() => setLogs({ pod: p, container: c })}>Logs</button>
       </li>)}</ul>,
+      ...(tools ? [<PodControls key={`${p.namespace}/${p.name}`} {...toolProps} pod={p} onStatus={tools} />] : []),
     ]} />
     <ResourceTable key={`services-${selected}`} title="Services" rows={scoped(inventory.services)} rowKey={(s) => `${s.namespace}/${s.name}`} empty="No services." head={['Service', 'Type', 'Cluster IP', 'Ports']} render={(s) => [
       qualified(s), displayName(s.type), displayName(s.cluster_ip) || '—', s.ports.map(displayName).join(', ') || '—',
