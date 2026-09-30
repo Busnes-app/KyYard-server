@@ -29,6 +29,7 @@
     "pull_failed",
     "pull_not_found",
     "pull_unauthorized",
+    "pvc_retention",
     "rollback_failed",
     "rollout_timeout",
     "runtime_error",

@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { WorkloadControls } from './WorkloadControls';
 import { PodControls } from './PodControls';
 import type { Pod, Workload } from '../tenant';
-import { commandLine } from './workloadTexts';
+import { commandLine, WORKLOAD_STEPS } from './workloadTexts';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); document.cookie = 'ky_csrf=; Max-Age=0'; });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -183,4 +183,5 @@ it('words a managed delete the agent settled as denied and a Pod Security refusa
 
 it('words a scale-down refused to keep a StatefulSet\'s volume claims', () => {
   expect(commandLine({ action: 'workload.scale', outcome: 'denied', detail: 'pvc_retention' })).toBe("Scale refused. Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete); refused.");
+  expect(WORKLOAD_STEPS.pvc_retention).toBe("Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete); refused.");
 });

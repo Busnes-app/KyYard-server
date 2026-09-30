@@ -56,6 +56,12 @@ type handle struct {
 	remove               func(context.Context, metav1.DeleteOptions) error
 }
 
+// scaleDeletesClaims reports whether setting replicas to n deletes volume claims: a StatefulSet
+// with whenScaled Delete taken below its current replicas.
+func (h *handle) scaleDeletesClaims(n *int32) bool {
+	return h.claimsDeletedOnScale && n != nil && *n < replicas(*h.replicas)
+}
+
 func bind[T any](ctx context.Context, api workloadAPI[T], name string, view func(T) handle) (*handle, error) {
 	o, err := api.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -179,7 +185,7 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	switch {
 	case cmd.Action == protocol.ActionWorkloadRestart:
 		err = h.patch(ctx, mergePatch(map[string]any{"template": map[string]any{"metadata": map[string]any{"annotations": map[string]string{restartedAt: time.Now().UTC().Format(time.RFC3339)}}}}))
-	case scale && h.claimsDeletedOnScale && *n < replicas(*h.replicas):
+	case scale && h.scaleDeletesClaims(n):
 		return protocol.OutcomeDenied, "pvc_retention"
 	case scale:
 		// The read's resourceVersion makes a change since the check above a 409.
@@ -364,8 +370,8 @@ func workloadResourcesOf(r corev1.ResourceRequirements) protocol.WorkloadResourc
 // rollout within req.Deadline. The precondition, after an access review for patch (forbidden)
 // and the namespace's Pod Security level (pod_security, as a deploy), refuses a managed object
 // (application_managed), one at another resourceVersion than the read or without a named
-// container (conflict) and one whose read is not whole (configuration_unreported: an apply
-// would drop what it did not show). The write is a strategic
+// container (conflict), one whose read is not whole (configuration_unreported: an apply
+// would drop what it did not show) and replicas that delete claims, as a scale (pvc_retention). The write is a strategic
 // merge patch of only the changed paths (see bind), so fields the form does not carry, those it
 // carries unchanged and those this client's types do not know keep their exact bytes. It carries
 // the read's resourceVersion, so a concurrent write is the API server's 409, reported conflict. A
@@ -407,6 +413,8 @@ func (c *Client) ApplyWorkload(parent context.Context, req protocol.WorkloadAppl
 			return protocol.OutcomeDenied, "conflict", ""
 		case len(have.Unsupported) > 0:
 			return protocol.OutcomeDenied, "configuration_unreported", ""
+		case h.scaleDeletesClaims(req.Spec.Replicas):
+			return protocol.OutcomeDenied, "pvc_retention", ""
 		case !edit(h, req.Spec):
 			return protocol.OutcomeDenied, "conflict", ""
 		}

@@ -822,3 +822,34 @@ func TestOperateScaleIsBoundToTheRead(t *testing.T) {
 		t.Fatalf("stale read: %s %q", outcome, detail)
 	}
 }
+
+// An apply lowering a StatefulSet's replicas when its claims are deleted on scale-down is
+// refused at the precondition, like a scale; raising them, or lowering with Retain, applies.
+func TestApplyWorkloadRefusesDeletingClaims(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  *appsv1.StatefulSet
+		to   int32
+		want string
+	}{
+		{"delete, down", claimRetention(appsv1.DeletePersistentVolumeClaimRetentionPolicyType, 3), 1, "precondition denied pvc_retention; apply skipped; rollout skipped"},
+		{"delete, up", claimRetention(appsv1.DeletePersistentVolumeClaimRetentionPolicyType, 1), 3, "precondition succeeded; apply succeeded; rollout skipped"},
+		{"retain, down", claimRetention(appsv1.RetainPersistentVolumeClaimRetentionPolicyType, 3), 1, "precondition succeeded; apply succeeded; rollout skipped"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, cs := workloadCluster(t, false, true, tc.set)
+			req := applyFrom(t, c, "shop/statefulset/db", time.Minute, func(w *protocol.WorkloadConfiguration) { w.Replicas = ptr(tc.to) })
+			res := c.ApplyWorkload(context.Background(), req, func() {})
+			if steps(res) != tc.want {
+				t.Fatalf("%s, writes %v", steps(res), mutations(cs))
+			}
+			if err := res.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			s, _ := cs.AppsV1().StatefulSets("shop").Get(context.Background(), "db", metav1.GetOptions{})
+			if refused := strings.Contains(tc.want, "denied"); refused != (len(mutations(cs)) == 0) || (!refused && *s.Spec.Replicas != tc.to) {
+				t.Fatalf("writes %v, replicas %d", mutations(cs), *s.Spec.Replicas)
+			}
+		})
+	}
+}

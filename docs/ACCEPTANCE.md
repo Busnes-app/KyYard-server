@@ -264,7 +264,8 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 - Overview, a pod's Delete icon: type the pod name. The Deployment replaces it.
 - `acc-db`: Scale to `1`. The status line reads `acc/acc-db · Scale refused. Scaling down would
   delete this StatefulSet's volume claims (whenScaled: Delete); refused.` and `kubectl get pvc -n
-  acc` still lists both claims. Scale to `3` succeeds.
+  acc` still lists both claims. Scale to `3` succeeds. Configuration tab: set Replicas to `1`,
+  "Save and apply": the precondition step is refused with the same text and nothing changes.
 - `acc-priv`, Terminal tab: open a terminal. It ends with "This pod or its namespace does not
   meet Pod Security baseline, so terminals are refused." and never shows "Connected.".
 - Pass: every command other than those two refusals succeeds; the workload's Activity tab lists restart, scale and apply; the

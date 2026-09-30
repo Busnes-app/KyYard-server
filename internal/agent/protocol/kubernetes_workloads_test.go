@@ -226,7 +226,7 @@ func TestWorkloadApplyResultSteps(t *testing.T) {
 	if err := r.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, code := range []string{"forbidden", "conflict", "application_managed", "namespace_not_granted"} {
+	for _, code := range []string{"forbidden", "conflict", "application_managed", "namespace_not_granted", "pvc_retention"} {
 		r.Steps = []DeploymentStep{{Service: WorkloadApplyService, Step: StepPrecondition, Outcome: OutcomeDenied, Code: code}}
 		if err := r.Validate(); err != nil {
 			t.Error(code, err)

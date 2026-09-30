@@ -107,7 +107,7 @@ var stepCodes = map[string]detailRule{
 	"pod_security": detailPodSecurity, "admission_denied": detailObject, "claim_immutable": detailObject,
 	"service_ip_immutable": detailObject, "service_ip_unavailable": detailObject,
 	"rollback_failed": detailNone, "start_failed_rolled_back": detailNone, "exited_early": detailNone,
-	"application_managed": detailNone, "namespace_not_granted": detailNone,
+	"application_managed": detailNone, "namespace_not_granted": detailNone, "pvc_retention": detailNone,
 }
 
 var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
