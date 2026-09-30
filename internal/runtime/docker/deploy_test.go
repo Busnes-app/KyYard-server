@@ -57,6 +57,11 @@ type fakeDeployEngine struct {
 	waitDelay        time.Duration // after the headers, before the body
 	waitBody         string        // the body once the wait ends; a stopped container by default
 	createStatus     int           // 201 default
+	createDelay      time.Duration // before POST /containers/create answers
+	restoreDelay     time.Duration // before each restore call answers: the new container's DELETE, a rename back, the old one's start
+	nameStatus       int           // GET /containers/adhoc/json, a run's container read by name; 404 when 0
+	nameState        string        // its State
+	nameImage        string        // its Image; newImage when ""
 	startStatus      int
 	removeStatus     int
 	oldStartStatus   int      // POST /containers/{old}/start, the rollback's restart; 204 default
@@ -166,6 +171,8 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "POST" && (strings.HasSuffix(p, "/containers/"+oldID+"/rename") || strings.HasSuffix(p, "/containers/"+otherOldID+"/rename")):
 			if strings.Contains(r.URL.RawQuery, "kyyard-prev") {
 				time.Sleep(f.renameDelay)
+			} else {
+				time.Sleep(f.restoreDelay)
 			}
 			if f.renameBackStatus != 0 && r.URL.RawQuery == "name=shop-web-1" {
 				w.WriteHeader(f.renameBackStatus)
@@ -181,6 +188,7 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/pause"):
 			w.WriteHeader(cmp.Or(f.pauseStatus, 204))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/create"):
+			time.Sleep(f.createDelay)
 			w.WriteHeader(f.createStatus)
 			_, _ = w.Write([]byte(`{"Id":"` + f.createdID + `","Warnings":[]}`))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+newID+"/start"):
@@ -189,9 +197,14 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			}
 			w.WriteHeader(f.startStatus)
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/start"):
+			time.Sleep(f.restoreDelay)
 			w.WriteHeader(f.oldStartStatus)
 		case r.Method == "DELETE" && strings.HasSuffix(p, "/containers/"+newID):
+			time.Sleep(f.restoreDelay)
 			w.WriteHeader(f.removeNewStatus)
+		case r.Method == "GET" && strings.HasSuffix(p, "/containers/adhoc/json"):
+			w.WriteHeader(cmp.Or(f.nameStatus, 404))
+			_, _ = w.Write([]byte(`{"Id":"` + newID + `","Image":"` + cmp.Or(f.nameImage, newImage) + `","Name":"/adhoc","State":` + cmp.Or(f.nameState, created) + `}`))
 		case r.Method == "POST" && strings.Contains(p, "/networks/") && strings.HasSuffix(p, "/connect"):
 			w.WriteHeader(f.connectStatus)
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+newID+"/json"):
@@ -1906,4 +1919,88 @@ func (f *fakeDeployEngine) lastCall() (engineCall, bool) {
 		return engineCall{}, false
 	}
 	return f.calls[len(f.calls)-1], true
+}
+
+// Each undo runs under one restore budget, not one per call: calls that answer within the budget
+// one by one but not together, a hung call, or a wait whose own bound is longer end the undo
+// rollback_failed within that budget, and the calls stop where it ran out.
+func TestDeployExplicitUndoRunsUnderOneBudget(t *testing.T) {
+	const budget = 600 * time.Millisecond
+	const rolledBack = "DELETE /containers/" + newID + ",POST /containers/" + oldID + "/rename"
+	for name, c := range map[string]struct {
+		set         func(*fakeDeployEngine)
+		steps, tail string
+	}{
+		"slow calls add up": {func(f *fakeDeployEngine) { f.startStatus, f.restoreDelay = 500, 400*time.Millisecond },
+			"stop=succeeded,start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped", "POST /containers/" + newID + "/start," + rolledBack},
+		"hung discard": {func(f *fakeDeployEngine) { f.startStatus, f.restoreDelay = 500, holdCall },
+			"stop=succeeded,start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped", "POST /containers/" + newID + "/start,DELETE /containers/" + newID},
+		"budget ends the wait": {func(f *fakeDeployEngine) { f.stopDelay, f.waitDelay = holdCall, 2*holdCall },
+			"stop=timed_out:runtime_timeout,rollback=failed:rollback_failed,start=skipped,remove=skipped", rolledBack + ",GET /containers/" + oldID + "/json,POST /containers/" + oldID + "/wait"},
+	} {
+		f := newFakeDeployEngine(t)
+		f.oldContainer["State"] = map[string]any{"Status": "running", "Running": true, "Paused": false}
+		c.set(f)
+		ctx, cancel := unanswered(false)
+		began := time.Now()
+		res := f.client().WaitStopFor(holdCall).RestoreFor(budget).Deploy(ctx, explicitRequest(explicitService()), func() {})
+		elapsed := time.Since(began)
+		cancel()
+		if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=succeeded,"+c.steps || res.Validate() != nil {
+			t.Errorf("%s steps: %s", name, got)
+		}
+		if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, c.tail) {
+			t.Errorf("%s calls:\n got %s\nwant suffix %s", name, got, c.tail)
+		}
+		if elapsed > 2*budget {
+			t.Errorf("%s took %s, more than one budget", name, elapsed)
+		}
+	}
+}
+
+// A run whose create went unanswered may have made the container: it is read by name and removed
+// by ID only when it was never started (created) and carries the frame's image; absent, started
+// or another's is left, and a read or removal that fails is rollback_failed. A recreate's
+// unanswered create is not looked up: its rename back reports a container holding the name.
+func TestDeployExplicitRunCreateUnanswered(t *testing.T) {
+	s := explicitService()
+	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
+	const read, removed = "GET /containers/adhoc/json", "GET /containers/adhoc/json,DELETE /containers/" + newID
+	for name, c := range map[string]struct {
+		cancelled            bool
+		status, removeStatus int
+		state, image         string
+		steps, tail          string
+	}{
+		"timed out, absent":  {false, 404, 204, created, newImage, "create=timed_out:runtime_timeout", read},
+		"timed out, created": {false, 200, 204, created, newImage, "create=timed_out:runtime_timeout", removed},
+		"cancelled, created": {true, 200, 204, created, newImage, "create=unknown:cancelled", removed},
+		"timed out, running": {false, 200, 204, running, newImage, "create=timed_out:runtime_timeout", read},
+		"another's":          {false, 200, 204, created, oldImage, "create=timed_out:runtime_timeout", read},
+		"lookup fails":       {false, 500, 204, created, newImage, "create=timed_out:runtime_timeout,rollback=failed:rollback_failed", read},
+		"delete fails":       {false, 200, 500, created, newImage, "create=timed_out:runtime_timeout,rollback=failed:rollback_failed", removed},
+	} {
+		f := newFakeDeployEngine(t)
+		f.createDelay, f.nameStatus, f.nameState, f.nameImage, f.removeNewStatus = holdCall, c.status, c.state, c.image, c.removeStatus
+		ctx, cancel := unanswered(c.cancelled)
+		res := f.client().Deploy(ctx, explicitRequest(s), func() {})
+		cancel()
+		if got := explicitSteps(res); got != "image=succeeded,"+c.steps+",start=skipped" || res.Validate() != nil {
+			t.Errorf("%s steps: %s", name, got)
+		}
+		if got, want := strings.Join(f.steps(), ","), "GET /info,GET /images/"+newImage+"/json,POST /containers/create,"+c.tail; got != want {
+			t.Errorf("%s calls:\n got %s\nwant %s", name, got, want)
+		}
+		if del, deleted := f.call("DELETE", "/containers/"+newID); deleted && del.Query != "force=1" {
+			t.Errorf("%s delete query %q", name, del.Query)
+		}
+	}
+	f := newFakeDeployEngine(t)
+	f.createDelay = holdCall
+	ctx, cancel := unanswered(false)
+	f.client().Deploy(ctx, explicitRequest(explicitService()), func() {})
+	cancel()
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/create,POST /containers/"+oldID+"/rename") {
+		t.Errorf("recreate calls: %s", got)
+	}
 }
