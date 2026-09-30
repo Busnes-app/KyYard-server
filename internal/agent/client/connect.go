@@ -45,8 +45,9 @@ type Options struct {
 	// Logs is set, in place of every Docker capability, and its facts-only snapshot carries an
 	// empty cluster inventory so it still has the shape a Kubernetes endpoint requires.
 	Kubernetes bool
-	// CommandDir overrides the durable command ledger directory for embedded agents
-	// whose identity and inventory generation are maintained by their control plane.
+	// CommandDir overrides the durable command ledger directory for embedded agents and for
+	// cluster agents (their scratch volume). With neither it nor IdentityDir the ledgers stay
+	// in memory and a restart forgets them.
 	CommandDir string
 	// RotateEvery is how often the agent offers a new key; zero disables rotation.
 	RotateEvery time.Duration
@@ -74,6 +75,12 @@ type Options struct {
 	// The runtime calls the third argument once, immediately before its first phase-two
 	// mutation; it returns once the deployer has recorded durably that the host may change.
 	Deploy func(context.Context, protocol.DeploymentRequest, func()) protocol.DeploymentResult
+	// ReadWorkload reads a workload's pod template for a cluster agent's configuration grant.
+	// With Operate and ApplyWorkload it advertises kubernetes.workloads.
+	ReadWorkload func(context.Context, protocol.InspectionTarget) (*protocol.WorkloadConfiguration, error)
+	// ApplyWorkload applies one workload.apply frame. It shares Deploy's slot, ledger and root
+	// context and answers deployment.result.
+	ApplyWorkload func(context.Context, protocol.WorkloadApply, func()) protocol.DeploymentResult
 	// Remove tears down the containers a removal names and reports its result. It shares
 	// Deploy's single slot and root context and is bounded by the request's deadline. Nil
 	// means this agent has no runtime, and every removal is refused.
@@ -102,6 +109,12 @@ func helloCapabilities(opts *Options) []string {
 		}
 		if opts.Inspect != nil {
 			capabilities = append(capabilities, protocol.CapabilityKubernetesInspect)
+		}
+		if opts.Operate != nil && opts.ReadWorkload != nil && opts.ApplyWorkload != nil {
+			capabilities = append(capabilities, protocol.CapabilityKubernetesWorkloads)
+		}
+		if opts.Exec != nil {
+			capabilities = append(capabilities, protocol.CapabilityPodExec)
 		}
 		return capabilities
 	}
@@ -518,6 +531,14 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 					deployments.handleRemoval(ctx, id.EndpointID, f.Payload, outbound)
 				} else {
 					deployments.handleApply(ctx, id.EndpointID, f.Payload, outbound)
+				}
+			case protocol.TypeWorkloadApply:
+				if len(f.Payload) > protocol.MaxWorkloadApplyBytes {
+					conn.Close(websocket.StatusPolicyViolation, protocol.CloseProtocol)
+					return errors.New("workload apply too large")
+				}
+				if hello.State != "pending" {
+					deployments.handleWorkloadApply(ctx, id.EndpointID, f.Payload, outbound)
 				}
 			case protocol.TypeLogOpen:
 				var req protocol.LogRequest

@@ -47,3 +47,21 @@ func TestReadLinkFile(t *testing.T) {
 		t.Fatal("an oversized link file was read")
 	}
 }
+
+// A writable scratch directory holds the ledgers; one an old manifest never mounted (here, a
+// path that does not exist) leaves the agent running without them, said once, and the probe
+// leaves nothing behind.
+func TestLedgerDir(t *testing.T) {
+	dir := t.TempDir()
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, format) }
+	if got := ledgerDir(dir, logf); got != dir || len(lines) != 0 {
+		t.Fatalf("writable: %q %v", got, lines)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("the probe left %v", entries)
+	}
+	if got := ledgerDir(filepath.Join(dir, "absent"), logf); got != "" || len(lines) != 1 {
+		t.Fatalf("unwritable: %q %v", got, lines)
+	}
+}

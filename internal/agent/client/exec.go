@@ -74,6 +74,14 @@ func newExecStreams(ctx context.Context, endpoint string, nonce []byte, b *execB
 	return &execStreams{live: make(map[string]*execStream), seen: make(map[string]time.Time), budget: b, endpoint: endpoint, nonce: nonce, ctx: ctx, opts: opts, out: out}
 }
 
+// runtime is the target shape this agent opens: a pod on a cluster, a container on Docker.
+func (s *execStreams) runtime() string {
+	if s.opts.Kubernetes {
+		return protocol.RuntimeKubernetes
+	}
+	return protocol.RuntimeDocker
+}
+
 var errExecProtocol = errors.New("invalid exec frame")
 var errExecCapacity = errors.New("exec stream limit reached")
 var errExecUnavailable = errors.New("this agent has no exec runtime; not started")
@@ -87,7 +95,7 @@ func (s *execStreams) handle(f protocol.Envelope, active bool) error {
 	switch f.Type {
 	case protocol.TypeExecOpen:
 		var req protocol.ExecOpen
-		if json.Unmarshal(f.Payload, &req) != nil || req.Validate(time.Now()) != nil || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
+		if json.Unmarshal(f.Payload, &req) != nil || req.Validate(time.Now()) != nil || req.Spec.ValidateFor(s.runtime()) != nil || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
 			return errExecProtocol
 		}
 		s.mu.Lock()

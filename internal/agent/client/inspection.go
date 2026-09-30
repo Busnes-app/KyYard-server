@@ -55,17 +55,29 @@ func newInspections(ctx context.Context, endpoint string, nonce []byte, opts *Op
 	return s
 }
 
-// newConfigurations serves configuration.open with its own one-slot admission and 20 s grants.
+// newConfigurations serves configuration.open with its own one-slot admission and 20 s grants:
+// a container's configuration on Docker, a workload's pod template on a cluster (an
+// object-shaped target only; the UID shape is inspection's).
 func newConfigurations(ctx context.Context, endpoint string, nonce []byte, opts *Options, out chan<- outFrame) *inspections {
 	s := &inspections{live: map[string]context.CancelFunc{}, seen: map[string]time.Time{}, slots: opts.configurationSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
+	ready := opts.Configure != nil
+	if opts.Kubernetes {
+		ready = opts.ReadWorkload != nil
+	}
 	s.frames = frameFamily{
 		cancel: protocol.TypeConfigurationCancel, result: protocol.TypeConfigurationResult,
-		maxBytes: protocol.MaxConfigurationFrameBytes, lifetime: protocol.ConfigurationLifetime, ready: opts.Configure != nil,
+		maxBytes: protocol.MaxConfigurationFrameBytes, lifetime: protocol.ConfigurationLifetime, ready: ready,
 		refusal: func(request, status string) any {
 			return protocol.ConfigurationResult{Request: request, Status: status}
 		},
 		reply: func(ctx context.Context, req protocol.InspectionOpen) any {
 			reply := protocol.ConfigurationResult{Request: req.Request, Status: "unavailable"}
+			if opts.Kubernetes {
+				if result, err := opts.ReadWorkload(ctx, req.Target); err == nil && result != nil && result.Validate(req.Target.Workload, time.Now()) == nil {
+					reply.Status, reply.Workload = "ok", result
+				}
+				return reply
+			}
 			if result, err := opts.Configure(ctx, req.Target); err == nil && result != nil && result.Validate(req.Target, time.Now()) == nil {
 				reply.Status = "ok"
 				reply.Result = result

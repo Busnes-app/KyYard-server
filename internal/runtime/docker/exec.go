@@ -45,7 +45,7 @@ func (c *Client) OpenExec(ctx context.Context, spec protocol.ExecSpec) (*ExecSes
 	return c.openExec(ctx, spec, protocol.ExecIdleTimeout, protocol.ExecAbsoluteTimeout)
 }
 func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, lifetime time.Duration) (*ExecSession, error) {
-	if err := spec.Validate(); err != nil {
+	if err := spec.ValidateFor(protocol.RuntimeDocker); err != nil {
 		return nil, err
 	}
 	lifetimeCtx, stopLifetime := context.WithTimeoutCause(parent, lifetime, ErrExecLifetime)

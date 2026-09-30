@@ -94,8 +94,13 @@ type ledgerEntry struct {
 	Finished time.Time `json:"finished"`
 }
 
+// openLedger with no directory keeps the ledger in memory: a restart forgets it.
 func openLedger(dir string) *ledger {
-	l := &ledger{path: filepath.Join(dir, "commands.json"), done: map[string]ledgerEntry{}}
+	l := &ledger{done: map[string]ledgerEntry{}}
+	if dir == "" {
+		return l
+	}
+	l.path = filepath.Join(dir, "commands.json")
 	raw, err := os.ReadFile(l.path)
 	if err != nil {
 		return l
@@ -123,6 +128,9 @@ func (l *ledger) record(id, outcome, detail string) {
 	defer l.mu.Unlock()
 	l.done[id] = ledgerEntry{Outcome: outcome, Detail: detail, Finished: time.Now().UTC()}
 	l.prune()
+	if l.path == "" {
+		return
+	}
 	if raw, err := json.Marshal(l.done); err == nil {
 		tmp := l.path + ".tmp"
 		if os.WriteFile(tmp, raw, 0o600) == nil {
