@@ -683,14 +683,14 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 func (r *deployRun) create(ctx context.Context, p prepared) string {
 	s := p.s
 	var created string
-	restored := true
+	restored, sent := true, false // sent: the create request went out, so it may have acted
 	r.step(s.Name, protocol.StepCreate, func() (outcome, code, detail string) {
 		defer func() {
 			switch {
 			case outcome == protocol.OutcomeSucceeded || !r.req.Explicit:
 			case run(r.req, s) && created == "":
 				// An unanswered create may have made the container anyway.
-				restored = !unanswered(outcome) || r.settleRun(ctx, s, "", outcome)
+				restored = !sent || !unanswered(outcome) || r.settleRun(ctx, s, "", outcome)
 			default:
 				restored = r.undo(ctx, p, created)
 			}
@@ -710,6 +710,7 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 		var out struct {
 			ID string `json:"Id"`
 		}
+		sent = true
 		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s, p.networkMode), &out)
 		if err != nil || status != http.StatusCreated {
 			if status == http.StatusConflict {
@@ -835,7 +836,7 @@ func (r *deployRun) watch(ctx context.Context, id string) (string, string, strin
 func (r *deployRun) rollback(ctx context.Context, p prepared, created string, running, paused bool) {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
-	if !r.discard(rctx, created) || !r.unpark(rctx, p) || (running && !r.revive(rctx, p, paused)) {
+	if !r.discard(rctx, created, true) || !r.unpark(rctx, p) || (running && !r.revive(rctx, p, paused)) {
 		r.rollbackFailed(p.s.Name)
 		return
 	}
@@ -915,11 +916,13 @@ func (r *deployRun) current(ctx context.Context, id string) (containerNow, error
 // settleRun removes a run's container that did not come up, so a retry finds the name free; it
 // reports false when that failed. After an unanswered start or create the container may have
 // started, or, with no ID, exist under the name: it is removed, by the ID read, only once a read
-// shows it was never started (created) and, found by name, has the name and the frame's image.
-// Gone already counts; one that cannot be read is left and reported.
+// shows it was never started (created) and, found by name, has the name and the frame's image;
+// that removal is not forced, so one started since the read is refused and reported. Gone already
+// counts; one that cannot be read is left and reported.
 func (r *deployRun) settleRun(ctx context.Context, s protocol.DeploymentService, created, outcome string) bool {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
+	force := true
 	if unanswered(outcome) {
 		now, err := r.current(rctx, cmp.Or(created, s.ContainerName))
 		switch {
@@ -930,9 +933,9 @@ func (r *deployRun) settleRun(ctx context.Context, s protocol.DeploymentService,
 		case now.State.Status != "created", created == "" && (now.Name != "/"+s.ContainerName || now.Image != s.ImageID):
 			return true
 		}
-		created = now.ID
+		created, force = now.ID, false
 	}
-	return r.discard(rctx, created)
+	return r.discard(rctx, created, force)
 }
 
 // stopWait bounds the wait for an old container whose stop went unanswered: the daemon may still
@@ -944,7 +947,9 @@ const stopWait = stopGrace*time.Second + callBudget
 func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool) bool {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
-	now, err := r.current(rctx, p.s.Replaces.ContainerID)
+	cctx, ccancel := context.WithTimeout(rctx, callBudget) // a slow read leaves time to wait and revive
+	now, err := r.current(cctx, p.s.Replaces.ContainerID)
+	ccancel()
 	if err != nil {
 		return false
 	}
@@ -1001,13 +1006,17 @@ func (r *deployRun) unparkIfParked(ctx context.Context, p prepared, name string)
 func (r *deployRun) undo(ctx context.Context, p prepared, created string) bool {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
-	discarded := created == "" || r.discard(rctx, created)
+	discarded := created == "" || r.discard(rctx, created, true)
 	return discarded && (run(r.req, p.s) || r.unpark(rctx, p))
 }
 
-// discard force-removes a container this run created; gone already counts.
-func (r *deployRun) discard(ctx context.Context, created string) bool {
-	status, err := r.c.del(ctx, "/containers/"+url.PathEscape(created)+"?force=1")
+// discard removes a container this run created, by force when asked; gone already counts.
+func (r *deployRun) discard(ctx context.Context, created string, force bool) bool {
+	path := "/containers/" + url.PathEscape(created)
+	if force {
+		path += "?force=1"
+	}
+	status, err := r.c.del(ctx, path)
 	return err == nil && (status < 400 || status == http.StatusNotFound)
 }
 

@@ -58,7 +58,8 @@ type fakeDeployEngine struct {
 	waitBody         string        // the body once the wait ends; a stopped container by default
 	createStatus     int           // 201 default
 	createDelay      time.Duration // before POST /containers/create answers
-	restoreDelay     time.Duration // before each restore call answers: the new container's DELETE, a rename back, the old one's start
+	discardDelay     time.Duration // before the new container's DELETE answers
+	restoreDelay     time.Duration // before a rename back or the old container's start answers
 	nameStatus       int           // GET /containers/adhoc/json, a run's container read by name; 404 when 0
 	nameState        string        // its State
 	nameImage        string        // its Image; newImage when ""
@@ -200,7 +201,7 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			time.Sleep(f.restoreDelay)
 			w.WriteHeader(f.oldStartStatus)
 		case r.Method == "DELETE" && strings.HasSuffix(p, "/containers/"+newID):
-			time.Sleep(f.restoreDelay)
+			time.Sleep(f.discardDelay)
 			w.WriteHeader(f.removeNewStatus)
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/adhoc/json"):
 			w.WriteHeader(cmp.Or(f.nameStatus, 404))
@@ -1283,6 +1284,9 @@ func TestDeployExplicitRunStartFailureRemovesTheNewContainer(t *testing.T) {
 	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/"+newID+"/start,DELETE /containers/"+newID) {
 		t.Fatalf("calls: %s", got)
 	}
+	if del, _ := f.call("DELETE", "/containers/"+newID); del.Query != "force=1" {
+		t.Fatalf("delete query %q", del.Query)
+	}
 }
 
 // 1c: the parked name derives from ContainerName and never stacks: an old container already
@@ -1763,6 +1767,9 @@ func TestDeployExplicitRunStartUnanswered(t *testing.T) {
 		if got, want := strings.Join(f.steps(), ","), runPrefixCalls+"POST /containers/"+newID+"/start,"+c.tail; got != want {
 			t.Errorf("%s calls:\n got %s\nwant %s", name, got, want)
 		}
+		if del, deleted := f.call("DELETE", "/containers/"+newID); deleted && del.Query != "" {
+			t.Errorf("%s delete query %q: a container read as created is removed unforced", name, del.Query)
+		}
 	}
 }
 
@@ -1931,9 +1938,11 @@ func TestDeployExplicitUndoRunsUnderOneBudget(t *testing.T) {
 		set         func(*fakeDeployEngine)
 		steps, tail string
 	}{
-		"slow calls add up": {func(f *fakeDeployEngine) { f.startStatus, f.restoreDelay = 500, 400*time.Millisecond },
+		"slow calls add up": {func(f *fakeDeployEngine) {
+			f.startStatus, f.discardDelay, f.restoreDelay = 500, budget*3/10, budget*9/10
+		},
 			"stop=succeeded,start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped", "POST /containers/" + newID + "/start," + rolledBack},
-		"hung discard": {func(f *fakeDeployEngine) { f.startStatus, f.restoreDelay = 500, holdCall },
+		"hung discard": {func(f *fakeDeployEngine) { f.startStatus, f.discardDelay = 500, holdCall },
 			"stop=succeeded,start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped", "POST /containers/" + newID + "/start,DELETE /containers/" + newID},
 		"budget ends the wait": {func(f *fakeDeployEngine) { f.stopDelay, f.waitDelay = holdCall, 2*holdCall },
 			"stop=timed_out:runtime_timeout,rollback=failed:rollback_failed,start=skipped,remove=skipped", rolledBack + ",GET /containers/" + oldID + "/json,POST /containers/" + oldID + "/wait"},
@@ -1959,9 +1968,10 @@ func TestDeployExplicitUndoRunsUnderOneBudget(t *testing.T) {
 }
 
 // A run whose create went unanswered may have made the container: it is read by name and removed
-// by ID only when it was never started (created) and carries the frame's image; absent, started
-// or another's is left, and a read or removal that fails is rollback_failed. A recreate's
-// unanswered create is not looked up: its rename back reports a container holding the name.
+// by ID, unforced, only when it was never started (created) and carries the frame's image; absent,
+// started or another's is left, and a read or removal that fails is rollback_failed. A create the
+// deadline guard never sent is not looked up, nor is a recreate's unanswered create: its rename
+// back reports a container holding the name.
 func TestDeployExplicitRunCreateUnanswered(t *testing.T) {
 	s := explicitService()
 	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
@@ -1991,11 +2001,24 @@ func TestDeployExplicitRunCreateUnanswered(t *testing.T) {
 		if got, want := strings.Join(f.steps(), ","), "GET /info,GET /images/"+newImage+"/json,POST /containers/create,"+c.tail; got != want {
 			t.Errorf("%s calls:\n got %s\nwant %s", name, got, want)
 		}
-		if del, deleted := f.call("DELETE", "/containers/"+newID); deleted && del.Query != "force=1" {
+		if del, deleted := f.call("DELETE", "/containers/"+newID); deleted && del.Query != "" {
 			t.Errorf("%s delete query %q", name, del.Query)
 		}
 	}
+	// The deadline guard sends no create: nothing is looked up or removed, and started is not called.
 	f := newFakeDeployEngine(t)
+	f.nameStatus = 200
+	req := explicitRequest(s)
+	req.Deadline = time.Now().Add(60 * time.Second)
+	started := false
+	res := f.client().Deploy(context.Background(), req, func() { started = true })
+	if got := explicitSteps(res); got != "image=succeeded,create=timed_out:deadline,start=skipped" || started {
+		t.Errorf("deadline guard steps: %s started=%v", got, started)
+	}
+	if got := strings.Join(f.steps(), ","); got != "GET /info,GET /images/"+newImage+"/json" {
+		t.Errorf("deadline guard calls: %s", got)
+	}
+	f = newFakeDeployEngine(t)
 	f.createDelay = holdCall
 	ctx, cancel := unanswered(false)
 	f.client().Deploy(ctx, explicitRequest(explicitService()), func() {})
