@@ -31,7 +31,8 @@ const stopGrace = 10
 const replaceBudget = 2*operationBudget + 4*callBudget
 
 // rollbackBudget is an explicit recreate's reserve for undoing a failed start: remove and
-// rename at callBudget, restart at operationBudget.
+// rename at callBudget, restart at operationBudget. After an unanswered stop the read and the
+// wait share the two callBudgets: the wait is cut so the restart always keeps operationBudget.
 const rollbackBudget = operationBudget + 2*callBudget
 
 // startWatch is how long an explicit recreate's new container must stay running (or leave the
@@ -917,8 +918,9 @@ func (r *deployRun) current(ctx context.Context, id string) (containerNow, error
 // reports false when that failed. After an unanswered start or create the container may have
 // started, or, with no ID, exist under the name: it is removed, by the ID read, only once a read
 // shows it was never started (created) and, found by name, has the name and the frame's image;
-// that removal is not forced, so one started since the read is refused and reported. Gone already
-// counts; one that cannot be read is left and reported.
+// that removal is not forced, so it is refused while the container runs, but a start that
+// completes and exits after the read is not detected. Gone already counts; one that cannot be
+// read is left and reported.
 func (r *deployRun) settleRun(ctx context.Context, s protocol.DeploymentService, created, outcome string) bool {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
@@ -943,19 +945,25 @@ func (r *deployRun) settleRun(ctx context.Context, s protocol.DeploymentService,
 const stopWait = stopGrace*time.Second + callBudget
 
 // reviveIfStopped starts the old container again after an unanswered stop, once it is not
-// running. One still running when the wait ends is left running.
+// running. The wait is cut to leave the restart operationBudget; one still running when it ends,
+// or with no time left to wait, is left running.
 func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool) bool {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
-	cctx, ccancel := context.WithTimeout(rctx, callBudget) // a slow read leaves time to wait and revive
+	cctx, ccancel := context.WithTimeout(rctx, callBudget)
 	now, err := r.current(cctx, p.s.Replaces.ContainerID)
 	ccancel()
 	if err != nil {
 		return false
 	}
 	if now.State.Running {
-		if stopped, err := r.c.waitStopped(rctx, p.s.Replaces.ContainerID, cmp.Or(r.c.stopWait, stopWait)); err != nil || !stopped {
-			return err == nil // still running when the wait ended: left running
+		deadline, _ := rctx.Deadline()
+		bound := min(cmp.Or(r.c.stopWait, stopWait), time.Until(deadline)-cmp.Or(r.c.restartReserve, operationBudget))
+		if bound <= 0 {
+			return true
+		}
+		if stopped, err := r.c.waitStopped(rctx, p.s.Replaces.ContainerID, bound); err != nil || !stopped {
+			return err == nil
 		}
 	}
 	return r.revive(rctx, p, paused)
