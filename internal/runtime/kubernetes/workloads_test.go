@@ -258,14 +258,15 @@ func TestOperateScaleRefusals(t *testing.T) {
 }
 
 // Delete reads the object fresh and deletes that one only: its UID as a precondition, Background
-// propagation. Pods the same.
+// propagation. A workload delete also carries the read's resourceVersion; a pod delete does not.
 func TestOperateDeletesAtTheReadUID(t *testing.T) {
-	for _, tc := range []struct{ action, ref, resource, uid string }{
-		{protocol.ActionWorkloadDelete, "shop/deployment/web", "deployments", testUID},
-		{protocol.ActionWorkloadDelete, "shop/daemonset/logs", "daemonsets", testUID},
-		{protocol.ActionPodDelete, "shop/pod/web-0", "pods", string(shopPod().UID)},
+	for _, tc := range []struct{ action, ref, resource, uid, version string }{
+		{protocol.ActionWorkloadDelete, "shop/deployment/web", "deployments", testUID, "41"},
+		{protocol.ActionWorkloadDelete, "shop/daemonset/logs", "daemonsets", testUID, "9"},
+		{protocol.ActionWorkloadDelete, "shop/statefulset/db", "statefulsets", testUID, "7"},
+		{protocol.ActionPodDelete, "shop/pod/web-0", "pods", string(shopPod().UID), ""},
 	} {
-		c, cs := workloadCluster(t, false, true, webDeployment(), agentDaemonSet(), shopPod())
+		c, cs := workloadCluster(t, false, true, webDeployment(), agentDaemonSet(), dbStatefulSet(), shopPod())
 		outcome, detail := c.Operate(context.Background(), command(tc.action, tc.ref))
 		if outcome != protocol.OutcomeSucceeded {
 			t.Fatalf("%s: %s %q", tc.ref, outcome, detail)
@@ -279,6 +280,9 @@ func TestOperateDeletesAtTheReadUID(t *testing.T) {
 		}
 		if opts == nil || opts.Preconditions == nil || opts.Preconditions.UID == nil || string(*opts.Preconditions.UID) != tc.uid || opts.PropagationPolicy == nil || *opts.PropagationPolicy != metav1.DeletePropagationBackground {
 			t.Fatalf("%s: delete options %+v", tc.ref, opts)
+		}
+		if got := opts.Preconditions.ResourceVersion; (tc.version == "") != (got == nil) || (got != nil && *got != tc.version) {
+			t.Fatalf("%s: resourceVersion precondition %v", tc.ref, got)
 		}
 		if got := reviews(cs); len(got) != 1 || !strings.HasPrefix(got[0], "delete ") || !strings.HasSuffix(got[0], "/"+tc.resource) {
 			t.Fatalf("%s: reviews %v", tc.ref, got)
@@ -851,5 +855,59 @@ func TestApplyWorkloadRefusesDeletingClaims(t *testing.T) {
 				t.Fatalf("writes %v, replicas %d", mutations(cs), *s.Spec.Replicas)
 			}
 		})
+	}
+}
+
+// Deleting a StatefulSet whose claims are deleted with it would delete its data: refused before
+// any delete. Retain, or no policy, deletes and leaves the claims.
+func TestOperateDeleteRefusesDeletingClaims(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy
+		detail string
+	}{
+		{"delete", &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType, WhenScaled: appsv1.RetainPersistentVolumeClaimRetentionPolicyType}, "pvc_retention"},
+		{"retain", &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType, WhenScaled: appsv1.DeletePersistentVolumeClaimRetentionPolicyType}, ""},
+		{"no policy", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := dbStatefulSet()
+			s.Spec.PersistentVolumeClaimRetentionPolicy = tc.policy
+			c, cs := workloadCluster(t, false, true, s)
+			outcome, detail := c.Operate(context.Background(), command(protocol.ActionWorkloadDelete, "shop/statefulset/db"))
+			if tc.detail != "" {
+				if outcome != protocol.OutcomeDenied || detail != tc.detail || len(mutations(cs)) != 0 {
+					t.Fatalf("%s %q, writes %v", outcome, detail, mutations(cs))
+				}
+				return
+			}
+			if outcome != protocol.OutcomeSucceeded || !reflect.DeepEqual(mutations(cs), []string{"delete statefulsets"}) {
+				t.Fatalf("%s %q, writes %v", outcome, detail, mutations(cs))
+			}
+		})
+	}
+}
+
+// A retention policy changed to Delete between the read and the delete is not acted on: the
+// read's resourceVersion precondition is the API server's 409, reported conflict.
+func TestOperateDeleteIsBoundToTheRead(t *testing.T) {
+	c, cs := workloadCluster(t, false, true, dbStatefulSet())
+	cs.PrependReactor("get", "statefulsets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		s := dbStatefulSet()
+		s.ResourceVersion = "6"
+		return true, s, nil
+	})
+	cs.PrependReactor("delete", "statefulsets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		p := action.(k8stesting.DeleteAction).GetDeleteOptions().Preconditions
+		if p != nil && p.ResourceVersion != nil && *p.ResourceVersion != dbStatefulSet().ResourceVersion {
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "apps", Resource: "statefulsets"}, "db", nil)
+		}
+		return false, nil, nil
+	})
+	if outcome, detail := c.Operate(context.Background(), command(protocol.ActionWorkloadDelete, "shop/statefulset/db")); outcome != protocol.OutcomeDenied || detail != "conflict" {
+		t.Fatalf("stale read: %s %q", outcome, detail)
+	}
+	if _, err := cs.AppsV1().StatefulSets("shop").Get(context.Background(), "db", metav1.GetOptions{}); err != nil {
+		t.Fatalf("deleted: %v", err)
 	}
 }

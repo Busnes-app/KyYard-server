@@ -185,3 +185,7 @@ it('words a scale-down refused to keep a StatefulSet\'s volume claims', () => {
   expect(commandLine({ action: 'workload.scale', outcome: 'denied', detail: 'pvc_retention' })).toBe("Scale refused. Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).");
   expect(WORKLOAD_STEPS.pvc_retention).toBe("Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).");
 });
+
+it('words a delete refused to keep a StatefulSet\'s volume claims', () => {
+  expect(commandLine({ action: 'workload.delete', outcome: 'denied', detail: 'pvc_retention' })).toBe("Delete refused. Deleting this StatefulSet would delete its volume claims (whenDeleted: Delete). Set whenDeleted: Retain first.");
+});

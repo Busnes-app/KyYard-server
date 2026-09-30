@@ -28,14 +28,21 @@ const DETAILS: Record<string, string> = {
   runtime_error: 'The cluster call failed.',
 };
 export const POD_NOT_FOUND = 'The pod is no longer in the cluster.';
-const POD_DETAILS: Record<string, string> = {
-  not_found: POD_NOT_FOUND,
-  conflict: 'The pod was replaced since the inventory was read. Refresh and try again.',
+// Detail words that differ by action.
+const ACTION_DETAILS: Record<string, Record<string, string>> = {
+  'pod.delete': {
+    not_found: POD_NOT_FOUND,
+    conflict: 'The pod was replaced since the inventory was read. Refresh and try again.',
+  },
+  'workload.delete': {
+    pvc_retention: 'Deleting this StatefulSet would delete its volume claims (whenDeleted: Delete). Set whenDeleted: Retain first.',
+  },
 };
-export function detailText(detail = '', pod = false): string {
+function detailText(detail = '', action = ''): string {
   const status = /^runtime_status ([1-5][0-9]{2})$/.exec(detail);
   if (status) return `The cluster refused with status ${status[1]}.`;
-  if (pod && Object.hasOwn(POD_DETAILS, detail)) return POD_DETAILS[detail] ?? '';
+  const own = Object.hasOwn(ACTION_DETAILS, action) ? ACTION_DETAILS[action] : undefined;
+  if (own && Object.hasOwn(own, detail)) return own[detail] ?? '';
   return Object.hasOwn(DETAILS, detail) ? DETAILS[detail] ?? '' : '';
 }
 
@@ -45,7 +52,7 @@ export const OUTCOMES: Record<string, string> = { '': 'pending', succeeded: 'don
 export function commandLine(c: { action: string; outcome: string; detail?: string }): string {
   const action = Object.hasOwn(ACTIONS, c.action) ? ACTIONS[c.action] : 'Command';
   const outcome = Object.hasOwn(OUTCOMES, c.outcome) ? OUTCOMES[c.outcome] : 'unrecognised outcome';
-  const detail = detailText(c.detail, c.action === 'pod.delete');
+  const detail = detailText(c.detail, c.action);
   return `${action} ${outcome}.${detail ? ` ${detail}` : ''}`;
 }
 

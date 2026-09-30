@@ -139,7 +139,7 @@ environment with namespace `acc` granted and labelled
 KyYard) a one-replica Deployment `acc-web` of a digest-pinned image that has `/bin/sh` and keeps
 running, with one environment variable `ACCEPT_KEY=one`. Also create a two-replica StatefulSet
 `acc-db` of the same image with a `volumeClaimTemplates` entry and
-`persistentVolumeClaimRetentionPolicy: {whenScaled: Delete}`, and a one-replica Deployment
+`persistentVolumeClaimRetentionPolicy: {whenScaled: Delete, whenDeleted: Delete}`, and a one-replica Deployment
 `acc-priv` of the same image with `securityContext.privileged: true`: create `acc-priv` while
 `acc` is labelled `enforce=privileged`, then relabel it `enforce=baseline` (`kubectl label
 --overwrite`; the running pod keeps running). Workload edits and pod terminals are refused (`pod_security`) in a namespace
@@ -266,9 +266,14 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   delete this StatefulSet's volume claims (whenScaled: Delete).` and `kubectl get pvc -n
   acc` still lists both claims. Scale to `3` succeeds. Configuration tab: set Replicas to `1`,
   "Save and apply": the precondition step is refused with the same text and nothing changes.
+  Delete (type `acc-db`): the status line reads `acc/acc-db · Delete refused. Deleting this
+  StatefulSet would delete its volume claims (whenDeleted: Delete). Set whenDeleted: Retain
+  first.` After `kubectl patch statefulset acc-db -n acc -p
+  '{"spec":{"persistentVolumeClaimRetentionPolicy":{"whenDeleted":"Retain"}}}'`, Delete succeeds
+  and `kubectl get pvc -n acc` still lists both claims.
 - `acc-priv` (its workload page), Terminal tab: pick its pod and open a terminal. It ends with "This pod or its namespace does not
   meet Pod Security baseline, so terminals are refused." and never shows "Connected.".
-- Pass: every command other than those two refusals succeeds; the workload's Activity tab lists restart, scale and apply; the
+- Pass: every command other than those refusals succeeds; the workload's Activity tab lists restart, scale and apply; the
   cluster's Activity tab also lists the pod delete. As reader, the workload page shows each
   pod's Logs link but no Restart, Scale, Delete or Terminal controls and no Configuration form.
 - Record: whether the operator found the workload page and the typed-name confirmations

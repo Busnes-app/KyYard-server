@@ -458,7 +458,10 @@ suffix: the plan shows each service's object name.
 Workloads: each Deployment, StatefulSet and DaemonSet in the cluster view links to its own page
 (Overview, Configuration, Logs, Terminal, Activity). In a granted namespace, operators and
 administrators restart and scale a workload (0 to 1000 replicas; a DaemonSet has no scale);
-organization and environment administrators delete a workload or a pod by typing its name;
+organization and environment administrators delete a workload or a pod by typing its name
+(a StatefulSet whose `persistentVolumeClaimRetentionPolicy` would delete its claims is refused:
+`whenDeleted: Delete` for a delete, `whenScaled: Delete` for a scale below its replicas; set
+`Retain` first);
 organization administrators edit a workload's images, commands, arguments, environment, CPU and
 memory and replicas on its Configuration tab, and open a terminal in a running pod's container
 (the shell you name; stderr is merged into the output). Edits and terminals need the namespace to

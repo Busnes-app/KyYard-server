@@ -43,23 +43,29 @@ type workloadAPI[T any] interface {
 
 // handle is one object as read, with pointers into it: a change through them is what write
 // sends. template is nil for a pod, replicas nil for a DaemonSet or a pod, paused a Deployment's.
-// claimsDeletedOnScale: a StatefulSet whose scale-down deletes the excess replicas' claims.
+// retention is a StatefulSet's claim retention policy, nil for other kinds or when unset.
 type handle struct {
-	meta                 *metav1.ObjectMeta
-	template             *corev1.PodTemplateSpec
-	replicas             **int32
-	paused               *bool
-	strategy             string
-	claimsDeletedOnScale bool
-	write                func(context.Context) error
-	patch                func(context.Context, []byte) error
-	remove               func(context.Context, metav1.DeleteOptions) error
+	meta      *metav1.ObjectMeta
+	template  *corev1.PodTemplateSpec
+	replicas  **int32
+	paused    *bool
+	strategy  string
+	retention *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy
+	write     func(context.Context) error
+	patch     func(context.Context, []byte) error
+	remove    func(context.Context, metav1.DeleteOptions) error
 }
 
 // scaleDeletesClaims reports whether setting replicas to n deletes volume claims: a StatefulSet
 // with whenScaled Delete taken below its current replicas.
 func (h *handle) scaleDeletesClaims(n *int32) bool {
-	return h.claimsDeletedOnScale && n != nil && *n < replicas(*h.replicas)
+	return h.retention != nil && h.retention.WhenScaled == appsv1.DeletePersistentVolumeClaimRetentionPolicyType && n != nil && *n < replicas(*h.replicas)
+}
+
+// deleteDeletesClaims reports whether deleting the object deletes its volume claims: a
+// StatefulSet with whenDeleted Delete.
+func (h *handle) deleteDeletesClaims() bool {
+	return h.retention != nil && h.retention.WhenDeleted == appsv1.DeletePersistentVolumeClaimRetentionPolicyType
 }
 
 func bind[T any](ctx context.Context, api workloadAPI[T], name string, view func(T) handle) (*handle, error) {
@@ -119,9 +125,8 @@ func (c *Client) workload(ctx context.Context, ref protocol.WorkloadRef) (*handl
 		})
 	case protocol.WorkloadStatefulSet:
 		return bind(ctx, apps.StatefulSets(ns), ref.Name, func(s *appsv1.StatefulSet) handle {
-			retention := s.Spec.PersistentVolumeClaimRetentionPolicy
 			return handle{meta: &s.ObjectMeta, template: &s.Spec.Template, replicas: &s.Spec.Replicas, strategy: string(s.Spec.UpdateStrategy.Type),
-				claimsDeletedOnScale: retention != nil && retention.WhenScaled == appsv1.DeletePersistentVolumeClaimRetentionPolicyType}
+				retention: s.Spec.PersistentVolumeClaimRetentionPolicy}
 		})
 	case protocol.WorkloadDaemonSet:
 		return bind(ctx, apps.DaemonSets(ns), ref.Name, func(s *appsv1.DaemonSet) handle {
@@ -137,8 +142,9 @@ func (c *Client) workload(ctx context.Context, ref protocol.WorkloadRef) (*handl
 // spec.replicas to Expects.Replicas (0..MaxWorkloadReplicas; a DaemonSet has none) at the read's
 // resourceVersion and refuses to scale a StatefulSet below its replicas when that deletes the
 // excess replicas' claims (whenScaled: Delete, pvc_retention), delete
-// removes the object read just before, by its UID, with Background propagation, unless it is
-// labelled managed-by kyyard (application_managed). The granted
+// removes the object read just before, by its UID (a workload also by its resourceVersion), with
+// Background propagation, unless it is labelled managed-by kyyard (application_managed) or is a
+// StatefulSet whose claims go with it (whenDeleted: Delete, pvc_retention). The granted
 // namespaces are the server's check; here the access review is the boundary.
 func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, detail string) {
 	verb := "delete"
@@ -194,10 +200,16 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	case cmd.Action == protocol.ActionWorkloadDelete && h.meta.Labels[render.LabelManagedBy] == render.ManagedBy:
 		// A KyYard-managed workload is removed through its application.
 		return protocol.OutcomeDenied, "application_managed"
+	case cmd.Action == protocol.ActionWorkloadDelete && h.deleteDeletesClaims():
+		return protocol.OutcomeDenied, "pvc_retention"
 	default:
-		uid := h.meta.UID
+		pre := metav1.Preconditions{UID: &h.meta.UID}
+		if cmd.Action == protocol.ActionWorkloadDelete {
+			// A change since the checks above, a retention policy included, is a 409.
+			pre.ResourceVersion = &h.meta.ResourceVersion
+		}
 		background := metav1.DeletePropagationBackground
-		if err = h.remove(ctx, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}, PropagationPolicy: &background}); apierrors.IsNotFound(err) {
+		if err = h.remove(ctx, metav1.DeleteOptions{Preconditions: &pre, PropagationPolicy: &background}); apierrors.IsNotFound(err) {
 			err = nil // gone since the read, as asked
 		}
 	}
@@ -217,8 +229,8 @@ func mergePatch(spec map[string]any) []byte {
 	return b
 }
 
-// operateFailure classifies a call that did not succeed, in fixed words: a conflict is the UID
-// precondition, an object recreated under the name since the read.
+// operateFailure classifies a call that did not succeed, in fixed words: a conflict is a
+// precondition, an object changed or recreated under the name since the read.
 func operateFailure(ctx context.Context, err error) (string, string) {
 	var status apierrors.APIStatus
 	switch {
