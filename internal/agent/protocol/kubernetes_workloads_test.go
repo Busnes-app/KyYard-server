@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -369,5 +370,17 @@ func TestWorkloadCreateResultSteps(t *testing.T) {
 	}}
 	if err := r.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A workload refusal names its field as a FieldError; the text is the wire's, unchanged.
+func TestWorkloadRefusalNamesItsField(t *testing.T) {
+	c := validWorkloadConfiguration()
+	over := int32(MaxWorkloadReplicas + 1)
+	c.Replicas = &over
+	err := c.Validate(c.Target, time.Now())
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.Field != "replicas" || err.Error() != "invalid workload configuration: replicas" {
+		t.Fatalf("%#v", err)
 	}
 }

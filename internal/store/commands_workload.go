@@ -1,7 +1,6 @@
 package store
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -298,8 +297,11 @@ func (t *tenancyStore) createWorkloadFrame(ctx context.Context, a TenantAccess, 
 			return invalidSpec("configuration_incomplete")
 		}
 		if err := frame.Validate(now); err != nil {
-			_, field, _ := strings.Cut(err.Error(), ": ")
-			return invalidSpec("spec_invalid:" + strings.NewReplacer(", ", "_", " ", "_").Replace(cmp.Or(field, "frame")))
+			field := "frame"
+			if fe := new(protocol.FieldError); errors.As(err, &fe) {
+				field = fe.Field
+			}
+			return invalidSpec("spec_invalid:" + strings.NewReplacer(", ", "_", " ", "_").Replace(field))
 		}
 		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_commands (id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
 			cmd.ID, cmd.EndpointID, cmd.OrganizationID, cmd.EnvironmentID, cmd.ActorID, cmd.RequestID, cmd.Action, "", cmd.Reference, "{}", cmd.Deadline, cmd.CreatedAt)

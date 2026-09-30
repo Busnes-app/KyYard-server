@@ -147,11 +147,13 @@ var (
 )
 
 // FieldError is a refused configuration; Field names what was refused.
-type FieldError struct{ Field string }
+type FieldError struct{ Field, Message string }
 
-func (e *FieldError) Error() string { return "invalid container configuration: " + e.Field }
+func (e *FieldError) Error() string { return e.Message + ": " + e.Field }
 
-func configErr(field string) error { return &FieldError{field} }
+func configErr(field string) error {
+	return &FieldError{Field: field, Message: "invalid container configuration"}
+}
 
 // text is a displayable string: valid UTF-8 that CleanText leaves alone, at most max bytes.
 func text(s string, max int) bool {
