@@ -68,7 +68,7 @@ var commandActions = map[string]permissions.Action{
 
 // CommandPermission is the permission a command action needs; false for an unknown action.
 func CommandPermission(action string) (permissions.Action, bool) {
-	if directActions[action] || action == ActionWorkloadApply {
+	if directActions[action] || action == ActionWorkloadApply || action == ActionWorkloadRun {
 		return permissions.ContainerConfigure, true
 	}
 	p, ok := commandActions[action]

@@ -160,6 +160,20 @@ func applyBody(t *testing.T, cfg *protocol.WorkloadConfiguration, confirm string
 	return string(raw)
 }
 
+// workloadRunBody is a run of Deployment namespace/name with one container whose env value is the
+// sentinel.
+func workloadRunBody(t *testing.T, namespace, name, confirm string) string {
+	t.Helper()
+	spec := workloadConfiguration(protocol.WorkloadRef{Namespace: namespace, Kind: "deployment", Name: name})
+	spec.ObservedAt, spec.ResourceVersion = time.Time{}, ""
+	spec.Containers[0].Env = spec.Containers[0].Env[:1]
+	raw, err := json.Marshal(map[string]any{"spec": spec, "confirm": confirm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 func dispatch(action, reference, confirm, expects string) string {
 	body := `{"action":"` + action + `","reference":"` + reference + `","confirm":"` + confirm + `"`
 	if expects != "" {
@@ -211,21 +225,26 @@ func TestWorkloadRoutesPermissionMatrix(t *testing.T) {
 		if w := tenantRequest(f.s, who, "POST", f.webWorkload+"/apply", applyBody(t, workloadConfiguration(protocol.WorkloadRef{Namespace: "shop", Kind: "deployment", Name: "web"}), "web"), true); w.Code != 403 {
 			t.Errorf("apply: %d %s", w.Code, w.Body.String())
 		}
+		if w := tenantRequest(f.s, who, "POST", f.clusterPath+"/workloads", workloadRunBody(t, "shop", "fresh", "fresh"), true); w.Code != 403 {
+			t.Errorf("run: %d %s", w.Code, w.Body.String())
+		}
 		if res := f.dialPod(t, who); res == nil || res.StatusCode != 403 {
 			t.Errorf("pod exec: %+v", res)
 		}
 	}
 	token, _ := f.service(t)
-	for _, method := range []string{"GET", "POST"} {
-		path := f.webWorkload + "/configuration"
-		if method == "POST" {
-			path = f.webWorkload + "/apply"
-		}
-		if w := bearer(f.s, method, path, token); w.Code != 403 {
-			t.Errorf("service token %s: %d %s", method, w.Code, w.Body.String())
+	for _, route := range [][2]string{{"GET", f.webWorkload + "/configuration"}, {"POST", f.webWorkload + "/apply"}, {"POST", f.clusterPath + "/workloads"}} {
+		if w := bearer(f.s, route[0], route[1], token); w.Code != 403 {
+			t.Errorf("service token %s %s: %d %s", route[0], route[1], w.Code, w.Body.String())
 		}
 	}
 	f.sync(t)
+	if w := tenantRequest(f.s, f.org, "POST", f.clusterPath+"/workloads", workloadRunBody(t, "shop", "fresh", "fresh"), true); w.Code != 202 {
+		t.Fatalf("organization admin run: %d %s", w.Code, w.Body.String())
+	}
+	if e := readEnvelope(t, f.ctx, f.conn); e.Type != protocol.TypeWorkloadApply {
+		t.Fatalf("run sent %s", e.Type)
+	}
 }
 
 func (f *workloadFleet) service(t *testing.T) (string, store.TenantAccess) {
@@ -272,6 +291,7 @@ func TestKubernetesRoutesRefuseADockerEndpoint(t *testing.T) {
 		{"POST", f.hostPath + "/commands", dispatch(protocol.ActionPodDelete, "shop/pod/web-7c9", "web-7c9", "")},
 		{"GET", f.hostPath + "/workloads/shop/deployment/web/configuration", ""},
 		{"POST", f.hostPath + "/workloads/shop/deployment/web/apply", "{}"},
+		{"POST", f.hostPath + "/workloads", "{}"},
 	} {
 		w := tenantRequest(f.s, f.org, route.method, route.path, route.body, true)
 		if w.Code != 409 || !strings.Contains(w.Body.String(), "runtime_unsupported") {
@@ -532,5 +552,73 @@ func TestPodExecCloseReasonPassesOnlyFixedRefusals(t *testing.T) {
 			t.Fatalf("%s: %s %s", reason, e.Type, e.Payload)
 		}
 		c.CloseNow()
+	}
+}
+
+// A run creates a Deployment the inventory does not list: an ungranted namespace and a taken name
+// are 422, a second direct command waits for the first (409), and the run sends a create frame,
+// settles from the agent's deployment.result and is listed by ?reference=. No value reaches audit
+// or the log.
+func TestWorkloadRunSettles(t *testing.T) {
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	f := newWorkloadFleet(t, workloadCaps...)
+	run := f.clusterPath + "/workloads"
+	code := func(w *httptest.ResponseRecorder, status int, want string) {
+		t.Helper()
+		if w.Code != status || !strings.Contains(w.Body.String(), want) {
+			t.Errorf("want %d %s, got %d %s", status, want, w.Code, w.Body.String())
+		}
+	}
+	code(tenantRequest(f.s, f.org, "POST", run, workloadRunBody(t, "other", "fresh", "fresh"), true), 422, "namespace_not_granted")
+	code(tenantRequest(f.s, f.org, "POST", run, workloadRunBody(t, "shop", "web", "web"), true), 422, `"blockers":["name_taken"]`)
+	code(tenantRequest(f.s, f.org, "POST", run, workloadRunBody(t, "shop", "fresh", "web"), true), 400, "")
+	f.sync(t)
+
+	w := tenantRequest(f.s, f.org, "POST", run, workloadRunBody(t, "shop", "fresh", "fresh"), true)
+	var cmd store.Command
+	if w.Code != 202 || json.Unmarshal(w.Body.Bytes(), &cmd) != nil || cmd.Action != store.ActionWorkloadRun || cmd.Reference != "shop/deployment/fresh" || cmd.Outcome != "" {
+		t.Fatalf("run: %d %s", w.Code, w.Body.String())
+	}
+	e := readEnvelope(t, f.ctx, f.conn)
+	var frame protocol.WorkloadApply
+	if e.Type != protocol.TypeWorkloadApply || json.Unmarshal(e.Payload, &frame) != nil || frame.Validate(time.Now()) != nil || !frame.Create || frame.Request != cmd.ID || frame.ResourceVersion != "" || frame.Spec.ResourceVersion != "" ||
+		frame.Target != (protocol.WorkloadRef{Namespace: "shop", Kind: "deployment", Name: "fresh"}) || frame.Spec.Containers[0].Env[0].Value != workloadSentinel {
+		t.Fatalf("frame %s %s", e.Type, e.Payload)
+	}
+	code(tenantRequest(f.s, f.org, "POST", run, workloadRunBody(t, "shop", "other", "other"), true), 409, "command_in_progress")
+	code(tenantRequest(f.s, f.org, "POST", f.webWorkload+"/apply", applyBody(t, workloadConfiguration(protocol.WorkloadRef{Namespace: "shop", Kind: "deployment", Name: "web"}), "web"), true), 409, "command_in_progress")
+	writeEnvelope(t, f.ctx, f.conn, protocol.TypeDeploymentResult, protocol.DeploymentResult{Deployment: frame.Request, Outcome: protocol.OutcomeSucceeded,
+		Steps:    []protocol.DeploymentStep{{Service: protocol.WorkloadApplyService, Step: protocol.StepApply, Outcome: protocol.OutcomeSucceeded}, {Service: protocol.WorkloadApplyService, Step: protocol.StepRollout, Outcome: protocol.OutcomeSucceeded}},
+		Services: []protocol.DeploymentIdentity{}})
+	f.sync(t)
+	w = tenantRequest(f.s, f.org, "GET", f.clusterPath+"/commands?reference=shop/deployment/fresh", "", false)
+	var listed []store.Command
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &listed) != nil || len(listed) != 1 || listed[0].ID != cmd.ID || listed[0].Outcome != protocol.OutcomeSucceeded || listed[0].Result == nil {
+		t.Fatalf("listed: %d %s", w.Code, w.Body.String())
+	}
+
+	rows, _, err := f.st.Audit().ListAuditRecords(f.ctx, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if strings.Contains(row.Details, workloadSentinel) || strings.Contains(row.Resource, workloadSentinel) {
+			t.Fatalf("a value reached the audit: %+v", row)
+		}
+		if row.Resource == f.cluster.id+"/shop/deployment/fresh" && row.Result == "success" {
+			seen[row.Action+" "+row.Details] = true
+		}
+	}
+	for _, want := range []string{"workload.run containers=1 replicas=2", "workload.run code=- new=-"} {
+		if !seen[want] {
+			t.Errorf("no audit %q in %v", want, seen)
+		}
+	}
+	if strings.Contains(logs.String(), workloadSentinel) {
+		t.Fatal("a value reached the log")
 	}
 }

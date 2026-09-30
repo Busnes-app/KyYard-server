@@ -16,9 +16,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// ActionWorkloadApply is a direct command whose frame is a workload.apply, settled from the
-// agent's deployment.result with service protocol.WorkloadApplyService.
-const ActionWorkloadApply = "workload.apply"
+// ActionWorkloadApply and ActionWorkloadRun are direct commands whose frame is a workload.apply
+// (a run's with create set), settled from the agent's deployment.result with service
+// protocol.WorkloadApplyService.
+const (
+	ActionWorkloadApply = "workload.apply"
+	ActionWorkloadRun   = "workload.run"
+)
 
 var (
 	// ErrNamespaceNotGranted is a cluster write in a namespace the endpoint's manifest does not
@@ -114,41 +118,56 @@ func (t *tenancyStore) createWorkloadCommand(ctx context.Context, a TenantAccess
 // Kubernetes endpoint whose manifest grants the namespace, and the workload or pod present. It
 // returns whether a KyYard application deployed the workload, and the pod for a pod target.
 func (t *tenancyStore) clusterTarget(ctx context.Context, tx *sql.Tx, endpointID, runtime, namespaces string, ref protocol.WorkloadRef) (managed bool, pod *protocol.Pod, err error) {
-	if runtime != protocol.RuntimeKubernetes {
-		return false, nil, ErrRuntimeUnsupported
-	}
-	if !slices.Contains(decodeNamespaces(namespaces), ref.Namespace) {
-		return false, nil, ErrNamespaceNotGranted
-	}
-	var raw string
-	err = tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil, ErrNotFound
-	}
+	inv, err := t.clusterInventory(ctx, tx, endpointID, runtime, namespaces, ref.Namespace)
 	if err != nil {
 		return false, nil, err
 	}
-	var snap protocol.Snapshot
-	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
-		return false, nil, err
-	}
-	if snap.Kubernetes == nil {
-		return false, nil, ErrNotFound
-	}
 	if ref.Kind == protocol.WorkloadPod {
-		i := slices.IndexFunc(snap.Kubernetes.Pods, func(p protocol.Pod) bool { return p.Namespace == ref.Namespace && p.Name == ref.Name })
+		i := slices.IndexFunc(inv.Pods, func(p protocol.Pod) bool { return p.Namespace == ref.Namespace && p.Name == ref.Name })
 		if i < 0 {
 			return false, nil, ErrNotFound
 		}
-		return false, &snap.Kubernetes.Pods[i], nil
+		return false, &inv.Pods[i], nil
 	}
-	i := slices.IndexFunc(snap.Kubernetes.Workloads, func(w protocol.Workload) bool {
-		return strings.EqualFold(w.Kind, ref.Kind) && w.Namespace == ref.Namespace && w.Name == ref.Name
-	})
+	i := slices.IndexFunc(inv.Workloads, inventoried(ref))
 	if i < 0 {
 		return false, nil, ErrNotFound
 	}
-	return snap.Kubernetes.Workloads[i].Application != "", nil, nil
+	return inv.Workloads[i].Application != "", nil, nil
+}
+
+// clusterInventory reads the endpoint's last Kubernetes inventory inside tx, once the endpoint is
+// a cluster whose manifest grants namespace. No inventory is ErrNotFound.
+func (t *tenancyStore) clusterInventory(ctx context.Context, tx *sql.Tx, endpointID, runtime, namespaces, namespace string) (*protocol.KubernetesInventory, error) {
+	if runtime != protocol.RuntimeKubernetes {
+		return nil, ErrRuntimeUnsupported
+	}
+	if !slices.Contains(decodeNamespaces(namespaces), namespace) {
+		return nil, ErrNamespaceNotGranted
+	}
+	var raw string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), endpointID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var snap protocol.Snapshot
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
+		return nil, err
+	}
+	if snap.Kubernetes == nil {
+		return nil, ErrNotFound
+	}
+	return snap.Kubernetes, nil
+}
+
+// inventoried matches the inventory workload ref names, kind case-insensitive.
+func inventoried(ref protocol.WorkloadRef) func(protocol.Workload) bool {
+	return func(w protocol.Workload) bool {
+		return strings.EqualFold(w.Kind, ref.Kind) && w.Namespace == ref.Namespace && w.Name == ref.Name
+	}
 }
 
 // clusterEndpoint reads the scoped endpoint's state, runtime and granted namespaces inside tx.
@@ -195,7 +214,7 @@ func (t *tenancyStore) RecordWorkloadConfigurationRead(ctx context.Context, a Te
 }
 
 // WorkloadApply is an edited pod template as the API received it: Spec.ResourceVersion is the
-// read's, and Confirm repeats the workload's name.
+// read's (empty for a run), and Confirm repeats the workload's name.
 type WorkloadApply struct {
 	Target  protocol.WorkloadRef
 	Confirm string
@@ -208,6 +227,18 @@ type WorkloadApply struct {
 // KyYard application, and a spec the protocol refuses. The intent row (workload.apply) names the
 // resource version and the container count, never a value; the frame is not stored.
 func (t *tenancyStore) CreateWorkloadApply(ctx context.Context, a TenantAccess, endpointID string, w WorkloadApply) (*Command, *protocol.WorkloadApply, error) {
+	return t.createWorkloadFrame(ctx, a, endpointID, w, false)
+}
+
+// CreateWorkloadRun records a workload.run direct command under container.configure and returns
+// the create frame to send: CreateWorkloadApply's checks, except that the target must be a
+// Deployment the inventory does not list (name_taken) and the spec carries no resource version.
+// The intent row names the container and replica counts, never a value.
+func (t *tenancyStore) CreateWorkloadRun(ctx context.Context, a TenantAccess, endpointID string, w WorkloadApply) (*Command, *protocol.WorkloadApply, error) {
+	return t.createWorkloadFrame(ctx, a, endpointID, w, true)
+}
+
+func (t *tenancyStore) createWorkloadFrame(ctx context.Context, a TenantAccess, endpointID string, w WorkloadApply, create bool) (*Command, *protocol.WorkloadApply, error) {
 	if parsed, err := protocol.ParseWorkloadRef(w.Target.String()); err != nil || parsed != w.Target || w.Target.Kind == protocol.WorkloadPod {
 		return nil, nil, ErrInvalid
 	}
@@ -218,13 +249,24 @@ func (t *tenancyStore) CreateWorkloadApply(ctx context.Context, a TenantAccess, 
 		a.CorrelationID = uuid.NewString()
 	}
 	now := time.Now().UTC()
-	cmd := &Command{ID: uuid.NewString(), EndpointID: endpointID, ActorID: a.ActorID, RequestID: a.CorrelationID, Action: ActionWorkloadApply, Reference: w.Target.String(), Expects: protocol.Expectation{}, CreatedAt: now, Deadline: now.Add(DeploymentApplyDeadline)}
+	action := ActionWorkloadApply
+	if create {
+		action = ActionWorkloadRun
+	}
+	cmd := &Command{ID: uuid.NewString(), EndpointID: endpointID, ActorID: a.ActorID, RequestID: a.CorrelationID, Action: action, Reference: w.Target.String(), Expects: protocol.Expectation{}, CreatedAt: now, Deadline: now.Add(DeploymentApplyDeadline)}
 	spec := w.Spec
 	spec.Target, spec.ObservedAt = w.Target, time.Time{}
-	frame := &protocol.WorkloadApply{Request: cmd.ID, Endpoint: endpointID, IssuedAt: now, Deadline: cmd.Deadline, Target: w.Target, ResourceVersion: spec.ResourceVersion, Spec: spec}
+	frame := &protocol.WorkloadApply{Request: cmd.ID, Endpoint: endpointID, IssuedAt: now, Deadline: cmd.Deadline, Target: w.Target, ResourceVersion: spec.ResourceVersion, Spec: spec, Create: create}
 	target := endpointID + "/" + cmd.Reference
 	details := fmt.Sprintf("resource_version=%s containers=%d", protocol.CleanText(spec.ResourceVersion, protocol.MaxResourceVersionBytes), len(spec.Containers))
-	err := t.runAs(ctx, a, permissions.ContainerConfigure, ActionWorkloadApply, &target, &details, true, func(tx *sql.Tx) error {
+	if create {
+		replicas := "-"
+		if spec.Replicas != nil {
+			replicas = fmt.Sprint(*spec.Replicas)
+		}
+		details = fmt.Sprintf("containers=%d replicas=%s", len(spec.Containers), replicas)
+	}
+	err := t.runAs(ctx, a, permissions.ContainerConfigure, action, &target, &details, true, func(tx *sql.Tx) error {
 		var state, runtime, namespaces string
 		var err error
 		cmd.OrganizationID, cmd.EnvironmentID, state, runtime, namespaces, err = t.clusterEndpoint(ctx, tx, a, endpointID)
@@ -240,11 +282,13 @@ func (t *tenancyStore) CreateWorkloadApply(ctx context.Context, a TenantAccess, 
 		if err := t.directBusy(ctx, tx, endpointID, now); err != nil {
 			return err
 		}
-		managed, _, err := t.clusterTarget(ctx, tx, endpointID, runtime, namespaces, w.Target)
-		if err != nil {
+		if create {
+			if err := t.workloadNameFree(ctx, tx, endpointID, runtime, namespaces, w.Target); err != nil {
+				return err
+			}
+		} else if managed, _, err := t.clusterTarget(ctx, tx, endpointID, runtime, namespaces, w.Target); err != nil {
 			return err
-		}
-		if managed || spec.Managed {
+		} else if managed || spec.Managed {
 			return ErrWorkloadManaged
 		}
 		if len(spec.Unsupported) > 0 {
@@ -262,4 +306,20 @@ func (t *tenancyStore) CreateWorkloadApply(ctx context.Context, a TenantAccess, 
 		return nil, nil, err
 	}
 	return cmd, frame, nil
+}
+
+// workloadNameFree checks a run's target: a granted namespace, a Deployment, and no workload of
+// that kind and name in the last inventory. The agent still refuses one created since.
+func (t *tenancyStore) workloadNameFree(ctx context.Context, tx *sql.Tx, endpointID, runtime, namespaces string, ref protocol.WorkloadRef) error {
+	inv, err := t.clusterInventory(ctx, tx, endpointID, runtime, namespaces, ref.Namespace)
+	if err != nil {
+		return err
+	}
+	if ref.Kind != protocol.WorkloadDeployment {
+		return invalidSpec("spec_invalid:target.kind")
+	}
+	if slices.ContainsFunc(inv.Workloads, inventoried(ref)) {
+		return invalidSpec("name_taken")
+	}
+	return nil
 }

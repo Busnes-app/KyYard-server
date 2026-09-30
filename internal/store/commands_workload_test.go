@@ -229,6 +229,101 @@ func TestWorkloadApplyCommand(t *testing.T) {
 	}
 }
 
+func testRun() WorkloadApply {
+	w := testApply()
+	w.Target.Name, w.Confirm, w.Spec.ResourceVersion = "shop-new", "shop-new", ""
+	return w
+}
+
+// A workload run is a direct command beside apply: one live per endpoint, refused for a name the
+// inventory already lists, an ungranted namespace, a kind other than Deployment and a spec the
+// create frame refuses, and settled from the same deployment.result. Nothing it audits carries a
+// value.
+func TestWorkloadRunCommand(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	cluster := activeClusterWith(t, ts, a, testCluster(), "shop")
+	host := activeEndpointWith(t, ts, a, nil, nil)
+	if _, _, err := ts.CreateWorkloadRun(ctx, a, host, testRun()); !errors.Is(err, ErrRuntimeUnsupported) {
+		t.Fatalf("docker host: %v", err)
+	}
+	for name, c := range map[string]struct {
+		mutate func(*WorkloadApply)
+		want   error
+	}{
+		"confirm":   {func(w *WorkloadApply) { w.Confirm = "web" }, ErrInvalid},
+		"pod":       {func(w *WorkloadApply) { w.Target.Kind = protocol.WorkloadPod }, ErrInvalid},
+		"namespace": {func(w *WorkloadApply) { w.Target.Namespace = "other" }, ErrNamespaceNotGranted},
+	} {
+		w := testRun()
+		c.mutate(&w)
+		if _, _, err := ts.CreateWorkloadRun(ctx, a, cluster, w); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
+		}
+	}
+	for name, c := range map[string]struct {
+		mutate func(*WorkloadApply)
+		want   string
+	}{
+		"taken":       {func(w *WorkloadApply) { w.Target.Name, w.Confirm = "web", "web" }, "name_taken"},
+		"statefulset": {func(w *WorkloadApply) { w.Target.Kind = protocol.WorkloadStatefulSet }, "spec_invalid:target.kind"},
+		"unsupported": {func(w *WorkloadApply) { w.Spec.Unsupported = []string{"env_field_ref"} }, "configuration_incomplete"},
+		"version":     {func(w *WorkloadApply) { w.Spec.ResourceVersion = "42" }, "spec_invalid:"},
+		"paused":      {func(w *WorkloadApply) { w.Spec.Paused = true }, "spec_invalid:"},
+		"no replicas": {func(w *WorkloadApply) { w.Spec.Replicas = nil }, "spec_invalid:"},
+	} {
+		w := testRun()
+		c.mutate(&w)
+		var spec *InvalidSpecError
+		if _, _, err := ts.CreateWorkloadRun(ctx, a, cluster, w); !errors.As(err, &spec) || !strings.HasPrefix(spec.Blockers[0], c.want) {
+			t.Errorf("%s: %v, want %s", name, err, c.want)
+		}
+	}
+
+	cmd, frame, err := ts.CreateWorkloadRun(ctx, a, cluster, testRun())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Action != ActionWorkloadRun || cmd.Reference != "shop/deployment/shop-new" || !frame.Create || frame.ResourceVersion != "" || frame.Request != cmd.ID || frame.Validate(time.Now()) != nil {
+		t.Fatalf("command %+v frame %+v", cmd, frame)
+	}
+	if p, ok := CommandPermission(ActionWorkloadRun); !ok || p != "container.configure" {
+		t.Fatalf("permission %s %v", p, ok)
+	}
+	if _, _, err := ts.CreateWorkloadApply(ctx, a, cluster, testApply()); !errors.Is(err, ErrCommandInProgress) {
+		t.Fatalf("apply beside a live run: %v", err)
+	}
+	if err := ts.SettleCommand(ctx, cluster, cmd.ID, protocol.OutcomeFailed, "x"); err != nil {
+		t.Fatal(err)
+	}
+	res := protocol.DeploymentResult{Deployment: cmd.ID, Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{{Service: protocol.WorkloadApplyService, Step: protocol.StepApply, Outcome: protocol.OutcomeSucceeded}}, Services: []protocol.DeploymentIdentity{}}
+	if err := ts.SettleDirectCommand(ctx, cluster, res); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	listed, err := ts.ListCommands(ctx, a, cluster, "", "shop/deployment/shop-new", 0)
+	if err != nil || len(listed) != 1 || listed[0].Outcome != protocol.OutcomeSucceeded || listed[0].Result == nil {
+		t.Fatalf("listed %+v %v", listed, err)
+	}
+	rows, _, err := st.Audit().ListAuditRecords(ctx, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, outcome := false, false
+	for _, row := range rows {
+		if strings.Contains(row.Details, workloadSentinel) || strings.Contains(row.Resource, workloadSentinel) {
+			t.Fatalf("a value reached the audit: %+v", row)
+		}
+		if row.Action == ActionWorkloadRun && row.Resource == cluster+"/shop/deployment/shop-new" && row.Result == "success" {
+			intent = intent || row.Details == "containers=1 replicas=2"
+			outcome = outcome || strings.HasPrefix(row.Details, "code=-")
+		}
+	}
+	if !intent || !outcome {
+		t.Fatalf("intent %v outcome %v", intent, outcome)
+	}
+}
+
 // A pod terminal matches the inventory's pod: namespace granted, name confirmed, the UID the
 // inventory knows, Running, and the container present. A pod spec never opens on a Docker host.
 func TestOpenPodExecTarget(t *testing.T) {

@@ -29,13 +29,13 @@ const (
 var directActions = map[string]bool{ActionRecreate: true, ActionRun: true}
 
 // settledByResult are the commands a deployment.result settles, not a command result: the
-// direct commands and a workload apply. SQL lists them as directIn.
-var settledByResult = []any{ActionRecreate, ActionRun, ActionWorkloadApply}
+// direct commands and a workload apply or run. SQL lists them as directIn.
+var settledByResult = []any{ActionRecreate, ActionRun, ActionWorkloadApply, ActionWorkloadRun}
 
-const directIn = `(?,?,?)`
+const directIn = `(?,?,?,?)`
 
 var (
-	ErrCommandInProgress = errors.New("a container recreate or run, or a workload apply, is in flight on this endpoint")
+	ErrCommandInProgress = errors.New("a container recreate or run, or a workload apply or run, is in flight on this endpoint")
 	ErrContainerManaged  = errors.New("the container belongs to an adopted application")
 )
 
@@ -410,11 +410,12 @@ func (t *tenancyStore) SettleDirectCommand(ctx context.Context, endpointID strin
 	if res.Validate() != nil {
 		return ErrUnreadableResult
 	}
-	// A workload.apply frame carries no request ID, so its result names none and only the
-	// workload service; a recreate or run echoes its request ID and names service direct.
+	// A workload.apply frame (an apply's or a run's) carries no request ID, so its result names
+	// none and only the workload service; a container recreate or run echoes its request ID and
+	// names service direct.
 	service, match, matchArgs := "direct", `action IN (?,?) AND request_id=?`, []any{ActionRecreate, ActionRun, res.RequestID}
 	if res.RequestID == "" {
-		service, match, matchArgs = protocol.WorkloadApplyService, `action=?`, []any{ActionWorkloadApply}
+		service, match, matchArgs = protocol.WorkloadApplyService, `action IN (?,?)`, []any{ActionWorkloadApply, ActionWorkloadRun}
 	}
 	if len(res.Services) > 1 || (service != "direct" && len(res.Services) > 0) || slices.ContainsFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Service != service }) ||
 		slices.ContainsFunc(res.Services, func(id protocol.DeploymentIdentity) bool { return id.Service != service }) {
@@ -489,7 +490,7 @@ func (t *tenancyStore) sweepDirect(ctx context.Context, tx *sql.Tx, endpointID s
 	return nil
 }
 
-// directIDs lists the commands a deployment.result settles (recreate, run, workload apply)
+// directIDs lists the commands a deployment.result settles (settledByResult)
 // matching where.
 func (t *tenancyStore) directIDs(ctx context.Context, tx *sql.Tx, where string, args ...any) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id FROM endpoint_commands WHERE action IN `+directIn+` AND `+where), append(slices.Clone(settledByResult), args...)...)
@@ -509,7 +510,7 @@ func (t *tenancyStore) directIDs(ctx context.Context, tx *sql.Tx, where string, 
 }
 
 // auditDirect writes a direct command's outcome row under its correlation ID and actor: action
-// container.recreate, container.run or workload.apply, resource endpoint/container (the replaced
+// container.recreate, container.run, workload.apply or workload.run, resource endpoint/container (the replaced
 // one, else the created one) or endpoint/<namespace>/<kind>/<name>, details the code and the new
 // container's ID.
 func (t *tenancyStore) auditDirect(ctx context.Context, tx *sql.Tx, endpointID, id, outcome, code, created string, now time.Time) error {
