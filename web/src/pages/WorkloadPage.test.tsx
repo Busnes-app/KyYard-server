@@ -9,7 +9,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const base = '/api/organizations/a/endpoints/ep_k';
 const path = '/organizations/a/endpoints/ep_k/workloads/shop/deployment/web';
 const SECRET = 'page-literal-value';
-const endpoint = { id: 'ep_k', environment_id: 'env-a', name: 'prod', runtime: 'kubernetes', state: 'active', facts: {}, fingerprint: '', capabilities: ['kubernetes.inventory', 'pod.logs', 'kubernetes.workloads', 'pod.exec'], alerts: [], created_at: '', deploy_namespaces: ['shop'] };
+const endpoint = { id: 'ep_k', environment_id: 'env-a', name: 'prod', runtime: 'kubernetes', state: 'active', facts: {}, fingerprint: '', capabilities: ['kubernetes.inventory', 'pod.logs', 'kubernetes.workloads', 'kubernetes.workloads.run', 'pod.exec'], alerts: [], created_at: '', deploy_namespaces: ['shop'] };
 const web = { kind: 'Deployment', namespace: 'shop', name: 'web', desired: 3, ready: 2, updated: 1, images: ['nginx:1.29'], paused: true };
 const podContainer = (name: string, restarts: number) => ({ name, image: 'nginx:1.29', image_id: '', state: 'running', reason: '', ready: true, restart_count: restarts });
 const pods = [
@@ -235,6 +235,7 @@ it.each([
   ['operator', {}, 'Only an organization administrator can run workloads.'],
   ['organization_admin', { runtime: 'docker' }, 'Workloads can be run only on a Kubernetes cluster.'],
   ['organization_admin', { capabilities: ['kubernetes.inventory'] }, 'Upgrade the cluster agent and re-apply the manifest to enable this.'],
+  ['organization_admin', { capabilities: ['kubernetes.inventory', 'kubernetes.workloads'] }, 'Upgrade the cluster agent and re-apply the manifest to enable this.'],
   ['organization_admin', { deploy_namespaces: [] }, 'The cluster manifest grants no namespace, so nothing can run here. Grant one and re-apply the manifest.'],
 ])('gates the run form for %s on %o', async (role, ep, text) => {
   stub(role, { ep });
@@ -259,6 +260,7 @@ it('runs a workload, shows Last change and links to it on success, keeping the f
   expect(requests.filter((r) => r.url === `${base}/workloads`)).toHaveLength(1);
   for (let i = 0; i < 20 && !screen.queryByRole('link', { name: 'Open the new workload' }); i++) await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
   expect(within(last).getByRole('link', { name: 'Open the new workload' }).getAttribute('href')).toBe('/organizations/a/endpoints/ep_k/workloads/shop/deployment/fresh?tab=overview');
+  expect(within(last).getByText('Running.')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Run workload' }).hasAttribute('disabled')).toBe(true);
   expect(screen.getByLabelText('Workload name').matches(':disabled')).toBe(true);
 });

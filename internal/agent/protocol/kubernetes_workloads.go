@@ -18,6 +18,9 @@ const (
 	// CapabilityKubernetesWorkloads marks a cluster agent that runs the workload and pod
 	// actions, reads a workload's configuration and applies it.
 	CapabilityKubernetesWorkloads = "kubernetes.workloads"
+	// CapabilityKubernetesWorkloadsRun marks a cluster agent whose workload apply honours
+	// Create: agents from before it advertise kubernetes.workloads and refuse a run.
+	CapabilityKubernetesWorkloadsRun = "kubernetes.workloads.run"
 	// CapabilityPodExec marks a cluster agent that opens an exec session in a pod container.
 	CapabilityPodExec = "pod.exec"
 

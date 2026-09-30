@@ -48,7 +48,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
         <option value="">All namespaces</option>
         {inventory.namespaces.map((ns) => <option key={ns} value={ns}>{displayName(ns)}</option>)}
       </select></label>
-      {canConfigure(role) && endpoint.capabilities.includes('kubernetes.workloads') && (endpoint.deploy_namespaces ?? []).length > 0 && <Link className="btn btn-secondary" to={workloadRunPath(org, endpoint.id)}>Run a workload</Link>}
+      {canConfigure(role) && endpoint.capabilities.includes('kubernetes.workloads.run') && (endpoint.deploy_namespaces ?? []).length > 0 && <Link className="btn btn-secondary" to={workloadRunPath(org, endpoint.id)}>Run a workload</Link>}
     </div>
     <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images', ...(tools ? ['Actions'] : [])]} render={(w) => [
       page(w.namespace, w.kind, w.name, qualified(w)), w.kind, `${w.ready}/${w.desired}${w.paused ? ' (paused)' : ''}`, w.images.map(displayName).join(', '),

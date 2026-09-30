@@ -90,7 +90,7 @@ A service token authenticates as `service:<id>` with the fixed role `pulse_reade
 
 Unmanaged containers: lifecycle actions above apply by permission, and an organization administrator edits configuration directly (`container.configure`). A container an adopted application owns is refused (`409 application_managed`) and changes through its application. Service tokens never hold `container.configure`.
 
-Cluster workloads and pods reuse these actions; there is no Kubernetes-specific permission. Every one is refused on a Docker endpoint (409 `runtime_unsupported`), without the agent capability (501: `kubernetes.workloads` for commands, read and apply, `pod.exec` for terminals), in a namespace the cluster's manifest does not grant (422 `namespace_not_granted`) and for a target absent from the last inventory (404). A Deployment a KyYard application deployed refuses the configuration read, the apply and `workload.delete` (409 `application_managed`); restart and scale stay allowed.
+Cluster workloads and pods reuse these actions; there is no Kubernetes-specific permission. Every one is refused on a Docker endpoint (409 `runtime_unsupported`), without the agent capability (501: `kubernetes.workloads` for commands, read and apply, `kubernetes.workloads.run` for a run, `pod.exec` for terminals), in a namespace the cluster's manifest does not grant (422 `namespace_not_granted`) and for a target absent from the last inventory (404). A Deployment a KyYard application deployed refuses the configuration read, the apply and `workload.delete` (409 `application_managed`); restart and scale stay allowed.
 
 ### Applications (M6–M7)
 

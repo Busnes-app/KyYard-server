@@ -273,10 +273,10 @@ func TestExpectationReplicasIsAdditive(t *testing.T) {
 
 func TestWorkloadVocabulary(t *testing.T) {
 	if ActionWorkloadRestart != "workload.restart" || ActionWorkloadScale != "workload.scale" || ActionWorkloadDelete != "workload.delete" || ActionPodDelete != "pod.delete" ||
-		CapabilityKubernetesWorkloads != "kubernetes.workloads" || CapabilityPodExec != "pod.exec" || TypeWorkloadApply != "workload.apply" || MaxWorkloadApplyBytes != 128<<10 {
+		CapabilityKubernetesWorkloads != "kubernetes.workloads" || CapabilityKubernetesWorkloadsRun != "kubernetes.workloads.run" || CapabilityPodExec != "pod.exec" || TypeWorkloadApply != "workload.apply" || MaxWorkloadApplyBytes != 128<<10 {
 		t.Fatal("the wire vocabulary changed")
 	}
-	if !CapabilitiesFit(RuntimeKubernetes, []string{CapabilityKubernetesWorkloads, CapabilityPodExec}) || CapabilitiesFit(RuntimeDocker, []string{CapabilityPodExec}) {
+	if !CapabilitiesFit(RuntimeKubernetes, []string{CapabilityKubernetesWorkloads, CapabilityKubernetesWorkloadsRun, CapabilityPodExec}) || CapabilitiesFit(RuntimeDocker, []string{CapabilityPodExec}) || CapabilitiesFit(RuntimeDocker, []string{CapabilityKubernetesWorkloadsRun}) {
 		t.Fatal("workload capabilities are cluster capabilities")
 	}
 }

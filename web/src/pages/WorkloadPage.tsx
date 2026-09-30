@@ -110,7 +110,7 @@ export const WorkloadRunPage: React.FC<{ org: string; endpoint: string }> = ({ o
       : !canConfigure(role) ? <EmptyNotice>Only an organization administrator can run workloads.</EmptyNotice>
       : details.state !== 'ready' || !e ? null
       : e.runtime !== 'kubernetes' ? <EmptyNotice>Workloads can be run only on a Kubernetes cluster.</EmptyNotice>
-      : !e.capabilities.includes('kubernetes.workloads') ? <EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice>
+      : !e.capabilities.includes('kubernetes.workloads.run') ? <EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice>
       : namespaces.length === 0 ? <EmptyNotice>The cluster manifest grants no namespace, so nothing can run here. Grant one and re-apply the manifest.</EmptyNotice>
       : <>
         <section className="panel"><WorkloadConfigurationForm base={base} mode="run" namespaces={namespaces} pending={!!command && (!command.outcome || command.outcome === 'succeeded')} onSent={(c, target) => setSent({ command: c, target })} /></section>

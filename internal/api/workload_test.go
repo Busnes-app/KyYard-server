@@ -23,7 +23,7 @@ const (
 	podUID           = "11111111-2222-4333-8444-555555555555"
 )
 
-var workloadCaps = []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesWorkloads, protocol.CapabilityPodExec}
+var workloadCaps = []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesWorkloads, protocol.CapabilityKubernetesWorkloadsRun, protocol.CapabilityPodExec}
 
 // workloadFleet is a cluster granted namespace shop and a Docker host, with a member per role.
 type workloadFleet struct {
@@ -374,6 +374,12 @@ func TestWorkloadRefusals(t *testing.T) {
 	code(tenantRequest(f.s, f.org, "POST", f.webWorkload+"/apply", applyBody(t, workloadConfiguration(protocol.WorkloadRef{Namespace: "shop", Kind: "deployment", Name: "web"}), "web"), true), 501, "")
 	if res := f.dialPod(t, f.org); res == nil || res.StatusCode != 501 {
 		t.Errorf("pod exec without pod.exec: %+v", res)
+	}
+	code(tenantRequest(f.s, f.org, "POST", f.clusterPath+"/workloads", workloadRunBody(t, "shop", "fresh", "fresh"), true), 501, "")
+	// An agent from before runs (kubernetes.workloads alone) is asked to upgrade for a run.
+	f.connect(t, protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesWorkloads)
+	if w := tenantRequest(f.s, f.org, "POST", f.clusterPath+"/workloads", workloadRunBody(t, "shop", "fresh", "fresh"), true); w.Code != 501 || !strings.Contains(w.Body.String(), "Upgrade the cluster agent to run workloads") {
+		t.Errorf("run beside a parity-era agent: %d %s", w.Code, w.Body.String())
 	}
 	f.sync(t)
 }

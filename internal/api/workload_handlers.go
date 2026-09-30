@@ -24,8 +24,9 @@ func workloadRef(r *http.Request) (protocol.WorkloadRef, error) {
 
 // workloadGate is what the configuration read, the apply and the run share, in order: no service
 // token (all carry values), the shared configure budget, container.configure, a cluster endpoint
-// and kubernetes.workloads. A route naming a workload has it parsed after the service token. It
-// writes the response and reports false on refusal.
+// and the route's capability (kubernetes.workloads, a run kubernetes.workloads.run). A route
+// naming a workload has it parsed after the service token. It writes the response and reports
+// false on refusal.
 func (s *Server) workloadGate(w http.ResponseWriter, r *http.Request, a store.TenantAccess, named bool) (string, protocol.WorkloadRef, bool) {
 	var ref protocol.WorkloadRef
 	if a.ServiceTokenID != "" {
@@ -56,8 +57,12 @@ func (s *Server) workloadGate(w http.ResponseWriter, r *http.Request, a store.Te
 	if !ok {
 		return "", ref, false
 	}
-	if !slices.Contains(ep.Capabilities, protocol.CapabilityKubernetesWorkloads) {
-		s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to configure workloads")
+	capability, refusal := protocol.CapabilityKubernetesWorkloads, "Upgrade the cluster agent to configure workloads"
+	if !named {
+		capability, refusal = protocol.CapabilityKubernetesWorkloadsRun, "Upgrade the cluster agent to run workloads"
+	}
+	if !slices.Contains(ep.Capabilities, capability) {
+		s.writeError(w, http.StatusNotImplemented, refusal)
 		return "", ref, false
 	}
 	return endpoint, ref, true
