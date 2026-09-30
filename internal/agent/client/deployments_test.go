@@ -341,7 +341,9 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 			removal := testRemoval("endpoint")
 			removal.Deployment = "5b4d3e2f-0a9c-4d8e-9f7a-3e4f5a6b7c8d"
 			advertised, advertisedRemove, resent, applied, removed := false, false, false, false, !withRemove
-			for !applied || !removed {
+			// The ledger replay is a separate goroutine's frame and may land after the apply result,
+			// so the loop waits for it too; the context deadline bounds the wait.
+			for !applied || !removed || !resent {
 				f, err := read(ctx, conn)
 				if err != nil {
 					return err
