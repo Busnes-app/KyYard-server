@@ -94,6 +94,7 @@ var manifestTemplate = template.Must(template.New("manifest").Funcs(template.Fun
 {{- if .Namespaces}}
 # In each namespace listed below (Role kyyard-agent-deploy) it may create, update and delete
 # Deployments, Services, ConfigMaps and Secrets; Secrets are read by name, never listed. It may
+# patch and delete StatefulSets and DaemonSets, delete pods and open exec sessions in them. It may
 # create PersistentVolumeClaims but never update or delete one: a claim KyYard created stays
 # until you delete it. Create the namespaces first. A namespace dropped from a later manifest
 # keeps its Role until you run
@@ -208,6 +209,17 @@ rules:
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [get, list, create, update, patch, delete]
+  # Workloads a migration adopts are patched and removed, never created.
+  - apiGroups: [apps]
+    resources: [statefulsets, daemonsets]
+    verbs: [get, list, patch, update, delete]
+  # Deleting a pod restarts it; exec opens a shell in it.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
   - apiGroups: [""]
     resources: [services, configmaps]
     verbs: [get, list, create, update, patch, delete]
@@ -303,6 +315,9 @@ spec:
             - name: enrollment
               mountPath: /etc/kyyard
               readOnly: true
+            # The root filesystem is read-only; the command ledgers live here.
+            - name: scratch
+              mountPath: /var/lib/kyyard-agent
       volumes:
         - name: enrollment
           secret:
@@ -310,5 +325,7 @@ spec:
             # Optional: the Secret is deleted once spent, and a restart must not wait for it.
             optional: true
             defaultMode: 0440
+        - name: scratch
+          emptyDir: {}
 {{- end}}
 `))

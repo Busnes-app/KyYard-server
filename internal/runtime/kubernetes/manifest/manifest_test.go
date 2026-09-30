@@ -150,6 +150,10 @@ func TestManifestCarriesTheTokenOnceAndALockedDownAgent(t *testing.T) {
 			if m := c.VolumeMounts[0]; m.MountPath != "/etc/kyyard" || !m.ReadOnly || spec.Volumes[0].Secret.SecretName != "kyyard-agent-enrollment" || !*spec.Volumes[0].Secret.Optional {
 				t.Fatalf("mount %+v %+v", m, spec.Volumes[0])
 			}
+			// The root filesystem is read-only; the command ledgers need a writable directory.
+			if m := c.VolumeMounts[1]; m.Name != "scratch" || m.MountPath != "/var/lib/kyyard-agent" || m.ReadOnly || spec.Volumes[1].Name != "scratch" || spec.Volumes[1].EmptyDir == nil {
+				t.Fatalf("scratch %+v %+v", m, spec.Volumes[1])
+			}
 		}
 		labels := obj.(interface{ GetLabels() map[string]string }).GetLabels()
 		if labels["app.kubernetes.io/name"] != "kyyard-agent" || labels["app.kubernetes.io/managed-by"] != "kyyard" {
@@ -203,12 +207,22 @@ func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
 			namespaces = append(namespaces, o.Namespace)
 			want := []rbacv1.PolicyRule{
 				{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
+				{APIGroups: []string{"apps"}, Resources: []string{"statefulsets", "daemonsets"}, Verbs: []string{"get", "list", "patch", "update", "delete"}},
+				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
+				{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
 				{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "create", "update", "patch", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"get", "list", "create"}},
 			}
 			if !reflect.DeepEqual(o.Rules, want) {
 				t.Fatalf("deploy role in %s: %+v", o.Namespace, o.Rules)
+			}
+		case *rbacv1.ClusterRole:
+			// Reads stay cluster-wide and read-only: workload writes are per namespace.
+			for _, r := range o.Rules {
+				if slices.ContainsFunc(r.Verbs, func(v string) bool { return v != "get" && v != "list" && v != "create" }) || (slices.Contains(r.Verbs, "create") && r.Resources[0] != "selfsubjectaccessreviews") {
+					t.Fatalf("cluster role rule %+v", r)
+				}
 			}
 		case *rbacv1.RoleBinding:
 			if o.Name == "kyyard-agent-deploy" && (o.RoleRef.Name != "kyyard-agent-deploy" || len(o.Subjects) != 1 || o.Subjects[0].Name != "kyyard-agent" || o.Subjects[0].Namespace != "kyyard-agent") {
