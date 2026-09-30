@@ -22,24 +22,28 @@ func workloadRef(r *http.Request) (protocol.WorkloadRef, error) {
 	return ref, nil
 }
 
-// workloadGate is what the configuration read and the apply share, in order: no service token
-// (both carry values), the shared configure budget, container.configure, a cluster endpoint and
-// kubernetes.workloads. It writes the response and reports false on refusal.
-func (s *Server) workloadGate(w http.ResponseWriter, r *http.Request, a store.TenantAccess) (string, protocol.WorkloadRef, bool) {
+// workloadGate is what the configuration read, the apply and the run share, in order: no service
+// token (all carry values), the shared configure budget, container.configure, a cluster endpoint
+// and the route's capability (kubernetes.workloads, a run kubernetes.workloads.run). A route
+// naming a workload has it parsed after the service token. It writes the response and reports
+// false on refusal.
+func (s *Server) workloadGate(w http.ResponseWriter, r *http.Request, a store.TenantAccess, named bool) (string, protocol.WorkloadRef, bool) {
+	var ref protocol.WorkloadRef
 	if a.ServiceTokenID != "" {
 		_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.ContainerConfigure, "bearer")
 		s.tenantError(w, store.ErrForbidden)
-		return "", protocol.WorkloadRef{}, false
+		return "", ref, false
 	}
 	endpoint, err := endpointID(r)
 	if err != nil {
 		s.tenantError(w, err)
-		return "", protocol.WorkloadRef{}, false
-	}
-	ref, err := workloadRef(r)
-	if err != nil {
-		s.tenantError(w, err)
 		return "", ref, false
+	}
+	if named {
+		if ref, err = workloadRef(r); err != nil {
+			s.tenantError(w, err)
+			return "", ref, false
+		}
 	}
 	if !s.allowAttempt("configure:"+a.Principal(), 12, time.Minute) {
 		s.writeError(w, 429, "Too many configuration requests")
@@ -53,8 +57,12 @@ func (s *Server) workloadGate(w http.ResponseWriter, r *http.Request, a store.Te
 	if !ok {
 		return "", ref, false
 	}
-	if !slices.Contains(ep.Capabilities, protocol.CapabilityKubernetesWorkloads) {
-		s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to configure workloads")
+	capability, refusal := protocol.CapabilityKubernetesWorkloads, "Upgrade the cluster agent to configure workloads"
+	if !named {
+		capability, refusal = protocol.CapabilityKubernetesWorkloadsRun, "Upgrade the cluster agent to run workloads"
+	}
+	if !slices.Contains(ep.Capabilities, capability) {
+		s.writeError(w, http.StatusNotImplemented, refusal)
 		return "", ref, false
 	}
 	return endpoint, ref, true
@@ -65,7 +73,7 @@ func (s *Server) workloadGate(w http.ResponseWriter, r *http.Request, a store.Te
 // reference. Nothing from the answer reaches audit or logs beyond the count of unsupported
 // settings.
 func (s *Server) handleWorkloadConfiguration(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
-	endpoint, ref, ok := s.workloadGate(w, r, a)
+	endpoint, ref, ok := s.workloadGate(w, r, a, true)
 	if !ok {
 		return
 	}
@@ -113,7 +121,7 @@ func (s *Server) handleWorkloadConfiguration(w http.ResponseWriter, r *http.Requ
 // frame recorded as a direct command before it is sent, settled from the agent's
 // deployment.result.
 func (s *Server) handleApplyWorkload(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
-	endpoint, ref, ok := s.workloadGate(w, r, a)
+	endpoint, ref, ok := s.workloadGate(w, r, a, true)
 	if !ok {
 		return
 	}
@@ -128,11 +136,38 @@ func (s *Server) handleApplyWorkload(w http.ResponseWriter, r *http.Request, a s
 		return
 	}
 	body.Spec.ResourceVersion = body.ResourceVersion
+	s.sendWorkloadFrame(w, r, a, endpoint, s.store.Tenancy().CreateWorkloadApply, store.WorkloadApply{Target: ref, Confirm: body.Confirm, Spec: body.Spec})
+}
+
+// handleRunWorkload creates the Deployment spec.target names from the spec the operator wrote:
+// a workload.apply frame with create set, recorded as a workload.run direct command before it is
+// sent and settled from the agent's deployment.result.
+func (s *Server) handleRunWorkload(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	endpoint, _, ok := s.workloadGate(w, r, a, false)
+	if !ok {
+		return
+	}
+	var body struct {
+		Spec    protocol.WorkloadConfiguration `json:"spec"`
+		Confirm string                         `json:"confirm"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // the frame's own bound applies in the store
+	if strictJSON(r, &body) != nil {
+		s.tenantError(w, store.ErrInvalid)
+		return
+	}
+	s.sendWorkloadFrame(w, r, a, endpoint, s.store.Tenancy().CreateWorkloadRun, store.WorkloadApply{Target: body.Spec.Target, Confirm: body.Confirm, Spec: body.Spec})
+}
+
+// sendWorkloadFrame records an apply or run with create and sends its frame: offline 409, unsent
+// 409 deployment_not_sent (the row settled failed), else 202 with the command.
+func (s *Server) sendWorkloadFrame(w http.ResponseWriter, r *http.Request, a store.TenantAccess, endpoint string,
+	create func(context.Context, store.TenantAccess, string, store.WorkloadApply) (*store.Command, *protocol.WorkloadApply, error), wa store.WorkloadApply) {
 	if !s.Connected(endpoint) {
 		s.tenantError(w, store.ErrEndpointOffline)
 		return
 	}
-	cmd, frame, err := s.store.Tenancy().CreateWorkloadApply(r.Context(), a, endpoint, store.WorkloadApply{Target: ref, Confirm: body.Confirm, Spec: body.Spec})
+	cmd, frame, err := create(r.Context(), a, endpoint, wa)
 	if err != nil {
 		s.tenantError(w, err)
 		return

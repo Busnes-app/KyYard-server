@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { WorkloadConfigurationForm, WorkloadResult } from './WorkloadConfigurationForm';
 import type { WorkloadConfiguration } from '../tenant';
+import { commandLine } from './workloadTexts';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.cookie = 'ky_csrf=; Max-Age=0'; });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -60,7 +61,7 @@ it('posts apply with the read resource_version, the whole spec and the typed nam
   expect(save().hasAttribute('disabled')).toBe(true);
   fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
   fireEvent.click(save());
-  await waitFor(() => expect(onSent).toHaveBeenCalledWith({ id: 'k7', action: 'workload.apply', outcome: '' }));
+  await waitFor(() => expect(onSent).toHaveBeenCalledWith({ id: 'k7', action: 'workload.apply', outcome: '' }, { namespace: 'shop', kind: 'deployment', name: 'web' }));
   expect(urls).toEqual([`${base}/workloads/shop/deployment/web/apply`]);
   const c = configuration();
   expect(bodies[0]).toEqual({
@@ -90,7 +91,7 @@ it('holds Save while replicas are malformed or out of range', () => {
 });
 
 it.each([
-  [json({ code: 'command_in_progress' }, 409), 'A workload apply or container change on this cluster is waiting for its result.'],
+  [json({ code: 'command_in_progress' }, 409), 'A workload apply or run, or a container change, on this cluster is waiting for its result.'],
   [json({ code: 'application_managed' }, 409), 'Managed by a KyYard application. Edit it there.'],
   [json({ code: 'namespace_not_granted' }, 422), 'This namespace is not granted to KyYard on this cluster.'],
   [json({ code: 'invalid_spec', blockers: ['configuration_incomplete', 'spec_invalid:replicas', 'spec_invalid:nonsense'] }, 422), 'This workload has settings the form cannot carry; nothing was changed. The server refused the replicas setting. The server refused part of this configuration.'],
@@ -150,4 +151,124 @@ it('shows imported Secret names read-only', () => {
   form(configuration({ env_from: ['db-credentials'] }));
   expect(screen.getByText('Imported from: db-credentials')).toBeTruthy();
   expect(screen.queryByDisplayValue('db-credentials')).toBeNull();
+});
+
+const runForm = (namespaces = ['shop', 'billing'], onSent = vi.fn()) => { render(<WorkloadConfigurationForm base={base} mode="run" namespaces={namespaces} onSent={onSent} />); return onSent; };
+const runButton = () => screen.getByRole('button', { name: 'Run workload' });
+
+it('runs a new Deployment only with namespace, name, image and the typed name, posting the create body', async () => {
+  const bodies: unknown[] = [];
+  const urls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    urls.push(String(input));
+    expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('csrf-r');
+    bodies.push(JSON.parse(String(init?.body)));
+    return json({ id: 'k8', action: 'workload.run', reference: 'shop/deployment/fresh', outcome: '' }, 202);
+  }));
+  document.cookie = 'ky_csrf=csrf-r';
+  const onSent = runForm();
+  expect(screen.getByRole('region', { name: 'Run a workload' })).toBeTruthy();
+  expect(screen.getByLabelText('Replicas')).toHaveProperty('value', '1');
+  expect(screen.queryByText(/Changes:|No changes\./)).toBeNull();
+  const steps: [string, string][] = [['Workload name', 'fresh'], ['Name of container 1', 'web'], ['Image of container 1', 'nginx:1.30'], ['Type the new workload name to confirm', 'fresh']];
+  for (const [label, value] of steps) {
+    expect(runButton().hasAttribute('disabled')).toBe(true);
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  }
+  expect(runButton().hasAttribute('disabled')).toBe(true);
+  fireEvent.change(screen.getByRole('combobox', { name: 'Namespace' }), { target: { value: 'shop' } });
+  fireEvent.change(screen.getByLabelText('Replicas'), { target: { value: '2' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add container 1 variable' }));
+  fireEvent.change(screen.getByLabelText('Container 1 variable 1 name'), { target: { value: 'K' } });
+  fireEvent.change(screen.getByLabelText('Value of K'), { target: { value: 'v' } });
+  expect(runButton().hasAttribute('disabled')).toBe(false);
+  fireEvent.click(runButton());
+  await waitFor(() => expect(onSent).toHaveBeenCalledWith({ id: 'k8', action: 'workload.run', reference: 'shop/deployment/fresh', outcome: '' }, { namespace: 'shop', kind: 'deployment', name: 'fresh' }));
+  expect(urls).toEqual([`${base}/workloads`]);
+  expect(bodies[0]).toEqual({
+    confirm: 'fresh',
+    spec: {
+      target: { namespace: 'shop', kind: 'deployment', name: 'fresh' }, resource_version: '', replicas: 2, strategy: 'RollingUpdate', paused: false,
+      containers: [{ name: 'web', image: 'nginx:1.30', image_id: '', command: [], args: [], env: [{ name: 'K', value: 'v' }], resources: { cpu_request: '', cpu_limit: '', memory_request: '', memory_limit: '' } }],
+      init_containers: [], env_from: [], managed: false, unsupported: [],
+    },
+  });
+  expect(bodies[0]).not.toHaveProperty('spec.target.uid');
+});
+
+it('holds Run for a name that is not a DNS label or a confirm that differs', () => {
+  runForm(['shop']);
+  expect(screen.getByRole('combobox', { name: 'Namespace' })).toHaveProperty('value', 'shop');
+  fireEvent.change(screen.getByLabelText('Name of container 1'), { target: { value: 'web' } });
+  fireEvent.change(screen.getByLabelText('Image of container 1'), { target: { value: 'nginx:1.30' } });
+  for (const bad of ['Fresh', 'fresh_1', '-fresh', 'a'.repeat(64)]) {
+    fireEvent.change(screen.getByLabelText('Workload name'), { target: { value: bad } });
+    fireEvent.change(screen.getByLabelText('Type the new workload name to confirm'), { target: { value: bad } });
+    expect(runButton().hasAttribute('disabled')).toBe(true);
+  }
+  expect(screen.getByText(/lower-case DNS label/)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Workload name'), { target: { value: 'fresh' } });
+  fireEvent.change(screen.getByLabelText('Type the new workload name to confirm'), { target: { value: 'fres' } });
+  expect(runButton().hasAttribute('disabled')).toBe(true);
+  fireEvent.change(screen.getByLabelText('Type the new workload name to confirm'), { target: { value: 'fresh' } });
+  expect(runButton().hasAttribute('disabled')).toBe(false);
+});
+
+it('adds and removes containers in run mode and requires each a name and an image', () => {
+  runForm(['shop']);
+  fireEvent.change(screen.getByLabelText('Workload name'), { target: { value: 'fresh' } });
+  fireEvent.change(screen.getByLabelText('Type the new workload name to confirm'), { target: { value: 'fresh' } });
+  fireEvent.change(screen.getByLabelText('Name of container 1'), { target: { value: 'web' } });
+  fireEvent.change(screen.getByLabelText('Image of container 1'), { target: { value: 'nginx:1.30' } });
+  expect(screen.queryByRole('button', { name: 'Remove container 1' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Add a container' }));
+  expect(runButton().hasAttribute('disabled')).toBe(true);
+  fireEvent.change(screen.getByLabelText('Name of container 2'), { target: { value: 'web' } });
+  fireEvent.change(screen.getByLabelText('Image of container 2'), { target: { value: 'busybox:1' } });
+  expect(runButton().hasAttribute('disabled')).toBe(true);
+  fireEvent.change(screen.getByLabelText('Name of container 2'), { target: { value: 'sidecar' } });
+  expect(runButton().hasAttribute('disabled')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Remove container 1' }));
+  expect(screen.getByLabelText('Name of container 1')).toHaveProperty('value', 'sidecar');
+  expect(screen.queryByLabelText('Name of container 2')).toBeNull();
+});
+
+it('does not offer adding or removing containers when editing', () => {
+  form();
+  expect(screen.queryByRole('button', { name: 'Add a container' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Remove container/ })).toBeNull();
+  expect(screen.queryByLabelText('Workload name')).toBeNull();
+});
+
+it.each([
+  [json({ code: 'invalid_spec', blockers: ['name_taken'] }, 422), 'A workload with this name already exists in the namespace. Choose another name.'],
+  [json({ code: 'namespace_not_granted' }, 422), 'This namespace is not granted to KyYard on this cluster.'],
+  [json({ code: 'command_in_progress' }, 409), 'A workload apply or run, or a container change, on this cluster is waiting for its result.'],
+  [json({ error: 'Resource not found in this organization' }, 404), 'The endpoint or its inventory was not found.'],
+])('renders a refused run as fixed text', async (response, text) => {
+  vi.stubGlobal('fetch', vi.fn(async () => response));
+  runForm(['shop']);
+  fireEvent.change(screen.getByLabelText('Workload name'), { target: { value: 'fresh' } });
+  fireEvent.change(screen.getByLabelText('Name of container 1'), { target: { value: 'web' } });
+  fireEvent.change(screen.getByLabelText('Image of container 1'), { target: { value: 'nginx:1.30' } });
+  fireEvent.change(screen.getByLabelText('Type the new workload name to confirm'), { target: { value: 'fresh' } });
+  fireEvent.click(runButton());
+  expect((await screen.findByRole('alert')).textContent).toBe(text);
+});
+
+it('words a run command and a name_taken step', () => {
+  expect(commandLine({ action: 'workload.run', outcome: 'denied', detail: 'name_taken' })).toBe('Run refused. A workload with this name already exists in the namespace. Choose another name.');
+  render(<WorkloadResult command={{ id: 'k8', action: 'workload.run', outcome: 'denied', result: { code: 'step_failed', steps: [
+    { service: 'workload', step: 'precondition', outcome: 'denied', code: 'name_taken', detail: '' },
+  ], services: [] } }} />);
+  expect(screen.getByText('A workload with this name already exists in the namespace. Choose another name.')).toBeTruthy();
+});
+
+it('says Running for a succeeded run and Applied for a succeeded apply', () => {
+  const { unmount } = render(<WorkloadResult command={{ id: 'k10', action: 'workload.run', outcome: 'succeeded' }} />);
+  expect(screen.getByText('Running.')).toBeTruthy();
+  expect(screen.queryByText('Applied.')).toBeNull();
+  unmount();
+  render(<WorkloadResult command={{ id: 'k11', action: 'workload.apply', outcome: 'succeeded' }} />);
+  expect(screen.getByText('Applied.')).toBeTruthy();
 });

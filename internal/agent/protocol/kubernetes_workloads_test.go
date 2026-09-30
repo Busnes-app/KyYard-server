@@ -273,10 +273,10 @@ func TestExpectationReplicasIsAdditive(t *testing.T) {
 
 func TestWorkloadVocabulary(t *testing.T) {
 	if ActionWorkloadRestart != "workload.restart" || ActionWorkloadScale != "workload.scale" || ActionWorkloadDelete != "workload.delete" || ActionPodDelete != "pod.delete" ||
-		CapabilityKubernetesWorkloads != "kubernetes.workloads" || CapabilityPodExec != "pod.exec" || TypeWorkloadApply != "workload.apply" || MaxWorkloadApplyBytes != 128<<10 {
+		CapabilityKubernetesWorkloads != "kubernetes.workloads" || CapabilityKubernetesWorkloadsRun != "kubernetes.workloads.run" || CapabilityPodExec != "pod.exec" || TypeWorkloadApply != "workload.apply" || MaxWorkloadApplyBytes != 128<<10 {
 		t.Fatal("the wire vocabulary changed")
 	}
-	if !CapabilitiesFit(RuntimeKubernetes, []string{CapabilityKubernetesWorkloads, CapabilityPodExec}) || CapabilitiesFit(RuntimeDocker, []string{CapabilityPodExec}) {
+	if !CapabilitiesFit(RuntimeKubernetes, []string{CapabilityKubernetesWorkloads, CapabilityKubernetesWorkloadsRun, CapabilityPodExec}) || CapabilitiesFit(RuntimeDocker, []string{CapabilityPodExec}) || CapabilitiesFit(RuntimeDocker, []string{CapabilityKubernetesWorkloadsRun}) {
 		t.Fatal("workload capabilities are cluster capabilities")
 	}
 }
@@ -289,5 +289,85 @@ func TestPodUIDIsAdditive(t *testing.T) {
 	var p Pod
 	if json.Unmarshal([]byte(`{"namespace":"shop","name":"web","uid":"`+testPodUID+`"}`), &p) != nil || p.UID != testPodUID {
 		t.Fatalf("uid not decoded: %+v", p)
+	}
+}
+
+// An edit frame's wire is unchanged by the create flag: this golden was captured before it.
+func TestWorkloadApplyEditWireIsUnchanged(t *testing.T) {
+	at := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	one := int32(1)
+	spec := WorkloadConfiguration{Target: WorkloadRef{Namespace: "shop", Kind: WorkloadDeployment, Name: "web"}, ResourceVersion: "41", Replicas: &one, Strategy: "RollingUpdate",
+		Containers: []WorkloadContainer{{Name: "web", Image: "nginx:1.27", Env: []WorkloadEnv{{Name: "MODE", Value: "prod"}}}}}
+	raw, _ := json.Marshal(WorkloadApply{Request: "0f1e2d3c-4b5a-4968-8776-655443322111", Endpoint: "ep1", IssuedAt: at, Deadline: at.Add(5 * time.Minute), Target: spec.Target, ResourceVersion: "41", Spec: spec})
+	const golden = `{"request":"0f1e2d3c-4b5a-4968-8776-655443322111","endpoint":"ep1","issued_at":"2026-09-30T12:00:00Z","deadline":"2026-09-30T12:05:00Z","target":{"namespace":"shop","kind":"deployment","name":"web"},"resource_version":"41","spec":{"target":{"namespace":"shop","kind":"deployment","name":"web"},"observed_at":"0001-01-01T00:00:00Z","resource_version":"41","replicas":1,"paused":false,"strategy":"RollingUpdate","containers":[{"name":"web","image":"nginx:1.27","image_id":"","command":null,"args":null,"env":[{"name":"MODE","value":"prod"}],"resources":{"cpu_request":"","cpu_limit":"","memory_request":"","memory_limit":""}}],"init_containers":null,"env_from":null,"managed":false,"unsupported":null}}`
+	if string(raw) != golden {
+		t.Fatalf("edit frame wire changed:\n%s", raw)
+	}
+}
+
+// validWorkloadCreate runs a new Deployment: no resource version, containers only.
+func validWorkloadCreate(now time.Time) WorkloadApply {
+	a := validWorkloadApply(now)
+	a.Create, a.ResourceVersion, a.Spec.ResourceVersion = true, "", ""
+	a.Spec.InitContainers, a.Spec.EnvFrom = nil, nil
+	return a
+}
+
+func TestWorkloadCreateBounds(t *testing.T) {
+	now := time.Now()
+	a := validWorkloadCreate(now)
+	if err := a.Validate(now); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := json.Marshal(a); !strings.Contains(string(raw), `"create":true`) {
+		t.Fatalf("create flag not on the wire: %s", raw)
+	}
+	for name, change := range map[string]func(*WorkloadApply){
+		"resource version":      func(a *WorkloadApply) { a.ResourceVersion, a.Spec.ResourceVersion = "41", "41" },
+		"spec resource version": func(a *WorkloadApply) { a.Spec.ResourceVersion = "41" },
+		"statefulset": func(a *WorkloadApply) {
+			a.Target.Kind, a.Spec.Target.Kind, a.Spec.Strategy = WorkloadStatefulSet, WorkloadStatefulSet, "OnDelete"
+		},
+		"daemonset": func(a *WorkloadApply) {
+			a.Target.Kind, a.Spec.Target.Kind, a.Spec.Replicas, a.Spec.Strategy = WorkloadDaemonSet, WorkloadDaemonSet, nil, ""
+		},
+		"unsupported": func(a *WorkloadApply) { a.Spec.Unsupported = []string{"env_field_ref"} },
+		"init containers": func(a *WorkloadApply) {
+			a.Spec.InitContainers = []WorkloadContainer{{Name: "migrate", Image: "shop/migrate:1"}}
+		},
+		"env from":    func(a *WorkloadApply) { a.Spec.EnvFrom = []string{"secret/shop-secrets"} },
+		"paused":      func(a *WorkloadApply) { a.Spec.Paused = true },
+		"no replicas": func(a *WorkloadApply) { a.Spec.Replicas = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := validWorkloadCreate(now)
+			change(&a)
+			if a.Validate(now) == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+	// An edit still needs its version; a read still carries one.
+	edit := validWorkloadApply(now)
+	edit.ResourceVersion, edit.Spec.ResourceVersion = "", ""
+	if edit.Validate(now) == nil {
+		t.Fatal("edit without a resource version accepted")
+	}
+	c := validWorkloadConfiguration()
+	c.ResourceVersion = ""
+	if c.Validate(c.Target, time.Now()) == nil {
+		t.Fatal("read without a resource version accepted")
+	}
+}
+
+// A create is answered with precondition, create and rollout steps.
+func TestWorkloadCreateResultSteps(t *testing.T) {
+	r := DeploymentResult{Deployment: validWorkloadCreate(time.Now()).Request, Outcome: OutcomeDenied, Code: ResultStepFailed, Steps: []DeploymentStep{
+		{Service: WorkloadApplyService, Step: StepPrecondition, Outcome: OutcomeSucceeded},
+		{Service: WorkloadApplyService, Step: StepCreate, Outcome: OutcomeDenied, Code: "name_taken", Detail: "Deployment/web"},
+		{Service: WorkloadApplyService, Step: StepRollout, Outcome: OutcomeSkipped},
+	}}
+	if err := r.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

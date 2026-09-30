@@ -40,12 +40,13 @@ func workloadOptions() *Options {
 	}
 }
 
-// A cluster agent that operates, reads and applies workloads says kubernetes.workloads, and one
+// A cluster agent that operates, reads and applies workloads says kubernetes.workloads and
+// kubernetes.workloads.run (its apply creates), and one
 // that can open a pod terminal says pod.exec; neither appears without its runtime call, and a
 // Docker agent never names them.
 func TestHelloCapabilitiesForWorkloads(t *testing.T) {
 	caps := helloCapabilities(workloadOptions())
-	if !slices.Contains(caps, protocol.CapabilityKubernetesWorkloads) || !slices.Contains(caps, protocol.CapabilityPodExec) || !protocol.CapabilitiesFit(protocol.RuntimeKubernetes, caps) {
+	if !slices.Contains(caps, protocol.CapabilityKubernetesWorkloads) || !slices.Contains(caps, protocol.CapabilityKubernetesWorkloadsRun) || !slices.Contains(caps, protocol.CapabilityPodExec) || !protocol.CapabilitiesFit(protocol.RuntimeKubernetes, caps) {
 		t.Fatalf("cluster %v", caps)
 	}
 	for name, drop := range map[string]func(*Options){
@@ -55,8 +56,8 @@ func TestHelloCapabilitiesForWorkloads(t *testing.T) {
 	} {
 		o := workloadOptions()
 		drop(o)
-		if slices.Contains(helloCapabilities(o), protocol.CapabilityKubernetesWorkloads) {
-			t.Errorf("without %s the agent still says kubernetes.workloads", name)
+		if caps := helloCapabilities(o); slices.Contains(caps, protocol.CapabilityKubernetesWorkloads) || slices.Contains(caps, protocol.CapabilityKubernetesWorkloadsRun) {
+			t.Errorf("without %s the agent still says %v", name, caps)
 		}
 	}
 	o := workloadOptions()
@@ -66,7 +67,7 @@ func TestHelloCapabilitiesForWorkloads(t *testing.T) {
 	}
 	o = workloadOptions()
 	o.Kubernetes = false
-	if docker := helloCapabilities(o); slices.Contains(docker, protocol.CapabilityKubernetesWorkloads) || slices.Contains(docker, protocol.CapabilityPodExec) {
+	if docker := helloCapabilities(o); slices.Contains(docker, protocol.CapabilityKubernetesWorkloads) || slices.Contains(docker, protocol.CapabilityKubernetesWorkloadsRun) || slices.Contains(docker, protocol.CapabilityPodExec) {
 		t.Fatalf("docker %v", docker)
 	}
 }

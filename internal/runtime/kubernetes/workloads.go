@@ -26,6 +26,10 @@ import (
 // restartedAt is the pod-template annotation a restart stamps, which rolls the pods.
 const restartedAt = "kyyard.busnes.app/restarted-at"
 
+// runLabel names a run's Deployment in its selector, so a foreign object sharing the
+// app.kubernetes.io labels does not overlap it. It is not an ownership label.
+const runLabel = "kyyard.busnes.app/run"
+
 // workloadResources is the API group and resource of each kind a WorkloadRef names.
 var workloadResources = map[string][2]string{
 	protocol.WorkloadDeployment:  {"apps", "deployments"},
@@ -388,7 +392,7 @@ func workloadResourcesOf(r corev1.ResourceRequirements) protocol.WorkloadResourc
 // carries unchanged and those this client's types do not know keep their exact bytes. It carries
 // the read's resourceVersion, so a concurrent write is the API server's 409, reported conflict. A
 // StatefulSet's or DaemonSet's rollout, and a paused Deployment's, is not waited for: rollout is
-// skipped. started is called once, before the write.
+// skipped. started is called once, before the write. A create frame runs createWorkload instead.
 func (c *Client) ApplyWorkload(parent context.Context, req protocol.WorkloadApply, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Request, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.Validate(time.Now()); err != nil {
@@ -398,6 +402,9 @@ func (c *Client) ApplyWorkload(parent context.Context, req protocol.WorkloadAppl
 	defer cancel()
 	ref := req.Target
 	r := &run{c: c, parent: parent, res: res, started: started, namespace: ref.Namespace}
+	if req.Create {
+		return r.createWorkload(ctx, req)
+	}
 	var h *handle
 	service := protocol.WorkloadApplyService
 	r.step(service, protocol.StepPrecondition, func() (string, string, string) {
@@ -533,5 +540,83 @@ func setQuantity(list *corev1.ResourceList, name corev1.ResourceName, have, want
 			*list = corev1.ResourceList{}
 		}
 		(*list)[name] = resource.MustParse(want)
+	}
+}
+
+// createWorkload runs a create frame: precondition (the create grant, Pod Security, the name
+// free), create of renderWorkload's Deployment, and its rollout. A name that exists, or is taken
+// before the create lands, is name_taken: nothing is overwritten.
+func (r *run) createWorkload(ctx context.Context, req protocol.WorkloadApply) protocol.DeploymentResult {
+	ref, service := req.Target, protocol.WorkloadApplyService
+	api := r.c.cs.AppsV1().Deployments(ref.Namespace)
+	r.step(service, protocol.StepPrecondition, func() (string, string, string) {
+		if o, code, detail := r.allowed(ctx); o != protocol.OutcomeSucceeded {
+			return o, code, detail
+		}
+		if o, code, detail := r.podSecurity(ctx); o != protocol.OutcomeSucceeded {
+			return o, code, detail
+		}
+		if _, err := api.Get(ctx, ref.Name, metav1.GetOptions{}); err == nil {
+			return nameTaken("Deployment", ref.Name)
+		} else if !apierrors.IsNotFound(err) {
+			return r.failure(ctx, err)
+		}
+		return succeeded()
+	})
+	r.step(service, protocol.StepCreate, func() (string, string, string) {
+		r.begin()
+		_, err := api.Create(ctx, renderWorkload(ref, req.Spec), metav1.CreateOptions{})
+		switch {
+		case err == nil:
+			return succeeded()
+		case apierrors.IsAlreadyExists(err):
+			return nameTaken("Deployment", ref.Name)
+		case apierrors.IsForbidden(err):
+			return protocol.OutcomeDenied, "admission_denied", ""
+		}
+		return r.failure(ctx, err)
+	})
+	r.step(service, protocol.StepRollout, func() (string, string, string) {
+		return r.rollout(ctx, ref.Name, func(d *appsv1.Deployment) string { return reasons(conditionReasons(d)) })
+	})
+	if r.res.Outcome == "" {
+		r.res.Outcome = protocol.OutcomeSucceeded
+	}
+	return r.res
+}
+
+// renderWorkload is the Deployment a run creates: the spec's replicas, strategy (RollingUpdate
+// when unset) and containers under the name's own app.kubernetes.io labels and runLabel, not
+// KyYard's managed-by, so the workload page edits it afterwards, and Deploy's progress deadline.
+func renderWorkload(ref protocol.WorkloadRef, spec protocol.WorkloadConfiguration) *appsv1.Deployment {
+	labels := func() map[string]string {
+		return map[string]string{render.LabelName: ref.Name, render.LabelInstanceName: ref.Name, runLabel: ref.Name}
+	}
+	strategy := appsv1.RollingUpdateDeploymentStrategyType
+	if spec.Strategy != "" {
+		strategy = appsv1.DeploymentStrategyType(spec.Strategy)
+	}
+	containers := make([]corev1.Container, 0, len(spec.Containers))
+	for _, w := range spec.Containers {
+		c := corev1.Container{Name: w.Name, Image: w.Image, Command: w.Command, Args: w.Args, Env: envVars(nil, w.Env)}
+		setQuantity(&c.Resources.Requests, corev1.ResourceCPU, "", w.Resources.CPURequest)
+		setQuantity(&c.Resources.Limits, corev1.ResourceCPU, "", w.Resources.CPULimit)
+		setQuantity(&c.Resources.Requests, corev1.ResourceMemory, "", w.Resources.MemoryRequest)
+		setQuantity(&c.Resources.Limits, corev1.ResourceMemory, "", w.Resources.MemoryLimit)
+		containers = append(containers, c)
+	}
+	n, automount, progress := *spec.Replicas, false, int32(render.ProgressDeadlineSeconds)
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ref.Namespace, Name: ref.Name, Labels: labels()},
+		Spec: appsv1.DeploymentSpec{
+			Replicas:                &n,
+			ProgressDeadlineSeconds: &progress,
+			Selector:                &metav1.LabelSelector{MatchLabels: labels()},
+			Strategy:                appsv1.DeploymentStrategy{Type: strategy},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels()},
+				Spec:       corev1.PodSpec{Containers: containers, RestartPolicy: corev1.RestartPolicyAlways, AutomountServiceAccountToken: &automount},
+			},
+		},
 	}
 }

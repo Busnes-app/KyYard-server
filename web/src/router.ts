@@ -5,7 +5,7 @@ export type Route =
   | { name: 'dashboard' | 'endpoints' | 'backup' | 'settings' | 'notfound' }
   | { name: 'organization' | 'members' | 'audit'; org: string }
   | { name: 'environment'; org: string; env: string }
-  | { name: 'endpoint' | 'container-new'; org: string; endpoint: string }
+  | { name: 'endpoint' | 'container-new' | 'workload-new'; org: string; endpoint: string }
   | { name: 'workload'; org: string; endpoint: string; namespace: string; kind: string; workload: string }
   | { name: 'container'; org: string; endpoint: string; container: string };
 
@@ -39,6 +39,7 @@ export function matchRoute(pathname: string): Route {
     if (parts.length === 4 && parts[2] === 'environments' && segment.test(parts[3])) return { name: 'environment', org, env: parts[3] };
     if (parts.length === 4 && parts[2] === 'endpoints' && segment.test(parts[3])) return { name: 'endpoint', org, endpoint: parts[3] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && parts[5] === 'new') return { name: 'container-new', org, endpoint: parts[3] };
+    if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'workloads' && parts[5] === 'new') return { name: 'workload-new', org, endpoint: parts[3] };
     if (parts.length === 8 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'workloads' && dnsLabel.test(parts[5]) && workloadKinds.includes(parts[6]) && dnsLabel.test(parts[7])) return { name: 'workload', org, endpoint: parts[3], namespace: parts[5], kind: parts[6], workload: parts[7] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && containerID.test(parts[5])) return { name: 'container', org, endpoint: parts[3], container: parts[5] };
   }
@@ -78,4 +79,5 @@ export const envPath = (org: string, env: string) => orgPath(org, `/environments
 export const endpointPath = (org: string, endpoint: string) => orgPath(org, `/endpoints/${encodeURIComponent(endpoint)}`);
 export const containerPath = (org: string, endpoint: string, container: string, tab?: string) => endpointPath(org, endpoint) + `/containers/${encodeURIComponent(container)}` + (tab ? `?tab=${encodeURIComponent(tab)}` : '');
 export const runPath = (org: string, endpoint: string) => endpointPath(org, endpoint) + '/containers/new';
+export const workloadRunPath = (org: string, endpoint: string) => endpointPath(org, endpoint) + '/workloads/new';
 export const workloadPath = (org: string, endpoint: string, namespace: string, kind: string, name: string, tab?: string) => endpointPath(org, endpoint) + `/workloads/${encodeURIComponent(namespace)}/${encodeURIComponent(kind)}/${encodeURIComponent(name)}` + (tab ? `?tab=${encodeURIComponent(tab)}` : '');

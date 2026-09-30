@@ -318,7 +318,7 @@ func CheckRuntimeShape(runtime string, s *Snapshot) error {
 }
 
 // kubernetesCapabilities is everything a cluster agent may advertise.
-var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesClaims: true, CapabilityKubernetesServiceIPs: true, CapabilityKubernetesRemove: true, CapabilityKubernetesInspect: true, CapabilityKubernetesWorkloads: true, CapabilityPodExec: true}
+var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesClaims: true, CapabilityKubernetesServiceIPs: true, CapabilityKubernetesRemove: true, CapabilityKubernetesInspect: true, CapabilityKubernetesWorkloads: true, CapabilityKubernetesWorkloadsRun: true, CapabilityPodExec: true}
 
 // CapabilitiesFit reports whether a hello's capabilities belong to the endpoint's runtime:
 // a cluster agent names only cluster capabilities, a Docker agent names none of them.

@@ -11,11 +11,14 @@ export const UNREPORTED = 'This workload has settings the form cannot carry; not
 export const POD_SECURITY = 'This namespace does not enforce Pod Security baseline or restricted; KyYard refuses to change workloads there.';
 export const MANAGED = 'Managed by a KyYard application. Edit it there.';
 export const PVC_RETENTION = "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).";
+export const NAME_TAKEN = 'A workload with this name already exists in the namespace. Choose another name.';
+// A run's 404 is the endpoint or its inventory; the server's body does not say which.
+export const RUN_NOT_FOUND = 'The endpoint or its inventory was not found.';
 
 // Step codes of a workload apply whose wording differs from an application deployment's.
 export const WORKLOAD_STEPS: Record<string, string> = {
   forbidden: FORBIDDEN, conflict: CONFLICT, not_found: NOT_FOUND, namespace_not_granted: NOT_GRANTED,
-  configuration_unreported: UNREPORTED, application_managed: MANAGED, pod_security: POD_SECURITY, pvc_retention: PVC_RETENTION,
+  configuration_unreported: UNREPORTED, application_managed: MANAGED, pod_security: POD_SECURITY, pvc_retention: PVC_RETENTION, name_taken: NAME_TAKEN,
 };
 // Detail words of a settled workload or pod command (the cluster agent's Operate).
 const DETAILS: Record<string, string> = {
@@ -46,7 +49,7 @@ function detailText(detail = '', action = ''): string {
   return Object.hasOwn(DETAILS, detail) ? DETAILS[detail] ?? '' : '';
 }
 
-export const ACTIONS: Record<string, string> = { 'workload.restart': 'Restart', 'workload.scale': 'Scale', 'workload.delete': 'Delete', 'pod.delete': 'Delete', 'workload.apply': 'Apply' };
+export const ACTIONS: Record<string, string> = { 'workload.restart': 'Restart', 'workload.scale': 'Scale', 'workload.delete': 'Delete', 'pod.delete': 'Delete', 'workload.apply': 'Apply', 'workload.run': 'Run' };
 export const OUTCOMES: Record<string, string> = { '': 'pending', succeeded: 'done', failed: 'failed', denied: 'refused', unknown: 'outcome unknown; check the cluster before trying again', timed_out: "did not answer in time; check the cluster's Activity tab before trying again" };
 // commandLine is a command as one fixed sentence; action, outcome and detail are never shown raw.
 export function commandLine(c: { action: string; outcome: string; detail?: string }): string {
@@ -58,7 +61,7 @@ export function commandLine(c: { action: string; outcome: string; detail?: strin
 
 const CONFLICTS: Record<string, string> = {
   application_managed: MANAGED,
-  command_in_progress: 'A workload apply or container change on this cluster is waiting for its result.',
+  command_in_progress: 'A workload apply or run, or a container change, on this cluster is waiting for its result.',
   runtime_unsupported: "This endpoint's runtime does not support this action.",
   endpoint_offline: 'The cluster agent is not connected. Reconnect it and try again.',
   deployment_not_sent: 'The command was not sent to the cluster agent. Refresh and try again.',
@@ -88,6 +91,7 @@ const FIELDS: Record<string, string> = {
 };
 function blockerText(code: string): string {
   if (code === 'configuration_incomplete') return UNREPORTED;
+  if (code === 'name_taken') return NAME_TAKEN;
   const field = code.startsWith('spec_invalid:') ? code.slice('spec_invalid:'.length) : '';
   return Object.hasOwn(FIELDS, field) ? `The server refused the ${FIELDS[field]} setting.` : 'The server refused part of this configuration.';
 }
