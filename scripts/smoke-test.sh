@@ -297,7 +297,6 @@ print(d)' "$1"; }
     }
     smoke_container_cleanup() {
       if [ -n "$SMOKE_CID" ]; then docker rm -f "$SMOKE_CID" >/dev/null 2>&1 || :; fi
-      docker rm -f ky-smoke-run >/dev/null 2>&1 || :
     }
     trap 'smoke_container_cleanup; cleanup' EXIT
     smoke_spec() { # smoke_spec <env value>
@@ -310,9 +309,11 @@ print(json.dumps({"name":"ky-smoke-run","image":{"reference":sys.argv[1]},"image
     RUN_CMD="$(api POST /containers "{\"spec\":$(smoke_spec one),\"acknowledge_binds\":[],\"confirm\":\"ky-smoke-run\"}")"
     RUN_ID="$(printf '%s' "$RUN_CMD" | jget id 2>/dev/null || :)"
     check "run accepts a new container" "$(test -n "$RUN_ID" && echo yes || echo no)" "yes"
-    check "run command succeeds" "$(wait_command "$RUN_ID")" "succeeded"
-    SMOKE_CID="$(api GET "/commands/$RUN_ID" | jget result_container_id 2>/dev/null || :)"
-    check "run reports the new container id" "$(printf '%s' "$SMOKE_CID" | grep -Ec '^[0-9a-f]{64}$')" "1"
+    if [ -n "$RUN_ID" ]; then
+      check "run command succeeds" "$(wait_command "$RUN_ID")" "succeeded"
+      SMOKE_CID="$(api GET "/commands/$RUN_ID" | jget result_container_id 2>/dev/null || :)"
+      check "run reports the new container id" "$(printf '%s' "$SMOKE_CID" | grep -Ec '^[0-9a-f]{64}$')" "1"
+    fi
     CFG="$(read_configuration "$SMOKE_CID")"
     contains "configuration names the container" "$CFG" '"name":"ky-smoke-run"'
     contains "configuration carries the env it was given" "$CFG" '"name":"SMOKE_KEY","value":"one"'
