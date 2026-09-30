@@ -3,7 +3,6 @@ package protocol
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -132,9 +131,9 @@ type WorkloadConfiguration struct {
 	Unsupported     []string            `json:"unsupported"`
 }
 
-var errWorkload = errors.New("invalid workload configuration")
-
-func workloadErr(field string) error { return fmt.Errorf("%w: %s", errWorkload, field) }
+func workloadErr(field string) error {
+	return &FieldError{Field: field, Message: "invalid workload configuration"}
+}
 
 // Validate bounds an untrusted agent's read before it reaches an HTTP response.
 func (c *WorkloadConfiguration) Validate(target WorkloadRef, now time.Time) error {

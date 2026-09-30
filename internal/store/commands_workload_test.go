@@ -171,7 +171,7 @@ func TestWorkloadApplyCommand(t *testing.T) {
 	}
 	bad := testApply()
 	bad.Spec.Replicas = replicas(1001)
-	if _, _, err := ts.CreateWorkloadApply(ctx, a, cluster, bad); !errors.As(err, &spec) || !strings.HasPrefix(spec.Blockers[0], "spec_invalid:") {
+	if _, _, err := ts.CreateWorkloadApply(ctx, a, cluster, bad); !errors.As(err, &spec) || spec.Blockers[0] != "spec_invalid:replicas" {
 		t.Fatalf("invalid spec: %v", err)
 	}
 

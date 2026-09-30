@@ -100,7 +100,7 @@ it('applies on typed confirmation and polls until settled', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  expect(document.body.textContent).toMatch(/succeeded/i);
+  expect(document.body.textContent, document.body.textContent ?? '').toMatch(/succeeded/i);
   const before = fetcher.mock.calls.length;
   await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
   expect(fetcher.mock.calls.length).toBe(before); // polling stopped on a terminal state
@@ -124,8 +124,8 @@ it('refetches the instance when a polled deployment settles, and on Refresh plan
   fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
   expect(onChanged).not.toHaveBeenCalled();
-  for (let i = 0; i < 10 && !/succeeded/i.test(document.body.textContent ?? ''); i++) await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  expect(document.body.textContent).toMatch(/succeeded/i);
+  for (let i = 0; i < 60 && !/succeeded/i.test(document.body.textContent ?? ''); i++) await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(document.body.textContent, document.body.textContent ?? '').toMatch(/succeeded/i);
   expect(onChanged).toHaveBeenCalledTimes(1); // reached succeeded: the instance's revision may have moved
   fireEvent.click(screen.getByRole('button', { name: 'Refresh plan' }));
   expect(onChanged).toHaveBeenCalledTimes(2);

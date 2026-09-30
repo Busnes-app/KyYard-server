@@ -562,3 +562,33 @@ func TestRecreateRollbackRealDocker(t *testing.T) {
 		}
 	}
 }
+
+// waitStopped against a real daemon, whose wait answers 200 at once and writes its body only when
+// the container stops: a running container outlasts the bound, and a stop ends the wait.
+func TestStopWaitRealDocker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, id := explicitFixture(t, ctx, "kyyard-stopwait-fixture")
+	c := New("/var/run/docker.sock")
+	began := time.Now()
+	if stopped, err := c.waitStopped(ctx, id, 2*time.Second); stopped || err != nil {
+		t.Fatalf("running container: stopped=%v err=%v", stopped, err)
+	}
+	t.Logf("running: wait ended at its 2s bound after %v", time.Since(began).Round(time.Millisecond))
+	stop := make(chan error, 1)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		stop <- exec.CommandContext(ctx, "docker", "stop", "-t", "1", id).Run()
+	}()
+	began = time.Now()
+	if stopped, err := c.waitStopped(ctx, id, 20*time.Second); !stopped || err != nil {
+		t.Fatalf("stopping container: stopped=%v err=%v", stopped, err)
+	}
+	t.Logf("stopping: wait returned the body after %v (docker stop -t 1 sent at 500ms)", time.Since(began).Round(time.Millisecond))
+	if err := <-stop; err != nil {
+		t.Fatalf("docker stop: %v", err)
+	}
+	if _, state := dockerState(ctx, id); state != "exited" {
+		t.Fatalf("state after the wait: %s", state)
+	}
+}
