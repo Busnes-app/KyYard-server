@@ -10,7 +10,7 @@ import { Members } from './pages/Members';
 import { Environment } from './pages/Environment';
 import { EndpointPage } from './pages/EndpointPage';
 import { ContainerPage, ContainerRunPage } from './pages/ContainerPage';
-import { WorkloadPage } from './pages/WorkloadPage';
+import { WorkloadPage, WorkloadRunPage } from './pages/WorkloadPage';
 import { AuditList } from './components/AuditList';
 import { Link } from './components/Link';
 import './styles/theme.css';
@@ -121,6 +121,7 @@ const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, s
     case 'endpoint': return <EndpointPage key={`${route.org}/${route.endpoint}`} org={route.org} endpoint={route.endpoint} />;
     case 'container-new': return <ContainerRunPage key={`${route.org}/${route.endpoint}/new`} org={route.org} endpoint={route.endpoint} />;
     case 'container': return <ContainerPage key={`${route.org}/${route.endpoint}/${route.container}`} org={route.org} endpoint={route.endpoint} container={route.container} />;
+    case 'workload-new': return <WorkloadRunPage key={`${route.org}/${route.endpoint}/workloads/new`} org={route.org} endpoint={route.endpoint} />;
     case 'workload': return <WorkloadPage key={`${route.org}/${route.endpoint}/${route.namespace}/${route.kind}/${route.workload}`} org={route.org} endpoint={route.endpoint} namespace={route.namespace} kind={route.kind} workload={route.workload} />;
     case 'audit': return (
       <div className="ky-page">

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { containerPath, matchRoute, runPath, workloadPath } from './router';
+import { containerPath, matchRoute, runPath, workloadPath, workloadRunPath } from './router';
 
 it('maps paths to routes and rejects unsafe segments', () => {
   expect(matchRoute('/')).toEqual({ name: 'dashboard' });
@@ -54,4 +54,10 @@ it('routes a workload page on DNS-label grammar and encodes its path', () => {
   expect(workloadPath('a', 'ep_1', 'default', 'deployment', 'web', 'logs')).toBe(`${base}/default/deployment/web?tab=logs`);
   const escaped = workloadPath('a', 'ep_1', 'x/y', 'deployment', 'web');
   expect(matchRoute(escaped).name).toBe('notfound');
+});
+
+it('routes the run a workload page', () => {
+  expect(matchRoute('/organizations/a/endpoints/ep_k/workloads/new')).toEqual({ name: 'workload-new', org: 'a', endpoint: 'ep_k' });
+  expect(workloadRunPath('a', 'ep k')).toBe('/organizations/a/endpoints/ep%20k/workloads/new');
+  expect(matchRoute('/organizations/a/endpoints/ep_k/workloads/newer').name).toBe('notfound');
 });

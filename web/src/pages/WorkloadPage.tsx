@@ -8,11 +8,11 @@ import { uptime, useNow } from '../components/containerFacts';
 import { ResourceTable } from '../components/ResourceTable';
 import { WorkloadControls } from '../components/WorkloadControls';
 import { PodControls } from '../components/PodControls';
-import { EditWorkload, WorkloadResult } from '../components/WorkloadConfigurationForm';
+import { EditWorkload, WorkloadConfigurationForm, WorkloadResult } from '../components/WorkloadConfigurationForm';
 import { commandLine, UPGRADE_CLUSTER } from '../components/workloadTexts';
 import type { ApplicationInstance } from '../components/ApplicationAdoption';
 import { endpointPath, envPath, navigate, useSearchParam, workloadPath } from '../router';
-import { canConfigure, canExec, useTenantResource, type DirectCommand, type Endpoint, type Inventory, type MemberOrganization, type Pod, type Workload } from '../tenant';
+import { canConfigure, canExec, useTenantResource, type DirectCommand, type Endpoint, type Inventory, type MemberOrganization, type Pod, type Workload, type WorkloadRef } from '../tenant';
 const PodTerminal = lazy(() => import('../components/PodTerminal').then((m) => ({ default: m.PodTerminal })));
 
 const TABS = ['overview', 'configuration', 'logs', 'terminal', 'activity'] as const;
@@ -88,6 +88,38 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
           : <EmptyNotice>The terminal needs a running pod on an active cluster.</EmptyNotice>}</PodPicker>}</section>}
       {tab === 'activity' && <Activity base={base} reference={`${namespace}/${kind}/${workload}`} cluster={endpointPath(org, endpoint)} />}
     </>}
+  </div>;
+};
+
+// WorkloadRunPage creates a Deployment in a namespace the cluster manifest grants. A success keeps
+// the form disabled, so running the same workload again is not one click away.
+export const WorkloadRunPage: React.FC<{ org: string; endpoint: string }> = ({ org, endpoint }) => {
+  const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
+  const details = useTenantResource<Endpoint>(base);
+  const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  const role = (Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role;
+  const [sent, setSent] = useState<{ command: DirectCommand; target: WorkloadRef } | null>(null);
+  const { command, error } = useCommand(base, sent?.command ?? null);
+  const e = details.data;
+  const namespaces = e?.deploy_namespaces ?? [];
+  return <div className="ky-page">
+    <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link><span>/</span><Link to={endpointPath(org, endpoint)}>{e?.name ?? endpoint}</Link></nav>
+    <h1 style={{ fontSize: 24 }}>Run a workload</h1>
+    <StateNotice state={details.state} onRetry={details.reload} />
+    {organizations.state === 'loading' ? <p role="status">Loading…</p>
+      : !canConfigure(role) ? <EmptyNotice>Only an organization administrator can run workloads.</EmptyNotice>
+      : details.state !== 'ready' || !e ? null
+      : e.runtime !== 'kubernetes' ? <EmptyNotice>Workloads can be run only on a Kubernetes cluster.</EmptyNotice>
+      : !e.capabilities.includes('kubernetes.workloads') ? <EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice>
+      : namespaces.length === 0 ? <EmptyNotice>The cluster manifest grants no namespace, so nothing can run here. Grant one and re-apply the manifest.</EmptyNotice>
+      : <>
+        <section className="panel"><WorkloadConfigurationForm base={base} mode="run" namespaces={namespaces} pending={!!command && (!command.outcome || command.outcome === 'succeeded')} onSent={(c, target) => setSent({ command: c, target })} /></section>
+        {command && sent && <section className="panel" aria-label="Last change">{command.outcome ? <>
+          <WorkloadResult command={command} />
+          {command.outcome === 'succeeded' && <p><Link to={workloadPath(org, endpoint, sent.target.namespace, 'deployment', sent.target.name, 'overview')}>Open the new workload</Link></p>}
+        </> : error ? <p role="alert" className="dr-alert dr-alert-error">Could not read the command result. Check the cluster's Activity tab before trying again.</p>
+          : <p role="status">Run sent; waiting for the cluster agent. Do not retry while its outcome is unknown.</p>}</section>}
+      </>}
   </div>;
 };
 

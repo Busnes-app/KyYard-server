@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { WorkloadPage } from './WorkloadPage';
+import { WorkloadPage, WorkloadRunPage } from './WorkloadPage';
 import { App } from '../App';
 vi.mock('../components/PodTerminal', () => ({ PodTerminal: ({ pod }: { pod: { name: string } }) => <p>pod terminal stub {pod.name}</p> }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '/'); document.cookie = 'ky_csrf=; Max-Age=0'; });
@@ -36,6 +36,8 @@ function stub(role = 'organization_admin', opts: Opts = {}) {
     if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_k', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, observed_at: now, engine: { runtime: 'kubernetes', version: 'v1.36', api_version: '', os: '', arch: '', kernel: '', cpus: 0, memory_bytes: 0, hostname: '' }, containers: [], images: [], networks: [], volumes: [], kubernetes } });
     if (url.endsWith('/applications')) return json(opts.applications ?? []);
     if (url.endsWith('/configuration')) return opts.configurationStatus ? json({ code: 'application_managed' }, opts.configurationStatus) : json(configuration);
+    if (url.endsWith('/workloads') && init?.method === 'POST') return json({ id: 'k8', action: 'workload.run', reference: 'shop/deployment/fresh', outcome: '' }, 202);
+    if (url.endsWith('/commands/k8')) return json(opts.command ?? { id: 'k8', action: 'workload.run', outcome: '' });
     if (url.endsWith('/apply')) return json({ id: 'k7', action: 'workload.apply', reference: 'shop/deployment/web', outcome: '' }, 202);
     if (url.endsWith('/commands/k7')) return json(opts.command ?? { id: 'k7', action: 'workload.apply', outcome: '' });
     if (url.includes('/commands')) return json([{ id: 'k1', action: 'workload.scale', reference: 'shop/deployment/web', outcome: 'denied', detail: 'forbidden', created_at: now }]);
@@ -217,4 +219,46 @@ it('hides workload controls when the agent lacks kubernetes.workloads', async ()
   await waitFor(() => expect(screen.getByRole('link', { name: 'Logs for shop/web-7c9' })).toBeTruthy());
   await act(async () => {});
   expect(screen.queryByRole('button', { name: /^(Restart|Scale|Delete) / })).toBeNull();
+});
+
+const runPage = () => render(<WorkloadRunPage org="a" endpoint="ep_k" />);
+
+it('dispatches the run a workload route from the App', async () => {
+  stub();
+  window.history.replaceState(null, '', '/organizations/a/endpoints/ep_k/workloads/new');
+  render(<App />);
+  expect(await screen.findByRole('heading', { level: 1, name: 'Run a workload' })).toBeTruthy();
+  expect(await screen.findByRole('combobox', { name: 'Namespace' })).toBeTruthy();
+});
+
+it.each([
+  ['operator', {}, 'Only an organization administrator can run workloads.'],
+  ['organization_admin', { runtime: 'docker' }, 'Workloads can be run only on a Kubernetes cluster.'],
+  ['organization_admin', { capabilities: ['kubernetes.inventory'] }, 'Upgrade the cluster agent and re-apply the manifest to enable this.'],
+  ['organization_admin', { deploy_namespaces: [] }, 'The cluster manifest grants no namespace, so nothing can run here. Grant one and re-apply the manifest.'],
+])('gates the run form for %s on %o', async (role, ep, text) => {
+  stub(role, { ep });
+  runPage();
+  expect(await screen.findByText(text)).toBeTruthy();
+  expect(screen.queryByLabelText('Workload name')).toBeNull();
+});
+
+it('runs a workload, shows Last change and links to it on success, keeping the form disabled', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const opts: Opts = { command: { id: 'k8', action: 'workload.run', outcome: 'succeeded' } };
+  const requests = stub('organization_admin', opts);
+  document.cookie = 'ky_csrf=csrf-p';
+  runPage();
+  fireEvent.change(await screen.findByLabelText('Workload name'), { target: { value: 'fresh' } });
+  fireEvent.change(screen.getByLabelText('Name of container 1'), { target: { value: 'web' } });
+  fireEvent.change(screen.getByLabelText('Image of container 1'), { target: { value: 'nginx:1.30' } });
+  fireEvent.change(screen.getByLabelText('Type the new workload name to confirm'), { target: { value: 'fresh' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Run workload' }));
+  const last = await screen.findByRole('region', { name: 'Last change' });
+  expect(last.textContent).toContain('waiting for the cluster agent');
+  expect(requests.filter((r) => r.url === `${base}/workloads`)).toHaveLength(1);
+  for (let i = 0; i < 20 && !screen.queryByRole('link', { name: 'Open the new workload' }); i++) await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(within(last).getByRole('link', { name: 'Open the new workload' }).getAttribute('href')).toBe('/organizations/a/endpoints/ep_k/workloads/shop/deployment/fresh?tab=overview');
+  expect(screen.getByRole('button', { name: 'Run workload' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByLabelText('Workload name').matches(':disabled')).toBe(true);
 });
