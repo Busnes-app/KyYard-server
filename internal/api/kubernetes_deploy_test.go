@@ -31,7 +31,8 @@ type clusterHost struct {
 
 func newClusterHost(t *testing.T, capabilities ...string) clusterHost {
 	t.Helper()
-	s, st, _ := setupTestServer(t)
+	s, st, cfg := setupTestServer(t)
+	cfg.Server.AgentImage = agentImage
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 	ts := st.Tenancy()

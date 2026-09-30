@@ -52,7 +52,7 @@ var ruleRE = regexp.MustCompile(`resources: \[([^\]]*)\]\n\s*verbs: \[([^\]]*)\]
 // every read of the ClusterRole, cluster-wide, every grant of the per-namespace Role, and
 // nothing either does not grant.
 func TestClusterDisclosureMatchesTheManifestAndThreatModel(t *testing.T) {
-	rendered, err := manifest.RenderRBAC("prod", []string{"shop"})
+	rendered, err := manifest.RenderRBAC("prod", "ghcr.io/busnes-app/kyyard@sha256:"+strings.Repeat("0", 64), []string{"shop"})
 	if err != nil {
 		t.Fatal(err)
 	}

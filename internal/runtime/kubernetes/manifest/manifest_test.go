@@ -238,22 +238,46 @@ func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
 	}
 }
 
-// The regenerated manifest carries the RBAC and nothing that enrolls: no Secret, no link, no
-// Deployment.
-func TestManifestRBACOnly(t *testing.T) {
-	doc, err := manifest.RenderRBAC(name, []string{"shop"})
+// The regenerated manifest carries the RBAC and the agent Deployment, exactly as enrollment
+// renders it (image, scratch volume, security context), so re-applying it upgrades an enrolled
+// agent in place; nothing that enrolls: no Secret, no link.
+func TestManifestRegenerated(t *testing.T) {
+	doc, err := manifest.RenderRBAC(name, image, []string{"shop"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var kinds []string
+	var got *appsv1.Deployment
 	for _, obj := range decode(t, doc) {
 		kinds = append(kinds, obj.GetObjectKind().GroupVersionKind().Kind)
+		if d, ok := obj.(*appsv1.Deployment); ok {
+			got = d
+		}
 	}
-	if !slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Role", "RoleBinding"}) {
+	if !slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Role", "RoleBinding", "Deployment"}) {
 		t.Fatalf("kinds %v", kinds)
 	}
-	if strings.Contains(doc, "kyyard=") || strings.Contains(doc, "kyyard-agent-enrollment") {
-		t.Fatalf("an enrollment in the RBAC manifest:\n%s", doc)
+	if strings.Contains(doc, "kyyard=") || strings.Contains(doc, "stringData") || strings.Contains(doc, "kind: Secret") {
+		t.Fatalf("an enrollment in the regenerated manifest:\n%s", doc)
+	}
+	enrolled, err := manifest.Render(manifest.Input{Image: image, Link: link, Name: name, Namespaces: []string{"shop"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want *appsv1.Deployment
+	for _, obj := range decode(t, enrolled) {
+		if d, ok := obj.(*appsv1.Deployment); ok {
+			want = d
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("regenerated Deployment\n got %+v\nwant %+v", got, want)
+	}
+	if m := got.Spec.Template.Spec.Containers[0].VolumeMounts[1]; m.Name != "scratch" || m.MountPath != "/var/lib/kyyard-agent" {
+		t.Fatalf("scratch mount %+v", m)
+	}
+	if _, err := manifest.RenderRBAC(name, "ghcr.io/busnes-app/kyyard:latest", []string{"shop"}); err == nil {
+		t.Fatal("regenerated with an unpinned image")
 	}
 }
 
@@ -262,11 +286,11 @@ func TestManifestRefusesBadNamespaces(t *testing.T) {
 		if _, err := manifest.Render(manifest.Input{Image: image, Link: link, Name: name, Namespaces: list}); err == nil {
 			t.Errorf("rendered %v", list)
 		}
-		if _, err := manifest.RenderRBAC(name, list); err == nil {
+		if _, err := manifest.RenderRBAC(name, image, list); err == nil {
 			t.Errorf("rendered RBAC %v", list)
 		}
 	}
-	if _, err := manifest.RenderRBAC("", nil); err == nil {
+	if _, err := manifest.RenderRBAC("", image, nil); err == nil {
 		t.Error("rendered without a name")
 	}
 }

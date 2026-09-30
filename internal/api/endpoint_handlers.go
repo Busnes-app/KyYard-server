@@ -34,7 +34,7 @@ const clusterDisclosure = "The KyYard agent's ServiceAccount can get and list na
 const namespaceDisclosure = " In each namespace you listed it may create, update and delete Deployments, Services, ConfigMaps and Secrets, and get any Secret there by name (it cannot list them). It may also create PersistentVolumeClaims there but never update or delete one. It may also get, list, patch, update and delete StatefulSets and DaemonSets there, delete pods, and open pods/exec (a shell in any pod). That lets it run any pod in those namespaces, under any of their ServiceAccounts and mounting any of their Secrets, so list only namespaces that enforce Pod Security baseline or stricter (label pod-security.kubernetes.io/enforce=baseline or restricted); KyYard refuses to deploy into any other. Pod logs and the metadata above stay readable in every namespace by design. A namespace you drop from the list keeps its Role until you delete it by hand."
 
 // manifestNote goes with a regenerated manifest.
-const manifestNote = "Apply it with a cluster-admin kubeconfig: kubectl apply -f on the saved file. Create the namespaces first. Apply it again after upgrading KyYard: a release can add rules, as migrations added PersistentVolumeClaims and StorageClasses. A namespace you removed keeps its Role until you run kubectl -n <namespace> delete role,rolebinding kyyard-agent-deploy."
+const manifestNote = "Apply it with a cluster-admin kubeconfig: kubectl apply -f on the saved file. Create the namespaces first. It carries the agent Deployment on this server's agent image but no enrollment Secret, so applying it again after upgrading KyYard upgrades the enrolled agent in place and adds any rules the release needs. A namespace you removed keeps its Role until you run kubectl -n <namespace> delete role,rolebinding kyyard-agent-deploy."
 
 const clusterNote = "Save the manifest and apply it with a cluster-admin kubeconfig. Run kubectl -n kyyard-agent logs deploy/kyyard-agent and compare the agent key fingerprint before approving. Once approved, delete the spent enrollment Secret: kubectl -n kyyard-agent delete secret kyyard-agent-enrollment. Uninstall with kubectl delete -f on the same file."
 
@@ -77,17 +77,7 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	if discover {
-		// Use bytes already installed by the operator, not a registry tag that can move.
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		host, _ := os.Hostname()
-		digests, _ := docker.New(s.config.Server.DockerSocket).ContainerImageDigests(ctx, host)
-		cancel()
-		for _, digest := range digests {
-			if strings.HasPrefix(digest, "ghcr.io/busnes-app/kyyard@sha256:") && config.IsPinnedAgentImage(digest) {
-				image = digest
-				break
-			}
-		}
+		image = s.discoverAgentImage(r.Context())
 	}
 	// A manifest is the only thing a cluster enrollment hands out, so one that cannot be
 	// rendered is refused before a token is minted.
@@ -139,7 +129,8 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 }
 
 // handleEndpointManifest records the namespaces a cluster's agent may write in and returns the
-// manifest that grants exactly those, RBAC only, for a cluster-admin to apply. The list is what
+// manifest that grants exactly those, with the agent Deployment on this server's agent image
+// and no enrollment Secret, for a cluster-admin to apply: re-applying it upgrades the agent. The list is what
 // plans and mappings check; the agent asks the API server for its real grant before each apply.
 func (s *Server) handleEndpointManifest(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	id, err := endpointID(r)
@@ -159,13 +150,37 @@ func (s *Server) handleEndpointManifest(w http.ResponseWriter, r *http.Request, 
 		s.tenantError(w, err)
 		return
 	}
-	doc, err := manifest.RenderRBAC(e.Name, e.DeployNamespaces)
+	image := s.config.Server.AgentImage
+	if image == "" && s.config.Server.DockerSocket != "" {
+		image = s.discoverAgentImage(r.Context())
+	}
+	if image == "" {
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Set KY_AGENT_IMAGE to a digest-pinned ghcr.io/busnes-app/kyyard@sha256:<digest> reference", "code": "agent_image_unpinned"})
+		return
+	}
+	doc, err := manifest.RenderRBAC(e.Name, image, e.DeployNamespaces)
 	if err != nil {
 		s.tenantError(w, err)
 		return
 	}
 	file := manifest.FileName(e.Name)
 	s.writeJSON(w, http.StatusOK, map[string]any{"manifest": doc, "manifest_file": file, "command": "kubectl apply -f " + file, "namespaces": e.DeployNamespaces, "note": manifestNote})
+}
+
+// discoverAgentImage is the official repository digest of the image this server's container
+// runs, read through the local Docker socket: bytes the operator already installed, not a
+// registry tag that can move. "" when there is none.
+func (s *Server) discoverAgentImage(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	host, _ := os.Hostname()
+	digests, _ := docker.New(s.config.Server.DockerSocket).ContainerImageDigests(ctx, host)
+	for _, digest := range digests {
+		if strings.HasPrefix(digest, "ghcr.io/busnes-app/kyyard@sha256:") && config.IsPinnedAgentImage(digest) {
+			return digest
+		}
+	}
+	return ""
 }
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }

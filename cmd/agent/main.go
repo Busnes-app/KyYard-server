@@ -193,7 +193,7 @@ func checkFlags(kube bool, socket, link, linkFile string) error {
 func ledgerDir(dir string, logf func(string, ...any)) string {
 	f, err := os.CreateTemp(dir, ".probe-*")
 	if err != nil {
-		logf("scratch directory %s is not writable (%v); command and deployment ledgers stay in memory until the full manifest is applied again", dir, err)
+		logf("scratch directory %s is not writable (%v); command and deployment ledgers stay in memory until the regenerated manifest is applied again", dir, err)
 		return ""
 	}
 	f.Close()

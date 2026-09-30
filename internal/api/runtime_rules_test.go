@@ -27,11 +27,13 @@ type runtimeFleet struct {
 	url     string
 	cluster enrolledAgent
 	host    enrolledAgent
+	cfg     *config.Config
 }
 
 func newRuntimeFleet(t *testing.T) runtimeFleet {
 	t.Helper()
-	s, st, _ := setupTestServer(t)
+	s, st, cfg := setupTestServer(t)
+	cfg.Server.AgentImage = agentImage
 	ctx := context.Background()
 	ts := st.Tenancy()
 	if err := ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"}); err != nil {
@@ -46,7 +48,7 @@ func newRuntimeFleet(t *testing.T) runtimeFleet {
 	}
 	httpSrv := httptest.NewServer(s)
 	t.Cleanup(httpSrv.Close)
-	f := runtimeFleet{s: s, st: st, admin: admin, url: httpSrv.URL}
+	f := runtimeFleet{s: s, st: st, admin: admin, url: httpSrv.URL, cfg: cfg}
 	f.cluster = enrollClusterAgent(t, s, st, "usr_envadmin", "cluster-1")
 	f.host = enrollAgent(t, s, st, admin, "host-1")
 	for _, ag := range []enrolledAgent{f.cluster, f.host} {

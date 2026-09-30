@@ -11,8 +11,9 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
-// An administrator records the namespaces a cluster's agent may write in and gets the RBAC-only
-// manifest granting exactly those; the call is audited with the list. A Docker endpoint has no
+// An administrator records the namespaces a cluster's agent may write in and gets the manifest
+// granting exactly those, with the agent Deployment on the server's agent image and no
+// enrollment Secret; the call is audited with the list. Without a pinned image it is refused. A Docker endpoint has no
 // manifest, a bad list is refused, and a member who may not enroll learns nothing.
 func TestEndpointManifestRoute(t *testing.T) {
 	f := newRuntimeFleet(t)
@@ -29,7 +30,7 @@ func TestEndpointManifestRoute(t *testing.T) {
 	if out.File != "kyyard-agent-cluster-1.yaml" || out.Command != "kubectl apply -f kyyard-agent-cluster-1.yaml" || !slices.Equal(out.Namespaces, []string{"billing", "shop"}) {
 		t.Fatalf("response %+v", out)
 	}
-	if strings.Count(out.Manifest, "name: kyyard-agent-deploy\n  namespace: \"billing\"") != 2 || strings.Contains(out.Manifest, "kind: Deployment") || strings.Contains(out.Manifest, "kyyard-agent-enrollment") || !strings.Contains(out.Note, "delete role,rolebinding kyyard-agent-deploy") {
+	if strings.Count(out.Manifest, "name: kyyard-agent-deploy\n  namespace: \"billing\"") != 2 || !strings.Contains(out.Manifest, "kind: Deployment") || !strings.Contains(out.Manifest, "image: \""+agentImage+"\"") || strings.Contains(out.Manifest, "kind: Secret") || strings.Contains(out.Manifest, "kyyard=") || !strings.Contains(out.Note, "delete role,rolebinding kyyard-agent-deploy") {
 		t.Fatalf("manifest:\n%s", out.Manifest)
 	}
 	var stored []string
@@ -65,6 +66,11 @@ func TestEndpointManifestRoute(t *testing.T) {
 			t.Errorf("%s %s: %d %s", tc.id, tc.body, w.Code, w.Body.String())
 		}
 	}
+	f.cfg.Server.AgentImage, f.cfg.Server.DockerSocket = "", ""
+	if w := tenantRequest(f.s, f.admin, "POST", route(f.cluster.id), `{"namespaces":["shop"]}`, true); w.Code != 409 || !strings.Contains(w.Body.String(), "agent_image_unpinned") {
+		t.Fatalf("no image: %d %s", w.Code, w.Body.String())
+	}
+	f.cfg.Server.AgentImage = agentImage
 	viewer := loginAs(t, f.s, f.st, "viewer", "user")
 	if err := f.st.Tenancy().SetMembership(context.Background(), &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_viewer", Role: store.RoleReadOnly, Status: "active"}); err != nil {
 		t.Fatal(err)
