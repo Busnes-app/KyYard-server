@@ -36,7 +36,7 @@ export const STEP_CODES: Record<string, string> = {
   namespace_not_granted: 'This namespace is not granted to KyYard on this cluster.',
   pvc_retention: "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).",
   container_missing: 'The container no longer exists.',
-  exited_early: 'The new container exited or restarted right after starting.',
+  exited_early: 'The new container exited, restarted or turned unhealthy right after starting.',
   identity_mismatch: 'The container is not the one this plan was decided about.',
   image_identity_mismatch: 'The host reported a different image identity than the plan pinned.',
   configuration_unreported: "The runtime did not report the container's full configuration.",

@@ -4,7 +4,7 @@ import { Check, Group, int, Lines, num, Num, Text, type GroupProps } from './fie
 const MiB = 1048576;
 // Swap and PIDs use -1 for unlimited; it stays -1 through the MiB conversion.
 const toMiB = (bytes: number) => bytes < 0 ? bytes : bytes / MiB;
-const toBytes = (mib: number) => mib < 0 ? -1 : Math.round(mib * MiB);
+const toBytes = (mib: number) => mib === -1 ? -1 : Math.round(mib * MiB);
 
 // Changing the reference drops the kept digest and image ID: both belong to the reference they
 // were read with. The server keeps the local image whenever an image ID is present.

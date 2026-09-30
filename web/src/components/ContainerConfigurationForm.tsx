@@ -174,7 +174,7 @@ export function ContainerConfigurationForm({ base, mode, initial, container, onS
       </>}
       {incomplete && <p>Complete every row: variable names, container ports, device paths and the health check command.</p>}
       {malformed && <p>Enter a number in every numeric field.</p>}
-      {negative && <p>Numbers cannot be negative, except -1 for unlimited memory and swap or PIDs.</p>}
+      {negative && <p>Numbers cannot be negative, except -1 (unlimited) for Memory and swap or PIDs limit.</p>}
       <label>{run ? 'Type the new container name to confirm' : `Type the container name ${expected} to confirm`}<input value={confirm} autoComplete="off" onChange={(e) => setConfirm(e.target.value)} /></label>
       <div><button type="button" disabled={!ready || busy || pending || lost} onClick={() => void submit()}>{run ? 'Run container' : 'Save and recreate'}</button></div>
     </div>

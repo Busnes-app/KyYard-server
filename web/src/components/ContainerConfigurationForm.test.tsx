@@ -354,12 +354,13 @@ it.each([
   ['Memory (MiB)', '-1'],
   ['Maximum retries', '-1'],
   ['PIDs limit', '-2'],
+  ['Memory and swap (MiB)', '-5'],
 ])('refuses a negative %s of %s', (label, value) => {
   edit();
   confirmName('web');
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
   expect(save().disabled).toBe(true);
-  expect(screen.getByText('Numbers cannot be negative, except -1 for unlimited memory and swap or PIDs.')).toBeTruthy();
+  expect(screen.getByText('Numbers cannot be negative, except -1 (unlimited) for Memory and swap or PIDs limit.')).toBeTruthy();
 });
 
 it('accepts -1 for the PIDs limit', () => {
