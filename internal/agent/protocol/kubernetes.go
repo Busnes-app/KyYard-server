@@ -214,7 +214,10 @@ func clampKubernetes(k *KubernetesInventory, truncated map[string]bool) {
 	for i := range k.Pods {
 		p := &k.Pods[i]
 		p.Namespace, p.Name, p.Phase, p.Node = name(p.Namespace), name(p.Name), short(p.Phase), name(p.Node)
-		p.OwnerKind, p.OwnerName, p.UID = short(p.OwnerKind), name(p.OwnerName), short(p.UID)
+		p.OwnerKind, p.OwnerName = short(p.OwnerKind), name(p.OwnerName)
+		if !deploymentUUID.MatchString(p.UID) {
+			p.UID = ""
+		}
 		if len(p.Containers) > MaxPodContainers {
 			p.Containers, truncated["pods"] = p.Containers[:MaxPodContainers], true
 		}
@@ -388,8 +391,8 @@ func (p PodTarget) Validate() error {
 // Docker, a pod for Kubernetes, never both.
 func (r LogRequest) ValidateFor(runtime string) error {
 	if runtime == RuntimeKubernetes {
-		if r.Container != "" || r.Pod == nil {
-			return errors.New("a Kubernetes log request names a pod and no container ID")
+		if r.Container != "" || r.Pod == nil || r.Pod.UID != "" {
+			return errors.New("a Kubernetes log request names a pod, with no UID, and no container ID")
 		}
 		return r.Pod.Validate()
 	}

@@ -207,10 +207,11 @@ func TestPodExecCloseUnblocksReadAndWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	errs := make(chan error, 2)
-	go func() { _, err := s.Read(make([]byte, 16)); errs <- err }()
-	go func() { _, err := s.Write([]byte("typed")); errs <- err }()
-	time.Sleep(20 * time.Millisecond)
+	errs, ready := make(chan error, 2), make(chan struct{}, 2)
+	go func() { ready <- struct{}{}; _, err := s.Read(make([]byte, 16)); errs <- err }()
+	go func() { ready <- struct{}{}; _, err := s.Write([]byte("typed")); errs <- err }()
+	<-ready
+	<-ready
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Add(1)
@@ -508,7 +509,7 @@ func TestBaselineViolation(t *testing.T) {
 		want   string
 	}{
 		{"compliant", func(p *corev1.Pod) {
-			p.Annotations = map[string]string{"container.apparmor.security.beta.kubernetes.io/app": "runtime/default"}
+			p.Annotations = map[string]string{"container.apparmor.security.beta.kubernetes.io/app": "runtime/default", "seccomp.security.alpha.kubernetes.io/pod": "runtime/default"}
 			p.Spec.Volumes = []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 			p.Spec.SecurityContext = &corev1.PodSecurityContext{
 				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
@@ -547,6 +548,12 @@ func TestBaselineViolation(t *testing.T) {
 		{"apparmor annotation", func(p *corev1.Pod) {
 			p.Annotations = map[string]string{"container.apparmor.security.beta.kubernetes.io/app": "unconfined"}
 		}, "apparmor"},
+		{"legacy pod seccomp annotation", func(p *corev1.Pod) {
+			p.Annotations = map[string]string{"seccomp.security.alpha.kubernetes.io/pod": "unconfined"}
+		}, "seccomp"},
+		{"legacy container seccomp annotation", func(p *corev1.Pod) {
+			p.Annotations = map[string]string{"container.seccomp.security.alpha.kubernetes.io/app": "unconfined"}
+		}, "seccomp"},
 		{"apparmor field", sc(func(s *corev1.SecurityContext) {
 			s.AppArmorProfile = &corev1.AppArmorProfile{Type: corev1.AppArmorProfileTypeUnconfined}
 		}), "apparmor"},

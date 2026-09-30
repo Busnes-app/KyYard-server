@@ -182,7 +182,7 @@ type NetworkAttachment struct {
 }
 
 // MaxNetworkAttachments bounds a container's reported networks and attachments alike.
-const MaxNetworkAttachments = 32
+const MaxNetworkAttachments = 16
 
 // HealthStates is the closed vocabulary of Container.Health and ContainerInspection.Health.
 var HealthStates = map[string]bool{"none": true, "starting": true, "healthy": true, "unhealthy": true}
