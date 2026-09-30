@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,5 +106,45 @@ func TestOneSlowContainerSpendsOneBudget(t *testing.T) {
 	// unanswered counter is unknown rather than zero.
 	if len(m.Samples) != 1 || m.Samples[0].RestartCount != -1 {
 		t.Fatalf("expected one sample with an unknown restart count, got %+v", m.Samples)
+	}
+}
+
+// A snapshot already inspects each running container; the samples that follow reuse that read
+// for the restart counter instead of inspecting again. Without one, Stats reads it itself.
+func TestStatsReusesTheSnapshotInspect(t *testing.T) {
+	var inspects atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch p := r.URL.Path; {
+		case strings.HasSuffix(p, "/info"), strings.HasSuffix(p, "/version"):
+			_, _ = w.Write([]byte(`{}`))
+		case strings.HasSuffix(p, "/containers/json"):
+			_, _ = w.Write([]byte(`[{"Id":"c1","Names":["/one"],"State":"running"}]`))
+		case strings.HasSuffix(p, "/images/json"), strings.HasSuffix(p, "/networks"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.HasSuffix(p, "/volumes"):
+			_, _ = w.Write([]byte(`{"Volumes":[]}`))
+		case strings.HasSuffix(p, "/containers/c1/json"):
+			inspects.Add(1)
+			_, _ = w.Write([]byte(`{"RestartCount":3,"State":{"StartedAt":"2026-09-29T09:30:00Z"}}`))
+		case strings.HasSuffix(p, "/containers/c1/stats"):
+			_, _ = w.Write([]byte(`{"read":"2026-09-16T12:00:00Z","cpu_stats":{"cpu_usage":{"total_usage":1},"system_cpu_usage":2,"online_cpus":1},"memory_stats":{"usage":8,"limit":16},"pids_stats":{"current":1}}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c := docker.NewHTTP(srv.Client(), srv.URL)
+	if _, err := c.Snapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m := c.Stats(context.Background(), []string{"c1"})
+	if got := inspects.Load(); got != 1 || len(m.Samples) != 1 || m.Samples[0].RestartCount != 3 {
+		t.Fatalf("inspects %d samples %+v", got, m.Samples)
+	}
+	// The snapshot's read is used once; the next cycle's Stats without a snapshot reads again.
+	m = c.Stats(context.Background(), []string{"c1"})
+	if got := inspects.Load(); got != 2 || m.Samples[0].RestartCount != 3 {
+		t.Fatalf("inspects %d samples %+v", got, m.Samples)
 	}
 }

@@ -234,3 +234,27 @@ func TestSnapshotInspectBudgetBoundsASlowDaemon(t *testing.T) {
 		}
 	}
 }
+
+// Past the inspect cap, each snapshot starts where the last one stopped, so every running
+// container gets its facts within a few cycles instead of the same first 200 every time.
+func TestSnapshotRotatesPastTheCap(t *testing.T) {
+	srv := fakeEngine(t, 210)
+	defer srv.Close()
+	c := docker.NewHTTP(srv.Client(), srv.URL)
+	first, err := c.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 200; i < 210; i++ {
+		if !first.Containers[i].StartedAt.IsZero() || second.Containers[i].StartedAt.IsZero() {
+			t.Fatalf("container %d: first %v second %v", i, first.Containers[i].StartedAt, second.Containers[i].StartedAt)
+		}
+	}
+	if !second.Containers[195].StartedAt.IsZero() {
+		t.Fatal("the second snapshot went past the cap")
+	}
+}

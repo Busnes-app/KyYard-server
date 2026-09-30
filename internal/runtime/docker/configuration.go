@@ -49,7 +49,7 @@ type inspectedConfiguration struct {
 		Memory, MemorySwap, NanoCpus                  int64
 		PidsLimit                                     *int64
 		CapAdd, CapDrop, SecurityOpt, ExtraHosts, Dns []string
-		Devices                                       []struct{ PathOnHost, PathInContainer, CgroupPermissions string }
+		Devices                                       []device
 		LogConfig                                     struct {
 			Type   string
 			Config map[string]string
@@ -288,13 +288,28 @@ func (o *configurationRead) cut(code string) {
 	}
 }
 
-// list caps l at protocol.MaxListEntries, naming field when it cuts. It never returns nil.
-func list[T any](o *configurationRead, field string, l []T) []T {
-	if len(l) > protocol.MaxListEntries {
-		o.cut("list_truncated:" + field)
-		l = l[:protocol.MaxListEntries]
+// list keeps the entries of l that fit, capped at protocol.MaxListEntries, naming field when it
+// cuts. It never returns nil.
+func list[T any](o *configurationRead, field string, l []T, fits func(T) bool) []T {
+	out := []T{}
+	for _, e := range l {
+		if !fits(e) || len(out) == protocol.MaxListEntries {
+			o.cut("list_truncated:" + field)
+			continue
+		}
+		out = append(out, e)
 	}
-	return append([]T{}, l...)
+	return out
+}
+
+// fits is a list entry the protocol accepts: clean text of at most max bytes.
+func fits(max int) func(string) bool {
+	return func(s string) bool { return protocol.CleanText(s, max) == s }
+}
+
+// deviceFits is a device the protocol accepts: both paths non-empty entries that fit.
+func deviceFits(d device) bool {
+	return d.PathOnHost != "" && d.PathInContainer != "" && fits(protocol.MaxListEntryBytes)(d.PathOnHost) && fits(protocol.MaxListEntryBytes)(d.PathInContainer)
 }
 
 // argv caps l at protocol.MaxArgv entries of protocol.MaxArgvEntryBytes, cutting at the first
@@ -348,10 +363,11 @@ func configurationFacts(in inspectedConfiguration, repoDigests []string) *config
 	}
 	o.Privileged, o.ReadOnlyRootfs, o.Init = h.Privileged, h.ReadonlyRootfs, h.Init != nil && *h.Init
 	o.TTY, o.StdinOpen = cfg.Tty, cfg.OpenStdin
-	o.CapAdd, o.CapDrop = list(o, "cap_add", h.CapAdd), list(o, "cap_drop", h.CapDrop)
-	o.SecurityOpt, o.ExtraHosts, o.DNS = list(o, "security_opt", h.SecurityOpt), list(o, "extra_hosts", h.ExtraHosts), list(o, "dns", h.Dns)
+	entry := fits(protocol.MaxListEntryBytes)
+	o.CapAdd, o.CapDrop = list(o, "cap_add", h.CapAdd, entry), list(o, "cap_drop", h.CapDrop, entry)
+	o.SecurityOpt, o.ExtraHosts, o.DNS = list(o, "security_opt", h.SecurityOpt, entry), list(o, "extra_hosts", h.ExtraHosts, entry), list(o, "dns", h.Dns, entry)
 	o.Devices = []protocol.Device{}
-	for _, d := range list(o, "devices", h.Devices) {
+	for _, d := range list(o, "devices", h.Devices, deviceFits) {
 		o.Devices = append(o.Devices, protocol.Device{Host: d.PathOnHost, Container: d.PathInContainer, Permissions: cmpOr(d.CgroupPermissions, "rwm")})
 	}
 	o.Log.Driver = h.LogConfig.Type
@@ -378,12 +394,16 @@ func cmpOr(s, def string) string {
 }
 
 // env splits KEY=VALUE on the first "="; a later duplicate wins, as in Docker, and an entry
-// the protocol would refuse is cut.
+// the protocol would refuse, or with no "=" and so no value to carry, is cut.
 func env(o *configurationRead, l []string) []protocol.EnvEntry {
 	var names []string
 	values := map[string]string{}
 	for _, kv := range l {
-		k, v, _ := strings.Cut(kv, "=")
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			o.cut("env_truncated")
+			continue
+		}
 		if _, dup := values[k]; !dup {
 			names = append(names, k)
 		}
@@ -531,7 +551,7 @@ func networks(o *configurationRead, in inspectedConfiguration) []protocol.Networ
 		}
 		n := in.NetworkSettings.Networks[name]
 		aliases := slices.DeleteFunc(slices.Clone(n.Aliases), func(a string) bool { return a == in.ID[:min(12, len(in.ID))] })
-		spec := protocol.NetworkAttachmentSpec{Name: name, Aliases: list(o, "aliases", aliases)}
+		spec := protocol.NetworkAttachmentSpec{Name: name, Aliases: list(o, "aliases", aliases, fits(256))}
 		if n.IPAMConfig != nil {
 			spec.IP = n.IPAMConfig.IPv4Address
 		}

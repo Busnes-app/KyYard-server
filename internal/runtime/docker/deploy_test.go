@@ -1,11 +1,13 @@
 package docker_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +50,8 @@ type fakeDeployEngine struct {
 	stopStatus       int            // 204 default; 304 allowed
 	stopDelay        time.Duration
 	renameStatus     int
+	renameBackStatus int // a rename giving the old container its name back; renameStatus when 0
+	pauseStatus      int // POST /containers/{old}/pause, the rollback's re-pause; 204 when 0
 	createStatus     int // 201 default
 	startStatus      int
 	removeStatus     int
@@ -156,7 +160,13 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			time.Sleep(f.stopDelay)
 			w.WriteHeader(f.stopStatus)
 		case r.Method == "POST" && (strings.HasSuffix(p, "/containers/"+oldID+"/rename") || strings.HasSuffix(p, "/containers/"+otherOldID+"/rename")):
+			if f.renameBackStatus != 0 && r.URL.RawQuery == "name=shop-web-1" {
+				w.WriteHeader(f.renameBackStatus)
+				return
+			}
 			w.WriteHeader(f.renameStatus)
+		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/pause"):
+			w.WriteHeader(cmp.Or(f.pauseStatus, 204))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/create"):
 			w.WriteHeader(f.createStatus)
 			_, _ = w.Write([]byte(`{"Id":"` + f.createdID + `","Warnings":[]}`))
@@ -1296,11 +1306,24 @@ func TestDeployExplicitRunBindNeedsAcknowledgement(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	started := false
 	res := f.client().Deploy(context.Background(), explicitRequest(s), func() { started = true })
-	if got := explicitSteps(res); got != "image=succeeded,create=denied:bind_missing,start=skipped" || started || res.Validate() != nil {
+	if got := explicitSteps(res); got != "create=denied:bind_missing,start=skipped" || started || res.Validate() != nil {
 		t.Fatalf("unacknowledged: %s started=%v", got, started)
 	}
-	if _, created := f.call("POST", "/containers/create"); created {
-		t.Fatal("created with an unacknowledged bind")
+	if got := strings.Join(f.steps(), ","); got != "GET /info" {
+		t.Fatalf("daemon called with an unacknowledged bind: %s", got)
+	}
+	// Nothing is pulled and no volume created for a run that is refused.
+	pulled := s
+	pulled.ImageID, pulled.Pull = "", &protocol.ImagePull{Reference: "ghcr.io/org/app@" + pullDigest, Digest: pullDigest}
+	pulled.Mounts = append(pulled.Mounts, protocol.Mount{Kind: protocol.MountVolume, Source: "data", Target: "/v"})
+	req := explicitRequest(pulled)
+	req.Volumes = []string{"data"}
+	f = newFakeDeployEngine(t)
+	if got := explicitSteps(f.client().Deploy(context.Background(), req, func() {})); got != "create=denied:bind_missing,start=skipped" {
+		t.Fatalf("pulled: %s", got)
+	}
+	if got := strings.Join(f.steps(), ","); got != "GET /info" {
+		t.Fatalf("pulled with an unacknowledged bind: %s", got)
 	}
 	s.Explicit.AcknowledgedBinds = []string{"/srv/data"}
 	f = newFakeDeployEngine(t)
@@ -1431,6 +1454,7 @@ func TestDeployExplicitStartWatch(t *testing.T) {
 		"exited":     {[]string{running, `{"Status":"exited","Running":false}`}, "start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped"},
 		"restarting": {[]string{`{"Status":"restarting","Running":true}`}, "start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped"},
 		"dead":       {[]string{`{"Status":"dead","Running":false}`}, "start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped"},
+		"unhealthy":  {[]string{starting, `{"Status":"running","Running":true,"Health":{"Status":"unhealthy"}}`}, "start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped"},
 		"stays":      {[]string{running}, "start=succeeded,remove=succeeded"},
 		"starting":   {[]string{starting}, "start=succeeded,remove=succeeded"},
 		"healthy":    {[]string{starting, healthy}, "start=succeeded,remove=succeeded"},
@@ -1533,5 +1557,127 @@ func TestDeployExplicitRecheckComparesEveryKey(t *testing.T) {
 	res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
 	if got := explicitSteps(res); !strings.Contains(got, "recheck=denied:configuration_drift") {
 		t.Fatalf("steps: %s", got)
+	}
+}
+
+// A run's container that started stays when only its identity read fails: the start succeeded,
+// and removing it would discard a running workload. A recreate still rolls back.
+func TestDeployExplicitRunKeepsAStartedContainer(t *testing.T) {
+	s := explicitService()
+	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
+	for name, c := range map[string]struct {
+		set  func(*fakeDeployEngine)
+		step string
+	}{
+		"unreadable": {func(f *fakeDeployEngine) { f.inspectNewStatus = 500 }, "start=failed:identity_unreadable: " + newID},
+		"unverified": {func(f *fakeDeployEngine) { f.startedImage = oldImage }, "start=failed:identity_unverified: " + newID},
+	} {
+		f := newFakeDeployEngine(t)
+		c.set(f)
+		res := f.client().Deploy(context.Background(), explicitRequest(s), func() {})
+		if got := explicitSteps(res); got != "image=succeeded,create=succeeded,"+c.step || res.Validate() != nil {
+			t.Fatalf("%s: %s", name, got)
+		}
+		if _, removed := f.call("DELETE", "/containers/"+newID); removed {
+			t.Fatalf("%s: a started run container was removed", name)
+		}
+	}
+	f := newFakeDeployEngine(t)
+	f.inspectNewStatus, f.stopStatus = 500, 304
+	if got := explicitSteps(f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})); !strings.HasSuffix(got, "start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped") {
+		t.Fatalf("recreate: %s", got)
+	}
+}
+
+// An undo that cannot give the old container its name back says so in a rollback step.
+func TestDeployExplicitUndoFailureIsReported(t *testing.T) {
+	for name, c := range map[string]struct {
+		set   func(*fakeDeployEngine)
+		steps string
+	}{
+		"create, rename back": {func(f *fakeDeployEngine) { f.createStatus, f.renameBackStatus = 500, 500 },
+			"create=failed:runtime_status: 500,rollback=failed:rollback_failed,stop=skipped,start=skipped,remove=skipped"},
+		"stop, rename back": {func(f *fakeDeployEngine) { f.stopStatus, f.renameBackStatus = 500, 500 },
+			"create=succeeded,stop=failed:runtime_status: 500,rollback=failed:rollback_failed,start=skipped,remove=skipped"},
+		"stop, remove new": {func(f *fakeDeployEngine) { f.stopStatus, f.removeNewStatus = 500, 500 },
+			"create=succeeded,stop=failed:runtime_status: 500,rollback=failed:rollback_failed,start=skipped,remove=skipped"},
+		"start, rename back": {func(f *fakeDeployEngine) { f.startStatus, f.renameBackStatus = 500, 500 },
+			"create=succeeded,stop=succeeded,start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped"},
+	} {
+		f := newFakeDeployEngine(t)
+		c.set(f)
+		res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+		if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,"+c.steps || res.Validate() != nil {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	// A successful undo adds no step.
+	f := newFakeDeployEngine(t)
+	f.createStatus = 500
+	if got := explicitSteps(f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})); strings.Contains(got, "rollback") {
+		t.Fatalf("undone: %s", got)
+	}
+}
+
+// A paused old container comes back paused after a rollback; a pause that fails is reported.
+func TestDeployExplicitRollbackRestoresPaused(t *testing.T) {
+	for _, pauseStatus := range []int{204, 500} {
+		f := newFakeDeployEngine(t)
+		f.oldContainer["State"] = map[string]any{"Status": "paused", "Running": true, "Paused": true}
+		f.startStatus, f.pauseStatus = 500, pauseStatus
+		res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+		want := "start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped"
+		if pauseStatus != 204 {
+			want = "start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped"
+		}
+		if got := explicitSteps(res); !strings.HasSuffix(got, want) || res.Validate() != nil {
+			t.Fatalf("pause %d: %s", pauseStatus, got)
+		}
+		if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/"+oldID+"/start,POST /containers/"+oldID+"/pause") {
+			t.Fatalf("pause %d calls: %s", pauseStatus, got)
+		}
+	}
+	// A running old container is not paused.
+	f := newFakeDeployEngine(t)
+	f.oldContainer["State"] = map[string]any{"Status": "running", "Running": true, "Paused": false}
+	f.startStatus = 500
+	f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+	if _, paused := f.call("POST", "/containers/"+oldID+"/pause"); paused {
+		t.Fatal("a running container was paused")
+	}
+}
+
+// A list longer than the frame can carry would be cut by the configuration read, so the explicit
+// precondition refuses it rather than recreating without the tail.
+func TestDeployExplicitRefusesTruncatedLists(t *testing.T) {
+	long := strings.Repeat("a", protocol.MaxListEntryBytes+1)
+	for name, edit := range map[string]func(map[string]any){
+		"cap_add": func(c map[string]any) {
+			c["HostConfig"].(map[string]any)["CapAdd"] = slices.Repeat([]string{"CAP_NET_ADMIN"}, protocol.MaxListEntries+1)
+		},
+		"dns entry": func(c map[string]any) { c["HostConfig"].(map[string]any)["Dns"] = []string{long} },
+		"devices": func(c map[string]any) {
+			c["HostConfig"].(map[string]any)["Devices"] = slices.Repeat([]any{map[string]any{"PathOnHost": "/dev/fuse", "PathInContainer": "/dev/fuse", "CgroupPermissions": "rwm"}}, protocol.MaxListEntries+1)
+		},
+		"log options": func(c map[string]any) {
+			opts := map[string]any{}
+			for i := range protocol.MaxLogOptions + 1 {
+				opts[strconv.Itoa(i)] = "x"
+			}
+			c["HostConfig"].(map[string]any)["LogConfig"] = map[string]any{"Type": "json-file", "Config": opts}
+		},
+		"aliases": func(c map[string]any) {
+			c["NetworkSettings"] = map[string]any{"Networks": map[string]any{"bridge": map[string]any{"Aliases": slices.Repeat([]string{"a"}, protocol.MaxListEntries+1)}}}
+		},
+		"ports": func(c map[string]any) {
+			c["HostConfig"].(map[string]any)["PortBindings"] = map[string]any{"80/tcp": []any{map[string]string{"HostIp": "127.0.0.1", "HostPort": ""}}}
+		},
+	} {
+		f := newFakeDeployEngine(t)
+		edit(f.oldContainer)
+		res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+		if res.Steps[0].Outcome != protocol.OutcomeDenied || stepText(res.Steps[0]) != "configuration_unreported" || len(f.steps()) != 2 || res.Validate() != nil {
+			t.Errorf("%s: %s calls %v", name, explicitSteps(res), f.steps())
+		}
 	}
 }
