@@ -19,12 +19,13 @@ const canonical = (c: WorkloadContainer): WorkloadContainer => ({
 const build = (s: WorkloadSpec): WorkloadSpec => ({ ...s, containers: s.containers.map(canonical), init_containers: s.init_containers.map(canonical) });
 const RESOURCES = [['cpu_request', 'CPU request'], ['cpu_limit', 'CPU limit'], ['memory_request', 'Memory request'], ['memory_limit', 'Memory limit']] as const;
 
-type FormProps = { base: string; initial: WorkloadConfiguration; onSent: (command: DirectCommand) => void; pending?: boolean };
+// onReread asks the owner for a fresh read; conflict is a settled apply refused as stale.
+type FormProps = { base: string; initial: WorkloadConfiguration; onSent: (command: DirectCommand) => void; pending?: boolean; onReread?: () => void; conflict?: boolean };
 
 // WorkloadConfigurationForm edits replicas and each container's image, command, arguments,
 // literal environment and resources. Init containers, strategy and references pass through as
 // read. Save applies at the read's resource_version, so a workload changed since is refused.
-export function WorkloadConfigurationForm({ base, initial, onSent, pending = false }: FormProps) {
+export function WorkloadConfigurationForm({ base, initial, onSent, pending = false, onReread, conflict = false }: FormProps) {
   const target = initial.target;
   const start = build(toWorkloadSpec(initial));
   const [draft, setDraft] = useState<WorkloadSpec>(start);
@@ -50,7 +51,7 @@ export function WorkloadConfigurationForm({ base, initial, onSent, pending = fal
       if (!alive.current) return;
       setConfirm(''); onSent(cmd);
     } catch {
-      if (alive.current) { setLost(true); setError('Connection lost. The change may have been sent. Check recent activity and read the workload again before retrying.'); }
+      if (alive.current) { setLost(true); setError("Connection lost. The change may have been sent. Check the workload's Activity tab and read the workload again before retrying."); }
     } finally { if (alive.current) setBusy(false); }
   };
   return <section className="ky-config-form" aria-label="Edit workload">
@@ -74,7 +75,8 @@ export function WorkloadConfigurationForm({ base, initial, onSent, pending = fal
       {badReplicas && <p>Enter replicas as a whole number from 0 to 1000.</p>}
       {incomplete && <p>Every container needs an image and every variable a name.</p>}
       <label>{`Type the workload name ${target.name} to confirm`}<input value={confirm} autoComplete="off" onChange={(e) => setConfirm(e.target.value)} /></label>
-      <div><button type="button" disabled={!ready || busy || pending || lost} onClick={() => void submit()}>Save and apply</button></div>
+      <div><button type="button" disabled={!ready || busy || pending || lost} onClick={() => void submit()}>Save and apply</button>
+        {(lost || conflict) && onReread && <button type="button" className="btn-secondary" onClick={onReread}>Read again</button>}</div>
     </div>
     {error && <p role="alert" className="dr-alert dr-alert-error">{error}</p>}
   </section>;
@@ -111,7 +113,7 @@ type Read = { kind: 'loading' } | { kind: 'ready'; data: WorkloadConfiguration }
 
 // EditWorkload reads the configuration (literal environment values included) once per mount and
 // hands it to the form; a read the server refuses as application-managed renders managed.
-export function EditWorkload({ base, target, pending, onSent, managed }: { base: string; target: WorkloadRef; pending: boolean; onSent: (command: DirectCommand) => void; managed: ReactNode }) {
+export function EditWorkload({ base, target, pending, onSent, managed, conflict = false }: { base: string; target: WorkloadRef; pending: boolean; onSent: (command: DirectCommand) => void; managed: ReactNode; conflict?: boolean }) {
   const [attempt, setAttempt] = useState(0);
   const [read, setRead] = useState<Read>({ kind: 'loading' });
   const { namespace, kind, name } = target;
@@ -142,6 +144,6 @@ export function EditWorkload({ base, target, pending, onSent, managed }: { base:
   return <section className="panel" aria-label="Configuration">
     {read.kind === 'loading' ? <p role="status">Reading configuration…</p>
       : read.kind === 'error' ? <><p role="status">{read.text}</p><button type="button" className="btn-secondary" onClick={() => setAttempt((n) => n + 1)}>Read again</button></>
-      : <WorkloadConfigurationForm base={base} initial={read.data} pending={pending} onSent={onSent} />}
+      : <WorkloadConfigurationForm base={base} initial={read.data} pending={pending} onSent={onSent} conflict={conflict} onReread={() => setAttempt((n) => n + 1)} />}
   </section>;
 }

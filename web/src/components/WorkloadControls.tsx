@@ -18,7 +18,7 @@ export function useClusterCommand(base: string, label: string, onStatus: (text: 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const say = (text: string) => onStatus(text ? `${label} · ${text}` : '');
   const { command, error } = useCommand(base, sent, (data) => { say(commandLine(data)); onSettled?.(); });
-  useEffect(() => { if (error) say(error); }, [error]);
+  useEffect(() => { if (error) say("Could not read the command result. Check the cluster's Activity tab before trying again."); }, [error]);
   const send = async (body: object) => {
     setBusy(true); say('');
     try {
@@ -28,7 +28,7 @@ export function useClusterCommand(base: string, label: string, onStatus: (text: 
       const cmd: DirectCommand = await resp.json();
       if (!alive.current) return;
       setSent(cmd); say(cmd.outcome ? commandLine(cmd) : WAITING);
-    } catch { if (alive.current) say('Connection lost. The action may have run. Check recent activity before trying again.'); }
+    } catch { if (alive.current) say("Connection lost. The action may have run. Check the cluster's Activity tab before trying again."); }
     finally { if (alive.current) setBusy(false); }
   };
   return { send, say, busy: busy || (command !== null && !command.outcome) };

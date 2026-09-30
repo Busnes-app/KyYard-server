@@ -256,7 +256,7 @@ it('renders a Kubernetes cluster, its mapped applications, filters by namespace 
   expect(screen.getByText('cordoned')).toBeTruthy();
   expect(screen.getByRole('status').textContent).toContain('truncated: pods');
   // No Docker resource or control is rendered for a cluster.
-  for (const name of ['Containers', 'Images', 'Networks', 'Volumes', 'Projects', 'Activity']) expect(screen.queryByRole('button', { name })).toBeNull();
+  for (const name of ['Containers', 'Images', 'Networks', 'Volumes', 'Projects']) expect(screen.queryByRole('button', { name })).toBeNull();
   expect(screen.queryByText('Actions')).toBeNull();
   expect(screen.queryByText(/Pull an image/)).toBeNull();
   const applications = screen.getByRole('region', { name: 'Applications' }).textContent;
@@ -337,4 +337,33 @@ it('reports a cluster workload command on the status line above the tables', asy
   await waitFor(() => expect(screen.getAllByRole('status').some((s) => s.textContent === 'shop/web · Command sent; waiting for the cluster agent. Do not retry while its outcome is unknown.')).toBe(true));
   expect(posted).toEqual([JSON.stringify({ action: 'workload.restart', reference: 'shop/deployment/web' })]);
   confirm.mockRestore();
+});
+
+it('lists every cluster command, pod deletes included, under the cluster Activity tab in fixed words', async () => {
+  const now = new Date().toISOString();
+  const cluster = { ...endpoint, runtime: 'kubernetes', capabilities: ['kubernetes.inventory'] };
+  const requests: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.includes('/commands')) return json([
+      { id: 'k1', action: 'pod.delete', reference: 'shop/pod/web-1', outcome: 'succeeded', created_at: now },
+      { id: 'k2', action: 'workload.scale', reference: 'shop/deployment/web', outcome: 'denied', detail: 'forbidden', created_at: now },
+      { id: 'k3', action: 'workload.restart', reference: 'shop/deployment/web', outcome: '', created_at: now },
+      { id: 'k4', action: '<b>odd</b>', reference: 'shop/deployment/web', outcome: 'exploded', detail: 'raw agent text', created_at: now },
+    ]);
+    if (url.endsWith('/inventory')) return json({}, 404);
+    if (url.endsWith('/samples') || url.endsWith('/applications') || url === '/api/organizations') return json([]);
+    return json(cluster);
+  }));
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Activity' }));
+  const list = await screen.findByRole('list');
+  expect(list.textContent).toContain('shop/pod/web-1 · Delete done.');
+  expect(list.textContent).toContain("shop/deployment/web · Scale refused. The agent's role does not allow this.");
+  expect(list.textContent).toContain('shop/deployment/web · Restart pending.');
+  expect(list.textContent).toContain('shop/deployment/web · Command unrecognised outcome.');
+  expect(list.textContent).not.toContain('odd');
+  expect(list.textContent).not.toContain('raw agent text');
+  expect(requests).toContain('/api/organizations/a/endpoints/ep_1/commands?limit=50');
 });

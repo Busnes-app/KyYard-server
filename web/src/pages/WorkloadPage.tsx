@@ -9,7 +9,7 @@ import { ResourceTable } from '../components/ResourceTable';
 import { WorkloadControls } from '../components/WorkloadControls';
 import { PodControls } from '../components/PodControls';
 import { EditWorkload, WorkloadResult } from '../components/WorkloadConfigurationForm';
-import { detailText, MANAGED, UPGRADE_CLUSTER } from '../components/workloadTexts';
+import { commandLine, UPGRADE_CLUSTER } from '../components/workloadTexts';
 import type { ApplicationInstance } from '../components/ApplicationAdoption';
 import { endpointPath, envPath, navigate, useSearchParam, workloadPath } from '../router';
 import { canConfigure, canExec, useTenantResource, type DirectCommand, type Endpoint, type Inventory, type MemberOrganization, type Pod, type Workload } from '../tenant';
@@ -37,6 +37,8 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
   // The page, not the form, polls a sent apply, so its result survives tab switches.
   const [sent, setSent] = useState<DirectCommand | null>(null);
   const { command, error: pollError } = useCommand(base, sent, inventory.reload);
+  const settled = command?.outcome ? command : null;
+  const conflict = !!settled?.result?.steps.some((s) => s.code === 'conflict');
   useEffect(() => {
     if (inventory.state === 'denied') return;
     const t = window.setInterval(() => { if (!document.hidden) inventory.reload(); }, 30_000);
@@ -50,7 +52,8 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
   const active = e?.state === 'active';
   const scope = `Cluster ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`;
   const owner = w?.instance && Array.isArray(applications.data) ? applications.data.find((i) => i.id === w.instance) : undefined;
-  const managed = <p className="dr-alert dr-alert-warn">{owner && e ? <>Managed by application {displayName(owner.project)}. <Link to={envPath(org, e.environment_id)}>Edit it there.</Link></> : MANAGED}</p>;
+  const managed = <p className="dr-alert dr-alert-warn">{owner && e ? <>Managed by application {displayName(owner.project)}. <Link to={envPath(org, e.environment_id)}>Edit it there.</Link></>
+    : <>Managed by a KyYard application. <Link to={endpointPath(org, endpoint)}>Edit it there.</Link></>}</p>;
   const podProps = { base, org, endpoint, active, role, capabilities: caps, scope, onStatus: setStatus, onRefresh: inventory.reload };
   return <div className="ky-page ky-container-page">
     <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link><span>/</span><Link to={endpointPath(org, endpoint)}>{e?.name ?? endpoint}</Link></nav>
@@ -64,7 +67,7 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
     {e && e.runtime !== 'kubernetes' && <EmptyNotice>This endpoint is not a Kubernetes cluster.</EmptyNotice>}
     {inventory.state === 'ready' && !w && <EmptyNotice>This workload is no longer reported by <Link to={endpointPath(org, endpoint)}>{e?.name ?? endpoint}</Link>. It may have been deleted.</EmptyNotice>}
     {command && <section className="panel" aria-label="Last change">{command.outcome ? <WorkloadResult command={command} />
-      : pollError ? <p role="alert" className="dr-alert dr-alert-error">Could not read the command result. Check recent activity before trying again.</p>
+      : pollError ? <p role="alert" className="dr-alert dr-alert-error">Could not read the command result. Check the workload's Activity tab before trying again.</p>
       : <p role="status">Apply sent; waiting for the cluster agent. Do not retry while its outcome is unknown.</p>}</section>}
     {w && <>
       <nav aria-label="Workload sections" className="ky-resource-tabs">
@@ -75,13 +78,13 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
         : !canConfigure(role) ? <Summary workload={w}><p>Only an organization administrator can edit this workload.</p></Summary>
         : w.application ? <Summary workload={w}>{managed}</Summary>
         : !caps.includes('kubernetes.workloads') ? <Summary workload={w}><EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice></Summary>
-        : <EditWorkload key={`${namespace}/${kind}/${workload}`} base={base} target={{ namespace, kind, name: workload }} pending={!!command && !command.outcome} onSent={(cmd) => { setSent(cmd); if (cmd.outcome) inventory.reload(); }} managed={<Summary workload={w}>{managed}</Summary>} />)}
+        : <EditWorkload key={`${namespace}/${kind}/${workload}/${settled?.id ?? ''}`} base={base} target={{ namespace, kind, name: workload }} pending={!!command && !command.outcome} conflict={conflict} onSent={(cmd) => { setSent(cmd); if (cmd.outcome) inventory.reload(); }} managed={<Summary workload={w}>{managed}</Summary>} />)}
       {tab === 'logs' && <section className="panel" aria-label="Logs"><PodPicker pods={pods} initial={podParam}>{(pod) => <ContainerPicker pod={pod}>{(c) => <ContainerLogs key={`${pod.name}/${c}`} url={`${base}/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/logs`} name={`${pod.namespace}/${pod.name}/${c}`} query={{ container: c }} />}</ContainerPicker>}</PodPicker></section>}
       {tab === 'terminal' && exec && <section className="panel" aria-label="Terminal">{!caps.includes('pod.exec') ? <EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice>
         : <PodPicker pods={pods} initial={podParam}>{(pod) => pod.phase === 'Running' && active
           ? <Suspense fallback={<p role="status">Loading terminal…</p>}><PodTerminal key={`${pod.name}/${pod.uid ?? ''}`} base={base} pod={pod} scope={scope} /></Suspense>
           : <EmptyNotice>The terminal needs a running pod on an active cluster.</EmptyNotice>}</PodPicker>}</section>}
-      {tab === 'activity' && <Activity base={base} reference={`${namespace}/${kind}/${workload}`} />}
+      {tab === 'activity' && <Activity base={base} reference={`${namespace}/${kind}/${workload}`} cluster={endpointPath(org, endpoint)} />}
     </>}
   </div>;
 };
@@ -139,14 +142,13 @@ function ContainerPicker({ pod, children }: { pod: Pod; children: (container: st
   </>;
 }
 
-function Activity({ base, reference }: { base: string; reference: string }) {
+function Activity({ base, reference, cluster }: { base: string; reference: string; cluster: string }) {
   const commands = useTenantResource<Command[]>(`${base}/commands?reference=${encodeURIComponent(reference)}&limit=50`);
   return <section className="panel" aria-label="Activity">
     <div className="panel-header"><h2>Recent activity</h2><button className="btn-secondary" onClick={commands.reload}>Refresh</button></div>
+    <p>Pod commands appear under the cluster's Activity tab on <Link to={cluster}>the cluster page</Link>.</p>
     <StateNotice state={commands.state} onRetry={commands.reload} />
-    {commands.state === 'ready' && Array.isArray(commands.data) && (commands.data.length ? <ul className="ky-list">{commands.data.map((k) => {
-      const detail = detailText(k.detail);
-      return <li key={k.id}>{`${new Date(k.created_at).toLocaleString()} · ${k.action} · ${k.outcome || 'pending'}${detail ? ` — ${detail}` : ''}`}</li>;
-    })}</ul> : <EmptyNotice>No commands have been sent to this workload.</EmptyNotice>)}
+    {commands.state === 'ready' && Array.isArray(commands.data) && (commands.data.length ? <ul className="ky-list">{commands.data.map((k) => <li key={k.id}>{`${new Date(k.created_at).toLocaleString()} · ${commandLine(k)}`}</li>)}</ul>
+      : <EmptyNotice>No commands have been sent to this workload.</EmptyNotice>)}
   </section>;
 }

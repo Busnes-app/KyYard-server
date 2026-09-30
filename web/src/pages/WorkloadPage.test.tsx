@@ -101,11 +101,12 @@ it('shows a managed workload read-only with a link to its application and never 
   expect(requests.some((r) => r.url.endsWith('/configuration'))).toBe(false);
 });
 
-it('treats a 409 application_managed read as managed', async () => {
+it('treats a 409 application_managed read as managed and links to the cluster when the application is unknown', async () => {
   stub('organization_admin', { configurationStatus: 409 });
   window.history.replaceState(null, '', `${path}?tab=configuration`);
   page();
-  expect(await screen.findByText('Managed by a KyYard application. Edit it there.')).toBeTruthy();
+  const note = await screen.findByText(/Managed by a KyYard application\./);
+  expect(within(note).getByRole('link', { name: 'Edit it there.' }).getAttribute('href')).toBe('/organizations/a/endpoints/ep_k');
   expect(screen.queryByRole('button', { name: 'Save and apply' })).toBeNull();
 });
 
@@ -135,6 +136,16 @@ it('applies an edit and keeps the step table in Last change across a tab switch'
   await act(async () => { vi.advanceTimersByTime(1500); });
   await act(async () => {});
   expect(within(last).getByText('The workload changed since you read it. Read again.')).toBeTruthy();
+  // A settled apply re-reads, so resource_version and the diff are fresh; after a conflict the
+  // ready form also offers Read again.
+  await act(async () => {});
+  await act(async () => {});
+  expect(requests.filter((r) => r.url.endsWith('/configuration'))).toHaveLength(2);
+  expect(screen.getByLabelText('Image of web')).toHaveProperty('value', 'nginx:1.29');
+  fireEvent.click(screen.getByRole('button', { name: 'Read again' }));
+  await act(async () => {});
+  await act(async () => {});
+  expect(requests.filter((r) => r.url.endsWith('/configuration'))).toHaveLength(3);
   tab('Overview');
   expect(within(screen.getByRole('region', { name: 'Last change' })).getByText('The workload changed since you read it. Read again.')).toBeTruthy();
 });
@@ -169,8 +180,9 @@ it('lists activity for the workload reference with fixed detail texts', async ()
   const requests = stub();
   window.history.replaceState(null, '', `${path}?tab=activity`);
   page();
-  expect(await screen.findByText(/workload\.scale · denied/)).toBeTruthy();
-  expect(screen.getByText(/The agent's role does not allow this/)).toBeTruthy();
+  expect(await screen.findByText(/Scale refused\. The agent's role does not allow this/)).toBeTruthy();
+  expect(screen.queryByText(/workload\.scale/)).toBeNull();
+  expect(screen.getByText(/Pod commands appear under the cluster's Activity tab/)).toBeTruthy();
   expect(requests.some((r) => r.url === `${base}/commands?reference=shop%2Fdeployment%2Fweb&limit=50`)).toBe(true);
 });
 

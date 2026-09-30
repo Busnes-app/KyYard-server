@@ -33,7 +33,7 @@ it('asks container and shell, confirms the pod name and opens the pod exec route
   render(<PodTerminal base="/api/organizations/a/endpoints/ep_k" pod={pod} scope="Cluster prod" />);
   expect(screen.queryByLabelText('Container user')).toBeNull();
   fireEvent.change(screen.getByLabelText('Container'), { target: { value: 'log' } });
-  fireEvent.change(screen.getByLabelText('Shell executable'), { target: { value: '/bin/bash' } });
+  fireEvent.change(screen.getByLabelText('Shell executable'), { target: { value: '  /bin/bash ' } });
   const open = screen.getByRole('button', { name: 'Open terminal in log' });
   expect(open.hasAttribute('disabled')).toBe(true);
   fireEvent.change(screen.getByLabelText('Confirm pod name'), { target: { value: 'web-7c9' } });

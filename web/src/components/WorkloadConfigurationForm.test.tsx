@@ -113,3 +113,22 @@ it('shows a settled apply with the workload step texts', () => {
   expect(screen.getByText('The workload changed since you read it. Read again.')).toBeTruthy();
   expect(screen.getAllByRole('row')).toHaveLength(3);
 });
+
+it('offers Read again after a lost connection and never resubmits', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+  const onReread = vi.fn();
+  render(<WorkloadConfigurationForm base={base} initial={configuration()} onSent={vi.fn()} onReread={onReread} />);
+  expect(screen.queryByRole('button', { name: 'Read again' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Image of web'), { target: { value: 'nginx:1.30' } });
+  fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
+  fireEvent.click(save());
+  expect((await screen.findByRole('alert')).textContent).toContain("the workload's Activity tab");
+  expect(save().hasAttribute('disabled')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Read again' }));
+  expect(onReread).toHaveBeenCalledOnce();
+});
+
+it('offers Read again after a conflict result', () => {
+  render(<WorkloadConfigurationForm base={base} initial={configuration()} onSent={vi.fn()} onReread={vi.fn()} conflict />);
+  expect(screen.getByRole('button', { name: 'Read again' })).toBeTruthy();
+});

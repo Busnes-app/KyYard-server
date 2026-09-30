@@ -153,3 +153,11 @@ it('offers no page links for a pod without a configurable owner', () => {
   expect(screen.queryByRole('link', { name: /for shop\/web-7c9/ })).toBeNull();
   expect(screen.getByRole('button', { name: 'Delete shop/web-7c9' })).toBeTruthy();
 });
+
+it('points a lost connection at the cluster Activity tab', async () => {
+  posts(() => { throw new TypeError('Failed to fetch'); });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const onStatus = controls();
+  fireEvent.click(screen.getByRole('button', { name: 'Restart shop/web' }));
+  await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("shop/web · Connection lost. The action may have run. Check the cluster's Activity tab before trying again."));
+});

@@ -17,7 +17,7 @@ export function PodTerminal({ base, pod, scope }: { base: string; pod: Pod; scop
     <p>Organization administrators only. The shell runs as the container's own user. Closing disconnects the terminal; it does not guarantee that the process stops. Sessions end after 15 minutes without input or 8 hours total.</p>
     {!pod.uid ? <EmptyNotice>The inventory does not report this pod's identity yet. Refresh after the agent's next report, or upgrade the cluster agent.</EmptyNotice>
       : start ? <LiveTerminal key={label} path={`${base}/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/exec`} start={start} label="Pod terminal" />
-      : <form onSubmit={(event) => { event.preventDefault(); setStart({ spec: { pod: { namespace: pod.namespace, name: pod.name, container, uid: pod.uid }, argv: [shell] }, confirm }); }}>
+      : <form onSubmit={(event) => { event.preventDefault(); setStart({ spec: { pod: { namespace: pod.namespace, name: pod.name, container, uid: pod.uid }, argv: [shell.trim()] }, confirm }); }}>
         <label>Container <select value={container} onChange={(e) => setContainer(e.target.value)}>{pod.containers.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}</select></label>
         <label>Shell executable <input required maxLength={1024} value={shell} onChange={(e) => setShell(e.target.value)} /></label>
         <label>Confirm pod name <input required value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" /></label>

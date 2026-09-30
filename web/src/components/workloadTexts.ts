@@ -37,9 +37,9 @@ export function detailText(detail = '', pod = false): string {
   return Object.hasOwn(DETAILS, detail) ? DETAILS[detail] ?? '' : '';
 }
 
-const ACTIONS: Record<string, string> = { 'workload.restart': 'Restart', 'workload.scale': 'Scale', 'workload.delete': 'Delete', 'pod.delete': 'Delete', 'workload.apply': 'Apply' };
-const OUTCOMES: Record<string, string> = { succeeded: 'done', failed: 'failed', denied: 'refused', unknown: 'outcome unknown; check the cluster before trying again' };
-// commandLine is a settled command as one fixed sentence.
+export const ACTIONS: Record<string, string> = { 'workload.restart': 'Restart', 'workload.scale': 'Scale', 'workload.delete': 'Delete', 'pod.delete': 'Delete', 'workload.apply': 'Apply' };
+export const OUTCOMES: Record<string, string> = { '': 'pending', succeeded: 'done', failed: 'failed', denied: 'refused', unknown: 'outcome unknown; check the cluster before trying again' };
+// commandLine is a command as one fixed sentence; action, outcome and detail are never shown raw.
 export function commandLine(c: { action: string; outcome: string; detail?: string }): string {
   const action = Object.hasOwn(ACTIONS, c.action) ? ACTIONS[c.action] : 'Command';
   const outcome = Object.hasOwn(OUTCOMES, c.outcome) ? OUTCOMES[c.outcome] : 'unrecognised outcome';

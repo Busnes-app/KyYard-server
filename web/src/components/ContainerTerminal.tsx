@@ -19,7 +19,7 @@ export function ContainerTerminal({ base, container, scope }: { base: string; co
     <h3>Terminal · {container.name}</h3>
     <p>{scope}</p><p className="font-mono" style={{ overflowWrap: 'anywhere' }}>Container {container.id}</p>
     <p>Organization administrators only. Choose the container user explicitly. Closing disconnects the terminal; it does not guarantee that the process stops. Sessions end after 15 minutes without input or 8 hours total.</p>
-    {start ? <LiveTerminal key={container.id} path={`${base}/containers/${encodeURIComponent(container.id)}/exec`} start={start} label="Container terminal" /> : <form onSubmit={(event) => { event.preventDefault(); setStart({ spec: { container: container.id, image_id: container.image_id, user, argv: [executable] }, confirm }); }}>
+    {start ? <LiveTerminal key={container.id} path={`${base}/containers/${encodeURIComponent(container.id)}/exec`} start={start} label="Container terminal" /> : <form onSubmit={(event) => { event.preventDefault(); setStart({ spec: { container: container.id, image_id: container.image_id, user, argv: [executable.trim()] }, confirm }); }}>
       <label>Container user <input required maxLength={128} value={user} placeholder="e.g. 1000 or app" onChange={(e) => setUser(e.target.value)} /></label>
       <label>Shell executable <input required maxLength={1024} value={executable} onChange={(e) => setExecutable(e.target.value)} /></label>
       <label>Confirm container name <input required value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" /></label>
