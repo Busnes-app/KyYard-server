@@ -145,8 +145,13 @@ func (s *Server) handleEndpointManifest(w http.ResponseWriter, r *http.Request, 
 		s.tenantError(w, err)
 		return
 	}
-	e, err := s.store.Tenancy().SetEndpointDeployNamespaces(r.Context(), a, id, input.Namespaces)
+	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, id)
 	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	a.EnvironmentID = ep.EnvironmentID
+	if err := s.store.Tenancy().CheckEnrollmentAccess(r.Context(), a); err != nil {
 		s.tenantError(w, err)
 		return
 	}
@@ -156,6 +161,11 @@ func (s *Server) handleEndpointManifest(w http.ResponseWriter, r *http.Request, 
 	}
 	if image == "" {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Set KY_AGENT_IMAGE to a digest-pinned ghcr.io/busnes-app/kyyard@sha256:<digest> reference", "code": "agent_image_unpinned"})
+		return
+	}
+	e, err := s.store.Tenancy().SetEndpointDeployNamespaces(r.Context(), a, id, input.Namespaces)
+	if err != nil {
+		s.tenantError(w, err)
 		return
 	}
 	doc, err := manifest.RenderRBAC(e.Name, image, e.DeployNamespaces)

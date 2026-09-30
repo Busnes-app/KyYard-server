@@ -66,9 +66,30 @@ func TestEndpointManifestRoute(t *testing.T) {
 			t.Errorf("%s %s: %d %s", tc.id, tc.body, w.Code, w.Body.String())
 		}
 	}
+	manifestSuccesses := func() int {
+		rows, _, err := f.st.Audit().ListAuditRecords(context.Background(), 0, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, r := range rows {
+			if r.Resource == f.cluster.id+"/manifest" && r.Result == "success" {
+				n++
+			}
+		}
+		return n
+	}
+	before := manifestSuccesses()
 	f.cfg.Server.AgentImage, f.cfg.Server.DockerSocket = "", ""
-	if w := tenantRequest(f.s, f.admin, "POST", route(f.cluster.id), `{"namespaces":["shop"]}`, true); w.Code != 409 || !strings.Contains(w.Body.String(), "agent_image_unpinned") {
+	if w := tenantRequest(f.s, f.admin, "POST", route(f.cluster.id), `{"namespaces":["other"]}`, true); w.Code != 409 || !strings.Contains(w.Body.String(), "agent_image_unpinned") {
 		t.Fatalf("no image: %d %s", w.Code, w.Body.String())
+	}
+	stored = nil
+	for _, ns := range f.endpoint(t, f.cluster.id)["deploy_namespaces"].([]any) {
+		stored = append(stored, ns.(string))
+	}
+	if !slices.Equal(stored, []string{"billing", "shop"}) || manifestSuccesses() != before {
+		t.Fatalf("refusal changed state: namespaces %v, manifest successes %d -> %d", stored, before, manifestSuccesses())
 	}
 	f.cfg.Server.AgentImage = agentImage
 	viewer := loginAs(t, f.s, f.st, "viewer", "user")
