@@ -182,6 +182,6 @@ it('words a managed delete the agent settled as denied and a Pod Security refusa
 });
 
 it('words a scale-down refused to keep a StatefulSet\'s volume claims', () => {
-  expect(commandLine({ action: 'workload.scale', outcome: 'denied', detail: 'pvc_retention' })).toBe("Scale refused. Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete); refused.");
-  expect(WORKLOAD_STEPS.pvc_retention).toBe("Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete); refused.");
+  expect(commandLine({ action: 'workload.scale', outcome: 'denied', detail: 'pvc_retention' })).toBe("Scale refused. Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).");
+  expect(WORKLOAD_STEPS.pvc_retention).toBe("Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).");
 });

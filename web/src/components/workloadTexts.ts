@@ -10,7 +10,7 @@ export const UNREPORTED = 'This workload has settings the form cannot carry; not
 // The inventory names an application only on a Deployment KyYard applied; elsewhere it is unknown.
 export const POD_SECURITY = 'This namespace does not enforce Pod Security baseline or restricted; KyYard refuses to change workloads there.';
 export const MANAGED = 'Managed by a KyYard application. Edit it there.';
-export const PVC_RETENTION = "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete); refused.";
+export const PVC_RETENTION = "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).";
 
 // Step codes of a workload apply whose wording differs from an application deployment's.
 export const WORKLOAD_STEPS: Record<string, string> = {

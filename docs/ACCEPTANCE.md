@@ -139,10 +139,10 @@ environment with namespace `acc` granted and labelled
 KyYard) a one-replica Deployment `acc-web` of a digest-pinned image that has `/bin/sh` and keeps
 running, with one environment variable `ACCEPT_KEY=one`. Also create a two-replica StatefulSet
 `acc-db` of the same image with a `volumeClaimTemplates` entry and
-`persistentVolumeClaimRetentionPolicy: {whenScaled: Delete}`, and a pod `acc-priv` of the same
-image with `securityContext.privileged: true`: create `acc-priv` while `acc` is labelled
-`enforce=privileged`, then relabel it `enforce=baseline` (`kubectl label --overwrite`; the pod
-keeps running). Workload edits and pod terminals are refused (`pod_security`) in a namespace
+`persistentVolumeClaimRetentionPolicy: {whenScaled: Delete}`, and a one-replica Deployment
+`acc-priv` of the same image with `securityContext.privileged: true`: create `acc-priv` while
+`acc` is labelled `enforce=privileged`, then relabel it `enforce=baseline` (`kubectl label
+--overwrite`; the running pod keeps running). Workload edits and pod terminals are refused (`pod_security`) in a namespace
 without that label. If the cluster was enrolled
 before this release, upgrade the server first, then **Regenerate manifest** and apply it: it
 carries the new Role rules and the agent Deployment (with its scratch volume) on the server's
@@ -263,10 +263,10 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   $ACCEPT_KEY` prints `two`; `exit` ends with "Process exited with code 0."
 - Overview, a pod's Delete icon: type the pod name. The Deployment replaces it.
 - `acc-db`: Scale to `1`. The status line reads `acc/acc-db · Scale refused. Scaling down would
-  delete this StatefulSet's volume claims (whenScaled: Delete); refused.` and `kubectl get pvc -n
+  delete this StatefulSet's volume claims (whenScaled: Delete).` and `kubectl get pvc -n
   acc` still lists both claims. Scale to `3` succeeds. Configuration tab: set Replicas to `1`,
   "Save and apply": the precondition step is refused with the same text and nothing changes.
-- `acc-priv`, Terminal tab: open a terminal. It ends with "This pod or its namespace does not
+- `acc-priv` (its workload page), Terminal tab: pick its pod and open a terminal. It ends with "This pod or its namespace does not
   meet Pod Security baseline, so terminals are refused." and never shows "Connected.".
 - Pass: every command other than those two refusals succeeds; the workload's Activity tab lists restart, scale and apply; the
   cluster's Activity tab also lists the pod delete. As reader, the workload page shows each
