@@ -84,7 +84,7 @@ export function WorkloadConfigurationForm(props: FormProps) {
         </select></label>
         <Text label="Workload name" value={name} onChange={setName} />
       </Group>}
-      {start.replicas !== undefined && <Group title="Scale"><Num label="Replicas" value={start.replicas} onChange={(v) => setDraft((d) => ({ ...d, replicas: v.trim() === '' ? NaN : int(v) }))} /></Group>}
+      {start.replicas !== undefined && <Group title="Scale"><Num label="Replicas" inputMode="numeric" value={start.replicas} onChange={(v) => setDraft((d) => ({ ...d, replicas: v.trim() === '' ? NaN : int(v) }))} /></Group>}
       {initial && (initial.env_from.length > 0 || initial.init_containers.length > 0) && <Group title="Imported">
         {initial.env_from.length > 0 && <p>Imported from: {initial.env_from.map(displayName).join(', ')}</p>}
         {initial.init_containers.length > 0 && <p>Init containers: {initial.init_containers.length}, kept as read.</p>}

@@ -77,3 +77,16 @@ it('accepts host_config codes and labels them with fixed text', () => {
   expect(parseConfiguration({ ...payload(), unsupported: ['host_config:Bad-Key'] }, target)).toBeNull();
   expect(parseConfiguration({ ...payload(), unsupported: [`host_config:${'a'.repeat(65)}`] }, target)).toBeNull();
 });
+
+// The Go protocol's caps (internal/agent/protocol): MaxLabels, MaxDeploymentEnvEntries,
+// MaxDeploymentPorts, MaxUnsupported + configurationCodes + 2*MaxListEntries.
+it('holds the protocol caps: the cap passes, one more is refused', () => {
+  const labels = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, 'v']));
+  const env = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `E${i}`, value: '' }));
+  const ports = (n: number) => Array.from({ length: n }, (_, i) => ({ host: 0, container: i + 1, protocol: 'tcp' }));
+  const codes = (n: number) => Array.from({ length: n }, (_, i) => `host_config:K${i}`);
+  for (const [key, make, cap] of [['labels', labels, 32], ['env', env, 128], ['ports', ports, 64], ['unsupported', codes, 107]] as const) {
+    expect(parseConfiguration({ ...payload(), [key]: make(cap) }, target), `${key} ${cap}`).not.toBeNull();
+    expect(parseConfiguration({ ...payload(), [key]: make(cap + 1) }, target), `${key} ${cap + 1}`).toBeNull();
+  }
+});

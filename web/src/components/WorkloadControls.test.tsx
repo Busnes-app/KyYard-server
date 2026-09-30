@@ -189,3 +189,32 @@ it('words a scale-down refused to keep a StatefulSet\'s volume claims', () => {
 it('words a delete refused to keep a StatefulSet\'s volume claims', () => {
   expect(commandLine({ action: 'workload.delete', outcome: 'denied', detail: 'pvc_retention' })).toBe("Delete refused. Deleting this StatefulSet would delete its volume claims (whenDeleted: Delete). Set whenDeleted: Retain first.");
 });
+
+it('frees the controls after a failed poll', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST'
+    ? json({ id: 'k1', action: 'workload.restart', outcome: '' }, 202)
+    : json({}, 500)));
+  document.cookie = 'ky_csrf=csrf-w';
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const onStatus = controls();
+  const restart = screen.getByRole('button', { name: 'Restart shop/web' }) as HTMLButtonElement;
+  fireEvent.click(restart);
+  await act(async () => {});
+  expect(restart.disabled).toBe(true);
+  await act(async () => { vi.advanceTimersByTime(1500); });
+  await act(async () => {});
+  expect(onStatus).toHaveBeenLastCalledWith("shop/web · Could not read the command result. Check the cluster's Activity tab before trying again.");
+  expect(restart.disabled).toBe(false);
+});
+
+it('keeps Delete for a pod whose owner name is not a DNS label', () => {
+  posts();
+  render(<PodControls base={base} org="a" endpoint="ep_k" pod={{ ...pod, owner_kind: 'StatefulSet', owner_name: 'db.v2' }} active role="organization_admin" capabilities={caps} scope="Cluster prod" onStatus={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Delete shop/web-7c9' })).toBeTruthy();
+  expect(screen.queryByRole('link', { name: /for shop\/web-7c9/ })).toBeNull();
+});
+
+it('words a command that timed out', () => {
+  expect(commandLine({ action: 'workload.restart', outcome: 'timed_out' })).toBe("Restart did not answer in time; check the cluster's Activity tab before trying again.");
+});

@@ -37,7 +37,7 @@ export function RestartGroup({ spec, set }: GroupProps) {
     <label>Restart policy<select value={spec.restart} onChange={(e) => set({ restart: e.target.value })}>
       {['no', 'always', 'unless-stopped', 'on-failure'].map((r) => <option key={r} value={r}>{r}</option>)}
     </select></label>
-    {spec.restart === 'on-failure' && <Num label="Maximum retries" value={spec.restart_retries} onChange={(v) => set({ restart_retries: int(v) })} />}
+    {spec.restart === 'on-failure' && <Num label="Maximum retries" inputMode="numeric" value={spec.restart_retries} onChange={(v) => set({ restart_retries: int(v) })} />}
   </Group>;
 }
 
@@ -67,7 +67,7 @@ export function HealthGroup({ spec, set }: GroupProps) {
       <Num label="Interval (seconds)" value={h.interval_seconds} onChange={(v) => set({ healthcheck: { ...h, interval_seconds: num(v) } })} />
       <Num label="Timeout (seconds)" value={h.timeout_seconds} onChange={(v) => set({ healthcheck: { ...h, timeout_seconds: num(v) } })} />
       <Num label="Start period (seconds)" value={h.start_period_seconds} onChange={(v) => set({ healthcheck: { ...h, start_period_seconds: num(v) } })} />
-      <Num label="Retries" value={h.retries} onChange={(v) => set({ healthcheck: { ...h, retries: int(v) } })} />
+      <Num label="Retries" inputMode="numeric" value={h.retries} onChange={(v) => set({ healthcheck: { ...h, retries: int(v) } })} />
     </>}
   </Group>;
 }

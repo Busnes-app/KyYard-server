@@ -63,9 +63,9 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
   const created = settled ? newContainer(settled, container) : '';
   useEffect(() => {
     if (inventory.state === 'denied') return;
-    const t = window.setInterval(() => { if (!document.hidden) inventory.reload(); }, 30_000);
+    const t = window.setInterval(() => { if (!document.hidden) { inventory.reload(); details.reload(); } }, 30_000);
     return () => window.clearInterval(t);
-  }, [inventory.state, inventory.reload]);
+  }, [inventory.state, inventory.reload, details.reload]);
   const e = details.data;
   const c = inventory.data?.snapshot.containers.find((row) => row.id === container) ?? null;
   const active = e?.state === 'active';
@@ -113,11 +113,12 @@ export const ContainerRunPage: React.FC<{ org: string; endpoint: string }> = ({ 
     <h1 style={{ fontSize: 24 }}>Run a container</h1>
     <StateNotice state={details.state} onRetry={details.reload} />
     {organizations.state === 'loading' ? <p role="status">Loading…</p>
+      : organizations.state !== 'ready' ? <StateNotice state={organizations.state} onRetry={organizations.reload} />
       : !canConfigure(role) ? <EmptyNotice>Only an organization administrator can run containers.</EmptyNotice>
       : details.state !== 'ready' || !details.data ? null
       : details.data.runtime !== 'docker' ? <EmptyNotice>Containers can be run only on a Docker host.</EmptyNotice>
       : !canRunContainers(details.data) ? <EmptyNotice>Upgrade the host agent to run containers here.</EmptyNotice>
-      : <section className="panel"><ContainerConfigurationForm base={base} mode="run" pending={!!command && !command.outcome} onSent={setSent} />
+      : <section className="panel"><ContainerConfigurationForm base={base} mode="run" pending={!!command && command.outcome !== 'failed'} onSent={setSent} />
         {command && <SentCommand command={command} error={error} org={org} endpoint={endpoint} current="" />}</section>}
   </div>;
 };
@@ -130,6 +131,7 @@ function SentCommand({ command, error, ...rest }: { command: DirectCommand; erro
 }
 
 const READ_ERRORS: Record<number, string> = {
+  401: 'Your session has expired. Sign in again.',
   403: 'You do not have permission to edit this container.',
   429: 'Too many configuration requests. Wait a minute and try again.',
   501: 'Upgrade the host agent to enable editing.',

@@ -147,10 +147,22 @@ it('words a timed_out apply', () => {
   expect(screen.getByText("The cluster agent did not answer in time; check the cluster's Activity tab before trying again.")).toBeTruthy();
 });
 
-it('shows imported Secret names read-only', () => {
-  form(configuration({ env_from: ['db-credentials'] }));
-  expect(screen.getByText('Imported from: db-credentials')).toBeTruthy();
-  expect(screen.queryByDisplayValue('db-credentials')).toBeNull();
+it('shows imported env_from entries in their wire form read-only', () => {
+  form(configuration({ env_from: ['secret/db-credentials'] }));
+  expect(screen.getByText('Imported from: secret/db-credentials')).toBeTruthy();
+  expect(screen.queryByDisplayValue('secret/db-credentials')).toBeNull();
+});
+
+it('offers no Reveal all when every variable is a reference', () => {
+  const c = configuration();
+  c.containers[0]!.env = [{ name: 'DB_PASSWORD', secret_ref: 'db/password' }];
+  form(c);
+  expect(screen.queryByRole('button', { name: 'Reveal all' })).toBeNull();
+});
+
+it('asks for whole replicas with a numeric keyboard', () => {
+  form();
+  expect(screen.getByLabelText('Replicas').getAttribute('inputmode')).toBe('numeric');
 });
 
 const runForm = (namespaces = ['shop', 'billing'], onSent = vi.fn()) => { render(<WorkloadConfigurationForm base={base} mode="run" namespaces={namespaces} onSent={onSent} />); return onSent; };

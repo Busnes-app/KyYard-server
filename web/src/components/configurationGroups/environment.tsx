@@ -17,7 +17,7 @@ export function EnvRows<T extends Env>({ noun, env, blank, onChange }: { noun: s
   const all = literals.length > 0 && literals.every((i) => revealed.has(i));
   const toggle = (i: number) => setRevealed((r) => { const next = new Set(r); if (!next.delete(i)) next.add(i); return next; });
   return <>
-    <div><button type="button" className="btn-secondary" aria-pressed={all} onClick={() => setRevealed(all ? new Set() : new Set(literals))}>{all ? 'Hide all' : 'Reveal all'}</button></div>
+    {literals.length > 0 && <div><button type="button" className="btn-secondary" aria-pressed={all} onClick={() => setRevealed(all ? new Set() : new Set(literals))}>Reveal all</button></div>}
     <Rows noun={noun} rows={env} blank={blank} locked={(e) => !literal(e)}
       onChange={(next) => {
         if (next.length < env.length) setRevealed(new Set());

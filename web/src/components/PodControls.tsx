@@ -17,8 +17,9 @@ export function PodControls({ base, org, endpoint, pod, active, role, capabiliti
   const { send, busy } = useClusterCommand(base, label, onStatus, onRefresh, POD_NOT_FOUND);
   const destroy = capabilities.includes('kubernetes.workloads') && canDestroy(role);
   const terminal = capabilities.includes('pod.exec') && canExec(role);
-  const kind = Object.hasOwn(PAGE_KINDS, pod.owner_kind) ? PAGE_KINDS[pod.owner_kind] ?? '' : '';
-  if (!dnsLabel.test(pod.namespace) || !dnsLabel.test(pod.name) || (kind && !dnsLabel.test(pod.owner_name))) return null;
+  // A pod whose owner the route cannot name keeps Delete and loses the page links.
+  const kind = Object.hasOwn(PAGE_KINDS, pod.owner_kind) && dnsLabel.test(pod.owner_name) ? PAGE_KINDS[pod.owner_kind] ?? '' : '';
+  if (!dnsLabel.test(pod.namespace) || !dnsLabel.test(pod.name)) return null;
   if (!destroy && !kind) return null;
   const page = (tab: string) => `${workloadPath(org, endpoint, pod.namespace, kind, pod.owner_name, tab)}&pod=${encodeURIComponent(pod.name)}`;
   const remove = () => {

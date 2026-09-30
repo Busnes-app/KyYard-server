@@ -186,6 +186,16 @@ it('reads logs for the chosen pod and container inline', async () => {
   expect(requests.some((r) => r.url.startsWith(`${base}/pods/shop/web-7c9/logs?container=log&tail=200`))).toBe(true);
 });
 
+it('says when the linked pod is gone instead of switching silently', async () => {
+  stub();
+  window.history.replaceState(null, '', `${path}?tab=logs&pod=web-gone`);
+  page();
+  expect(await screen.findByText('The selected pod is no longer reported; showing another pod of this workload.')).toBeTruthy();
+  expect((screen.getByLabelText('Pod') as HTMLSelectElement).value).toBe('web-7c9');
+  fireEvent.change(screen.getByLabelText('Pod'), { target: { value: 'web-8d1' } });
+  expect(screen.queryByText(/selected pod is no longer reported/)).toBeNull();
+});
+
 it('opens the pod terminal only on a running pod', async () => {
   stub();
   window.history.replaceState(null, '', `${path}?tab=terminal&pod=web-8d1`);

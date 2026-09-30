@@ -11,7 +11,7 @@ const workloadNames: Record<string, string> = {
   env_from_truncated: 'imports more Secrets and ConfigMaps than the read could carry',
 };
 // workloadUnsupportedLabel is the fixed text of an unsupported code, '' for one this build does not know.
-export const workloadUnsupportedLabel = (code: string): string => Object.hasOwn(workloadNames, code) ? workloadNames[code] ?? '' : unsupportedLabel(code);
+export const workloadUnsupportedLabel = (code: string): string => Object.hasOwn(workloadNames, code) ? workloadNames[code] ?? '' : code.startsWith('list_truncated:') ? unsupportedLabel(code) : '';
 
 export type WorkloadSpec = Omit<WorkloadConfiguration, 'target' | 'observed_at' | 'managed'>;
 
@@ -21,7 +21,8 @@ const str = (v: unknown): v is string => typeof v === 'string';
 const strs = (v: unknown, max: number): v is string[] => Array.isArray(v) && v.length <= max && v.every(str);
 const DNS_LABEL = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
 const ENV_FROM = /^(secret|configmap)\/[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
-const STRATEGIES = ['', 'RollingUpdate', 'Recreate', 'OnDelete'];
+// Update strategies per kind (protocol workloadStrategies).
+const STRATEGIES: Record<string, string[]> = { deployment: ['', 'RollingUpdate', 'Recreate'], statefulset: ['', 'RollingUpdate', 'OnDelete'], daemonset: ['', 'RollingUpdate', 'OnDelete'] };
 const QUANTITY_KEYS = ['cpu_request', 'cpu_limit', 'memory_request', 'memory_limit'] as const;
 
 function env(v: unknown): WorkloadEnv[] | null {
@@ -60,8 +61,8 @@ export function parseWorkloadConfiguration(value: unknown, target: WorkloadRef):
   if (!obj(value) || !obj(value.target) || value.target.namespace !== target.namespace || value.target.kind !== target.kind || value.target.name !== target.name) return null;
   const v = value;
   if (!str(v.observed_at) || !Number.isFinite(Date.parse(v.observed_at)) || !str(v.resource_version) || v.resource_version.length > 64) return null;
-  if (v.replicas !== undefined && (typeof v.replicas !== 'number' || !Number.isInteger(v.replicas) || v.replicas < 0 || v.replicas > 1000)) return null;
-  if (typeof v.paused !== 'boolean' || typeof v.managed !== 'boolean' || !str(v.strategy) || !STRATEGIES.includes(v.strategy)) return null;
+  if (v.replicas !== undefined && (target.kind === 'daemonset' || typeof v.replicas !== 'number' || !Number.isInteger(v.replicas) || v.replicas < 0 || v.replicas > 1000)) return null;
+  if (typeof v.paused !== 'boolean' || typeof v.managed !== 'boolean' || !str(v.strategy) || !(Object.hasOwn(STRATEGIES, target.kind) && STRATEGIES[target.kind]?.includes(v.strategy))) return null;
   const c = containers(v.containers), i = containers(v.init_containers ?? []);
   if (!c || !i || c.length === 0) return null;
   const names = [...c, ...i].map((x) => x.name);
@@ -95,7 +96,7 @@ export function diffWorkload(before: WorkloadSpec, after: WorkloadSpec): string[
     for (const name of new Set([...a.keys(), ...b.keys()])) {
       const x = a.get(name), y = b.get(name);
       if (!x || !y) { out.push(`${group}.${name}`); continue; }
-      for (const f of ['image', 'command', 'args', 'env', 'resources'] as const) if (differs(x[f], y[f])) out.push(`${group}.${name}.${f}`);
+      for (const f of ['image', 'image_id', 'command', 'args', 'env', 'resources'] as const) if (differs(x[f], y[f])) out.push(`${group}.${name}.${f}`);
     }
   }
   return out;
