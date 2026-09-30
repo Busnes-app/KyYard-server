@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -269,15 +270,15 @@ func TestWorkloadRunCommand(t *testing.T) {
 		"taken":       {func(w *WorkloadApply) { w.Target.Name, w.Confirm = "web", "web" }, "name_taken"},
 		"statefulset": {func(w *WorkloadApply) { w.Target.Kind = protocol.WorkloadStatefulSet }, "spec_invalid:target.kind"},
 		"unsupported": {func(w *WorkloadApply) { w.Spec.Unsupported = []string{"env_field_ref"} }, "configuration_incomplete"},
-		"version":     {func(w *WorkloadApply) { w.Spec.ResourceVersion = "42" }, "spec_invalid:"},
-		"paused":      {func(w *WorkloadApply) { w.Spec.Paused = true }, "spec_invalid:"},
-		"no replicas": {func(w *WorkloadApply) { w.Spec.Replicas = nil }, "spec_invalid:"},
+		"version":     {func(w *WorkloadApply) { w.Spec.ResourceVersion = "42" }, "spec_invalid:resource_version"},
+		"paused":      {func(w *WorkloadApply) { w.Spec.Paused = true }, "spec_invalid:frame"},
+		"no replicas": {func(w *WorkloadApply) { w.Spec.Replicas = nil }, "spec_invalid:replicas"},
 	} {
 		w := testRun()
 		c.mutate(&w)
 		var spec *InvalidSpecError
-		if _, _, err := ts.CreateWorkloadRun(ctx, a, cluster, w); !errors.As(err, &spec) || !strings.HasPrefix(spec.Blockers[0], c.want) {
-			t.Errorf("%s: %v, want %s", name, err, c.want)
+		if _, _, err := ts.CreateWorkloadRun(ctx, a, cluster, w); !errors.As(err, &spec) || !slices.Equal(spec.Blockers, []string{c.want}) {
+			t.Errorf("%s: %v %+v, want %s", name, err, spec, c.want)
 		}
 	}
 
@@ -293,6 +294,12 @@ func TestWorkloadRunCommand(t *testing.T) {
 	}
 	if _, _, err := ts.CreateWorkloadApply(ctx, a, cluster, testApply()); !errors.Is(err, ErrCommandInProgress) {
 		t.Fatalf("apply beside a live run: %v", err)
+	}
+	// The kind is an input check: a StatefulSet run is 422 even while the slot is taken.
+	sts := testRun()
+	sts.Target.Kind = protocol.WorkloadStatefulSet
+	if _, _, err := ts.CreateWorkloadRun(ctx, a, cluster, sts); !errors.As(err, new(*InvalidSpecError)) {
+		t.Fatalf("statefulset beside a live run: %v", err)
 	}
 	if err := ts.SettleCommand(ctx, cluster, cmd.ID, protocol.OutcomeFailed, "x"); err != nil {
 		t.Fatal(err)

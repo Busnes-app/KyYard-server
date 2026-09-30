@@ -26,6 +26,10 @@ import (
 // restartedAt is the pod-template annotation a restart stamps, which rolls the pods.
 const restartedAt = "kyyard.busnes.app/restarted-at"
 
+// runLabel names a run's Deployment in its selector, so a foreign object sharing the
+// app.kubernetes.io labels does not overlap it. It is not an ownership label.
+const runLabel = "kyyard.busnes.app/run"
+
 // workloadResources is the API group and resource of each kind a WorkloadRef names.
 var workloadResources = map[string][2]string{
 	protocol.WorkloadDeployment:  {"apps", "deployments"},
@@ -582,11 +586,11 @@ func (r *run) createWorkload(ctx context.Context, req protocol.WorkloadApply) pr
 }
 
 // renderWorkload is the Deployment a run creates: the spec's replicas, strategy (RollingUpdate
-// when unset) and containers under the name's own app.kubernetes.io labels, not KyYard's
-// managed-by, so the workload page edits it afterwards. Nothing else is set.
+// when unset) and containers under the name's own app.kubernetes.io labels and runLabel, not
+// KyYard's managed-by, so the workload page edits it afterwards, and Deploy's progress deadline.
 func renderWorkload(ref protocol.WorkloadRef, spec protocol.WorkloadConfiguration) *appsv1.Deployment {
 	labels := func() map[string]string {
-		return map[string]string{render.LabelName: ref.Name, render.LabelInstanceName: ref.Name}
+		return map[string]string{render.LabelName: ref.Name, render.LabelInstanceName: ref.Name, runLabel: ref.Name}
 	}
 	strategy := appsv1.RollingUpdateDeploymentStrategyType
 	if spec.Strategy != "" {
@@ -601,13 +605,14 @@ func renderWorkload(ref protocol.WorkloadRef, spec protocol.WorkloadConfiguratio
 		setQuantity(&c.Resources.Limits, corev1.ResourceMemory, "", w.Resources.MemoryLimit)
 		containers = append(containers, c)
 	}
-	n, automount := *spec.Replicas, false
+	n, automount, progress := *spec.Replicas, false, int32(render.ProgressDeadlineSeconds)
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ref.Namespace, Name: ref.Name, Labels: labels()},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &n,
-			Selector: &metav1.LabelSelector{MatchLabels: labels()},
-			Strategy: appsv1.DeploymentStrategy{Type: strategy},
+			Replicas:                &n,
+			ProgressDeadlineSeconds: &progress,
+			Selector:                &metav1.LabelSelector{MatchLabels: labels()},
+			Strategy:                appsv1.DeploymentStrategy{Type: strategy},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels()},
 				Spec:       corev1.PodSpec{Containers: containers, RestartPolicy: corev1.RestartPolicyAlways, AutomountServiceAccountToken: &automount},

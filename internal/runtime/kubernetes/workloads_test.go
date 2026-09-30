@@ -949,13 +949,14 @@ func createCluster(t *testing.T, denied, rolls bool, objects ...runtime.Object) 
 // else, so no probes, security context or volumes.
 func TestRenderWorkload(t *testing.T) {
 	req := createFrame("web", time.Minute)
-	labels := map[string]string{"app.kubernetes.io/name": "web", "app.kubernetes.io/instance": "web"}
+	labels := map[string]string{"app.kubernetes.io/name": "web", "app.kubernetes.io/instance": "web", "kyyard.busnes.app/run": "web"}
 	want := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", Labels: labels},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr(int32(2)),
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
-			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType},
+			Replicas:                ptr(int32(2)),
+			ProgressDeadlineSeconds: ptr(int32(540)),
+			Selector:                &metav1.LabelSelector{MatchLabels: labels},
+			Strategy:                appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
@@ -987,6 +988,9 @@ func TestRenderWorkload(t *testing.T) {
 		if _, ok := l[render.LabelManagedBy]; ok {
 			t.Fatal("a run carries KyYard's managed-by label")
 		}
+		if _, ok := l[render.LabelInstance]; ok {
+			t.Fatal("a run carries KyYard's instance label")
+		}
 	}
 	// The strategy and replicas are the form's; the label maps are not shared.
 	req.Spec.Strategy, req.Spec.Replicas = "Recreate", ptr(int32(0))
@@ -995,7 +999,7 @@ func TestRenderWorkload(t *testing.T) {
 		t.Fatalf("strategy %s replicas %d", got.Spec.Strategy.Type, *got.Spec.Replicas)
 	}
 	got.Labels["x"] = "y"
-	if len(got.Spec.Selector.MatchLabels) != 2 || len(got.Spec.Template.Labels) != 2 {
+	if len(got.Spec.Selector.MatchLabels) != 3 || len(got.Spec.Template.Labels) != 3 {
 		t.Fatal("label maps shared")
 	}
 }

@@ -245,6 +245,9 @@ func (t *tenancyStore) createWorkloadFrame(ctx context.Context, a TenantAccess, 
 	if w.Confirm != w.Target.Name {
 		return nil, nil, fmt.Errorf("%w: confirm must be %q", ErrInvalid, w.Target.Name)
 	}
+	if create && w.Target.Kind != protocol.WorkloadDeployment {
+		return nil, nil, invalidSpec("spec_invalid:target.kind")
+	}
 	if a.CorrelationID == "" {
 		a.CorrelationID = uuid.NewString()
 	}
@@ -308,15 +311,12 @@ func (t *tenancyStore) createWorkloadFrame(ctx context.Context, a TenantAccess, 
 	return cmd, frame, nil
 }
 
-// workloadNameFree checks a run's target: a granted namespace, a Deployment, and no workload of
-// that kind and name in the last inventory. The agent still refuses one created since.
+// workloadNameFree checks a run's target: a granted namespace and no workload of that kind and
+// name in the last inventory. The agent still refuses one created since.
 func (t *tenancyStore) workloadNameFree(ctx context.Context, tx *sql.Tx, endpointID, runtime, namespaces string, ref protocol.WorkloadRef) error {
 	inv, err := t.clusterInventory(ctx, tx, endpointID, runtime, namespaces, ref.Namespace)
 	if err != nil {
 		return err
-	}
-	if ref.Kind != protocol.WorkloadDeployment {
-		return invalidSpec("spec_invalid:target.kind")
 	}
 	if slices.ContainsFunc(inv.Workloads, inventoried(ref)) {
 		return invalidSpec("name_taken")
