@@ -45,7 +45,9 @@ type Client struct {
 	// openLog streams one container's log. Tests replace it: the fake clientset answers every
 	// log request with the same text and ignores its options.
 	openLog func(ctx context.Context, namespace, pod string, opts *corev1.PodLogOptions) (io.ReadCloser, error)
-	log     *log.Logger
+	// executor builds a pod exec stream; nil (NewFromClientset) makes exec unavailable.
+	executor func(namespace, pod string, opts *corev1.PodExecOptions) (streamer, error)
+	log      *log.Logger
 }
 
 // New reads the cluster cfg names.
@@ -54,7 +56,9 @@ func New(cfg *rest.Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewFromClientset(cs), nil
+	c := NewFromClientset(cs)
+	c.executor = spdyExecutor(cfg, cs)
+	return c, nil
 }
 
 // InCluster reads the cluster the agent's pod runs in, as its ServiceAccount.
