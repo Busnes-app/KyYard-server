@@ -4,7 +4,7 @@ import { Link } from './Link';
 import { useCommand } from './ContainerControls';
 import { commandLine, NOT_FOUND, workloadRefusal } from './workloadTexts';
 import { secureFetch } from '../api';
-import { workloadPath } from '../router';
+import { dnsLabel, workloadPath } from '../router';
 import { canDestroy, canOperate, type DirectCommand, type Workload } from '../tenant';
 
 const WAITING = 'Command sent; waiting for the cluster agent. Do not retry while its outcome is unknown.';
@@ -44,7 +44,8 @@ export function WorkloadControls({ base, org, endpoint, workload: w, active, rol
   const reference = `${w.namespace}/${kind}/${w.name}`;
   const { send, say, busy } = useClusterCommand(base, label, onStatus, onRefresh);
   const capable = capabilities.includes('kubernetes.workloads');
-  const operate = capable && canOperate(role), destroy = capable && canDestroy(role);
+  const operate = capable && canOperate(role), destroy = capable && canDestroy(role) && !w.application;
+  if (!dnsLabel.test(w.namespace) || !dnsLabel.test(w.name)) return null;
   if (!operate && !destroy && !open) return null;
   const restart = () => { if (window.confirm(`Restart ${w.kind} ${label}? Its pods are replaced.\n${scope}`)) void send({ action: 'workload.restart', reference }); };
   const scale = () => {

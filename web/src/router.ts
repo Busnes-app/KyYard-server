@@ -15,7 +15,7 @@ const segment = /^(?=.*[A-Za-z0-9_-])[A-Za-z0-9._-]{1,64}$/;
 // A Docker container ID as the inventory reports it: lowercase 64 hex, nothing else.
 const containerID = /^[0-9a-f]{64}$/;
 // Namespace and workload name are Kubernetes DNS labels; kind is one of the configurable three.
-const dnsLabel = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+export const dnsLabel = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
 const workloadKinds = ['deployment', 'statefulset', 'daemonset'];
 
 // decodeURIComponent throws on malformed escapes; a bad link must land on not-found, not a blank page.

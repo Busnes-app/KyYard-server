@@ -38,6 +38,8 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
   const [sent, setSent] = useState<DirectCommand | null>(null);
   const { command, error: pollError } = useCommand(base, sent, inventory.reload);
   const settled = command?.outcome ? command : null;
+  const [settledId, setSettledId] = useState('');
+  useEffect(() => { if (settled) setSettledId(settled.id); }, [settled?.id]);
   const conflict = !!settled?.result?.steps.some((s) => s.code === 'conflict');
   useEffect(() => {
     if (inventory.state === 'denied') return;
@@ -78,7 +80,7 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
         : !canConfigure(role) ? <Summary workload={w}><p>Only an organization administrator can edit this workload.</p></Summary>
         : w.application ? <Summary workload={w}>{managed}</Summary>
         : !caps.includes('kubernetes.workloads') ? <Summary workload={w}><EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice></Summary>
-        : <EditWorkload key={`${namespace}/${kind}/${workload}/${settled?.id ?? ''}`} base={base} target={{ namespace, kind, name: workload }} pending={!!command && !command.outcome} conflict={conflict} onSent={(cmd) => { setSent(cmd); if (cmd.outcome) inventory.reload(); }} managed={<Summary workload={w}>{managed}</Summary>} />)}
+        : <EditWorkload key={`${namespace}/${kind}/${workload}/${settledId}`} base={base} target={{ namespace, kind, name: workload }} pending={!!command && !command.outcome} conflict={conflict} onSent={(cmd) => { setSent(cmd); if (cmd.outcome) inventory.reload(); }} managed={<Summary workload={w}>{managed}</Summary>} />)}
       {tab === 'logs' && <section className="panel" aria-label="Logs"><PodPicker pods={pods} initial={podParam}>{(pod) => <ContainerPicker pod={pod}>{(c) => <ContainerLogs key={`${pod.name}/${c}`} url={`${base}/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/logs`} name={`${pod.namespace}/${pod.name}/${c}`} query={{ container: c }} />}</ContainerPicker>}</PodPicker></section>}
       {tab === 'terminal' && exec && <section className="panel" aria-label="Terminal">{!caps.includes('pod.exec') ? <EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice>
         : <PodPicker pods={pods} initial={podParam}>{(pod) => pod.phase === 'Running' && active

@@ -150,6 +150,31 @@ it('applies an edit and keeps the step table in Last change across a tab switch'
   expect(within(screen.getByRole('region', { name: 'Last change' })).getByText('The workload changed since you read it. Read again.')).toBeTruthy();
 });
 
+it('does not re-read the configuration when a second apply is sent until it settles', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const opts: Opts = { command: { id: 'k7', action: 'workload.apply', outcome: 'succeeded' } };
+  const requests = stub('organization_admin', opts);
+  document.cookie = 'ky_csrf=csrf-p';
+  window.history.replaceState(null, '', `${path}?tab=configuration`);
+  page();
+  await screen.findByLabelText('Image of web');
+  const edit = async (image: string) => {
+    fireEvent.change(await screen.findByLabelText('Image of web'), { target: { value: image } });
+    fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save and apply' }));
+  };
+  const reads = () => requests.filter((r) => r.url.endsWith('/configuration')).length;
+  await edit('nginx:1.30');
+  await screen.findByRole('region', { name: 'Last change' });
+  await act(async () => { vi.advanceTimersByTime(1500); });
+  for (let i = 0; i < 4; i++) await act(async () => {});
+  expect(reads()).toBe(2);
+  opts.command = { id: 'k7', action: 'workload.apply', outcome: '' };
+  await edit('nginx:1.31');
+  for (let i = 0; i < 4; i++) await act(async () => {});
+  expect(reads()).toBe(2);
+});
+
 it('reads logs for the chosen pod and container inline', async () => {
   const requests = stub();
   window.history.replaceState(null, '', `${path}?tab=logs&pod=web-7c9`);

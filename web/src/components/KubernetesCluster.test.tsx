@@ -66,7 +66,7 @@ it('links configurable workloads to their page and renders toolbars by role and 
   expect(screen.queryByText('Actions')).toBeNull();
 });
 
-it('gives an ownerless pod Delete and a Logs button opening the logs dialog', () => {
+it('gives an ownerless pod Delete but no group Logs button; per-container Logs stay', () => {
   const show = vi.fn(function (this: HTMLDialogElement) { this.open = true; });
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show });
   const c = { name: 'task', image: 'busybox', image_id: '', state: 'running', reason: '', ready: true, restart_count: 0 };
@@ -75,10 +75,20 @@ it('gives an ownerless pod Delete and a Logs button opening the logs dialog', ()
   render(<KubernetesCluster org="a" base="/api/x" endpoint={capable} inventory={inventory} instances={[]} admin={false} role="organization_admin" onStatus={vi.fn()} onChanged={vi.fn()} />);
   const group = screen.getByRole('group', { name: 'Actions for shop/job-1' });
   expect(within(group).getByRole('button', { name: 'Delete shop/job-1' })).toBeTruthy();
-  fireEvent.click(within(group).getByRole('button', { name: 'Logs for shop/job-1' }));
+  expect(within(group).queryByRole('button', { name: /^Logs/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Logs for shop/job-1/task' }));
   expect(screen.getByRole('dialog', { name: 'Logs for shop/job-1/task' })).toBeTruthy();
   expect(show).toHaveBeenCalledOnce();
   Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+});
+
+it('renders a dotted workload name as plain text with no controls', () => {
+  const inventory: KubernetesInventory = { ...empty, namespaces: ['shop'], workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web.v2', desired: 1, ready: 1, updated: 1, images: [], paused: false }] };
+  const capable = { ...endpoint, capabilities: ['kubernetes.inventory', 'kubernetes.workloads'] };
+  render(<KubernetesCluster org="a" base="/api/x" endpoint={capable} inventory={inventory} instances={[]} admin={false} role="organization_admin" onStatus={vi.fn()} onChanged={vi.fn()} />);
+  expect(screen.getByText('shop/web.v2')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'shop/web.v2' })).toBeNull();
+  expect(screen.queryByRole('group', { name: 'Actions for shop/web.v2' })).toBeNull();
 });
 
 it('reloads the inventory when a cluster toolbar command settles', async () => {

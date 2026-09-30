@@ -161,3 +161,16 @@ it('points a lost connection at the cluster Activity tab', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Restart shop/web' }));
   await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("shop/web · Connection lost. The action may have run. Check the cluster's Activity tab before trying again."));
 });
+
+it('hides Delete for an application-managed workload', () => {
+  posts();
+  controls({ workload: { ...web, application: 'app-1' } });
+  expect(screen.queryByRole('button', { name: 'Delete shop/web' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Restart shop/web' })).toBeTruthy();
+});
+
+it('renders no controls for a name the route rejects', () => {
+  posts();
+  controls({ workload: { ...web, name: 'web.v2' } });
+  expect(screen.queryByRole('group')).toBeNull();
+});

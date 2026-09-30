@@ -38,7 +38,7 @@ export function detailText(detail = '', pod = false): string {
 }
 
 export const ACTIONS: Record<string, string> = { 'workload.restart': 'Restart', 'workload.scale': 'Scale', 'workload.delete': 'Delete', 'pod.delete': 'Delete', 'workload.apply': 'Apply' };
-export const OUTCOMES: Record<string, string> = { '': 'pending', succeeded: 'done', failed: 'failed', denied: 'refused', unknown: 'outcome unknown; check the cluster before trying again' };
+export const OUTCOMES: Record<string, string> = { '': 'pending', succeeded: 'done', failed: 'failed', denied: 'refused', unknown: 'outcome unknown; check the cluster before trying again', timed_out: "did not answer in time; check the cluster's Activity tab before trying again" };
 // commandLine is a command as one fixed sentence; action, outcome and detail are never shown raw.
 export function commandLine(c: { action: string; outcome: string; detail?: string }): string {
   const action = Object.hasOwn(ACTIONS, c.action) ? ACTIONS[c.action] : 'Command';

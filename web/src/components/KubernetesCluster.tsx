@@ -8,7 +8,7 @@ import type { ApplicationInstance } from './ApplicationAdoption';
 import { Link } from './Link';
 import { WorkloadControls } from './WorkloadControls';
 import { PAGE_KINDS, PodControls } from './PodControls';
-import { workloadPath } from '../router';
+import { dnsLabel, workloadPath } from '../router';
 import { canOperate, type Endpoint, type KubernetesInventory, type Pod, type PodContainer } from '../tenant';
 
 const stateBadge: Record<string, string> = { running: 'badge-success', terminated: 'badge-danger' };
@@ -32,7 +32,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
   const active = endpoint.state === 'active';
   const tools = onStatus && endpoint.capabilities.includes('kubernetes.workloads') && canOperate(role) ? onStatus : null;
   const toolProps = { base, org, endpoint: endpoint.id, active, role, capabilities: endpoint.capabilities, scope: `Cluster ${displayName(endpoint.name)} · Endpoint ${endpoint.id}`, onRefresh };
-  const page = (namespace: string, kind: string, name: string, text: string) => Object.hasOwn(PAGE_KINDS, kind) ? <Link to={workloadPath(org, endpoint.id, namespace, PAGE_KINDS[kind] ?? '', name)}>{text}</Link> : text;
+  const page = (namespace: string, kind: string, name: string, text: string) => Object.hasOwn(PAGE_KINDS, kind) && dnsLabel.test(namespace) && dnsLabel.test(name) ? <Link to={workloadPath(org, endpoint.id, namespace, PAGE_KINDS[kind] ?? '', name)}>{text}</Link> : text;
   return <>
     <section className="panel" aria-label="Cluster health">
       <h2 style={{ fontSize: 16 }}>Cluster health <span className={`badge ${healthBadge[health] ?? 'badge-secondary'}`}>{health}</span></h2>
@@ -60,7 +60,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
         {displayName(c.name)} <span className={`badge ${stateBadge[c.state] ?? 'badge-secondary'}`} title={c.image}>{displayName(c.state)}</span>{c.reason && ` ${displayName(c.reason)}`}{' '}
         <button className="btn-secondary" disabled={!active} aria-label={`Logs for ${p.namespace}/${p.name}/${c.name}`} onClick={() => setLogs({ pod: p, container: c })}>Logs</button>
       </li>)}</ul>,
-      ...(tools ? [<PodControls key={`${p.namespace}/${p.name}`} {...toolProps} pod={p} onStatus={tools} onLogs={() => { const c = p.containers[0]; if (c) setLogs({ pod: p, container: c }); }} />] : []),
+      ...(tools ? [<PodControls key={`${p.namespace}/${p.name}`} {...toolProps} pod={p} onStatus={tools} />] : []),
     ]} />
     <ResourceTable key={`services-${selected}`} title="Services" rows={scoped(inventory.services)} rowKey={(s) => `${s.namespace}/${s.name}`} empty="No services." head={['Service', 'Type', 'Cluster IP', 'Ports']} render={(s) => [
       qualified(s), displayName(s.type), displayName(s.cluster_ip) || '—', s.ports.map(displayName).join(', ') || '—',

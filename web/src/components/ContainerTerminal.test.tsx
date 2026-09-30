@@ -76,3 +76,15 @@ it('refuses another stream and releases the socket on unmount', () => {
   expect(terminal.writes).toEqual([]); expect(socket.close).toHaveBeenCalledOnce();
   view.unmount(); expect(socket.onmessage).toBeNull();
 });
+
+it('trims the shell executable before posting argv', () => {
+  vi.stubGlobal('WebSocket', Socket);
+  document.cookie = 'ky_csrf=exec-csrf';
+  render(<ContainerTerminal base="/api/organizations/team/endpoints/host" container={container} scope="Team / Prod / Host" />);
+  fireEvent.change(screen.getByLabelText('Container user'), { target: { value: '1000' } });
+  fireEvent.change(screen.getByLabelText('Shell executable'), { target: { value: '  /bin/sh ' } });
+  fireEvent.change(screen.getByLabelText('Confirm container name'), { target: { value: 'web' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Open terminal as 1000' }));
+  act(() => Socket.current.onopen?.());
+  expect(JSON.parse(Socket.current.sent[0] ?? '').spec.argv).toEqual(['/bin/sh']);
+});

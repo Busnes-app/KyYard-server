@@ -132,3 +132,14 @@ it('offers Read again after a conflict result', () => {
   render(<WorkloadConfigurationForm base={base} initial={configuration()} onSent={vi.fn()} onReread={vi.fn()} conflict />);
   expect(screen.getByRole('button', { name: 'Read again' })).toBeTruthy();
 });
+
+it('words a timed_out apply', () => {
+  render(<WorkloadResult command={{ id: 'k9', action: 'workload.apply', outcome: 'timed_out' }} />);
+  expect(screen.getByText("The cluster agent did not answer in time; check the cluster's Activity tab before trying again.")).toBeTruthy();
+});
+
+it('shows imported Secret names read-only', () => {
+  form(configuration({ env_from: ['db-credentials'] }));
+  expect(screen.getByText('Imported from: db-credentials')).toBeTruthy();
+  expect(screen.queryByDisplayValue('db-credentials')).toBeNull();
+});

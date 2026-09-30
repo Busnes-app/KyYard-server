@@ -5,6 +5,7 @@ import { RESULT_CODES, StepTable } from './ApplicationDeploymentPlan';
 import { diffWorkload, parseWorkloadConfiguration, toWorkloadSpec, workloadUnsupportedLabel, type WorkloadSpec } from './workloadConfiguration';
 import { Group, int, Lines, Num, Text } from './configurationGroups/fields';
 import { EnvRows } from './configurationGroups/environment';
+import { displayName } from './Endpoints';
 import { NOT_FOUND, NOT_GRANTED, UPGRADE_CLUSTER, WORKLOAD_STEPS, workloadRefusal } from './workloadTexts';
 
 export const KIND_NAMES: Record<string, string> = { deployment: 'Deployment', statefulset: 'StatefulSet', daemonset: 'DaemonSet' };
@@ -61,6 +62,10 @@ export function WorkloadConfigurationForm({ base, initial, onSent, pending = fal
     </div>}
     <fieldset className="ky-config-groups" disabled={busy || pending}>
       {initial.replicas !== undefined && <Group title="Scale"><Num label="Replicas" value={initial.replicas} onChange={(v) => setDraft((d) => ({ ...d, replicas: v.trim() === '' ? NaN : int(v) }))} /></Group>}
+      {(initial.env_from.length > 0 || initial.init_containers.length > 0) && <Group title="Imported">
+        {initial.env_from.length > 0 && <p>Imported from: {initial.env_from.map(displayName).join(', ')}</p>}
+        {initial.init_containers.length > 0 && <p>Init containers: {initial.init_containers.length}, kept as read.</p>}
+      </Group>}
       {draft.containers.map((c, i) => <Group key={c.name} title={`Container ${c.name}`}>
         <Text label={`Image of ${c.name}`} value={c.image} onChange={(image) => setContainer(i, { image })} />
         <Lines label={`Command of ${c.name}`} value={c.command} onChange={(command) => setContainer(i, { command })} />
@@ -86,6 +91,7 @@ const OUTCOMES: Record<string, string> = {
   succeeded: 'Applied.',
   failed: 'The cluster did not complete the change; the steps say which. Nothing was rolled back.',
   denied: 'The cluster refused the change; nothing was applied.',
+  timed_out: "The cluster agent did not answer in time; check the cluster's Activity tab before trying again.",
   unknown: 'The outcome is unknown: the agent may or may not have applied it. Read the workload again before retrying.',
 };
 // WorkloadResult is a settled apply: outcome, result code and the step table in workload words.
