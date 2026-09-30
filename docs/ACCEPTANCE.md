@@ -65,6 +65,20 @@ in the results table.
 - Making a read-only bind writable on a container's Configuration tab shows no acknowledgement
   checkbox, and Save answers "Acknowledge every new host path.": the server counts it as a new
   bind and the form does not.
+- A cluster agent whose Role predates workload actions shows Restart, Scale, Delete, Save and
+  Terminal as usual; the command then answers "The agent's role does not allow this.
+  Regenerate and apply the cluster manifest, then retry." Nothing warns before the attempt.
+- A DaemonSet has no Scale button.
+- After a workload edit, a StatefulSet's, DaemonSet's or paused Deployment's rollout is not
+  awaited: the step table shows the rollout step skipped.
+- A pod terminal's 15-minute idle timeout counts only typing and resizing: a session that
+  only prints output (`top`) closes after 15 minutes.
+- A pod terminal shows "Connected. Terminal contents are not recorded." before the cluster
+  accepts the attachment; a refused one (no `pods/exec` grant) then ends with "Terminal
+  ended or was refused. …" rather than a start error.
+- A cluster agent enrolled before this release has no scratch volume, and **Regenerate
+  manifest** adds none: it logs that its scratch directory is not writable and keeps its
+  command ledgers in memory until the volume is added (README, Kubernetes endpoints).
 
 ## Prerequisites
 
@@ -113,6 +127,13 @@ preflight shows the clock blocker and no plan is made.
   local `RepoDigests`; the local copy is older when they differ.
 - Write a marker into the `acc-app_data` volume (a row, a file) and note it.
 
+**Optional: a disposable Kubernetes cluster** for step 3c, enrolled and approved in the same
+environment with namespace `acc` granted and labelled
+`pod-security.kubernetes.io/enforce=baseline`. In `acc`, create with `kubectl` (not through
+KyYard) a one-replica Deployment `acc-web` of a digest-pinned image that has `/bin/sh` and keeps
+running, with one environment variable `ACCEPT_KEY=one`. After a server upgrade, apply the
+regenerated manifest before the step.
+
 **Accounts and two organizations**, all through the UI, signed in as the bootstrap `admin`
 (a platform administrator and the administrator of the initial organization, `org_initial`):
 
@@ -139,7 +160,8 @@ Hand this over as is:
 1. Start KyYard from the shipped Compose file, retrieve the one-time credential and replace it.
 2. Create an environment and enroll and approve both hosts; inspect their identity and status.
 3. Find a container, inspect its configuration and statistics, search, follow and download its
-   logs, restart it, and open a terminal in it.
+   logs, restart it, and open a terminal in it. With a cluster: do the same for a workload,
+   scale it, change one environment value and delete one of its pods.
 4. Show that a read-only account cannot change anything, open a terminal or see secrets, and
    that another organization cannot reach these resources through direct URLs or API requests.
 5. Import the `acc-app` Compose project, preview a change, deploy it, read the deployment
@@ -211,6 +233,26 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
   values, no edit form), and the endpoint page has no "Run a container" button. Removing the
   container from step 3 cleans up.
 - Record: anything in the save area or step table the operator could not interpret.
+
+### 3c. Cluster workloads (with the optional cluster)
+
+- Endpoint page of the cluster, Cluster tab. Workload names link to their page; `acc-web`
+  opens on Overview (kind, desired/ready/updated, images, pods).
+- Icon group: Restart (confirm), then Scale to `2` (prompt). The status line reads
+  `acc/acc-web · Restart done.` and then `acc/acc-web · Scale done.`; the Overview lists two
+  pods after the next refresh.
+- Configuration tab (admin): `ACCEPT_KEY` shows masked; change it to `two`, type `acc-web` in
+  "Type the workload name acc-web to confirm", "Save and apply". The Last change panel shows
+  "Applied." and the steps precondition, apply and rollout.
+- Terminal tab (admin): pick a pod and its container, shell `/bin/sh`, type the pod name in
+  "Confirm pod name", open. Expect "Connected. Terminal contents are not recorded."; `echo
+  $ACCEPT_KEY` prints `two`; `exit` ends with "Process exited with code 0."
+- Overview, a pod's Delete icon: type the pod name. The Deployment replaces it.
+- Pass: every command succeeds; the workload's Activity tab lists restart, scale and apply; the
+  cluster's Activity tab also lists the pod delete. As reader, the workload page shows no
+  action icons, no Configuration form and no Terminal tab.
+- Record: whether the operator found the workload page and the typed-name confirmations
+  unaided.
 
 ### 4. Read-only and cross-tenant
 

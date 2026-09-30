@@ -77,10 +77,11 @@ A service token authenticates as `service:<id>` with the fixed role `pulse_reade
 |---|---|---|---|---|---|---|---|
 | `container.read` (inspect, stats) | ✓ | ✓ | ✓ | ✓ | ✓ | redacted env; labels, network names and IPs are reported | – |
 | `container.logs` (implemented) | ✓ | ✓ | ✓ | ✓ | – | log bodies not stored; also covers pod logs on a Kubernetes endpoint (read workload logs) | session metadata: one row per session naming the endpoint and the container, or the pod and container, asked for |
-| `container.operate` (start, stop, restart, pause) | ✓ | ✓ | ✓ | – | – | no | success/failure/unknown |
-| `container.destroy` (remove, prune) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required |
-| `container.exec` (implemented) | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded |
+| `container.operate` (start, stop, restart, pause; on a cluster `workload.restart` and `workload.scale`, implemented) | ✓ | ✓ | ✓ | – | – | no | success/failure/unknown; a workload command's row is named after the action, `replicas=<n>` for a scale |
+| `container.destroy` (remove, prune; on a cluster `workload.delete` and `pod.delete`, implemented) | ✓ | ✓ | – | – | – | no | success/failure/unknown, confirmation required (a workload or pod: its typed name) |
+| `container.exec` (implemented; also pod terminals on a cluster) | ✓ | – | – | – | – | no | session open/close with target and duration; contents never recorded; a pod's rows are `pod.exec.open`/`pod.exec.close` with the pod UID |
 | `container.configure` (implemented: read a container's full configuration, recreate it from an edited copy, run a new one; host-level settings only with `KY_CONTAINER_ALLOW_PRIVILEGED`; off guards against mistakes and the obvious escalations, not against the holder, whose acknowledged binds are audited per path; on makes it host-root-equivalent) | ✓ | – | – | – | – | environment values in the read response and the frame only; in memory, never stored, audited or logged | read: `container.configuration.read` success with `image=<id> unsupported=<n>`; recreate/run: `container.configure` with `image= binds= fields=` (setting names only) plus one `container.bind.acknowledged` row per used bind path, and at settle `container.recreate`/`container.run` with `code= new=`; denials |
+| `container.configure` — cluster workload (implemented: read a Deployment's, StatefulSet's or DaemonSet's pod template, apply an edited copy) | ✓ | – | – | – | – | literal environment values in the read response and the frame only; Secret and ConfigMap values only by reference, never read by the agent. An apply may reference any Secret key in a granted namespace, so it is equivalent to reading Secrets there | read: `workload.configuration.read` with `unsupported=<n>`; apply: `workload.apply` with `resource_version=<rv> containers=<n>`, audited again when it settles with its result code |
 | `image.read` | ✓ | ✓ | ✓ | ✓ | ✓ | no | – |
 | `image.pull` (endpoint image controls; operators keep it for host-level pulls) | ✓ | ✓ | ✓ | – | – | sends no registry credential: a registry that needs one is refused (`credentialsMissing`); credentialed pulls go only through a deployment under `application.deploy` or a direct recreate or run (`container.configure`, resolved under `image.pull`), in the frame only | success/failure |
 | `image.destroy` | ✓ | ✓ | – | – | – | no | success/failure |
@@ -88,6 +89,8 @@ A service token authenticates as `service:<id>` with the fixed role `pulse_reade
 | `volume.destroy` | ✓ | – | – | – | – | no | success/failure, separate explicit confirmation naming data loss |
 
 Unmanaged containers: lifecycle actions above apply by permission, and an organization administrator edits configuration directly (`container.configure`). A container an adopted application owns is refused (`409 application_managed`) and changes through its application. Service tokens never hold `container.configure`.
+
+Cluster workloads and pods reuse these actions; there is no Kubernetes-specific permission. Every one is refused on a Docker endpoint (409 `runtime_unsupported`), without the agent capability (501: `kubernetes.workloads` for commands, read and apply, `pod.exec` for terminals), in a namespace the cluster's manifest does not grant (422 `namespace_not_granted`) and for a target absent from the last inventory (404). A Deployment a KyYard application deployed refuses the configuration read, the apply and `workload.delete` (409 `application_managed`); restart and scale stay allowed.
 
 ### Applications (M6–M7)
 
@@ -137,6 +140,7 @@ Every mutating action and every denied attempt by a member is recorded in organi
 | Unmanaged containers | lifecycle by permission; direct configuration edit and run under `container.configure` (organization administrators); adopted containers only through their application | implemented |
 | Developer scope | deploy plus logs, no exec, no destructive | proposed |
 | Exec | organization administrators only in 0.1; the UI offers Terminal only to them | implemented |
+| Cluster workloads (2026-09-29) | reuse `container.operate` (restart, scale), `container.destroy` (delete), `container.exec` (pod terminal) and `container.configure` (workload read and apply); no new action | implemented |
 | Per-environment grants | not in 0.1 | proposed |
 | Read-only service tokens | 6-digit pairing code, 15 min, single use, unauthenticated claim rate-limited 5/min/IP and 30/min; fixed pulse_reader role; hourly read summary | implemented |
 
