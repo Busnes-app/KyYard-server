@@ -115,7 +115,8 @@ const (
 var (
 	// ErrExecForbidden: the agent's own grant lacks the exec (create pods/exec).
 	ErrExecForbidden = errors.New("forbidden")
-	// ErrExecPodSecurity: the pod's namespace does not enforce Pod Security baseline or restricted.
+	// ErrExecPodSecurity: the pod's namespace does not enforce Pod Security baseline or
+	// restricted, or the pod itself does not meet baseline.
 	ErrExecPodSecurity = errors.New("pod_security")
 )
 

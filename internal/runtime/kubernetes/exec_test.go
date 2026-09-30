@@ -484,3 +484,101 @@ func TestPodExecOnARealCluster(t *testing.T) {
 		t.Fatalf("status %+v %v", st, err)
 	}
 }
+
+// Each Pod Security baseline control, broken once, is refused with its own detail word; a pod
+// using only what baseline allows passes.
+func TestBaselineViolation(t *testing.T) {
+	sc := func(mutate func(*corev1.SecurityContext)) func(*corev1.Pod) {
+		return func(p *corev1.Pod) {
+			p.Spec.Containers[1].SecurityContext = &corev1.SecurityContext{}
+			mutate(p.Spec.Containers[1].SecurityContext)
+		}
+	}
+	podSC := func(mutate func(*corev1.PodSecurityContext)) func(*corev1.Pod) {
+		return func(p *corev1.Pod) {
+			p.Spec.SecurityContext = &corev1.PodSecurityContext{}
+			mutate(p.Spec.SecurityContext)
+		}
+	}
+	unconfined := &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined}
+	unmasked := corev1.UnmaskedProcMount
+	for _, tc := range []struct {
+		name   string
+		mutate func(*corev1.Pod)
+		want   string
+	}{
+		{"compliant", func(p *corev1.Pod) {
+			p.Annotations = map[string]string{"container.apparmor.security.beta.kubernetes.io/app": "runtime/default"}
+			p.Spec.Volumes = []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+			p.Spec.SecurityContext = &corev1.PodSecurityContext{
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+				Sysctls:        []corev1.Sysctl{{Name: "net.ipv4.ip_unprivileged_port_start", Value: "0"}},
+				SELinuxOptions: &corev1.SELinuxOptions{Type: "container_t", Level: "s0:c1,c2"},
+			}
+			def := corev1.DefaultProcMount
+			p.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: 80}}
+			p.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr(false), ProcMount: &def,
+				Capabilities:    &corev1.Capabilities{Add: []corev1.Capability{"NET_BIND_SERVICE", "CHOWN"}, Drop: []corev1.Capability{"ALL"}},
+				AppArmorProfile: &corev1.AppArmorProfile{Type: corev1.AppArmorProfileTypeRuntimeDefault}}
+		}, ""},
+		{"privileged container", sc(func(s *corev1.SecurityContext) { s.Privileged = ptr(true) }), "privileged"},
+		{"privileged init container", func(p *corev1.Pod) {
+			p.Spec.InitContainers = []corev1.Container{{Name: "setup", SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)}}}
+		}, "privileged"},
+		{"privileged ephemeral container", func(p *corev1.Pod) {
+			p.Spec.EphemeralContainers = []corev1.EphemeralContainer{{EphemeralContainerCommon: corev1.EphemeralContainerCommon{Name: "debug", SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)}}}}
+		}, "privileged"},
+		{"host network", func(p *corev1.Pod) { p.Spec.HostNetwork = true }, "host_namespace"},
+		{"host pid", func(p *corev1.Pod) { p.Spec.HostPID = true }, "host_namespace"},
+		{"host ipc", func(p *corev1.Pod) { p.Spec.HostIPC = true }, "host_namespace"},
+		{"host path", func(p *corev1.Pod) {
+			p.Spec.Volumes = []corev1.Volume{{Name: "root", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/"}}}}
+		}, "host_path"},
+		{"capability", sc(func(s *corev1.SecurityContext) {
+			s.Capabilities = &corev1.Capabilities{Add: []corev1.Capability{"CHOWN", "SYS_ADMIN"}}
+		}), "capabilities"},
+		{"proc mount", sc(func(s *corev1.SecurityContext) { s.ProcMount = &unmasked }), "proc_mount"},
+		{"pod seccomp", podSC(func(s *corev1.PodSecurityContext) { s.SeccompProfile = unconfined }), "seccomp"},
+		{"container seccomp", sc(func(s *corev1.SecurityContext) { s.SeccompProfile = unconfined }), "seccomp"},
+		{"sysctl", podSC(func(s *corev1.PodSecurityContext) { s.Sysctls = []corev1.Sysctl{{Name: "kernel.msgmax", Value: "1"}} }), "sysctl"},
+		{"host port", func(p *corev1.Pod) {
+			p.Spec.Containers[1].Ports = []corev1.ContainerPort{{ContainerPort: 80, HostPort: 8080}}
+		}, "host_port"},
+		{"apparmor annotation", func(p *corev1.Pod) {
+			p.Annotations = map[string]string{"container.apparmor.security.beta.kubernetes.io/app": "unconfined"}
+		}, "apparmor"},
+		{"apparmor field", sc(func(s *corev1.SecurityContext) {
+			s.AppArmorProfile = &corev1.AppArmorProfile{Type: corev1.AppArmorProfileTypeUnconfined}
+		}), "apparmor"},
+		{"selinux type", sc(func(s *corev1.SecurityContext) { s.SELinuxOptions = &corev1.SELinuxOptions{Type: "spc_t"} }), "selinux"},
+		{"selinux user", podSC(func(s *corev1.PodSecurityContext) { s.SELinuxOptions = &corev1.SELinuxOptions{User: "system_u"} }), "selinux"},
+		{"host process", podSC(func(s *corev1.PodSecurityContext) {
+			s.WindowsOptions = &corev1.WindowsSecurityContextOptions{HostProcess: ptr(true)}
+		}), "host_process"},
+	} {
+		if got := baselineViolation(execPod(tc.mutate)); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A privileged pod predating its namespace's baseline label is refused with pod_security before
+// the access review, and the executor is never built.
+func TestPodExecRefusesANonBaselinePod(t *testing.T) {
+	cs := execCluster(execPod(func(p *corev1.Pod) {
+		p.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr(true)}
+	}), "baseline", true)
+	c := NewFromClientset(cs)
+	c.executor = func(string, string, *corev1.PodExecOptions) (streamer, error) {
+		t.Fatal("the executor was built for a privileged pod")
+		return nil, nil
+	}
+	if _, err := c.OpenExec(context.Background(), execSpec()); !errors.Is(err, protocol.ErrExecPodSecurity) || protocol.ExecRefusal(err) != "pod_security" {
+		t.Fatalf("err %v", err)
+	}
+	for _, a := range cs.Actions() {
+		if a.GetResource().Resource == "selfsubjectaccessreviews" {
+			t.Fatal("the access review ran for a refused pod")
+		}
+	}
+}

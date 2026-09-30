@@ -3,8 +3,11 @@ package kubernetes
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,8 +73,8 @@ type podExec struct {
 
 // OpenExec attaches a TTY to spec.Pod's container, running spec.Argv, once the pod read back
 // has the same UID, is Running and has that container, its namespace enforces Pod Security
-// baseline or restricted (protocol.ErrExecPodSecurity) and an access review allows create
-// pods/exec on it (protocol.ErrExecForbidden). See protocol §7.
+// baseline or restricted and the pod itself meets baseline (protocol.ErrExecPodSecurity), and an
+// access review allows create pods/exec on it (protocol.ErrExecForbidden). See protocol §7.
 func (c *Client) OpenExec(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
 	return c.openExec(ctx, spec, protocol.ExecIdleTimeout, protocol.ExecAbsoluteTimeout)
 }
@@ -95,7 +98,7 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 	case string(pod.UID) != t.UID || pod.Status.Phase != corev1.PodRunning || !hasContainer(pod, t.Container):
 		return nil, errors.New("exec target identity or running state changed")
 	}
-	if err := c.execAllowed(parent, t); err != nil {
+	if err := c.execAllowed(parent, t, pod); err != nil {
 		return nil, err
 	}
 	st, err := c.executor(t.Namespace, t.Name, &corev1.PodExecOptions{Container: t.Container, Command: spec.Argv, Stdin: true, Stdout: true, TTY: true})
@@ -122,9 +125,10 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 }
 
 // execAllowed refuses a namespace that does not enforce Pod Security baseline or restricted
-// (entering a privileged pod is host access; the same rule as a deploy) and an agent whose own
-// grant lacks create pods/exec on the pod, each with its fixed error so the operator sees why.
-func (c *Client) execAllowed(parent context.Context, t *protocol.PodTarget) error {
+// (entering a privileged pod is host access; the same rule as a deploy), a pod that does not
+// meet baseline itself (it may predate the label) and an agent whose own grant lacks create
+// pods/exec on the pod, each with its fixed error so the operator sees why.
+func (c *Client) execAllowed(parent context.Context, t *protocol.PodTarget, pod *corev1.Pod) error {
 	ctx, cancel := context.WithTimeout(parent, callBudget)
 	defer cancel()
 	r := &run{c: c, parent: parent, namespace: t.Namespace}
@@ -137,6 +141,9 @@ func (c *Client) execAllowed(parent context.Context, t *protocol.PodTarget) erro
 	default:
 		return errors.New("exec target namespace could not be read")
 	}
+	if v := baselineViolation(pod); v != "" {
+		return fmt.Errorf("%w: %s", protocol.ErrExecPodSecurity, v)
+	}
 	ok, err := r.review(ctx, authorizationv1.ResourceAttributes{Namespace: t.Namespace, Verb: "create", Resource: "pods", Subresource: "exec", Name: t.Name})
 	switch {
 	case err != nil:
@@ -145,6 +152,81 @@ func (c *Client) execAllowed(parent context.Context, t *protocol.PodTarget) erro
 		return protocol.ErrExecForbidden
 	}
 	return nil
+}
+
+// Pod Security baseline's allowed capability additions, safe sysctls and SELinux types
+// (https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline).
+var (
+	baselineCapabilities = []corev1.Capability{"AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "MKNOD", "NET_BIND_SERVICE", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT"}
+	baselineSysctls      = []string{"kernel.shm_rmid_forced", "net.ipv4.ip_local_port_range", "net.ipv4.ip_unprivileged_port_start", "net.ipv4.tcp_syncookies", "net.ipv4.ping_group_range",
+		"net.ipv4.ip_local_reserved_ports", "net.ipv4.tcp_keepalive_time", "net.ipv4.tcp_fin_timeout", "net.ipv4.tcp_keepalive_intvl", "net.ipv4.tcp_keepalive_probes"}
+	baselineSELinuxTypes = []string{"", "container_t", "container_init_t", "container_kvm_t", "container_engine_t"}
+)
+
+const appArmorAnnotation = "container.apparmor.security.beta.kubernetes.io/"
+
+// baselineViolation is the first Pod Security baseline control pod breaks, as a fixed detail
+// word, or "" when it meets baseline. Every container, init and ephemeral included, is checked.
+func baselineViolation(pod *corev1.Pod) string {
+	s := pod.Spec
+	if s.HostNetwork || s.HostPID || s.HostIPC {
+		return "host_namespace"
+	}
+	if slices.ContainsFunc(s.Volumes, func(v corev1.Volume) bool { return v.HostPath != nil }) {
+		return "host_path"
+	}
+	for k, v := range pod.Annotations {
+		if strings.HasPrefix(k, appArmorAnnotation) && v != "" && v != "runtime/default" && !strings.HasPrefix(v, "localhost/") {
+			return "apparmor"
+		}
+	}
+	if p := s.SecurityContext; p != nil {
+		if slices.ContainsFunc(p.Sysctls, func(c corev1.Sysctl) bool { return !slices.Contains(baselineSysctls, c.Name) }) {
+			return "sysctl"
+		}
+		if v := securityViolation(p.SeccompProfile, p.AppArmorProfile, p.SELinuxOptions, p.WindowsOptions); v != "" {
+			return v
+		}
+	}
+	containers := slices.Concat(s.InitContainers, s.Containers)
+	for _, e := range s.EphemeralContainers {
+		containers = append(containers, corev1.Container(e.EphemeralContainerCommon))
+	}
+	for _, c := range containers {
+		if slices.ContainsFunc(c.Ports, func(p corev1.ContainerPort) bool { return p.HostPort != 0 }) {
+			return "host_port"
+		}
+		sc := c.SecurityContext
+		switch {
+		case sc == nil:
+			continue
+		case sc.Privileged != nil && *sc.Privileged:
+			return "privileged"
+		case sc.Capabilities != nil && slices.ContainsFunc(sc.Capabilities.Add, func(c corev1.Capability) bool { return !slices.Contains(baselineCapabilities, c) }):
+			return "capabilities"
+		case sc.ProcMount != nil && *sc.ProcMount != corev1.DefaultProcMount:
+			return "proc_mount"
+		}
+		if v := securityViolation(sc.SeccompProfile, sc.AppArmorProfile, sc.SELinuxOptions, sc.WindowsOptions); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// securityViolation checks the controls a pod and a container security context share.
+func securityViolation(seccomp *corev1.SeccompProfile, apparmor *corev1.AppArmorProfile, selinux *corev1.SELinuxOptions, windows *corev1.WindowsSecurityContextOptions) string {
+	switch {
+	case seccomp != nil && seccomp.Type == corev1.SeccompProfileTypeUnconfined:
+		return "seccomp"
+	case apparmor != nil && apparmor.Type == corev1.AppArmorProfileTypeUnconfined:
+		return "apparmor"
+	case selinux != nil && (selinux.User != "" || selinux.Role != "" || !slices.Contains(baselineSELinuxTypes, selinux.Type)):
+		return "selinux"
+	case windows != nil && windows.HostProcess != nil && *windows.HostProcess:
+		return "host_process"
+	}
+	return ""
 }
 
 func ptrTo(v int) *int { return &v }

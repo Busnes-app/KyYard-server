@@ -708,3 +708,117 @@ func TestPodCarriesItsUID(t *testing.T) {
 		t.Fatalf("uid %q", got)
 	}
 }
+
+// scaleCluster is workloadCluster whose JSON merge patches answer 409 when the patch carries a
+// metadata.resourceVersion other than the stored one, as the API server does.
+func scaleCluster(t *testing.T, objects ...runtime.Object) (*Client, *fake.Clientset) {
+	t.Helper()
+	c, cs := workloadCluster(t, false, true, objects...)
+	for _, res := range []string{"deployments", "statefulsets"} {
+		cs.PrependReactor("patch", res, func(action k8stesting.Action) (bool, runtime.Object, error) {
+			p := action.(k8stesting.PatchAction)
+			if p.GetPatchType() != types.MergePatchType {
+				return false, nil, nil
+			}
+			stored, err := cs.Tracker().Get(p.GetResource(), p.GetNamespace(), p.GetName())
+			if err != nil {
+				return true, nil, err
+			}
+			var sent struct {
+				Metadata struct {
+					ResourceVersion string `json:"resourceVersion"`
+				} `json:"metadata"`
+			}
+			if err := json.Unmarshal(p.GetPatch(), &sent); err != nil {
+				return true, nil, err
+			}
+			if sent.Metadata.ResourceVersion != stored.(metav1.Object).GetResourceVersion() {
+				return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "apps", Resource: res}, p.GetName(), nil)
+			}
+			return false, nil, nil
+		})
+	}
+	return c, cs
+}
+
+func claimRetention(whenScaled appsv1.PersistentVolumeClaimRetentionPolicyType, n int32) *appsv1.StatefulSet {
+	s := dbStatefulSet()
+	s.Spec.Replicas = ptr(n)
+	s.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType, WhenScaled: whenScaled}
+	return s
+}
+
+// Scaling a StatefulSet whose claims are deleted when scaled down below its current replicas
+// would delete the excess replicas' volume claims: refused before any write. Scaling up, or
+// down with Retain, goes ahead.
+func TestOperateScaleRefusesDeletingClaims(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		set    *appsv1.StatefulSet
+		to     int32
+		detail string
+	}{
+		{"delete, down", claimRetention(appsv1.DeletePersistentVolumeClaimRetentionPolicyType, 3), 1, "pvc_retention"},
+		{"delete, to zero", claimRetention(appsv1.DeletePersistentVolumeClaimRetentionPolicyType, 3), 0, "pvc_retention"},
+		{"delete, unset replicas is 1", func() *appsv1.StatefulSet {
+			s := claimRetention(appsv1.DeletePersistentVolumeClaimRetentionPolicyType, 1)
+			s.Spec.Replicas = nil
+			return s
+		}(), 0, "pvc_retention"},
+		{"delete, up", claimRetention(appsv1.DeletePersistentVolumeClaimRetentionPolicyType, 1), 3, ""},
+		{"delete, same", claimRetention(appsv1.DeletePersistentVolumeClaimRetentionPolicyType, 2), 2, ""},
+		{"retain, down", claimRetention(appsv1.RetainPersistentVolumeClaimRetentionPolicyType, 3), 1, ""},
+		{"no policy, down", dbStatefulSet(), 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, cs := scaleCluster(t, tc.set)
+			cmd := command(protocol.ActionWorkloadScale, "shop/statefulset/db")
+			cmd.Expects.Replicas = ptr(tc.to)
+			outcome, detail := c.Operate(context.Background(), cmd)
+			if tc.detail != "" {
+				if outcome != protocol.OutcomeDenied || detail != tc.detail || len(mutations(cs)) != 0 {
+					t.Fatalf("%s %q, writes %v", outcome, detail, mutations(cs))
+				}
+				return
+			}
+			if outcome != protocol.OutcomeSucceeded {
+				t.Fatalf("%s %q", outcome, detail)
+			}
+			s, _ := cs.AppsV1().StatefulSets("shop").Get(context.Background(), "db", metav1.GetOptions{})
+			if *s.Spec.Replicas != tc.to {
+				t.Fatalf("replicas %d", *s.Spec.Replicas)
+			}
+		})
+	}
+}
+
+// A scale patch carries the resourceVersion of the object it inspected, so a change between the
+// read and the patch is the API server's 409, reported conflict.
+func TestOperateScaleIsBoundToTheRead(t *testing.T) {
+	c, cs := scaleCluster(t, webDeployment())
+	cmd := command(protocol.ActionWorkloadScale, "shop/deployment/web")
+	cmd.Expects.Replicas = ptr(int32(4))
+	if outcome, detail := c.Operate(context.Background(), cmd); outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("%s %q", outcome, detail)
+	}
+	var sent []string
+	for _, a := range cs.Actions() {
+		if p, ok := a.(k8stesting.PatchAction); ok {
+			sent = append(sent, string(p.GetPatch()))
+		}
+	}
+	if want := `{"metadata":{"resourceVersion":"41"},"spec":{"replicas":4}}`; len(sent) != 1 || sent[0] != want {
+		t.Fatalf("patches %v", sent)
+	}
+
+	// Another writer moves the object between the read and the patch.
+	c, cs = scaleCluster(t, webDeployment())
+	cs.PrependReactor("get", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		d := webDeployment()
+		d.ResourceVersion = "40"
+		return true, d, nil
+	})
+	if outcome, detail := c.Operate(context.Background(), cmd); outcome != protocol.OutcomeDenied || detail != "conflict" {
+		t.Fatalf("stale read: %s %q", outcome, detail)
+	}
+}

@@ -43,15 +43,17 @@ type workloadAPI[T any] interface {
 
 // handle is one object as read, with pointers into it: a change through them is what write
 // sends. template is nil for a pod, replicas nil for a DaemonSet or a pod, paused a Deployment's.
+// claimsDeletedOnScale: a StatefulSet whose scale-down deletes the excess replicas' claims.
 type handle struct {
-	meta     *metav1.ObjectMeta
-	template *corev1.PodTemplateSpec
-	replicas **int32
-	paused   *bool
-	strategy string
-	write    func(context.Context) error
-	patch    func(context.Context, []byte) error
-	remove   func(context.Context, metav1.DeleteOptions) error
+	meta                 *metav1.ObjectMeta
+	template             *corev1.PodTemplateSpec
+	replicas             **int32
+	paused               *bool
+	strategy             string
+	claimsDeletedOnScale bool
+	write                func(context.Context) error
+	patch                func(context.Context, []byte) error
+	remove               func(context.Context, metav1.DeleteOptions) error
 }
 
 func bind[T any](ctx context.Context, api workloadAPI[T], name string, view func(T) handle) (*handle, error) {
@@ -111,7 +113,9 @@ func (c *Client) workload(ctx context.Context, ref protocol.WorkloadRef) (*handl
 		})
 	case protocol.WorkloadStatefulSet:
 		return bind(ctx, apps.StatefulSets(ns), ref.Name, func(s *appsv1.StatefulSet) handle {
-			return handle{meta: &s.ObjectMeta, template: &s.Spec.Template, replicas: &s.Spec.Replicas, strategy: string(s.Spec.UpdateStrategy.Type)}
+			retention := s.Spec.PersistentVolumeClaimRetentionPolicy
+			return handle{meta: &s.ObjectMeta, template: &s.Spec.Template, replicas: &s.Spec.Replicas, strategy: string(s.Spec.UpdateStrategy.Type),
+				claimsDeletedOnScale: retention != nil && retention.WhenScaled == appsv1.DeletePersistentVolumeClaimRetentionPolicyType}
 		})
 	case protocol.WorkloadDaemonSet:
 		return bind(ctx, apps.DaemonSets(ns), ref.Name, func(s *appsv1.DaemonSet) handle {
@@ -124,7 +128,9 @@ func (c *Client) workload(ctx context.Context, ref protocol.WorkloadRef) (*handl
 // Operate runs one workload or pod action named by Reference ("<namespace>/<kind>/<name>"), after
 // a SelfSubjectAccessReview for its verb: an agent whose manifest lacks the grant answers
 // denied forbidden. Restart stamps the pod template's restartedAt annotation, scale sets
-// spec.replicas to Expects.Replicas (0..MaxWorkloadReplicas; a DaemonSet has none), delete
+// spec.replicas to Expects.Replicas (0..MaxWorkloadReplicas; a DaemonSet has none) at the read's
+// resourceVersion and refuses to scale a StatefulSet below its replicas when that deletes the
+// excess replicas' claims (whenScaled: Delete, pvc_retention), delete
 // removes the object read just before, by its UID, with Background propagation, unless it is
 // labelled managed-by kyyard (application_managed). The granted
 // namespaces are the server's check; here the access review is the boundary.
@@ -173,8 +179,12 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	switch {
 	case cmd.Action == protocol.ActionWorkloadRestart:
 		err = h.patch(ctx, mergePatch(map[string]any{"template": map[string]any{"metadata": map[string]any{"annotations": map[string]string{restartedAt: time.Now().UTC().Format(time.RFC3339)}}}}))
+	case scale && h.claimsDeletedOnScale && *n < replicas(*h.replicas):
+		return protocol.OutcomeDenied, "pvc_retention"
 	case scale:
-		err = h.patch(ctx, mergePatch(map[string]any{"replicas": *n}))
+		// The read's resourceVersion makes a change since the check above a 409.
+		body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": h.meta.ResourceVersion}, "spec": map[string]any{"replicas": *n}})
+		err = h.patch(ctx, body)
 	case cmd.Action == protocol.ActionWorkloadDelete && h.meta.Labels[render.LabelManagedBy] == render.ManagedBy:
 		// A KyYard-managed workload is removed through its application.
 		return protocol.OutcomeDenied, "application_managed"
