@@ -135,13 +135,13 @@ func TestContainerNetworkAttachmentsAreAdditive(t *testing.T) {
 	if c.Networks[0] != "shop_default" || c.NetworkAttachments[0] != (NetworkAttachment{Name: "shop_default", IP: "172.18.0.3"}) || c.Health != "healthy" || c.RestartPolicy != "unless-stopped" || c.StartedAt.Year() != 2026 {
 		t.Fatalf("current report: %+v", c)
 	}
-	long := `{"containers":[{"id":"c1","networks":[],"network_attachments":[` + strings.TrimSuffix(strings.Repeat(`{"name":"n"},`, 21), ",") + `]}]}`
+	long := `{"containers":[{"id":"c1","networks":[],"network_attachments":[` + strings.TrimSuffix(strings.Repeat(`{"name":"n"},`, MaxNetworkAttachments+5), ",") + `]}]}`
 	s = Snapshot{}
 	if err := UnmarshalSnapshotBounded([]byte(long), &s); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Containers[0].NetworkAttachments) != 16 || MaxNetworkAttachments != 16 {
-		t.Fatalf("attachments not cut at 16 while decoding: %d", len(s.Containers[0].NetworkAttachments))
+	if len(s.Containers[0].NetworkAttachments) != MaxNetworkAttachments {
+		t.Fatalf("attachments not cut while decoding: %d", len(s.Containers[0].NetworkAttachments))
 	}
 }
 

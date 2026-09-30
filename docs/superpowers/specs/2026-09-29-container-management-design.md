@@ -43,7 +43,7 @@ Three sub-projects, each its own plan and PR series. Later ones depend on earlie
 |---|---|---|---|
 | `StartedAt time.Time` | `started_at` | `ContainerInspect.State.StartedAt` | zero when not running or unknown; the client shows uptime as now minus `started_at` and never trusts `status` text |
 | `Health string` | `health` | `State.Health.Status` | `none`, `starting`, `healthy`, `unhealthy`, same vocabulary the inspection already uses |
-| `NetworkAttachments []NetworkAttachment` | `network_attachments` | `NetworkSettings.Networks` | beside the unchanged `networks` names; `{name, ip, ip6}`; bounded to 16 |
+| `NetworkAttachments []NetworkAttachment` | `network_attachments` | `NetworkSettings.Networks` | beside the unchanged `networks` names; `{name, ip, ip6}`; bounded to 32 |
 | `RestartPolicy string` | `restart_policy` | `HostConfig.RestartPolicy.Name` | the inspection already exposes it; the list needs it too |
 
 `networks` keeps its `[]string` shape, so the change is additive in both directions: an older server ignores `network_attachments`, and a report from an older agent decodes with none. The frontend reads `network_attachments` and falls back to `networks` names (`containerFacts.attachments`). The inventory's `/containers/json` list does not carry `StartedAt` or health, so the Docker adapter does one `ContainerInspect` per running container per report, under the report's existing deadline, and reports `started_at` zero for any it could not read within budget. The inventory is capped (`truncated`), so the extra calls are bounded by the same cap.
