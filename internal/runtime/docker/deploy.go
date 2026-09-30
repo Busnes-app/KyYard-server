@@ -930,17 +930,39 @@ func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool
 	if running {
 		cctx, cancel := restoring(ctx)
 		defer cancel()
-		wctx, wcancel := context.WithTimeout(cctx, cmp.Or(r.c.stopWait, stopWait))
-		defer wcancel()
-		status, err := r.c.post(wctx, "/containers/"+url.PathEscape(p.s.Replaces.ContainerID)+"/wait?condition=not-running")
-		switch {
-		case err != nil && wctx.Err() == context.DeadlineExceeded:
-			return true // still running
-		case err != nil || status != http.StatusOK:
-			return false
+		if stopped, err := r.c.waitStopped(cctx, p.s.Replaces.ContainerID, cmp.Or(r.c.stopWait, stopWait)); err != nil || !stopped {
+			return err == nil // still running when the wait ended: left running
 		}
 	}
 	return r.revive(ctx, p, paused)
+}
+
+// waitResponse is the body of POST /containers/{id}/wait.
+type waitResponse struct {
+	StatusCode int
+	Error      *struct{ Message string }
+}
+
+// waitStopped waits up to bound for a container to stop running. The Engine sends the wait's
+// 200 headers at once and its body only once the container has stopped, so the body is the
+// answer: a bound that ends while it is awaited means the container still runs (false, nil).
+func (c *Client) waitStopped(ctx context.Context, id string, bound time.Duration) (bool, error) {
+	wctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	var out waitResponse
+	path := "/containers/" + url.PathEscape(id) + "/wait?condition=not-running"
+	status, err := c.postJSON(wctx, path, nil, &out)
+	switch {
+	case status == http.StatusOK && err != nil && wctx.Err() == context.DeadlineExceeded:
+		return false, nil
+	case err != nil:
+		return false, err
+	case status != http.StatusOK:
+		return false, &statusError{path, status}
+	case out.Error != nil:
+		return false, errors.New("docker: the wait reported an error")
+	}
+	return true, nil
 }
 
 // unparkIfParked gives the old container its name back after an unanswered rename, if a read

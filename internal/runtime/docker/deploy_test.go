@@ -51,11 +51,12 @@ type fakeDeployEngine struct {
 	stopDelay        time.Duration
 	renameDelay      time.Duration // before the parking rename answers; a rename back is not delayed
 	renameStatus     int
-	renameBackStatus int // a rename giving the old container its name back; renameStatus when 0
-	pauseStatus      int // POST /containers/{old}/pause, the rollback's re-pause; 204 when 0
-	waitStatus       int // POST /containers/{old}/wait; 200 when 0
-	waitDelay        time.Duration
-	createStatus     int // 201 default
+	renameBackStatus int           // a rename giving the old container its name back; renameStatus when 0
+	pauseStatus      int           // POST /containers/{old}/pause, the rollback's re-pause; 204 when 0
+	waitStatus       int           // POST /containers/{old}/wait; 200 when 0
+	waitDelay        time.Duration // after the headers, before the body
+	waitBody         string        // the body once the wait ends; a stopped container by default
+	createStatus     int           // 201 default
 	startStatus      int
 	removeStatus     int
 	oldStartStatus   int      // POST /containers/{old}/start, the rollback's restart; 204 default
@@ -172,9 +173,11 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			}
 			w.WriteHeader(f.renameStatus)
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/wait"):
-			time.Sleep(f.waitDelay)
+			// As v1.41 does: headers at once, the body only when the container has stopped.
 			w.WriteHeader(cmp.Or(f.waitStatus, 200))
-			_, _ = w.Write([]byte(`{"StatusCode":0}`))
+			w.(http.Flusher).Flush()
+			time.Sleep(f.waitDelay)
+			_, _ = w.Write([]byte(cmp.Or(f.waitBody, `{"StatusCode":0,"Error":null}`)))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/pause"):
 			w.WriteHeader(cmp.Or(f.pauseStatus, 204))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/create"):
@@ -1813,6 +1816,21 @@ func TestDeployExplicitStopUnanswered(t *testing.T) {
 		}
 		if wait, waited := f.call("POST", "/containers/"+oldID+"/wait"); waited && wait.Query != "condition=not-running" {
 			t.Errorf("%s wait query %q", name, wait.Query)
+		}
+	}
+	// A wait whose body reports an error, or cannot be decoded, did not prove the container stopped.
+	for name, body := range map[string]string{"wait error": `{"StatusCode":0,"Error":{"Message":"x"}}`, "wait garbage": `{"StatusCode":`} {
+		f := newFakeDeployEngine(t)
+		f.stopDelay, f.waitBody = holdCall, body
+		f.oldContainer["State"] = map[string]any{"Status": "running", "Running": true, "Paused": false}
+		ctx, cancel := unanswered(false)
+		res := f.client().Deploy(ctx, explicitRequest(explicitService()), func() {})
+		cancel()
+		if got := explicitSteps(res); !strings.HasSuffix(got, ",stop=timed_out:runtime_timeout,rollback=failed:rollback_failed,start=skipped,remove=skipped") {
+			t.Errorf("%s steps: %s", name, got)
+		}
+		if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, undone+"GET /containers/"+oldID+"/json,POST /containers/"+oldID+"/wait") {
+			t.Errorf("%s calls: %s", name, got)
 		}
 	}
 	// A stop that failed with an answer keeps the plain undo, and an old container that was not
