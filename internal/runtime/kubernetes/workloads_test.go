@@ -16,8 +16,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -32,13 +35,14 @@ const (
 // and an extended resource.
 func webDeployment() *appsv1.Deployment {
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", UID: testUID, ResourceVersion: "41", Generation: 3},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", UID: testUID, ResourceVersion: "41", Generation: 3,
+			Labels: map[string]string{"team": "shop"}, Annotations: map[string]string{"deployment.kubernetes.io/revision": "3"}},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr(int32(2)),
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
 			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}},
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}, Annotations: map[string]string{"prometheus.io/scrape": "true"}},
 				Spec: corev1.PodSpec{
 					Volumes:         []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
 					SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr(true)},
@@ -98,14 +102,44 @@ func workloadCluster(t *testing.T, denied, rolls bool, objects ...runtime.Object
 		review.Status.Allowed = !denied && review.Spec.ResourceAttributes.Namespace == "shop"
 		return true, review, nil
 	})
-	cs.PrependReactor("update", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		d := action.(k8stesting.UpdateAction).GetObject().(*appsv1.Deployment)
+	// The API server's strategic merge patch: a stale metadata.resourceVersion is a 409, and a
+	// Deployment's written generation rolls out when rolls is true.
+	cs.PrependReactor("patch", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		p := action.(k8stesting.PatchAction)
+		if p.GetPatchType() != types.StrategicMergePatchType {
+			return false, nil, nil
+		}
+		gvr := appsv1.SchemeGroupVersion.WithResource("deployments")
+		stored, err := cs.Tracker().Get(gvr, p.GetNamespace(), p.GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		var sent struct {
+			Metadata struct {
+				ResourceVersion string `json:"resourceVersion"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(p.GetPatch(), &sent); err != nil {
+			return true, nil, err
+		}
+		if sent.Metadata.ResourceVersion != "" && sent.Metadata.ResourceVersion != stored.(*appsv1.Deployment).ResourceVersion {
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "apps", Resource: "deployments"}, p.GetName(), nil)
+		}
+		old, _ := json.Marshal(stored)
+		merged, err := strategicpatch.StrategicMergePatch(old, p.GetPatch(), &appsv1.Deployment{})
+		if err != nil {
+			return true, nil, err
+		}
+		d := &appsv1.Deployment{}
+		if err := json.Unmarshal(merged, d); err != nil {
+			return true, nil, err
+		}
 		d.Generation++
 		if rolls {
 			n := replicas(d.Spec.Replicas)
 			d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: n, UpdatedReplicas: n, ReadyReplicas: n, AvailableReplicas: n}
 		}
-		return false, nil, nil
+		return true, d, cs.Tracker().Update(gvr, d, p.GetNamespace())
 	})
 	return c, cs
 }
@@ -427,6 +461,8 @@ func TestApplyWorkloadChangesOnlyTheFormsFields(t *testing.T) {
 		"mounts": {b.Containers[0].VolumeMounts, a.Containers[0].VolumeMounts}, "envFrom": {b.Containers[0].EnvFrom, a.Containers[0].EnvFrom},
 		"args": {b.Containers[0].Args, a.Containers[0].Args}, "command": {b.Containers[0].Command, a.Containers[0].Command},
 		"selector": {before.Spec.Selector, after.Spec.Selector}, "strategy": {before.Spec.Strategy, after.Spec.Strategy},
+		"labels": {before.Labels, after.Labels}, "annotations": {before.Annotations, after.Annotations},
+		"template labels": {before.Spec.Template.Labels, after.Spec.Template.Labels}, "template annotations": {before.Spec.Template.Annotations, after.Spec.Template.Annotations},
 		"secret env": {b.Containers[0].Env[1], a.Containers[0].Env[1]}, "configmap env": {b.Containers[0].Env[2], a.Containers[0].Env[2]},
 	} {
 		x, _ := json.Marshal(pair[0])
@@ -443,8 +479,78 @@ func TestApplyWorkloadChangesOnlyTheFormsFields(t *testing.T) {
 	if _, ok := w.Resources.Limits[corev1.ResourceMemory]; ok || cpu.String() != "500m" || gpu.String() != "1" {
 		t.Fatalf("resources %+v", w.Resources)
 	}
-	if got := mutations(cs); !reflect.DeepEqual(got, []string{"update deployments"}) {
+	if got := mutations(cs); !reflect.DeepEqual(got, []string{"patch deployments"}) {
 		t.Fatalf("writes %v", got)
+	}
+}
+
+// patches returns the strategic merge patches sent, decoded.
+func patches(t *testing.T, cs *fake.Clientset) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, a := range cs.Actions() {
+		if p, ok := a.(k8stesting.PatchAction); ok && p.GetPatchType() == types.StrategicMergePatchType {
+			var m map[string]any
+			if err := json.Unmarshal(p.GetPatch(), &m); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// The write is a strategic merge patch holding only the edited paths and the read's
+// resourceVersion; applied to the stored object's raw JSON it keeps fields the bundled client
+// types do not know, and the object's labels and annotations.
+func TestApplyWorkloadPatchesOnlyTheEdit(t *testing.T) {
+	c, cs := workloadCluster(t, false, true, webDeployment())
+	req := applyFrom(t, c, "shop/deployment/web", time.Minute, func(w *protocol.WorkloadConfiguration) { w.Containers[0].Image = "ghcr.io/org/web:2" })
+	if res := c.ApplyWorkload(context.Background(), req, func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("%s", steps(res))
+	}
+	sent := patches(t, cs)
+	want := map[string]any{
+		"metadata": map[string]any{"resourceVersion": "41"},
+		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
+			"$setElementOrder/containers": []any{map[string]any{"name": "web"}},
+			"containers":                  []any{map[string]any{"name": "web", "image": "ghcr.io/org/web:2"}},
+		}}},
+	}
+	if len(sent) != 1 || !reflect.DeepEqual(sent[0], want) {
+		t.Fatalf("patch %v", sent)
+	}
+
+	live := webDeployment()
+	live.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}
+	raw, _ := json.Marshal(live)
+	stored := &unstructured.Unstructured{}
+	if err := stored.UnmarshalJSON(raw); err != nil {
+		t.Fatal(err)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(unstructured.SetNestedField(stored.Object, "kept", "spec", "futureField"))
+	containers, _, _ := unstructured.NestedSlice(stored.Object, "spec", "template", "spec", "containers")
+	containers[0].(map[string]any)["futureField"] = "kept too"
+	must(unstructured.SetNestedSlice(stored.Object, containers, "spec", "template", "spec", "containers"))
+	before, _ := stored.MarshalJSON()
+	body, _ := json.Marshal(sent[0])
+	merged, err := strategicpatch.StrategicMergePatch(before, body, &appsv1.Deployment{})
+	must(err)
+	after := &unstructured.Unstructured{}
+	must(after.UnmarshalJSON(merged))
+	containers, _, _ = unstructured.NestedSlice(after.Object, "spec", "template", "spec", "containers")
+	future, _, _ := unstructured.NestedString(after.Object, "spec", "futureField")
+	if future != "kept" || containers[0].(map[string]any)["futureField"] != "kept too" || containers[0].(map[string]any)["image"] != "ghcr.io/org/web:2" {
+		t.Fatalf("after the patch: %s", merged)
+	}
+	if !reflect.DeepEqual(after.GetLabels(), webDeployment().Labels) || !reflect.DeepEqual(after.GetAnnotations(), webDeployment().Annotations) {
+		t.Fatalf("metadata after the patch: %v %v", after.GetLabels(), after.GetAnnotations())
 	}
 }
 
@@ -464,7 +570,7 @@ func TestApplyWorkloadUnchangedIsIdentical(t *testing.T) {
 }
 
 // A concurrent edit is refused, never overwritten: a resourceVersion other than the read's, or the
-// API server's own 409 on the update.
+// API server's own 409 on the patch.
 func TestApplyWorkloadConflict(t *testing.T) {
 	c, cs := workloadCluster(t, false, true, webDeployment())
 	req := applyFrom(t, c, "shop/deployment/web", time.Minute, func(w *protocol.WorkloadConfiguration) { w.Containers[0].Image = "ghcr.io/org/web:2" })
@@ -475,7 +581,7 @@ func TestApplyWorkloadConflict(t *testing.T) {
 	}
 
 	c, cs = workloadCluster(t, false, true, webDeployment())
-	cs.PrependReactor("update", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+	cs.PrependReactor("patch", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "apps", Resource: "deployments"}, "web", nil)
 	})
 	res = c.ApplyWorkload(context.Background(), applyFrom(t, c, "shop/deployment/web", time.Minute, func(w *protocol.WorkloadConfiguration) { w.Containers[0].Image = "ghcr.io/org/web:2" }), func() {})

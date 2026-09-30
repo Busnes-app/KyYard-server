@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 )
 
 // restartedAt is the pod-template annotation a restart stamps, which rolls the pods.
@@ -36,20 +37,19 @@ var workloadResources = map[string][2]string{
 // workloadAPI is the part of a typed client a workload or pod is acted on through.
 type workloadAPI[T any] interface {
 	Get(ctx context.Context, name string, opts metav1.GetOptions) (T, error)
-	Update(ctx context.Context, obj T, opts metav1.UpdateOptions) (T, error)
 	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (T, error)
 	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
 }
 
-// handle is one object as read, with pointers into it: a change through them is what update
-// writes. template is nil for a pod, replicas nil for a DaemonSet or a pod, paused a Deployment's.
+// handle is one object as read, with pointers into it: a change through them is what write
+// sends. template is nil for a pod, replicas nil for a DaemonSet or a pod, paused a Deployment's.
 type handle struct {
 	meta     *metav1.ObjectMeta
 	template *corev1.PodTemplateSpec
 	replicas **int32
 	paused   *bool
 	strategy string
-	update   func(context.Context) error
+	write    func(context.Context) error
 	patch    func(context.Context, []byte) error
 	remove   func(context.Context, metav1.DeleteOptions) error
 }
@@ -59,8 +59,40 @@ func bind[T any](ctx context.Context, api workloadAPI[T], name string, view func
 	if err != nil {
 		return nil, err
 	}
+	read, err := json.Marshal(o)
+	if err != nil {
+		return nil, err
+	}
 	h := view(o)
-	h.update = func(ctx context.Context) error { _, err := api.Update(ctx, o, metav1.UpdateOptions{}); return err }
+	version := h.meta.ResourceVersion
+	// write sends the changes made through the handle since the read as a strategic merge patch
+	// against the typed kind, carrying the read's resourceVersion: fields this client's types do
+	// not know are never sent, so they survive, and a concurrent write is the API server's 409.
+	h.write = func(ctx context.Context) error {
+		edited, err := json.Marshal(o)
+		if err != nil {
+			return err
+		}
+		body, err := strategicpatch.CreateTwoWayMergePatch(read, edited, o)
+		if err != nil {
+			return err
+		}
+		var patch map[string]any
+		if err := json.Unmarshal(body, &patch); err != nil {
+			return err
+		}
+		metadata, _ := patch["metadata"].(map[string]any)
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["resourceVersion"] = version
+		patch["metadata"] = metadata
+		if body, err = json.Marshal(patch); err != nil {
+			return err
+		}
+		_, err = api.Patch(ctx, name, types.StrategicMergePatchType, body, metav1.PatchOptions{})
+		return err
+	}
 	h.patch = func(ctx context.Context, body []byte) error {
 		_, err := api.Patch(ctx, name, types.MergePatchType, body, metav1.PatchOptions{})
 		return err
@@ -318,9 +350,10 @@ func workloadResourcesOf(r corev1.ResourceRequirements) protocol.WorkloadResourc
 // rollout within req.Deadline. The precondition, after an access review for update (forbidden),
 // refuses a managed object (application_managed), one at another resourceVersion than the read
 // or without a named container (conflict) and one whose read is not whole
-// (configuration_unreported: an apply would drop what it did not show). Fields the form does not
-// carry, and those it carries unchanged, keep their exact bytes. The Update carries the read's
-// resourceVersion, so a concurrent write is the API server's 409, reported conflict. A
+// (configuration_unreported: an apply would drop what it did not show). The write is a strategic
+// merge patch of only the changed paths (see bind), so fields the form does not carry, those it
+// carries unchanged and those this client's types do not know keep their exact bytes. It carries
+// the read's resourceVersion, so a concurrent write is the API server's 409, reported conflict. A
 // StatefulSet's or DaemonSet's rollout, and a paused Deployment's, is not waited for: rollout is
 // skipped. started is called once, before the write.
 func (c *Client) ApplyWorkload(parent context.Context, req protocol.WorkloadApply, started func()) protocol.DeploymentResult {
@@ -363,7 +396,7 @@ func (c *Client) ApplyWorkload(parent context.Context, req protocol.WorkloadAppl
 	})
 	r.step(service, protocol.StepApply, func() (string, string, string) {
 		r.begin()
-		err := h.update(ctx)
+		err := h.write(ctx)
 		switch {
 		case err == nil:
 			return succeeded()
