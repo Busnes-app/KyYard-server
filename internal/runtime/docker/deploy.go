@@ -31,7 +31,8 @@ const stopGrace = 10
 const replaceBudget = 2*operationBudget + 4*callBudget
 
 // rollbackBudget is an explicit recreate's reserve for undoing a failed start: remove and
-// rename at callBudget, restart at operationBudget.
+// rename at callBudget, restart at operationBudget. After an unanswered stop the read and the
+// wait share the two callBudgets: the wait is cut so the restart always keeps operationBudget.
 const rollbackBudget = operationBudget + 2*callBudget
 
 // startWatch is how long an explicit recreate's new container must stay running (or leave the
@@ -576,8 +577,8 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
 	if run(r.req, s) {
 		created := r.create(ctx, p)
-		if outcome, up := r.start(ctx, s, created, false); failedStep(outcome) && !up {
-			r.settleRun(ctx, s.Name, created, outcome)
+		if outcome, up := r.start(ctx, s, created, false); failedStep(outcome) && !up && !r.settleRun(ctx, s, created, outcome) {
+			r.rollbackFailed(s.Name)
 		}
 		return
 	}
@@ -683,10 +684,15 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 func (r *deployRun) create(ctx context.Context, p prepared) string {
 	s := p.s
 	var created string
-	restored := true
+	restored, sent := true, false // sent: the create request went out, so it may have acted
 	r.step(s.Name, protocol.StepCreate, func() (outcome, code, detail string) {
 		defer func() {
-			if outcome != protocol.OutcomeSucceeded && r.req.Explicit {
+			switch {
+			case outcome == protocol.OutcomeSucceeded || !r.req.Explicit:
+			case run(r.req, s) && created == "":
+				// An unanswered create may have made the container anyway.
+				restored = !sent || !unanswered(outcome) || r.settleRun(ctx, s, "", outcome)
+			default:
 				restored = r.undo(ctx, p, created)
 			}
 		}()
@@ -705,6 +711,7 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 		var out struct {
 			ID string `json:"Id"`
 		}
+		sent = true
 		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s, p.networkMode), &out)
 		if err != nil || status != http.StatusCreated {
 			if status == http.StatusConflict {
@@ -828,7 +835,9 @@ func (r *deployRun) watch(ctx context.Context, id string) (string, string, strin
 // swallow. Success recodes the start start_failed_rolled_back; failure is rollback_failed and
 // the start keeps its code.
 func (r *deployRun) rollback(ctx context.Context, p prepared, created string, running, paused bool) {
-	if !r.discard(ctx, created) || !r.unpark(ctx, p) || (running && !r.revive(ctx, p, paused)) {
+	rctx, cancel := r.restoring(ctx)
+	defer cancel()
+	if !r.discard(rctx, created, true) || !r.unpark(rctx, p) || (running && !r.revive(rctx, p, paused)) {
 		r.rollbackFailed(p.s.Name)
 		return
 	}
@@ -850,24 +859,23 @@ func parked(containerName, deployment string) string {
 	return containerName + parkedSuffix + deployment[:8]
 }
 
-// restoring bounds a restore by its own budget, detached from the run's cancellation and
-// deadline: an agent shutting down mid-start still puts the old container back.
-func restoring(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), rollbackBudget)
+// restoring bounds one undo by rollbackBudget, detached from the run's cancellation and
+// deadline: an agent shutting down mid-start still puts the old container back. Each undo opens
+// one and every call it makes shares it.
+func (r *deployRun) restoring(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(r.c.restoreBudget, rollbackBudget))
 }
 
 // revive starts the old container again and, if it was paused, pauses it.
 func (r *deployRun) revive(ctx context.Context, p prepared, paused bool) bool {
-	cctx, cancel := restoring(ctx)
-	defer cancel()
 	old := "/containers/" + url.PathEscape(p.s.Replaces.ContainerID)
-	if status, err := r.c.post(cctx, old+"/start"); err != nil || status >= 400 {
+	if status, err := r.c.post(ctx, old+"/start"); err != nil || status >= 400 {
 		return false
 	}
 	if !paused {
 		return true
 	}
-	status, err := r.c.post(cctx, old+"/pause")
+	status, err := r.c.post(ctx, old+"/pause")
 	return err == nil && status < 400
 }
 
@@ -883,22 +891,21 @@ func unanswered(outcome string) bool {
 
 var errStateUnreported = errors.New("docker: container state unreported")
 
-// containerNow is a container's name and state as a restore reads them.
+// containerNow is a container's identity and state as a restore reads them.
 type containerNow struct {
-	Name  string
-	State *struct {
+	ID          string `json:"Id"`
+	Name, Image string
+	State       *struct {
 		Status  string // created, running, paused, restarting, removing, exited or dead
 		Running bool
 	}
 }
 
-// current reads a container's name and state, for a restore to act on; an error means the state
-// is unknown.
+// current reads a container's identity and state, for a restore to act on; an error means the
+// state is unknown.
 func (r *deployRun) current(ctx context.Context, id string) (containerNow, error) {
-	cctx, cancel := restoring(ctx)
-	defer cancel()
 	var in containerNow
-	if err := r.c.get(cctx, "/containers/"+url.PathEscape(id)+"/json", &in); err != nil {
+	if err := r.c.get(ctx, "/containers/"+url.PathEscape(id)+"/json", &in); err != nil {
 		return in, err
 	}
 	if in.State == nil {
@@ -907,25 +914,30 @@ func (r *deployRun) current(ctx context.Context, id string) (containerNow, error
 	return in, nil
 }
 
-// settleRun removes a run's container whose start failed, so a retry finds the name free. An
-// unanswered start may have started it: it is removed only once a read shows it was never started
-// (created); gone already counts, and one that cannot be read is left and reported.
-func (r *deployRun) settleRun(ctx context.Context, service, created, outcome string) {
+// settleRun removes a run's container that did not come up, so a retry finds the name free; it
+// reports false when that failed. After an unanswered start or create the container may have
+// started, or, with no ID, exist under the name: it is removed, by the ID read, only once a read
+// shows it was never started (created) and, found by name, has the name and the frame's image;
+// that removal is not forced, so it is refused while the container runs, but a start that
+// completes and exits after the read is not detected. Gone already counts; one that cannot be
+// read is left and reported.
+func (r *deployRun) settleRun(ctx context.Context, s protocol.DeploymentService, created, outcome string) bool {
+	rctx, cancel := r.restoring(ctx)
+	defer cancel()
+	force := true
 	if unanswered(outcome) {
-		now, err := r.current(ctx, created)
+		now, err := r.current(rctx, cmp.Or(created, s.ContainerName))
 		switch {
 		case statusOf(err) == http.StatusNotFound:
-			return
-		case err != nil:
-			r.rollbackFailed(service)
-			return
-		case now.State.Status != "created":
-			return
+			return true
+		case err != nil || !protocol.ValidExecID(now.ID):
+			return false
+		case now.State.Status != "created", created == "" && (now.Name != "/"+s.ContainerName || now.Image != s.ImageID):
+			return true
 		}
+		created, force = now.ID, false
 	}
-	if !r.discard(ctx, created) {
-		r.rollbackFailed(service)
-	}
+	return r.discard(rctx, created, force)
 }
 
 // stopWait bounds the wait for an old container whose stop went unanswered: the daemon may still
@@ -933,20 +945,34 @@ func (r *deployRun) settleRun(ctx context.Context, service, created, outcome str
 const stopWait = stopGrace*time.Second + callBudget
 
 // reviveIfStopped starts the old container again after an unanswered stop, once it is not
-// running. One still running when the wait ends is left running.
+// running. The wait is cut to leave the restart operationBudget; one still running when it ends,
+// or with no time left to wait, is left running.
 func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool) bool {
-	now, err := r.current(ctx, p.s.Replaces.ContainerID)
+	rctx, cancel := r.restoring(ctx)
+	defer cancel()
+	cctx, ccancel := context.WithTimeout(rctx, callBudget)
+	now, err := r.current(cctx, p.s.Replaces.ContainerID)
+	ccancel()
 	if err != nil {
 		return false
 	}
 	if now.State.Running {
-		cctx, cancel := restoring(ctx)
-		defer cancel()
-		if stopped, err := r.c.waitStopped(cctx, p.s.Replaces.ContainerID, cmp.Or(r.c.stopWait, stopWait)); err != nil || !stopped {
-			return err == nil // still running when the wait ended: left running
+		deadline, _ := rctx.Deadline()
+		bound := waitBound(cmp.Or(r.c.stopWait, stopWait), time.Until(deadline), cmp.Or(r.c.restartReserve, operationBudget))
+		if bound == 0 {
+			return true
+		}
+		if stopped, err := r.c.waitStopped(rctx, p.s.Replaces.ContainerID, bound); err != nil || !stopped {
+			return err == nil
 		}
 	}
-	return r.revive(ctx, p, paused)
+	return r.revive(rctx, p, paused)
+}
+
+// waitBound is how long to wait for a stop with remaining budget left and reserve kept for the
+// restart: stopWait at most, never negative.
+func waitBound(stopWait, remaining, reserve time.Duration) time.Duration {
+	return max(0, min(stopWait, remaining-reserve))
 }
 
 // waitResponse is the body of POST /containers/{id}/wait.
@@ -957,7 +983,8 @@ type waitResponse struct {
 
 // waitStopped waits up to bound for a container to stop running. The Engine sends the wait's
 // 200 headers at once and its body only once the container has stopped, so the body is the
-// answer: a bound that ends while it is awaited means the container still runs (false, nil).
+// answer: a bound that ends before it arrives, headers included, means the container still runs
+// (false, nil). A ctx that ends first is an error.
 func (c *Client) waitStopped(ctx context.Context, id string, bound time.Duration) (bool, error) {
 	wctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
@@ -965,7 +992,7 @@ func (c *Client) waitStopped(ctx context.Context, id string, bound time.Duration
 	path := "/containers/" + url.PathEscape(id) + "/wait?condition=not-running"
 	status, err := c.postJSON(wctx, path, nil, &out)
 	switch {
-	case status == http.StatusOK && err != nil && wctx.Err() == context.DeadlineExceeded:
+	case err != nil && wctx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
 		return false, nil
 	case err != nil:
 		return false, err
@@ -980,8 +1007,10 @@ func (c *Client) waitStopped(ctx context.Context, id string, bound time.Duration
 // unparkIfParked gives the old container its name back after an unanswered rename, if a read
 // shows the daemon parked it.
 func (r *deployRun) unparkIfParked(ctx context.Context, p prepared, name string) bool {
-	now, err := r.current(ctx, p.s.Replaces.ContainerID)
-	return err == nil && (now.Name != "/"+name || r.unpark(ctx, p))
+	rctx, cancel := r.restoring(ctx)
+	defer cancel()
+	now, err := r.current(rctx, p.s.Replaces.ContainerID)
+	return err == nil && (now.Name != "/"+name || r.unpark(rctx, p))
 }
 
 // undo puts the host back after an explicit step failed before the new container started, so a
@@ -989,24 +1018,26 @@ func (r *deployRun) unparkIfParked(ctx context.Context, p prepared, name string)
 // its name back. It reports false when the new container was not removed or a recreate's old
 // container did not get its name back.
 func (r *deployRun) undo(ctx context.Context, p prepared, created string) bool {
-	discarded := created == "" || r.discard(ctx, created)
-	return discarded && (run(r.req, p.s) || r.unpark(ctx, p))
+	rctx, cancel := r.restoring(ctx)
+	defer cancel()
+	discarded := created == "" || r.discard(rctx, created, true)
+	return discarded && (run(r.req, p.s) || r.unpark(rctx, p))
 }
 
-// discard force-removes a container this run created; gone already counts.
-func (r *deployRun) discard(ctx context.Context, created string) bool {
-	cctx, cancel := restoring(ctx)
-	defer cancel()
-	status, err := r.c.del(cctx, "/containers/"+url.PathEscape(created)+"?force=1")
+// discard removes a container this run created, by force when asked; gone already counts.
+func (r *deployRun) discard(ctx context.Context, created string, force bool) bool {
+	path := "/containers/" + url.PathEscape(created)
+	if force {
+		path += "?force=1"
+	}
+	status, err := r.c.del(ctx, path)
 	return err == nil && (status < 400 || status == http.StatusNotFound)
 }
 
 // unpark gives the old container its name back, without any parked suffix.
 func (r *deployRun) unpark(ctx context.Context, p prepared) bool {
-	cctx, cancel := restoring(ctx)
-	defer cancel()
 	name, _, _ := strings.Cut(p.name, parkedSuffix)
-	status, err := r.c.post(cctx, "/containers/"+url.PathEscape(p.s.Replaces.ContainerID)+"/rename?name="+url.QueryEscape(name))
+	status, err := r.c.post(ctx, "/containers/"+url.PathEscape(p.s.Replaces.ContainerID)+"/rename?name="+url.QueryEscape(name))
 	return err == nil && status < 400
 }
 

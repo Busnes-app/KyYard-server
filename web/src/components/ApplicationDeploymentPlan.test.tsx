@@ -77,7 +77,7 @@ const settled = { ...plan, state: 'succeeded', detail: '', result: { steps: [{ s
 const refused = { ...plan, state: 'denied', detail: '', result: { code: 'step_failed', steps: [{ service: 'web', step: 'precondition', outcome: 'denied', code: 'unsupported', detail: 'privileged' }, { service: 'web', step: 'image', outcome: 'skipped', detail: '' }], services: [] } };
 
 it('applies on typed confirmation and polls until settled', async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   let reads = 0;
   const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
     if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
@@ -93,13 +93,7 @@ it('applies on typed confirmation and polls until settled', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
   const post = fetcher.mock.calls.find(c => String(c[0]).endsWith('/apply'));
   expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({ confirm: 'shop' });
-  // vi.waitFor's own polling misbehaves under fake timers here; act() forces passive effects
-  // (the setInterval registration and its state updates) to flush on each advance. The interval
-  // is registered mid-flight of the first advance (after the apply POST resolves), so its first
-  // tick lands in the *second* advance; three advances cover two actual polls (reads 2 and 3).
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  for (let i = 0; i < 20 && !/succeeded/i.test(document.body.textContent ?? ''); i++) await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   expect(document.body.textContent, document.body.textContent ?? '').toMatch(/succeeded/i);
   const before = fetcher.mock.calls.length;
   await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
@@ -108,7 +102,7 @@ it('applies on typed confirmation and polls until settled', async () => {
   vi.useRealTimers();
 });
 it('refetches the instance when a polled deployment settles, and on Refresh plan', async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   let reads = 0;
   const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
     if (String(url).endsWith('/mapping')) return new Response(JSON.stringify(mapping));
@@ -124,7 +118,7 @@ it('refetches the instance when a polled deployment settles, and on Refresh plan
   fireEvent.change(screen.getByLabelText('Confirm apply project'), { target: { value: 'shop' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply deployment' }));
   expect(onChanged).not.toHaveBeenCalled();
-  for (let i = 0; i < 60 && !/succeeded/i.test(document.body.textContent ?? ''); i++) await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  for (let i = 0; i < 20 && !/succeeded/i.test(document.body.textContent ?? ''); i++) await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   expect(document.body.textContent, document.body.textContent ?? '').toMatch(/succeeded/i);
   expect(onChanged).toHaveBeenCalledTimes(1); // reached succeeded: the instance's revision may have moved
   fireEvent.click(screen.getByRole('button', { name: 'Refresh plan' }));
