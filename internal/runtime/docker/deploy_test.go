@@ -1711,13 +1711,15 @@ const (
 	holdCall       = time.Second
 	running        = `{"Status":"running","Running":true}`
 	exited         = `{"Status":"exited","Running":false}`
+	created        = `{"Status":"created","Running":false}`
 	parkedWeb      = "/shop-web-1.kyyard-prev-3f2b1c9e"
 	recreateCalls  = "GET /info,GET /containers/" + oldID + "/json,GET /images/" + newImage + "/json,GET /containers/" + oldID + "/json,"
 	runPrefixCalls = "GET /info,GET /images/" + newImage + "/json,POST /containers/create,POST /networks/back/connect,"
 )
 
 // A run whose start went unanswered may have started the container: it is removed only once a
-// read shows it is not running, and left when it cannot be read.
+// read shows it was never started (created); a started one, even exited, is left, and one that
+// cannot be read is reported.
 func TestDeployExplicitRunStartUnanswered(t *testing.T) {
 	s := explicitService()
 	s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
@@ -1728,10 +1730,12 @@ func TestDeployExplicitRunStartUnanswered(t *testing.T) {
 		steps, tail string
 	}{
 		"timed out, running": {false, running, 200, "start=timed_out:runtime_timeout", "GET /containers/" + newID + "/json"},
-		"timed out, exited":  {false, exited, 200, "start=timed_out:runtime_timeout", "GET /containers/" + newID + "/json,DELETE /containers/" + newID},
+		"timed out, exited":  {false, exited, 200, "start=timed_out:runtime_timeout", "GET /containers/" + newID + "/json"},
+		"timed out, created": {false, created, 200, "start=timed_out:runtime_timeout", "GET /containers/" + newID + "/json,DELETE /containers/" + newID},
+		"cancelled, created": {true, created, 200, "start=unknown:cancelled", "GET /containers/" + newID + "/json,DELETE /containers/" + newID},
 		"timed out, unread":  {false, running, 500, "start=timed_out:runtime_timeout,rollback=failed:rollback_failed", "GET /containers/" + newID + "/json"},
 		"cancelled, running": {true, running, 200, "start=unknown:cancelled", "GET /containers/" + newID + "/json"},
-		"cancelled, exited":  {true, exited, 200, "start=unknown:cancelled", "GET /containers/" + newID + "/json,DELETE /containers/" + newID},
+		"cancelled, exited":  {true, exited, 200, "start=unknown:cancelled", "GET /containers/" + newID + "/json"},
 		"timed out, gone":    {false, running, 404, "start=timed_out:runtime_timeout", "GET /containers/" + newID + "/json"},
 	} {
 		f := newFakeDeployEngine(t)

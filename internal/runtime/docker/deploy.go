@@ -576,8 +576,8 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
 	if run(r.req, s) {
 		created := r.create(ctx, p)
-		if failed, up := r.start(ctx, s, created, false); failed && !up {
-			r.settleRun(ctx, s.Name, created)
+		if outcome, up := r.start(ctx, s, created, false); failedStep(outcome) && !up {
+			r.settleRun(ctx, s.Name, created, outcome)
 		}
 		return
 	}
@@ -664,7 +664,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	}
 	// A recreate's container must keep running only if the old one was: a stopped job's
 	// replacement may exit as the old one did.
-	if failed, _ := r.start(ctx, s, created, r.req.Explicit && running); failed && r.req.Explicit {
+	if outcome, _ := r.start(ctx, s, created, r.req.Explicit && running); failedStep(outcome) && r.req.Explicit {
 		r.rollback(ctx, p, created, running, paused)
 	}
 	r.step(s.Name, protocol.StepRemove, func() (string, string, string) {
@@ -741,12 +741,13 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 	return created
 }
 
-// start records the start step and reports whether it ran and did not succeed, and whether the
+// start records the start step and returns its outcome (skipped when not run), and whether the
 // container was up (started, through any watch) so only its identity read failed. A watched
 // start must keep running through the watch.
-func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, created string, watched bool) (failed, up bool) {
+func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, created string, watched bool) (result string, up bool) {
+	result = protocol.OutcomeSkipped
 	r.step(s.Name, protocol.StepStart, func() (outcome, code, detail string) {
-		defer func() { failed = outcome != protocol.OutcomeSucceeded }()
+		defer func() { result = outcome }()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
 		defer cancel()
 		status, err := r.c.post(cctx, "/containers/"+url.PathEscape(created)+"/start")
@@ -776,7 +777,7 @@ func (r *deployRun) start(ctx context.Context, s protocol.DeploymentService, cre
 		r.res.Services = append(r.res.Services, id)
 		return succeeded()
 	})
-	return failed, up
+	return result, up
 }
 
 // watch reads a started container every startPoll for startWatch and fails the start
@@ -870,6 +871,11 @@ func (r *deployRun) revive(ctx context.Context, p prepared, paused bool) bool {
 	return err == nil && status < 400
 }
 
+// failedStep is a step outcome that is neither success nor a skip.
+func failedStep(outcome string) bool {
+	return outcome != protocol.OutcomeSucceeded && outcome != protocol.OutcomeSkipped
+}
+
 // unanswered is an outcome where the Engine may have acted without saying so.
 func unanswered(outcome string) bool {
 	return outcome == protocol.OutcomeUnknown || outcome == protocol.OutcomeTimedOut
@@ -877,37 +883,43 @@ func unanswered(outcome string) bool {
 
 var errStateUnreported = errors.New("docker: container state unreported")
 
-// current reads a container's name and whether it runs, for a restore to act on; an error means
-// the state is unknown.
-func (r *deployRun) current(ctx context.Context, id string) (name string, running bool, err error) {
+// containerNow is a container's name and state as a restore reads them.
+type containerNow struct {
+	Name  string
+	State *struct {
+		Status  string // created, running, paused, restarting, removing, exited or dead
+		Running bool
+	}
+}
+
+// current reads a container's name and state, for a restore to act on; an error means the state
+// is unknown.
+func (r *deployRun) current(ctx context.Context, id string) (containerNow, error) {
 	cctx, cancel := restoring(ctx)
 	defer cancel()
-	var in struct {
-		Name  string
-		State *struct{ Running bool }
-	}
+	var in containerNow
 	if err := r.c.get(cctx, "/containers/"+url.PathEscape(id)+"/json", &in); err != nil {
-		return "", false, err
+		return in, err
 	}
 	if in.State == nil {
-		return "", false, errStateUnreported
+		return in, errStateUnreported
 	}
-	return in.Name, in.State.Running, nil
+	return in, nil
 }
 
 // settleRun removes a run's container whose start failed, so a retry finds the name free. An
-// unanswered start may have run it: it is removed only once a read shows it is not running (gone
-// already counts), and one that cannot be read is left and reported.
-func (r *deployRun) settleRun(ctx context.Context, service, created string) {
-	if unanswered(r.res.Steps[len(r.res.Steps)-1].Outcome) {
-		_, running, err := r.current(ctx, created)
+// unanswered start may have started it: it is removed only once a read shows it was never started
+// (created); gone already counts, and one that cannot be read is left and reported.
+func (r *deployRun) settleRun(ctx context.Context, service, created, outcome string) {
+	if unanswered(outcome) {
+		now, err := r.current(ctx, created)
 		switch {
 		case statusOf(err) == http.StatusNotFound:
 			return
 		case err != nil:
 			r.rollbackFailed(service)
 			return
-		case running:
+		case now.State.Status != "created":
 			return
 		}
 	}
@@ -923,11 +935,11 @@ const stopWait = stopGrace*time.Second + callBudget
 // reviveIfStopped starts the old container again after an unanswered stop, once it is not
 // running. One still running when the wait ends is left running.
 func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool) bool {
-	_, running, err := r.current(ctx, p.s.Replaces.ContainerID)
+	now, err := r.current(ctx, p.s.Replaces.ContainerID)
 	if err != nil {
 		return false
 	}
-	if running {
+	if now.State.Running {
 		cctx, cancel := restoring(ctx)
 		defer cancel()
 		if stopped, err := r.c.waitStopped(cctx, p.s.Replaces.ContainerID, cmp.Or(r.c.stopWait, stopWait)); err != nil || !stopped {
@@ -968,8 +980,8 @@ func (c *Client) waitStopped(ctx context.Context, id string, bound time.Duration
 // unparkIfParked gives the old container its name back after an unanswered rename, if a read
 // shows the daemon parked it.
 func (r *deployRun) unparkIfParked(ctx context.Context, p prepared, name string) bool {
-	now, _, err := r.current(ctx, p.s.Replaces.ContainerID)
-	return err == nil && (now != "/"+name || r.unpark(ctx, p))
+	now, err := r.current(ctx, p.s.Replaces.ContainerID)
+	return err == nil && (now.Name != "/"+name || r.unpark(ctx, p))
 }
 
 // undo puts the host back after an explicit step failed before the new container started, so a
