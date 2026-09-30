@@ -55,6 +55,7 @@ type fakeDeployEngine struct {
 	pauseStatus      int           // POST /containers/{old}/pause, the rollback's re-pause; 204 when 0
 	waitStatus       int           // POST /containers/{old}/wait; 200 when 0
 	waitDelay        time.Duration // after the headers, before the body
+	waitHeaderDelay  time.Duration // before the headers
 	waitBody         string        // the body once the wait ends; a stopped container by default
 	createStatus     int           // 201 default
 	createDelay      time.Duration // before POST /containers/create answers
@@ -184,6 +185,7 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			w.WriteHeader(f.renameStatus)
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+oldID+"/wait"):
 			// As v1.41 does: headers at once, the body only when the container has stopped.
+			time.Sleep(f.waitHeaderDelay)
 			w.WriteHeader(cmp.Or(f.waitStatus, 200))
 			w.(http.Flusher).Flush()
 			time.Sleep(f.waitDelay)
@@ -1881,6 +1883,37 @@ func TestDeployExplicitStopUnanswered(t *testing.T) {
 	}
 }
 
+// A bound that ends before the wait's headers arrive means still running, not a failed wait: no
+// step, no start.
+func TestDeployExplicitStopWaitHeadersLate(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.stopDelay, f.waitHeaderDelay = holdCall, 200*time.Millisecond
+	f.oldContainer["State"] = map[string]any{"Status": "running", "Running": true, "Paused": false}
+	ctx, cancel := unanswered(false)
+	res := f.client().WaitStopFor(5*time.Millisecond).Deploy(ctx, explicitRequest(explicitService()), func() {})
+	cancel()
+	if got := explicitSteps(res); !strings.HasSuffix(got, ",stop=timed_out:runtime_timeout,start=skipped,remove=skipped") {
+		t.Errorf("steps: %s", got)
+	}
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "GET /containers/"+oldID+"/json,POST /containers/"+oldID+"/wait") {
+		t.Errorf("calls: %s", got)
+	}
+}
+
+// The wait is stopWait at most and always leaves the restart its reserve.
+func TestWaitBound(t *testing.T) {
+	for name, c := range map[string]struct{ stopWait, remaining, reserve, want time.Duration }{
+		"stopWait-limited":   {30 * time.Second, 70 * time.Second, 30 * time.Second, 30 * time.Second},
+		"reserve-limited":    {30 * time.Second, 50 * time.Second, 30 * time.Second, 20 * time.Second},
+		"exactly zero":       {30 * time.Second, 30 * time.Second, 30 * time.Second, 0},
+		"negative remaining": {30 * time.Second, -time.Second, 30 * time.Second, 0},
+	} {
+		if got := docker.WaitBound(c.stopWait, c.remaining, c.reserve); got != c.want {
+			t.Errorf("%s: %s, want %s", name, got, c.want)
+		}
+	}
+}
+
 // A recreate's rename that went unanswered may have parked the old container: it is read by ID
 // and given its name back when it carries the parked name; a read that fails is rollback_failed.
 func TestDeployExplicitRenameUnanswered(t *testing.T) {
@@ -1953,7 +1986,11 @@ func TestDeployExplicitEachUndoWithinItsBudget(t *testing.T) {
 			"stop=succeeded,start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped", "POST /containers/" + newID + "/start,DELETE /containers/" + newID},
 		"wait cut for the restart": {func(f *fakeDeployEngine) { f.stopDelay, f.waitDelay = holdCall, 2*holdCall }, 0,
 			revive, left + ",POST /containers/" + oldID + "/wait"},
-		"slow read, restart keeps its reserve": {func(f *fakeDeployEngine) { f.stopDelay, f.waitDelay, f.restoreDelay = holdCall, budget/10, budget*3/10 }, budget * 4 / 10,
+		// Guards against over-cutting: a wait and restart well inside the cut still happen.
+		// TestWaitBound proves the reserve.
+		"slow read, restart keeps its reserve": {func(f *fakeDeployEngine) {
+			f.stopDelay, f.waitDelay, f.restoreDelay = holdCall, 10*time.Millisecond, 30*time.Millisecond
+		}, budget * 4 / 10,
 			revive, left + ",POST /containers/" + oldID + "/wait,POST /containers/" + oldID + "/start"},
 		"no time left to wait": {func(f *fakeDeployEngine) { f.stopDelay = holdCall }, budget * 3 / 4,
 			revive, left},

@@ -27,3 +27,6 @@ func (c *Client) ReserveRestartFor(d time.Duration) *Client {
 	c.restartReserve = d
 	return c
 }
+
+// WaitBound is waitBound.
+var WaitBound = waitBound

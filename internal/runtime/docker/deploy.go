@@ -958,8 +958,8 @@ func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool
 	}
 	if now.State.Running {
 		deadline, _ := rctx.Deadline()
-		bound := min(cmp.Or(r.c.stopWait, stopWait), time.Until(deadline)-cmp.Or(r.c.restartReserve, operationBudget))
-		if bound <= 0 {
+		bound := waitBound(cmp.Or(r.c.stopWait, stopWait), time.Until(deadline), cmp.Or(r.c.restartReserve, operationBudget))
+		if bound == 0 {
 			return true
 		}
 		if stopped, err := r.c.waitStopped(rctx, p.s.Replaces.ContainerID, bound); err != nil || !stopped {
@@ -967,6 +967,12 @@ func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool
 		}
 	}
 	return r.revive(rctx, p, paused)
+}
+
+// waitBound is how long to wait for a stop with remaining budget left and reserve kept for the
+// restart: stopWait at most, never negative.
+func waitBound(stopWait, remaining, reserve time.Duration) time.Duration {
+	return max(0, min(stopWait, remaining-reserve))
 }
 
 // waitResponse is the body of POST /containers/{id}/wait.
@@ -977,8 +983,8 @@ type waitResponse struct {
 
 // waitStopped waits up to bound for a container to stop running. The Engine sends the wait's
 // 200 headers at once and its body only once the container has stopped, so the body is the
-// answer: a bound that ends while it is awaited means the container still runs (false, nil). A
-// ctx that ends first is an error.
+// answer: a bound that ends before it arrives, headers included, means the container still runs
+// (false, nil). A ctx that ends first is an error.
 func (c *Client) waitStopped(ctx context.Context, id string, bound time.Duration) (bool, error) {
 	wctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
@@ -986,7 +992,7 @@ func (c *Client) waitStopped(ctx context.Context, id string, bound time.Duration
 	path := "/containers/" + url.PathEscape(id) + "/wait?condition=not-running"
 	status, err := c.postJSON(wctx, path, nil, &out)
 	switch {
-	case status == http.StatusOK && err != nil && wctx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
+	case err != nil && wctx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
 		return false, nil
 	case err != nil:
 		return false, err
