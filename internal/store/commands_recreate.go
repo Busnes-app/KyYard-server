@@ -25,10 +25,17 @@ const (
 	ActionRun      = "container.run"
 )
 
+// directActions are the recreate and run the API builds from a DirectCommand.
 var directActions = map[string]bool{ActionRecreate: true, ActionRun: true}
 
+// settledByResult are the commands a deployment.result settles, not a command result: the
+// direct commands and a workload apply. SQL lists them as directIn.
+var settledByResult = []any{ActionRecreate, ActionRun, ActionWorkloadApply}
+
+const directIn = `(?,?,?)`
+
 var (
-	ErrCommandInProgress = errors.New("a container recreate or run is in flight on this endpoint")
+	ErrCommandInProgress = errors.New("a container recreate or run, or a workload apply, is in flight on this endpoint")
 	ErrContainerManaged  = errors.New("the container belongs to an adopted application")
 )
 
@@ -182,12 +189,8 @@ func (t *tenancyStore) CheckDirectCommand(ctx context.Context, a TenantAccess, e
 // It returns the inventory and the replaced container (nil for a run).
 func (t *tenancyStore) directTarget(ctx context.Context, tx *sql.Tx, endpointID string, dc DirectCommand, svc *protocol.DeploymentService, now time.Time) (protocol.Snapshot, *protocol.Container, error) {
 	var snap protocol.Snapshot
-	var busy int
-	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM endpoint_commands WHERE endpoint_id=? AND action IN (?,?) AND outcome='' AND deadline>=?`), endpointID, ActionRecreate, ActionRun, now).Scan(&busy); err != nil {
+	if err := t.directBusy(ctx, tx, endpointID, now); err != nil {
 		return snap, nil, err
-	}
-	if busy > 0 {
-		return snap, nil, ErrCommandInProgress
 	}
 	recreate := dc.Action == ActionRecreate
 	if recreate {
@@ -229,6 +232,19 @@ func (t *tenancyStore) directTarget(ctx context.Context, tx *sql.Tx, endpointID 
 		return snap, nil, fmt.Errorf("%w: confirm must be %q", ErrInvalid, old.Name)
 	}
 	return snap, old, nil
+}
+
+// directBusy refuses while a command a deployment.result settles is live on the endpoint: the
+// agent runs one at a time.
+func (t *tenancyStore) directBusy(ctx context.Context, tx *sql.Tx, endpointID string, now time.Time) error {
+	var busy int
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM endpoint_commands WHERE endpoint_id=? AND action IN `+directIn+` AND outcome='' AND deadline>=?`), append(append([]any{endpointID}, settledByResult...), now)...).Scan(&busy); err != nil {
+		return err
+	}
+	if busy > 0 {
+		return ErrCommandInProgress
+	}
+	return nil
 }
 
 // directBlockers checks svc against the last inventory: the name and published ports are free,
@@ -394,12 +410,14 @@ func (t *tenancyStore) SettleDirectCommand(ctx context.Context, endpointID strin
 	if res.Validate() != nil {
 		return ErrUnreadableResult
 	}
+	// A workload.apply frame carries no request ID, so its result names none and only the
+	// workload service; a recreate or run echoes its request ID and names service direct.
+	service, match, matchArgs := "direct", `action IN (?,?) AND request_id=?`, []any{ActionRecreate, ActionRun, res.RequestID}
 	if res.RequestID == "" {
-		return ErrNotFound // a binary without request IDs never ran a direct command
+		service, match, matchArgs = protocol.WorkloadApplyService, `action=?`, []any{ActionWorkloadApply}
 	}
-	// A direct frame has one service, named direct; a result about anything else is not its.
-	if len(res.Services) > 1 || slices.ContainsFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Service != "direct" }) ||
-		slices.ContainsFunc(res.Services, func(id protocol.DeploymentIdentity) bool { return id.Service != "direct" }) {
+	if len(res.Services) > 1 || (service != "direct" && len(res.Services) > 0) || slices.ContainsFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Service != service }) ||
+		slices.ContainsFunc(res.Services, func(id protocol.DeploymentIdentity) bool { return id.Service != service }) {
 		return ErrUnreadableResult
 	}
 	created := ""
@@ -411,7 +429,7 @@ func (t *tenancyStore) SettleDirectCommand(ctx context.Context, endpointID strin
 		return ErrInvalid
 	}
 	return t.settleDirect(ctx, endpointID, res.Deployment, res.Outcome, res.Code, created, `, result=?, result_container_id=?`, []any{string(raw), created},
-		`request_id=? AND (outcome='' OR (outcome=? AND result=''))`, []any{res.RequestID, protocol.OutcomeUnknown})
+		match+` AND (outcome='' OR (outcome=? AND result=''))`, append(matchArgs, protocol.OutcomeUnknown))
 }
 
 // FailDirectCommand records that a direct command's frame never left the server. A command
@@ -435,8 +453,8 @@ func (t *tenancyStore) settleDirect(ctx context.Context, endpointID, id, outcome
 	defer tx.Rollback()
 	now := time.Now().UTC()
 	args := append([]any{outcome, code, now}, setArgs...)
-	args = append(append(args, id, endpointID, ActionRecreate, ActionRun), whereArgs...)
-	updated, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=?`+set+` WHERE id=? AND endpoint_id=? AND action IN (?,?) AND `+where), args...)
+	args = append(append(append(args, id, endpointID), settledByResult...), whereArgs...)
+	updated, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=?`+set+` WHERE id=? AND endpoint_id=? AND action IN `+directIn+` AND `+where), args...)
 	if err != nil {
 		return err
 	}
@@ -471,9 +489,10 @@ func (t *tenancyStore) sweepDirect(ctx context.Context, tx *sql.Tx, endpointID s
 	return nil
 }
 
-// directIDs lists the direct commands (recreate, run) matching where.
+// directIDs lists the commands a deployment.result settles (recreate, run, workload apply)
+// matching where.
 func (t *tenancyStore) directIDs(ctx context.Context, tx *sql.Tx, where string, args ...any) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id FROM endpoint_commands WHERE action IN (?,?) AND `+where), append([]any{ActionRecreate, ActionRun}, args...)...)
+	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id FROM endpoint_commands WHERE action IN `+directIn+` AND `+where), append(slices.Clone(settledByResult), args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -490,14 +509,15 @@ func (t *tenancyStore) directIDs(ctx context.Context, tx *sql.Tx, where string, 
 }
 
 // auditDirect writes a direct command's outcome row under its correlation ID and actor: action
-// container.recreate or container.run, resource endpoint/container (the replaced one, else the
-// created one), details the code and the new container's ID.
+// container.recreate, container.run or workload.apply, resource endpoint/container (the replaced
+// one, else the created one) or endpoint/<namespace>/<kind>/<name>, details the code and the new
+// container's ID.
 func (t *tenancyStore) auditDirect(ctx context.Context, tx *sql.Tx, endpointID, id, outcome, code, created string, now time.Time) error {
-	var actor, org, env, correlation, action, container string
-	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT actor_id,organization_id,environment_id,request_id,action,container_id FROM endpoint_commands WHERE id=?`), id).Scan(&actor, &org, &env, &correlation, &action, &container); err != nil {
+	var actor, org, env, correlation, action, container, reference string
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT actor_id,organization_id,environment_id,request_id,action,container_id,reference FROM endpoint_commands WHERE id=?`), id).Scan(&actor, &org, &env, &correlation, &action, &container, &reference); err != nil {
 		return err
 	}
-	resource := endpointID + "/" + cmp.Or(container, created, "-")
+	resource := endpointID + "/" + cmp.Or(container, reference, created, "-")
 	details := "code=" + cmp.Or(code, "-") + " new=" + cmp.Or(created, "-")
 	_, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`),
 		actor, action, protocol.CleanText(resource, 255), protocol.CleanText(details, 255), now, "organization", org, env, correlation, auditResults[outcome])

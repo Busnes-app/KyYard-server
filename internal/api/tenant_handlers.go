@@ -129,7 +129,11 @@ func (s *Server) tenantError(w http.ResponseWriter, err error) {
 	}
 	switch {
 	case errors.Is(err, store.ErrCommandInProgress):
-		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A container recreate or run on this endpoint is waiting for its result", "code": "command_in_progress"})
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "A container recreate or run, or a workload apply, on this endpoint is waiting for its result", "code": "command_in_progress"})
+	case errors.Is(err, store.ErrWorkloadManaged):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "This workload belongs to a KyYard application; change it through the application", "code": "application_managed"})
+	case errors.Is(err, store.ErrNamespaceNotGranted):
+		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "The cluster's manifest does not grant KyYard writes in that namespace; add it and apply the regenerated manifest", "code": "namespace_not_granted"})
 	case errors.Is(err, store.ErrContainerManaged):
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "This container belongs to an adopted application; change it through the application", "code": "application_managed"})
 	case errors.Is(err, store.ErrForbidden):

@@ -171,11 +171,11 @@ func TestListCommandsFiltersByContainer(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	all, err := ts.ListCommands(ctx, a, endpointID, "", 0)
+	all, err := ts.ListCommands(ctx, a, endpointID, "", "", 0)
 	if err != nil || len(all) != 2 {
 		t.Fatalf("unfiltered: %v %d", err, len(all))
 	}
-	only, err := ts.ListCommands(ctx, a, endpointID, one, 0)
+	only, err := ts.ListCommands(ctx, a, endpointID, one, "", 0)
 	if err != nil || len(only) != 1 || only[0].ContainerID != one {
 		t.Fatalf("filtered: %v %+v", err, only)
 	}

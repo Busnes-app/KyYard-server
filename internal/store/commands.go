@@ -59,11 +59,16 @@ var commandActions = map[string]permissions.Action{
 	protocol.ActionRemove:      permissions.ContainerDestroy,
 	protocol.ActionImagePull:   permissions.ImagePull,
 	protocol.ActionImageRemove: permissions.ImageDestroy,
+	// A restart or scale is reversible like a container restart; a delete is not.
+	protocol.ActionWorkloadRestart: permissions.ContainerOperate,
+	protocol.ActionWorkloadScale:   permissions.ContainerOperate,
+	protocol.ActionWorkloadDelete:  permissions.ContainerDestroy,
+	protocol.ActionPodDelete:       permissions.ContainerDestroy,
 }
 
 // CommandPermission is the permission a command action needs; false for an unknown action.
 func CommandPermission(action string) (permissions.Action, bool) {
-	if directActions[action] {
+	if directActions[action] || action == ActionWorkloadApply {
 		return permissions.ContainerConfigure, true
 	}
 	p, ok := commandActions[action]
@@ -88,6 +93,12 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 	needs, ok := commandActions[action]
 	if !ok {
 		return nil, fmt.Errorf("%w: unsupported action %q", ErrInvalid, action)
+	}
+	if workloadActions[action] {
+		return t.createWorkloadCommand(ctx, a, endpointID, action, containerID, confirm, expects)
+	}
+	if expects.Replicas != nil {
+		return nil, fmt.Errorf("%w: replicas are a scale's", ErrInvalid)
 	}
 	destructive := destructivePermissions[needs]
 	if needs == permissions.ContainerDestroy && expects.State == "" {
@@ -220,8 +231,8 @@ func (t *tenancyStore) SettleCommand(ctx context.Context, endpointID, id, outcom
 	if !displaySafe(detail) {
 		detail = ""
 	}
-	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=? AND endpoint_id=? AND outcome='' AND action NOT IN (?,?)`),
-		outcome, detail, time.Now().UTC(), id, endpointID, ActionRecreate, ActionRun)
+	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=? AND endpoint_id=? AND outcome='' AND action NOT IN `+directIn),
+		append([]any{outcome, detail, time.Now().UTC(), id, endpointID}, settledByResult...)...)
 	return err
 }
 
@@ -274,8 +285,8 @@ func (t *tenancyStore) ReadCommand(ctx context.Context, a TenantAccess, endpoint
 }
 
 // ListCommands returns an endpoint's recent commands, newest first; a non-empty containerID
-// narrows them to that container.
-func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpointID, containerID string, limit int) ([]Command, error) {
+// narrows them to that container, a non-empty reference to that image or workload.
+func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpointID, containerID, reference string, limit int) ([]Command, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -285,8 +296,11 @@ func (t *tenancyStore) ListCommands(ctx context.Context, a TenantAccess, endpoin
 			return err
 		}
 		query, args := commandColumns+` WHERE endpoint_id=? ORDER BY created_at DESC LIMIT ?`, []any{endpointID, limit}
-		if containerID != "" {
+		switch {
+		case containerID != "":
 			query, args = commandColumns+` WHERE endpoint_id=? AND (container_id=? OR result_container_id=?) ORDER BY created_at DESC LIMIT ?`, []any{endpointID, containerID, containerID, limit}
+		case reference != "":
+			query, args = commandColumns+` WHERE endpoint_id=? AND reference=? ORDER BY created_at DESC LIMIT ?`, []any{endpointID, reference, limit}
 		}
 		rows, err := tx.QueryContext(ctx, t.store.rebind(query), args...)
 		if err != nil {

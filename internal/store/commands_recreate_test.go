@@ -204,7 +204,7 @@ func TestDirectCommandsHaveOneWriter(t *testing.T) {
 		t.Fatalf("settled: %+v", c)
 	}
 	// The new container's Activity lists the run that made it.
-	list, err := st.Tenancy().ListCommands(ctx, a, endpointID, identity.ContainerID, 0)
+	list, err := st.Tenancy().ListCommands(ctx, a, endpointID, identity.ContainerID, "", 0)
 	if err != nil || len(list) != 1 || list[0].ID != cmd.ID {
 		t.Fatalf("by new container: %+v %v", list, err)
 	}

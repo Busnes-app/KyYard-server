@@ -346,13 +346,18 @@ type TenancyStore interface {
 	ResolveDirectImage(ctx context.Context, access TenantAccess, endpointID, reference string, resolver DigestResolver, key []byte, privateAllowed bool) (*protocol.ImagePull, map[string]protocol.RegistryAuth, error)
 	SettleDirectCommand(ctx context.Context, endpointID string, res protocol.DeploymentResult) error
 	CheckDirectCommand(ctx context.Context, access TenantAccess, endpointID string, dc DirectCommand) error
+	// Workload configuration and apply: a cluster workload's pod template, read and applied
+	// under container.configure; the apply is a direct command settled from deployment.result.
+	CheckWorkloadTarget(ctx context.Context, access TenantAccess, action permissions.Action, endpointID string, ref protocol.WorkloadRef) error
+	RecordWorkloadConfigurationRead(ctx context.Context, access TenantAccess, endpointID string, ref protocol.WorkloadRef, unsupported int) error
+	CreateWorkloadApply(ctx context.Context, access TenantAccess, endpointID string, w WorkloadApply) (*Command, *protocol.WorkloadApply, error)
 	FailDirectCommand(ctx context.Context, endpointID, id, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
 	// ReconcileAfterStart settles every in-flight command as unknown, fails every open policy run
 	// and settles validations the previous process left; startup only.
 	ReconcileAfterStart(ctx context.Context) (int64, error)
 	ReadCommand(ctx context.Context, access TenantAccess, endpointID, id string) (*Command, error)
-	ListCommands(ctx context.Context, access TenantAccess, endpointID, containerID string, limit int) ([]Command, error)
+	ListCommands(ctx context.Context, access TenantAccess, endpointID, containerID, reference string, limit int) ([]Command, error)
 	RollUp(ctx context.Context, since time.Time) (int64, error)
 	ReadRollups(ctx context.Context, access TenantAccess, endpointID, containerID string, window time.Duration) ([]RollupRow, error)
 	Prune(ctx context.Context) (int64, error)

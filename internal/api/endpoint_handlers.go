@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -437,13 +438,15 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		Expects struct {
 			ImageDigest string `json:"image_digest"`
 			State       string `json:"state"`
+			// Replicas is a workload.scale's new count, and only a scale's.
+			Replicas *int32 `json:"replicas"`
 		} `json:"expects"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
-	expects := protocol.Expectation{ImageDigest: body.Expects.ImageDigest, State: body.Expects.State}
+	expects := protocol.Expectation{ImageDigest: body.Expects.ImageDigest, State: body.Expects.State, Replicas: body.Expects.Replicas}
 	if body.Container != "" && body.Reference != "" {
 		// A command names one or the other. Preferring one silently would make the request
 		// mean something the caller did not write.
@@ -457,7 +460,18 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 			return
 		}
 	}
-	if !s.runtimeGate(w, r, a, id, dockerRoute) {
+	// A workload action names its target in reference and runs on a cluster whose agent says
+	// kubernetes.workloads; the store checks the namespace grant and the inventory.
+	kind := dockerRoute
+	if store.WorkloadAction(body.Action) {
+		kind = kubernetesRoute
+	}
+	ep, ok := s.runtimeEndpoint(w, r, a, id, kind)
+	if !ok {
+		return
+	}
+	if kind == kubernetesRoute && !slices.Contains(ep.Capabilities, protocol.CapabilityKubernetesWorkloads) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to operate workloads")
 		return
 	}
 	target := body.Container
@@ -510,12 +524,18 @@ func (s *Server) handleListCommands(w http.ResponseWriter, r *http.Request, a st
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	container := r.URL.Query().Get("container")
+	container, reference := r.URL.Query().Get("container"), r.URL.Query().Get("reference")
 	if container != "" && !protocol.ValidContainerHexID(container) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid container", "code": "invalid_container"})
 		return
 	}
-	rows, err := s.store.Tenancy().ListCommands(r.Context(), a, id, container, limit)
+	if reference != "" {
+		if _, err := protocol.ParseWorkloadRef(reference); err != nil || container != "" {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid workload reference", "code": "invalid_reference"})
+			return
+		}
+	}
+	rows, err := s.store.Tenancy().ListCommands(r.Context(), a, id, container, reference, limit)
 	if err != nil {
 		s.tenantError(w, err)
 		return
