@@ -133,18 +133,17 @@ it('applies an edit and keeps the step table in Last change across a tab switch'
   fireEvent.click(screen.getByRole('button', { name: 'Save and apply' }));
   const last = await screen.findByRole('region', { name: 'Last change' });
   expect(last.textContent).toContain('waiting for the cluster agent');
-  await act(async () => { vi.advanceTimersByTime(1500); });
-  await act(async () => {});
-  expect(within(last).getByText('The workload changed since you read it. Read again.')).toBeTruthy();
+  const conflict = 'The workload changed since you read it. Read again.';
+  for (let i = 0; i < 20 && !screen.queryByText(conflict); i++) await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(within(last).getByText(conflict)).toBeTruthy();
   // A settled apply re-reads, so resource_version and the diff are fresh; after a conflict the
   // ready form also offers Read again.
-  await act(async () => {});
-  await act(async () => {});
+  for (let i = 0; i < 20 && requests.filter((r) => r.url.endsWith('/configuration')).length < 2; i++) await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(requests.filter((r) => r.url.endsWith('/configuration'))).toHaveLength(2);
   expect(screen.getByLabelText('Image of web')).toHaveProperty('value', 'nginx:1.29');
   fireEvent.click(screen.getByRole('button', { name: 'Read again' }));
-  await act(async () => {});
-  await act(async () => {});
+  for (let i = 0; i < 20 && requests.filter((r) => r.url.endsWith('/configuration')).length < 3; i++) await act(async () => { await vi.advanceTimersByTimeAsync(100); });
   expect(requests.filter((r) => r.url.endsWith('/configuration'))).toHaveLength(3);
   tab('Overview');
   expect(within(screen.getByRole('region', { name: 'Last change' })).getByText('The workload changed since you read it. Read again.')).toBeTruthy();
