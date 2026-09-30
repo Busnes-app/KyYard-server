@@ -70,7 +70,9 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 			}
 			return o, code, detail
 		})
-		r.step(set.Service, protocol.StepStart, func() (string, string, string) { return r.rollout(ctx, set) })
+		r.step(set.Service, protocol.StepStart, func() (string, string, string) {
+			return r.rollout(ctx, set.Deployment.Name, func(d *appsv1.Deployment) string { return r.stalled(set, d) })
+		})
 	}
 	if r.res.Outcome == "" {
 		r.res.Outcome = protocol.OutcomeSucceeded
@@ -500,11 +502,12 @@ func upsert[T interface {
 	}
 }
 
-// rollout waits until the Deployment's controller has seen the latest generation and its one
-// replica is updated, ready and available, reading it every poll within the request's deadline.
+// rollout waits until the Deployment's controller has seen the latest generation and its
+// replicas are updated, ready and available, reading it every poll within the request's deadline.
 // A failure the controller reports for the current generation on two consecutive polls ends the
 // wait. A transient read failure is not an answer: the wait keeps the last good read and polls on.
-func (r *run) rollout(ctx context.Context, set render.Set) (string, string, string) {
+// why is the rollout_timeout detail for the last good read (nil when there was none).
+func (r *run) rollout(ctx context.Context, name string, why func(*appsv1.Deployment) string) (string, string, string) {
 	api := r.c.cs.AppsV1().Deployments(r.namespace)
 	var last *appsv1.Deployment
 	// A failure condition must hold on two consecutive polls: right after a Recreate write the
@@ -512,7 +515,7 @@ func (r *run) rollout(ctx context.Context, set render.Set) (string, string, stri
 	// ReplicaSet before the new one exists, and one poll must not fail a re-apply on it.
 	strikes := 0
 	for {
-		d, err := api.Get(ctx, set.Deployment.Name, metav1.GetOptions{})
+		d, err := api.Get(ctx, name, metav1.GetOptions{})
 		switch {
 		case err == nil:
 			last = d
@@ -521,7 +524,7 @@ func (r *run) rollout(ctx context.Context, set render.Set) (string, string, stri
 			}
 			if failed(d) {
 				if strikes++; strikes >= 2 {
-					return protocol.OutcomeFailed, "rollout_timeout", r.stalled(set, d)
+					return protocol.OutcomeFailed, "rollout_timeout", why(d)
 				}
 			} else {
 				strikes = 0
@@ -534,7 +537,7 @@ func (r *run) rollout(ctx context.Context, set render.Set) (string, string, stri
 			if errors.Is(r.parent.Err(), context.Canceled) {
 				return protocol.OutcomeUnknown, "cancelled", ""
 			}
-			return protocol.OutcomeTimedOut, "rollout_timeout", r.stalled(set, last)
+			return protocol.OutcomeTimedOut, "rollout_timeout", why(last)
 		case <-time.After(r.c.poll):
 		}
 	}
@@ -581,19 +584,7 @@ var reasonWord = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
 // each planned claim still Pending or Lost (a pod whose claim is unbound never schedules), and the
 // newest pod's waiting reason, as far as each can be read in a few seconds past the deadline.
 func (r *run) stalled(set render.Set, d *appsv1.Deployment) string {
-	var parts []string
-	if d != nil {
-		for _, c := range d.Status.Conditions {
-			switch {
-			case c.Type == appsv1.DeploymentProgressing && reasonWord.MatchString(c.Reason):
-				parts = append(parts, "progressing="+c.Reason)
-			case c.Type == appsv1.DeploymentAvailable && c.Status != corev1.ConditionTrue && reasonWord.MatchString(c.Reason):
-				parts = append(parts, "available="+c.Reason)
-			case c.Type == appsv1.DeploymentReplicaFailure && c.Status == corev1.ConditionTrue && reasonWord.MatchString(c.Reason):
-				parts = append(parts, "replicafailure="+c.Reason)
-			}
-		}
-	}
+	parts := conditionReasons(d)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.parent), 5*time.Second)
 	defer cancel()
 	for _, want := range set.Claims {
@@ -614,5 +605,28 @@ func (r *run) stalled(set render.Set, d *appsv1.Deployment) string {
 			}
 		}
 	}
-	return strings.Join(parts[:min(len(parts), 3)], ",")
+	return reasons(parts)
 }
+
+// conditionReasons are a Deployment's Progressing reason, its Available reason when unavailable
+// and its ReplicaFailure reason, each a reason word; none for nil.
+func conditionReasons(d *appsv1.Deployment) []string {
+	var parts []string
+	if d == nil {
+		return parts
+	}
+	for _, c := range d.Status.Conditions {
+		switch {
+		case c.Type == appsv1.DeploymentProgressing && reasonWord.MatchString(c.Reason):
+			parts = append(parts, "progressing="+c.Reason)
+		case c.Type == appsv1.DeploymentAvailable && c.Status != corev1.ConditionTrue && reasonWord.MatchString(c.Reason):
+			parts = append(parts, "available="+c.Reason)
+		case c.Type == appsv1.DeploymentReplicaFailure && c.Status == corev1.ConditionTrue && reasonWord.MatchString(c.Reason):
+			parts = append(parts, "replicafailure="+c.Reason)
+		}
+	}
+	return parts
+}
+
+// reasons is a rollout_timeout detail: at most three reasons.
+func reasons(parts []string) string { return strings.Join(parts[:min(len(parts), 3)], ",") }

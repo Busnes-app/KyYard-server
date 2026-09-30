@@ -354,7 +354,7 @@ func images(spec corev1.PodSpec) []string {
 }
 
 func pod(p corev1.Pod) protocol.Pod {
-	out := protocol.Pod{Namespace: p.Namespace, Name: p.Name, Phase: string(p.Status.Phase), Node: p.Spec.NodeName, Containers: []protocol.PodContainer{}}
+	out := protocol.Pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), Phase: string(p.Status.Phase), Node: p.Spec.NodeName, Containers: []protocol.PodContainer{}}
 	if p.Status.StartTime != nil {
 		out.StartedAt = p.Status.StartTime.UTC()
 	}
