@@ -12,7 +12,7 @@ const maxQueued = 256 * 1024;
 // Fixed refusals the agent may name in exec.close; any other reason keeps the generic text.
 const CLOSE_REASONS: Record<string, string> = {
   forbidden: "The agent's role does not allow a terminal here. Regenerate and apply the cluster manifest, then retry.",
-  pod_security: 'This namespace does not enforce Pod Security baseline or restricted, so terminals are refused.',
+  pod_security: 'This pod or its namespace does not meet Pod Security baseline, so terminals are refused.',
 };
 
 export function ContainerTerminal({ base, container, scope }: { base: string; container: Container; scope: string }) {

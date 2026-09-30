@@ -22,6 +22,7 @@ const DETAILS: Record<string, string> = {
   admission_denied: 'The cluster refused the change (quota or policy).',
   unsupported: 'The agent does not run this action on this kind.',
   replicas_out_of_range: 'Replicas must be from 0 to 1000.',
+  pvc_retention: "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete); refused.",
   invalid_reference: 'The agent refused the workload reference.',
   runtime_timeout: 'The cluster did not answer in time.',
   runtime_error: 'The cluster call failed.',

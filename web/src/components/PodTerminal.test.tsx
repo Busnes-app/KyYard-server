@@ -54,7 +54,7 @@ it('refuses to open a pod whose identity the inventory does not report', () => {
 
 it.each([
   ['forbidden', "The agent's role does not allow a terminal here. Regenerate and apply the cluster manifest, then retry."],
-  ['pod_security', 'This namespace does not enforce Pod Security baseline or restricted, so terminals are refused.'],
+  ['pod_security', 'This pod or its namespace does not meet Pod Security baseline, so terminals are refused.'],
   ['<b>x</b>', 'Terminal ended or was refused. Process state may be unknown. Check access, target and agent version before opening another terminal.'],
 ])('words the %s close reason in fixed text', (reason, text) => {
   vi.stubGlobal('WebSocket', Socket);

@@ -180,3 +180,7 @@ it('words a managed delete the agent settled as denied and a Pod Security refusa
   expect(commandLine({ action: 'workload.delete', outcome: 'denied', detail: 'application_managed' })).toBe('Delete refused. Managed by a KyYard application. Edit it there.');
   expect(commandLine({ action: 'workload.apply', outcome: 'denied', detail: 'pod_security' })).toBe('Apply refused. This namespace does not enforce Pod Security baseline or restricted; KyYard refuses to change workloads there.');
 });
+
+it('words a scale-down refused to keep a StatefulSet\'s volume claims', () => {
+  expect(commandLine({ action: 'workload.scale', outcome: 'denied', detail: 'pvc_retention' })).toBe("Scale refused. Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete); refused.");
+});
