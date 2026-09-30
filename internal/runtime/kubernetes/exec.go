@@ -126,14 +126,18 @@ func hasContainer(pod *corev1.Pod, name string) bool {
 	return false
 }
 
-// finish records how the stream ended, then ends stdout. Only a CodeExitError is an exit code:
-// client-go answers nil both for a success status and for an error stream that ended empty, and
-// a stream we cancelled proves nothing about the process.
+// finish records how the stream ended, then ends stdout. nil is exit 0 and an ExitError its
+// code, unless the session cancelled the stream itself (Close, idle, lifetime): then the exit is
+// unknown.
 func (s *podExec) finish(err error) {
 	var exit exec.ExitError
 	var code *int
-	if s.ctx.Err() == nil && errors.As(err, &exit) {
-		code = ptrTo(exit.ExitStatus())
+	if s.ctx.Err() == nil {
+		if err == nil {
+			code = ptrTo(0)
+		} else if errors.As(err, &exit) {
+			code = ptrTo(exit.ExitStatus())
+		}
 	}
 	s.mu.Lock()
 	s.ended, s.exit = true, code

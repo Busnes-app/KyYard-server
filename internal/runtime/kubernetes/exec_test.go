@@ -43,10 +43,7 @@ func (f *fakeStreamer) StreamWithContext(ctx context.Context, opts remotecommand
 	}()
 	if f.block {
 		<-ctx.Done()
-		if f.result != nil {
-			return f.result
-		}
-		return ctx.Err()
+		return f.result
 	}
 	buf := make([]byte, 1024)
 	for {
@@ -107,9 +104,7 @@ func TestPodExecEchoesAndReportsTheExitCode(t *testing.T) {
 		code   *int
 	}{
 		{"exit 3", exec.CodeExitError{Err: errors.New("command terminated with exit code 3"), Code: 3}, ptr(3)},
-		// client-go answers nil both for a success status and for an error stream that ended
-		// empty (a dropped connection), so nil is no proof of exit 0.
-		{"nil is unknown", nil, nil},
+		{"nil with no cancel is exit 0", nil, ptr(0)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake(tc.result)
@@ -213,6 +208,18 @@ func TestPodExecCloseUnblocksReadAndWrite(t *testing.T) {
 			t.Fatal("Close did not unblock Read and Write")
 		}
 	}
+	waitStopped(t, s)
+}
+
+func TestPodExecNilAfterCloseIsUnknown(t *testing.T) {
+	f := newFake(nil)
+	f.block = true
+	c, _ := execClient(t, f, execPod(nil))
+	s, err := c.OpenExec(context.Background(), execSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
 	waitStopped(t, s)
 }
 
