@@ -299,8 +299,8 @@ it('says the organizations could not be read instead of refusing the role', asyn
   expect(screen.queryByText('Only an organization administrator can run containers.')).toBeNull();
 });
 
-it('keeps the run form locked after a successful run', async () => {
-  stub('organization_admin', [container()], { ...configurable, run: { id: 'run1', action: 'container.run', outcome: 'succeeded', result: { steps: [], services: [] } } });
+it.each([['succeeded', true], ['denied', false]])('locks the run form after a %s run: %s', async (outcome, locked) => {
+  stub('organization_admin', [container()], { ...configurable, run: { id: 'run1', action: 'container.run', outcome, result: { steps: [], services: [] } } });
   render(<ContainerRunPage org="a" endpoint="ep_1" />);
   fireEvent.change(await screen.findByLabelText('Image reference'), { target: { value: 'nginx:1' } });
   fireEvent.change(screen.getByLabelText('Container name'), { target: { value: 'api' } });
@@ -309,9 +309,10 @@ it('keeps the run form locked after a successful run', async () => {
   const run = screen.getByRole('button', { name: 'Run container' }) as HTMLButtonElement;
   expect(run.disabled).toBe(false);
   await act(async () => { fireEvent.click(run); });
-  expect(await screen.findByText('Done.')).toBeTruthy();
+  expect(await screen.findByText(outcome === 'succeeded' ? 'Done.' : 'The host refused the change; nothing was replaced.')).toBeTruthy();
+  expect(screen.getByLabelText('Image reference').matches(':disabled')).toBe(locked);
   typeName();
-  expect(run.disabled).toBe(true);
+  expect(run.disabled).toBe(locked);
 });
 
 it('refreshes the host details with the inventory every 30 s', async () => {

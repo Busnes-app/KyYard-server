@@ -118,7 +118,7 @@ export const ContainerRunPage: React.FC<{ org: string; endpoint: string }> = ({ 
       : details.state !== 'ready' || !details.data ? null
       : details.data.runtime !== 'docker' ? <EmptyNotice>Containers can be run only on a Docker host.</EmptyNotice>
       : !canRunContainers(details.data) ? <EmptyNotice>Upgrade the host agent to run containers here.</EmptyNotice>
-      : <section className="panel"><ContainerConfigurationForm base={base} mode="run" pending={!!command && command.outcome !== 'failed'} onSent={setSent} />
+      : <section className="panel"><ContainerConfigurationForm base={base} mode="run" pending={!!command && (!command.outcome || command.outcome === 'succeeded')} onSent={setSent} />
         {command && <SentCommand command={command} error={error} org={org} endpoint={endpoint} current="" />}</section>}
   </div>;
 };
