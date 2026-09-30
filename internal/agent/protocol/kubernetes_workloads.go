@@ -141,7 +141,7 @@ func (c *WorkloadConfiguration) Validate(target WorkloadRef, now time.Time) erro
 	if d := now.Sub(c.ObservedAt); d > MaxClockSkew || d < -MaxClockSkew {
 		return workloadErr("observed_at")
 	}
-	if err := c.validSpec(); err != nil {
+	if err := c.validSpec(false); err != nil {
 		return err
 	}
 	if b, err := json.Marshal(c); err != nil || len(b) >= MaxConfigurationFrameBytes {
@@ -150,13 +150,14 @@ func (c *WorkloadConfiguration) Validate(target WorkloadRef, now time.Time) erro
 	return nil
 }
 
-// validSpec is everything but the target match and the observation time.
-func (c *WorkloadConfiguration) validSpec() error {
+// validSpec is everything but the target match and the observation time. A create has no
+// resource version; anything else needs one.
+func (c *WorkloadConfiguration) validSpec(create bool) error {
 	kind := c.Target.Kind
 	switch {
 	case !c.Target.validObject() || kind == WorkloadPod:
 		return workloadErr("target")
-	case !validResourceVersion(c.ResourceVersion):
+	case create && c.ResourceVersion != "" || !create && !validResourceVersion(c.ResourceVersion):
 		return workloadErr("resource_version")
 	case (c.Replicas == nil) != (kind == WorkloadDaemonSet) || (c.Replicas != nil && (*c.Replicas < 0 || *c.Replicas > MaxWorkloadReplicas)):
 		return workloadErr("replicas")
@@ -261,8 +262,10 @@ var resourceVersion = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 func validResourceVersion(s string) bool { return resourceVersion.MatchString(s) }
 
 // WorkloadApply sets a workload's pod template (image, command, args, env, resources) and
-// replicas and paused from Spec, on the object at ResourceVersion only. It is answered by a
-// DeploymentResult whose Deployment is Request and whose one service is WorkloadApplyService.
+// replicas and paused from Spec, on the object at ResourceVersion only. With Create it instead
+// creates a Deployment that must not exist, from containers, replicas and strategy only, with no
+// ResourceVersion. It is answered by a DeploymentResult whose Deployment is Request and whose one
+// service is WorkloadApplyService.
 type WorkloadApply struct {
 	Request         string                `json:"request"`
 	Endpoint        string                `json:"endpoint"`
@@ -271,6 +274,7 @@ type WorkloadApply struct {
 	Target          WorkloadRef           `json:"target"`
 	ResourceVersion string                `json:"resource_version"`
 	Spec            WorkloadConfiguration `json:"spec"`
+	Create          bool                  `json:"create,omitempty"`
 }
 
 // Validate holds the spec to the target and version it was read at: desired state, so no
@@ -288,7 +292,10 @@ func (a WorkloadApply) Validate(now time.Time) error {
 	if a.Spec.Target != a.Target || a.Spec.ResourceVersion != a.ResourceVersion || !a.Spec.ObservedAt.IsZero() || a.Spec.Managed || len(a.Spec.Unsupported) > 0 {
 		return errors.New("the workload apply spec does not match its target")
 	}
-	if err := a.Spec.validSpec(); err != nil {
+	if a.Create && (a.Target.Kind != WorkloadDeployment || a.Spec.Paused || len(a.Spec.InitContainers) > 0 || len(a.Spec.EnvFrom) > 0) {
+		return errors.New("a workload create carries a Deployment's containers only")
+	}
+	if err := a.Spec.validSpec(a.Create); err != nil {
 		return err
 	}
 	if b, err := json.Marshal(a); err != nil || len(b) > MaxWorkloadApplyBytes {

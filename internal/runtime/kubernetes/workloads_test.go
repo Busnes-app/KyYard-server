@@ -911,3 +911,192 @@ func TestOperateDeleteIsBoundToTheRead(t *testing.T) {
 		t.Fatalf("deleted: %v", err)
 	}
 }
+
+// createFrame runs shop/deployment/<name>: two replicas of one container with a literal, a
+// Secret and a ConfigMap env and resources.
+func createFrame(name string, deadline time.Duration) protocol.WorkloadApply {
+	ref := protocol.WorkloadRef{Namespace: "shop", Kind: protocol.WorkloadDeployment, Name: name}
+	now := time.Now()
+	return protocol.WorkloadApply{Request: testApplyID, Endpoint: "ep_1", IssuedAt: now, Deadline: now.Add(deadline), Target: ref, Create: true, Spec: protocol.WorkloadConfiguration{
+		Target: ref, Replicas: ptr(int32(2)),
+		Containers: []protocol.WorkloadContainer{{
+			Name: "web", Image: "ghcr.io/org/web:1", Command: []string{"/web"}, Args: []string{"--port", "80"},
+			Env:       []protocol.WorkloadEnv{{Name: "MODE", Value: "prod"}, {Name: "TOKEN", SecretRef: "web-secret/token"}, {Name: "LEVEL", ConfigMapRef: "web-env/level"}},
+			Resources: protocol.WorkloadResources{CPURequest: "250m", MemoryLimit: "128Mi"},
+		}},
+	}}
+}
+
+// createCluster is workloadCluster whose Deployment creates report their first generation
+// rolled out when rolls is true.
+func createCluster(t *testing.T, denied, rolls bool, objects ...runtime.Object) (*Client, *fake.Clientset) {
+	t.Helper()
+	c, cs := workloadCluster(t, denied, rolls, objects...)
+	cs.PrependReactor("create", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		d := action.(k8stesting.CreateAction).GetObject().(*appsv1.Deployment).DeepCopy()
+		d.Generation = 1
+		if rolls {
+			n := replicas(d.Spec.Replicas)
+			d.Status = appsv1.DeploymentStatus{ObservedGeneration: 1, Replicas: n, UpdatedReplicas: n, ReadyReplicas: n, AvailableReplicas: n}
+		}
+		return true, d, cs.Tracker().Create(appsv1.SchemeGroupVersion.WithResource("deployments"), d, d.Namespace)
+	})
+	return c, cs
+}
+
+// The run's Deployment is exactly the form's: its own name labels (never KyYard's managed-by),
+// replicas, strategy, containers, restart policy Always and no service-account token; nothing
+// else, so no probes, security context or volumes.
+func TestRenderWorkload(t *testing.T) {
+	req := createFrame("web", time.Minute)
+	labels := map[string]string{"app.kubernetes.io/name": "web", "app.kubernetes.io/instance": "web"}
+	want := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", Labels: labels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr(int32(2)),
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					RestartPolicy:                corev1.RestartPolicyAlways,
+					AutomountServiceAccountToken: ptr(false),
+					Containers: []corev1.Container{{
+						Name: "web", Image: "ghcr.io/org/web:1", Command: []string{"/web"}, Args: []string{"--port", "80"},
+						Env: []corev1.EnvVar{
+							{Name: "MODE", Value: "prod"},
+							{Name: "TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "web-secret"}, Key: "token"}}},
+							{Name: "LEVEL", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "web-env"}, Key: "level"}}},
+						},
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m")},
+							Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+						},
+					}},
+				},
+			},
+		},
+	}
+	got := renderWorkload(req.Target, req.Spec)
+	if !reflect.DeepEqual(got, want) {
+		g, _ := json.Marshal(got)
+		w, _ := json.Marshal(want)
+		t.Fatalf("render:\n got %s\nwant %s", g, w)
+	}
+	for _, l := range []map[string]string{got.Labels, got.Spec.Selector.MatchLabels, got.Spec.Template.Labels} {
+		if _, ok := l[render.LabelManagedBy]; ok {
+			t.Fatal("a run carries KyYard's managed-by label")
+		}
+	}
+	// The strategy and replicas are the form's; the label maps are not shared.
+	req.Spec.Strategy, req.Spec.Replicas = "Recreate", ptr(int32(0))
+	got = renderWorkload(req.Target, req.Spec)
+	if got.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType || *got.Spec.Replicas != 0 {
+		t.Fatalf("strategy %s replicas %d", got.Spec.Strategy.Type, *got.Spec.Replicas)
+	}
+	got.Labels["x"] = "y"
+	if len(got.Spec.Selector.MatchLabels) != 2 || len(got.Spec.Template.Labels) != 2 {
+		t.Fatal("label maps shared")
+	}
+}
+
+// A create checks the grant, Pod Security and the name, creates the render and waits for its
+// rollout.
+func TestApplyWorkloadCreates(t *testing.T) {
+	c, cs := createCluster(t, false, true)
+	req := createFrame("web", time.Minute)
+	started := 0
+	res := c.ApplyWorkload(context.Background(), req, func() { started++ })
+	if res.Outcome != protocol.OutcomeSucceeded || steps(res) != "precondition succeeded; create succeeded; rollout succeeded" || started != 1 {
+		t.Fatalf("%s %s started %d", res.Outcome, steps(res), started)
+	}
+	if err := res.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reviews(cs); !reflect.DeepEqual(got, []string{"create apps/deployments"}) {
+		t.Fatalf("reviews %v", got)
+	}
+	if got := mutations(cs); !reflect.DeepEqual(got, []string{"create deployments"}) {
+		t.Fatalf("mutations %v", got)
+	}
+	stored, err := cs.AppsV1().Deployments("shop").Get(context.Background(), "web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := renderWorkload(req.Target, req.Spec)
+	if !reflect.DeepEqual(stored.Labels, want.Labels) || !reflect.DeepEqual(stored.Spec, want.Spec) {
+		t.Fatalf("created %+v", stored.Spec)
+	}
+	// The rollout read the created Deployment after the create.
+	actions := cs.Actions()
+	last := actions[len(actions)-1]
+	if last.GetVerb() != "get" || last.GetResource().Resource != "deployments" {
+		t.Fatalf("last call %s %s", last.GetVerb(), last.GetResource().Resource)
+	}
+}
+
+func TestApplyWorkloadCreateRefusals(t *testing.T) {
+	ctx := context.Background()
+	gr := schema.GroupResource{Group: "apps", Resource: "deployments"}
+	for _, tc := range []struct {
+		name    string
+		denied  bool
+		objects []runtime.Object
+		setup   func(*fake.Clientset)
+		started bool
+		want    string
+	}{
+		{name: "forbidden", denied: true, want: "precondition denied forbidden; create skipped; rollout skipped"},
+		{name: "exists", objects: []runtime.Object{webDeployment()}, want: "precondition denied name_taken Deployment/web; create skipped; rollout skipped"},
+		{name: "pod security", setup: func(cs *fake.Clientset) {
+			if _, err := cs.CoreV1().Namespaces().Update(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shop"}}, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "precondition denied pod_security missing; create skipped; rollout skipped"},
+		{name: "lost race", started: true, setup: func(cs *fake.Clientset) {
+			cs.PrependReactor("create", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewAlreadyExists(gr, "web")
+			})
+		}, want: "precondition succeeded; create denied name_taken Deployment/web; rollout skipped"},
+		{name: "admission", started: true, setup: func(cs *fake.Clientset) {
+			cs.PrependReactor("create", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewForbidden(gr, "web", nil)
+			})
+		}, want: "precondition succeeded; create denied admission_denied; rollout skipped"},
+	} {
+		c, cs := createCluster(t, tc.denied, true, tc.objects...)
+		if tc.setup != nil {
+			tc.setup(cs)
+		}
+		started := false
+		res := c.ApplyWorkload(ctx, createFrame("web", time.Minute), func() { started = true })
+		if res.Outcome != protocol.OutcomeDenied || steps(res) != tc.want || started != tc.started {
+			t.Fatalf("%s: %s started %v", tc.name, steps(res), started)
+		}
+		if err := res.Validate(); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if d, err := cs.AppsV1().Deployments("shop").Get(ctx, "web", metav1.GetOptions{}); err == nil && d.UID != testUID {
+			t.Fatalf("%s: a Deployment was created", tc.name)
+		}
+	}
+}
+
+func TestApplyWorkloadCreateRollout(t *testing.T) {
+	c, _ := createCluster(t, false, false)
+	res := c.ApplyWorkload(context.Background(), createFrame("web", 300*time.Millisecond), func() {})
+	if res.Outcome != protocol.OutcomeTimedOut || !strings.HasPrefix(steps(res), "precondition succeeded; create succeeded; rollout timed_out rollout_timeout") {
+		t.Fatalf("%s", steps(res))
+	}
+	if err := res.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	// A create frame carrying a resource version is refused before any call.
+	c, cs := createCluster(t, false, true)
+	req := createFrame("web", time.Minute)
+	req.ResourceVersion, req.Spec.ResourceVersion = "41", "41"
+	res = c.ApplyWorkload(context.Background(), req, func() { t.Fatal("started") })
+	if res.Outcome != protocol.OutcomeDenied || res.Code != protocol.ResultInvalidRequest || len(cs.Actions()) != 0 {
+		t.Fatalf("%s %s %d", res.Outcome, res.Code, len(cs.Actions()))
+	}
+}
