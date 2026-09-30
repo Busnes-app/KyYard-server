@@ -29,16 +29,21 @@ type namespaceGrant struct {
 	phrase string
 	verbs  []string
 	write  bool
+	says   string // exact wording required instead, when set
 }
 
 // namespaceGrants names each resource the kyyard-agent-deploy Role grants. A resource added, or
 // a verb list changed, on that Role fails this test until namespaceDisclosure is updated to match.
 var namespaceGrants = map[string]namespaceGrant{
-	"deployments":            {"Deployments", []string{"get", "list", "create", "update", "patch", "delete"}, true},
-	"services":               {"Services", []string{"get", "list", "create", "update", "patch", "delete"}, true},
-	"configmaps":             {"ConfigMaps", []string{"get", "list", "create", "update", "patch", "delete"}, true},
-	"secrets":                {"Secrets", []string{"get", "create", "update", "patch", "delete"}, true},
-	"persistentvolumeclaims": {"PersistentVolumeClaims", []string{"get", "list", "create"}, false},
+	"deployments":            {"Deployments", []string{"get", "list", "create", "update", "patch", "delete"}, true, ""},
+	"services":               {"Services", []string{"get", "list", "create", "update", "patch", "delete"}, true, ""},
+	"configmaps":             {"ConfigMaps", []string{"get", "list", "create", "update", "patch", "delete"}, true, ""},
+	"secrets":                {"Secrets", []string{"get", "create", "update", "patch", "delete"}, true, ""},
+	"persistentvolumeclaims": {"PersistentVolumeClaims", []string{"get", "list", "create"}, false, ""},
+	"statefulsets":           {"StatefulSets", []string{"get", "list", "patch", "update", "delete"}, false, "get, list, patch, update and delete StatefulSets and DaemonSets"},
+	"daemonsets":             {"DaemonSets", []string{"get", "list", "patch", "update", "delete"}, false, "get, list, patch, update and delete StatefulSets and DaemonSets"},
+	"pods":                   {"pods", []string{"delete"}, false, "delete pods"},
+	"pods/exec":              {"pods/exec", []string{"create"}, false, "open pods/exec"},
 }
 
 var ruleRE = regexp.MustCompile(`resources: \[([^\]]*)\]\n\s*verbs: \[([^\]]*)\]`)
@@ -133,7 +138,11 @@ func TestClusterDisclosureMatchesTheManifestAndThreatModel(t *testing.T) {
 			if !slices.Equal(verbs, want.verbs) {
 				t.Errorf("%s: Role grants verbs %v, the table expects %v", resource, verbs, want.verbs)
 			}
-			if want.write {
+			if want.says != "" {
+				if !strings.Contains(namespaceDisclosure, want.says) {
+					t.Errorf("%s: namespace disclosure missing %q", resource, want.says)
+				}
+			} else if want.write {
 				if !strings.Contains(namespaceDisclosure, "create, update and delete") || !strings.Contains(namespaceDisclosure, want.phrase) {
 					t.Errorf("%s: namespace disclosure missing the create/update/delete grant", resource)
 				}

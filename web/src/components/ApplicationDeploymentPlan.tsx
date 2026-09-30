@@ -32,6 +32,8 @@ const LEGACY_OUTCOME = 'The agent did not classify this outcome; upgrade the age
 // renders only in the shape its code allows; an unknown code renders as inert text.
 export const STEP_CODES: Record<string, string> = {
   runtime_unreadable: "The daemon's default runtime could not be read.",
+  application_managed: 'This workload is managed by a KyYard application; change it through the application.',
+  namespace_not_granted: 'This namespace is not granted to KyYard on this cluster.',
   container_missing: 'The container no longer exists.',
   exited_early: 'The new container exited or restarted right after starting.',
   identity_mismatch: 'The container is not the one this plan was decided about.',
