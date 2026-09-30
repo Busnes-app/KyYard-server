@@ -16,11 +16,14 @@ const (
 	MaxWorkloadPods       = MaxPodContainers * 4
 )
 
-// WorkloadRef names the Deployment a cluster inspection reads.
+// WorkloadRef has two shapes. An inspection names a Deployment by UID and no Kind (valid); a
+// configuration read, an apply or a command names an object by Kind and no UID (validObject,
+// ParseWorkloadRef).
 type WorkloadRef struct {
 	Namespace string `json:"namespace"`
+	Kind      string `json:"kind,omitempty"`
 	Name      string `json:"name"`
-	UID       string `json:"uid"`
+	UID       string `json:"uid,omitempty"`
 }
 
 // WorkloadStatus is a Deployment's rollout state and its pods. Missing: the Deployment is gone,
@@ -63,7 +66,7 @@ var (
 )
 
 func (w WorkloadRef) valid() bool {
-	return ValidDNSLabel(w.Namespace) && ValidDNSLabel(w.Name) && deploymentUUID.MatchString(w.UID)
+	return w.Kind == "" && ValidDNSLabel(w.Namespace) && ValidDNSLabel(w.Name) && deploymentUUID.MatchString(w.UID)
 }
 
 // validate bounds an untrusted status: counts non-negative, closed vocabularies, reason words,

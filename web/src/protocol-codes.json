@@ -1,6 +1,7 @@
 {
   "step_codes": [
     "admission_denied",
+    "application_managed",
     "bind_missing",
     "cancelled",
     "claim_immutable",
@@ -21,6 +22,7 @@
     "legacy",
     "name_reserved",
     "name_taken",
+    "namespace_not_granted",
     "pinned_image_missing",
     "pod_security",
     "pull_digest_mismatch",

@@ -41,11 +41,13 @@ type (
 )
 
 // ConfigurationResult answers a ConfigurationOpen. Status is ok, unavailable or busy; only ok
-// carries a Result, and never runtime error text.
+// carries an answer, a Result for a container or a Workload for a cluster object, and never
+// runtime error text.
 type ConfigurationResult struct {
-	Request string                  `json:"request"`
-	Status  string                  `json:"status"`
-	Result  *ContainerConfiguration `json:"result,omitempty"`
+	Request  string                  `json:"request"`
+	Status   string                  `json:"status"`
+	Result   *ContainerConfiguration `json:"result,omitempty"`
+	Workload *WorkloadConfiguration  `json:"workload,omitempty"`
 }
 
 type EnvEntry struct {
@@ -381,19 +383,19 @@ func (c *ContainerConfiguration) validUnsupported() error {
 	return nil
 }
 
-// Validate checks the frame's shape; a present Result is validated against the grant's target
-// by the caller with ContainerConfiguration.Validate.
+// Validate checks the frame's shape; a present Result or Workload is validated against the
+// grant's target by the caller with its own Validate.
 func (r ConfigurationResult) Validate() error {
 	if !execStreamID.MatchString(r.Request) {
 		return configErr("request")
 	}
 	switch r.Status {
 	case "ok":
-		if r.Result == nil {
-			return configErr("ok without a result")
+		if (r.Result == nil) == (r.Workload == nil) {
+			return configErr("ok without exactly one result")
 		}
 	case "unavailable", "busy":
-		if r.Result != nil {
+		if r.Result != nil || r.Workload != nil {
 			return configErr("result on a refusal")
 		}
 	default:

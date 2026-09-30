@@ -60,6 +60,11 @@ const (
 	// Image actions name a reference rather than a container, and travel in Reference.
 	ActionImagePull   = "image.pull"
 	ActionImageRemove = "image.remove"
+	// Cluster actions name a WorkloadRef ("<namespace>/<kind>/<name>") in Reference.
+	ActionWorkloadRestart = "workload.restart"
+	ActionWorkloadScale   = "workload.scale" // Expects.Replicas is the new count
+	ActionWorkloadDelete  = "workload.delete"
+	ActionPodDelete       = "pod.delete"
 )
 
 // Close reasons the server sends in the WebSocket close frame.
@@ -203,6 +208,8 @@ type Command struct {
 type Expectation struct {
 	ImageDigest string `json:"image_digest,omitempty"`
 	State       string `json:"state,omitempty"`
+	// Replicas is a scale's target count, 0..MaxWorkloadReplicas.
+	Replicas *int32 `json:"replicas,omitempty"`
 }
 
 // Result is what became of a command. Detail is bounded: an agent cannot make the control

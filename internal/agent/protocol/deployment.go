@@ -44,6 +44,8 @@ const (
 	StepRemove                      = "remove"
 	StepRecheck                     = "recheck"  // re-inspects the old container at the start of its replacement
 	StepRollback                    = "rollback" // restores the replaced container after a failed start
+	StepApply                       = "apply"    // a workload apply's update of the object
+	StepRollout                     = "rollout"  // a workload apply's wait for the rollout
 	// ExplicitProject and ExplicitRevision are the fixed identity of a direct (edit or run) frame.
 	ExplicitProject            = "direct"
 	ExplicitRevision           = 1
@@ -105,6 +107,7 @@ var stepCodes = map[string]detailRule{
 	"pod_security": detailPodSecurity, "admission_denied": detailObject, "claim_immutable": detailObject,
 	"service_ip_immutable": detailObject, "service_ip_unavailable": detailObject,
 	"rollback_failed": detailNone, "start_failed_rolled_back": detailNone, "exited_early": detailNone,
+	"application_managed": detailNone, "namespace_not_granted": detailNone,
 }
 
 var resultCodes = map[string]bool{ResultStepFailed: true, ResultClockSkew: true, ResultInvalidRequest: true, ResultWrongEndpoint: true, ResultBusy: true, ResultRestarted: true, ResultUnreadable: true, CodeLegacy: true}
@@ -164,7 +167,7 @@ var (
 	deploymentEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 	// Docker's volume name characters, at least two, long enough for a resolved "<project>_<name>" (64+1+64).
 	deploymentVolume  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{1,128}$`)
-	deploymentSteps   = map[string]bool{StepRollback: true, StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true, StepRecheck: true}
+	deploymentSteps   = map[string]bool{StepApply: true, StepRollout: true, StepRollback: true, StepVolume: true, StepPrecondition: true, StepImage: true, StepPull: true, StepStop: true, StepRename: true, StepCreate: true, StepStart: true, StepRemove: true, StepRecheck: true}
 	deploymentRestart = map[string]bool{"": true, "no": true, "always": true, "unless-stopped": true, "on-failure": true}
 	resultOutcomes    = map[string]bool{OutcomeSucceeded: true, OutcomeFailed: true, OutcomeDenied: true, OutcomeTimedOut: true, OutcomeUnknown: true}
 )

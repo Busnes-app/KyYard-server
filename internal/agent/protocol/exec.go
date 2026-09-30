@@ -24,27 +24,47 @@ var (
 	execUser     = regexp.MustCompile(`^[a-zA-Z0-9_.-]+(?::[a-zA-Z0-9_.-]+)?$`)
 )
 
-// ExecSpec carries the exact target approved by the caller. Argv is passed directly
-// to Docker: this adapter neither parses a command line nor inserts a shell.
+// ExecSpec carries the exact target approved by the caller: a Docker container and image with
+// an explicit user, or a pod container pinned by the pod's UID. Argv is passed directly to the
+// runtime: no adapter parses a command line or inserts a shell.
 type ExecSpec struct {
-	Container string   `json:"container"`
-	ImageID   string   `json:"image_id"`
-	User      string   `json:"user"`
-	Argv      []string `json:"argv"`
+	Container string     `json:"container"`
+	ImageID   string     `json:"image_id"`
+	User      string     `json:"user"`
+	Argv      []string   `json:"argv"`
+	Pod       *PodTarget `json:"pod,omitempty"`
+}
+
+// ValidateFor is Validate holding the target to the runtime: a pod exactly on a cluster.
+func (s ExecSpec) ValidateFor(runtime string) error {
+	if (s.Pod != nil) != (runtime == RuntimeKubernetes) {
+		return errors.New("the exec target does not match the agent's runtime")
+	}
+	return s.Validate()
 }
 
 func (s ExecSpec) Validate() error {
+	if s.Pod != nil {
+		if s.Container != "" || s.ImageID != "" || s.User != "" || s.Pod.Container == "" || s.Pod.UID == "" || s.Pod.Validate() != nil {
+			return errors.New("a pod exec names a namespace, pod, container and pod UID, and no Docker field")
+		}
+		return validArgv(s.Argv)
+	}
 	if !fullDockerID.MatchString(s.Container) || !strings.HasPrefix(s.ImageID, "sha256:") || !fullDockerID.MatchString(strings.TrimPrefix(s.ImageID, "sha256:")) {
 		return errors.New("exec requires full container and image IDs")
 	}
 	if len(s.User) == 0 || len(s.User) > 128 || !execUser.MatchString(s.User) {
 		return errors.New("exec requires an explicit container user or user:group")
 	}
-	if len(s.Argv) == 0 || len(s.Argv) > MaxExecArgs || s.Argv[0] == "" {
+	return validArgv(s.Argv)
+}
+
+func validArgv(argv []string) error {
+	if len(argv) == 0 || len(argv) > MaxExecArgs || argv[0] == "" {
 		return errors.New("exec requires bounded argv with a nonempty executable")
 	}
 	size := 0
-	for _, arg := range s.Argv {
+	for _, arg := range argv {
 		size += len(arg)
 		if strings.ContainsRune(arg, 0) || !utf8.ValidString(arg) || size > MaxExecArgumentBytes {
 			return errors.New("exec arguments exceed bounds or contain invalid text")
