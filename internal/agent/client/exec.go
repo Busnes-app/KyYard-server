@@ -186,8 +186,12 @@ func (s *execStreams) run(ctx context.Context, req protocol.ExecOpen, stream *ex
 	}
 	runtime, err := s.opts.Exec(ctx, req.Spec)
 	if err != nil {
+		// Daemon errors can contain argv; only a fixed refusal is forwarded.
+		if reason := protocol.ExecRefusal(err); reason != "" {
+			closed.Reason = reason
+		}
 		return
-	} // daemon errors can contain argv; never forward them
+	}
 	defer runtime.Close()
 	stopClose := context.AfterFunc(ctx, func() { _ = runtime.Close() })
 	defer stopClose()

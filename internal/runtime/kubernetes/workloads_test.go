@@ -95,7 +95,10 @@ func shopPod() *corev1.Pod {
 // is true.
 func workloadCluster(t *testing.T, denied, rolls bool, objects ...runtime.Object) (*Client, *fake.Clientset) {
 	t.Helper()
-	c, cs := cluster(t, append([]runtime.Object{&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web-secret"}, StringData: map[string]string{"token": secretValue}}}, objects...)...)
+	c, cs := cluster(t, append([]runtime.Object{
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shop", Labels: map[string]string{podSecurityEnforce: "baseline"}}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web-secret"}, StringData: map[string]string{"token": secretValue}},
+	}, objects...)...)
 	c.poll = 10 * time.Millisecond
 	cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
@@ -316,6 +319,20 @@ func TestOperateForbidden(t *testing.T) {
 		if outcome != protocol.OutcomeDenied || detail != "forbidden" || len(mutations(cs)) != 0 {
 			t.Fatalf("%s: %s %q %v", cmd.Action, outcome, detail, mutations(cs))
 		}
+	}
+}
+
+// A Deployment KyYard manages is removed through its application, never by a workload delete;
+// restart and scale stay allowed.
+func TestOperateRefusesDeletingAManagedWorkload(t *testing.T) {
+	managed := webDeployment()
+	managed.Labels[render.LabelManagedBy] = render.ManagedBy
+	c, cs := workloadCluster(t, false, true, managed)
+	if outcome, detail := c.Operate(context.Background(), command(protocol.ActionWorkloadDelete, "shop/deployment/web")); outcome != protocol.OutcomeDenied || detail != "application_managed" || len(mutations(cs)) != 0 {
+		t.Fatalf("%s %q %v", outcome, detail, mutations(cs))
+	}
+	if outcome, _ := c.Operate(context.Background(), command(protocol.ActionWorkloadRestart, "shop/deployment/web")); outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("restart: %s", outcome)
 	}
 }
 
@@ -622,6 +639,31 @@ func TestApplyWorkloadRefusals(t *testing.T) {
 		if err := res.Validate(); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
+	}
+}
+
+// An apply needs the namespace to enforce Pod Security baseline or restricted, as a deploy does:
+// editing a privileged workload is host access.
+func TestApplyWorkloadRefusesWithoutPodSecurity(t *testing.T) {
+	for level, detail := range map[string]string{"": "missing", "privileged": "privileged", "loose": "invalid"} {
+		c, cs := workloadCluster(t, false, true, webDeployment())
+		req := applyFrom(t, c, "shop/deployment/web", time.Minute, func(w *protocol.WorkloadConfiguration) { w.Containers[0].Image = "ghcr.io/org/web:2" })
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shop"}}
+		if level != "" {
+			ns.Labels = map[string]string{podSecurityEnforce: level}
+		}
+		if _, err := cs.CoreV1().Namespaces().Update(context.Background(), ns, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		res := c.ApplyWorkload(context.Background(), req, func() { t.Fatalf("%q: started", level) })
+		if res.Outcome != protocol.OutcomeDenied || steps(res) != "precondition denied pod_security "+detail+"; apply skipped; rollout skipped" || len(mutations(cs)) != 1 {
+			t.Fatalf("%q: %s %v", level, steps(res), mutations(cs))
+		}
+	}
+	c, _ := workloadCluster(t, false, true, webDeployment())
+	res := c.ApplyWorkload(context.Background(), applyFrom(t, c, "shop/deployment/web", time.Minute, func(*protocol.WorkloadConfiguration) {}), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("baseline: %s", steps(res))
 	}
 }
 

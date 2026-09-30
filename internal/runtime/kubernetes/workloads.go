@@ -125,7 +125,8 @@ func (c *Client) workload(ctx context.Context, ref protocol.WorkloadRef) (*handl
 // a SelfSubjectAccessReview for its verb: an agent whose manifest lacks the grant answers
 // denied forbidden. Restart stamps the pod template's restartedAt annotation, scale sets
 // spec.replicas to Expects.Replicas (0..MaxWorkloadReplicas; a DaemonSet has none), delete
-// removes the object read just before, by its UID, with Background propagation. The granted
+// removes the object read just before, by its UID, with Background propagation, unless it is
+// labelled managed-by kyyard (application_managed). The granted
 // namespaces are the server's check; here the access review is the boundary.
 func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, detail string) {
 	verb := "delete"
@@ -174,6 +175,9 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 		err = h.patch(ctx, mergePatch(map[string]any{"template": map[string]any{"metadata": map[string]any{"annotations": map[string]string{restartedAt: time.Now().UTC().Format(time.RFC3339)}}}}))
 	case scale:
 		err = h.patch(ctx, mergePatch(map[string]any{"replicas": *n}))
+	case cmd.Action == protocol.ActionWorkloadDelete && h.meta.Labels[render.LabelManagedBy] == render.ManagedBy:
+		// A KyYard-managed workload is removed through its application.
+		return protocol.OutcomeDenied, "application_managed"
 	default:
 		uid := h.meta.UID
 		background := metav1.DeletePropagationBackground
@@ -347,10 +351,11 @@ func workloadResourcesOf(r corev1.ResourceRequirements) protocol.WorkloadResourc
 
 // ApplyWorkload writes req.Spec's image, command, args, env and cpu and memory of each named
 // container, and replicas and paused, onto the object read fresh, then waits for a Deployment's
-// rollout within req.Deadline. The precondition, after an access review for update (forbidden),
-// refuses a managed object (application_managed), one at another resourceVersion than the read
-// or without a named container (conflict) and one whose read is not whole
-// (configuration_unreported: an apply would drop what it did not show). The write is a strategic
+// rollout within req.Deadline. The precondition, after an access review for patch (forbidden)
+// and the namespace's Pod Security level (pod_security, as a deploy), refuses a managed object
+// (application_managed), one at another resourceVersion than the read or without a named
+// container (conflict) and one whose read is not whole (configuration_unreported: an apply
+// would drop what it did not show). The write is a strategic
 // merge patch of only the changed paths (see bind), so fields the form does not carry, those it
 // carries unchanged and those this client's types do not know keep their exact bytes. It carries
 // the read's resourceVersion, so a concurrent write is the API server's 409, reported conflict. A
@@ -369,12 +374,15 @@ func (c *Client) ApplyWorkload(parent context.Context, req protocol.WorkloadAppl
 	service := protocol.WorkloadApplyService
 	r.step(service, protocol.StepPrecondition, func() (string, string, string) {
 		gr := workloadResources[ref.Kind]
-		ok, err := r.review(ctx, authorizationv1.ResourceAttributes{Namespace: ref.Namespace, Verb: "update", Group: gr[0], Resource: gr[1], Name: ref.Name})
+		ok, err := r.review(ctx, authorizationv1.ResourceAttributes{Namespace: ref.Namespace, Verb: "patch", Group: gr[0], Resource: gr[1], Name: ref.Name})
 		if err != nil {
 			return r.failure(ctx, err)
 		}
 		if !ok {
 			return protocol.OutcomeDenied, "forbidden", ""
+		}
+		if o, code, detail := r.podSecurity(ctx); o != protocol.OutcomeSucceeded {
+			return o, code, detail
 		}
 		if h, err = c.workload(ctx, ref); apierrors.IsNotFound(err) {
 			return protocol.OutcomeDenied, "conflict", ""

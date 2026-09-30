@@ -557,3 +557,28 @@ func TestExecSocketWithoutRuntimeRemainsResponsive(t *testing.T) {
 		t.Fatal("session survived cancellation")
 	}
 }
+
+// A runtime's fixed refusal (the pod's namespace lacks Pod Security, or the agent's Role lacks
+// create pods/exec) is the close reason; any other start error stays the generic reason.
+func TestExecStartRefusalIsTheCloseReason(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("wrapped: %w", protocol.ErrExecForbidden), "forbidden"},
+		{protocol.ErrExecPodSecurity, "pod_security"},
+		{errors.New("forbidden secret argv"), "exec start failed; process exit unknown"},
+	} {
+		ctx, cancel := context.WithCancel(context.Background())
+		out := make(chan outFrame, 8)
+		s := newExecStreams(ctx, "endpoint", make([]byte, 32), &execBudget{}, &Options{Exec: func(context.Context, protocol.ExecSpec) (ExecSession, error) { return nil, tc.err }}, out)
+		if err := s.handle(execFrame(protocol.TypeExecOpen, execRequest()), true); err != nil {
+			t.Fatal(err)
+		}
+		if closed := nextExecFrame(t, out, protocol.TypeExecClose).Payload.(protocol.ExecClose); closed.Reason != tc.want || closed.ExitCode != nil {
+			t.Fatalf("%v: %+v", tc.err, closed)
+		}
+		waitExecBudget(t, s.budget, 0)
+		cancel()
+	}
+}

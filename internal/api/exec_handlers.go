@@ -322,7 +322,8 @@ func writeExecBrowser(ctx context.Context, c *websocket.Conn, f protocol.Envelop
 }
 
 // Only well-formed, connection-scoped frames enter browser queues. Agent error
-// text is untrusted and can contain secrets; replace it with a fixed notice.
+// text is untrusted and can contain secrets; replace it with a fixed notice unless it is one
+// of the fixed exec refusals (protocol.IsExecRefusal).
 func (s *Server) handleExecFrame(c *agentConn, f protocol.Envelope) {
 	var id string
 	switch f.Type {
@@ -347,7 +348,9 @@ func (s *Server) handleExecFrame(c *agentConn, f protocol.Envelope) {
 			return
 		}
 		id = v.Stream
-		v.Reason = errExecEnded.Error()
+		if !protocol.IsExecRefusal(v.Reason) {
+			v.Reason = errExecEnded.Error()
+		}
 		f = envelope(f.Type, v)
 	}
 	s.execs.deliver(c, id, f)

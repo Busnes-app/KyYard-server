@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/util/exec"
@@ -78,10 +81,26 @@ func execSpec() protocol.ExecSpec {
 	return protocol.ExecSpec{Argv: []string{"sh"}, Pod: &protocol.PodTarget{Namespace: "shop", Name: "web-0", Container: "app", UID: execPodUID}}
 }
 
+// execCluster is a fake API server holding pod in namespace shop, which enforces Pod Security
+// at level ("" for no label), and whose access review answers allowed.
+func execCluster(pod *corev1.Pod, level string, allowed bool) *fake.Clientset {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shop"}}
+	if level != "" {
+		ns.Labels = map[string]string{podSecurityEnforce: level}
+	}
+	cs := fake.NewSimpleClientset(pod, ns)
+	cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+		review.Status.Allowed = allowed
+		return true, review, nil
+	})
+	return cs
+}
+
 // execClient is a fake-clientset client whose executor is f; got receives the exec options.
 func execClient(t *testing.T, f *fakeStreamer, pod *corev1.Pod) (*Client, *corev1.PodExecOptions) {
 	t.Helper()
-	c := NewFromClientset(fake.NewSimpleClientset(pod))
+	c := NewFromClientset(execCluster(pod, "baseline", true))
 	got := &corev1.PodExecOptions{}
 	c.executor = func(namespace, name string, opts *corev1.PodExecOptions) (streamer, error) {
 		if namespace != "shop" || name != "web-0" {
@@ -332,7 +351,7 @@ func TestPodExecRefusals(t *testing.T) {
 		{"no uid", execPod(nil), func(s *protocol.ExecSpec) { s.Pod.UID = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := NewFromClientset(fake.NewSimpleClientset(tc.pod))
+			c := NewFromClientset(execCluster(tc.pod, "baseline", true))
 			c.executor = func(string, string, *corev1.PodExecOptions) (streamer, error) {
 				t.Fatal("the executor was built for a refused target")
 				return nil, nil
@@ -346,6 +365,49 @@ func TestPodExecRefusals(t *testing.T) {
 				t.Fatal("exec opened")
 			}
 		})
+	}
+}
+
+// Exec needs the pod's namespace to enforce Pod Security baseline or restricted, and the agent's
+// own grant for create pods/exec on that pod (a SelfSubjectAccessReview); each refusal is its
+// fixed error, and the executor is never built.
+func TestPodExecGates(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		level   string
+		allowed bool
+		want    error
+	}{
+		{"no pod security label", "", true, protocol.ErrExecPodSecurity},
+		{"privileged", "privileged", true, protocol.ErrExecPodSecurity},
+		{"review denied", "restricted", false, protocol.ErrExecForbidden},
+	} {
+		cs := execCluster(execPod(nil), tc.level, tc.allowed)
+		c := NewFromClientset(cs)
+		c.executor = func(string, string, *corev1.PodExecOptions) (streamer, error) {
+			t.Fatalf("%s: the executor was built", tc.name)
+			return nil, nil
+		}
+		if _, err := c.OpenExec(context.Background(), execSpec()); !errors.Is(err, tc.want) {
+			t.Fatalf("%s: err %v", tc.name, err)
+		}
+	}
+	cs := execCluster(execPod(nil), "restricted", true)
+	c := NewFromClientset(cs)
+	c.executor = func(string, string, *corev1.PodExecOptions) (streamer, error) { return newFake(nil), nil }
+	s, err := c.OpenExec(context.Background(), execSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	var attrs []authorizationv1.ResourceAttributes
+	for _, a := range cs.Actions() {
+		if a.GetResource().Resource == "selfsubjectaccessreviews" {
+			attrs = append(attrs, *a.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview).Spec.ResourceAttributes)
+		}
+	}
+	if want := (authorizationv1.ResourceAttributes{Namespace: "shop", Verb: "create", Resource: "pods", Subresource: "exec", Name: "web-0"}); len(attrs) != 1 || attrs[0] != want {
+		t.Fatalf("reviews %+v", attrs)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/client"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -68,7 +69,9 @@ type podExec struct {
 }
 
 // OpenExec attaches a TTY to spec.Pod's container, running spec.Argv, once the pod read back
-// has the same UID, is Running and has that container. See protocol §7.
+// has the same UID, is Running and has that container, its namespace enforces Pod Security
+// baseline or restricted (protocol.ErrExecPodSecurity) and an access review allows create
+// pods/exec on it (protocol.ErrExecForbidden). See protocol §7.
 func (c *Client) OpenExec(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
 	return c.openExec(ctx, spec, protocol.ExecIdleTimeout, protocol.ExecAbsoluteTimeout)
 }
@@ -92,6 +95,9 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 	case string(pod.UID) != t.UID || pod.Status.Phase != corev1.PodRunning || !hasContainer(pod, t.Container):
 		return nil, errors.New("exec target identity or running state changed")
 	}
+	if err := c.execAllowed(parent, t); err != nil {
+		return nil, err
+	}
 	st, err := c.executor(t.Namespace, t.Name, &corev1.PodExecOptions{Container: t.Container, Command: spec.Argv, Stdin: true, Stdout: true, TTY: true})
 	if err != nil {
 		return nil, errors.New("exec transport could not be configured")
@@ -113,6 +119,32 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 		s.finish(st.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: s.stdinR, Stdout: s.stdoutW, Tty: true, TerminalSizeQueue: s}))
 	}()
 	return s, nil
+}
+
+// execAllowed refuses a namespace that does not enforce Pod Security baseline or restricted
+// (entering a privileged pod is host access; the same rule as a deploy) and an agent whose own
+// grant lacks create pods/exec on the pod, each with its fixed error so the operator sees why.
+func (c *Client) execAllowed(parent context.Context, t *protocol.PodTarget) error {
+	ctx, cancel := context.WithTimeout(parent, callBudget)
+	defer cancel()
+	r := &run{c: c, parent: parent, namespace: t.Namespace}
+	switch _, code, _ := r.podSecurity(ctx); code {
+	case "":
+	case "pod_security":
+		return protocol.ErrExecPodSecurity
+	case "forbidden":
+		return protocol.ErrExecForbidden
+	default:
+		return errors.New("exec target namespace could not be read")
+	}
+	ok, err := r.review(ctx, authorizationv1.ResourceAttributes{Namespace: t.Namespace, Verb: "create", Resource: "pods", Subresource: "exec", Name: t.Name})
+	switch {
+	case err != nil:
+		return errors.New("exec access review failed")
+	case !ok:
+		return protocol.ErrExecForbidden
+	}
+	return nil
 }
 
 func ptrTo(v int) *int { return &v }

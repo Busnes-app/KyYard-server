@@ -506,3 +506,31 @@ func TestPodExecOpenCloseAndUIDMismatch(t *testing.T) {
 		return opened && closed
 	})
 }
+
+// The agent's close reason reaches the browser only when it is a fixed exec refusal; any other
+// text is replaced by the fixed notice.
+func TestPodExecCloseReasonPassesOnlyFixedRefusals(t *testing.T) {
+	f := newWorkloadFleet(t, workloadCaps...)
+	for reason, want := range map[string]string{"forbidden": "forbidden", "pod_security": "pod_security", "token=secret": "terminal attachment ended; process state may be unknown"} {
+		c, res := f.dialPodPath(t, f.org, "/pods/shop/web-7c9/exec")
+		if c == nil {
+			t.Fatalf("dial: %+v", res)
+		}
+		spec := protocol.ExecSpec{Pod: &protocol.PodTarget{Namespace: "shop", Name: "web-7c9", Container: "web", UID: podUID}, Argv: []string{"/bin/sh"}}
+		raw, _ := json.Marshal(map[string]any{"csrf": "terminal-test-csrf", "confirm": "web-7c9", "spec": spec, "size": protocol.TerminalSize{Rows: 24, Columns: 80}})
+		if err := c.Write(f.ctx, websocket.MessageText, raw); err != nil {
+			t.Fatal(err)
+		}
+		var grant protocol.ExecOpen
+		if e := readEnvelope(t, f.ctx, f.conn); e.Type != protocol.TypeExecOpen || json.Unmarshal(e.Payload, &grant) != nil {
+			t.Fatalf("grant %s %s", e.Type, e.Payload)
+		}
+		writeEnvelope(t, f.ctx, f.conn, protocol.TypeExecClose, protocol.ExecClose{Stream: grant.Stream, Reason: reason})
+		e := readEnvelope(t, f.ctx, c)
+		var closed protocol.ExecClose
+		if e.Type != protocol.TypeExecClose || json.Unmarshal(e.Payload, &closed) != nil || closed.Reason != want {
+			t.Fatalf("%s: %s %s", reason, e.Type, e.Payload)
+		}
+		c.CloseNow()
+	}
+}

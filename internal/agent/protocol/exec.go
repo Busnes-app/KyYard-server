@@ -109,6 +109,31 @@ const (
 	MaxExecFrameBytes         = 64 << 10
 )
 
+// A runtime refuses an exec start with one of these fixed errors when the operator can act on
+// the cause. The agent sends its text as the exec.close reason, and the server passes exactly
+// these through to the browser; every other start failure keeps a fixed generic reason.
+var (
+	// ErrExecForbidden: the agent's own grant lacks the exec (create pods/exec).
+	ErrExecForbidden = errors.New("forbidden")
+	// ErrExecPodSecurity: the pod's namespace does not enforce Pod Security baseline or restricted.
+	ErrExecPodSecurity = errors.New("pod_security")
+)
+
+// ExecRefusal is err's fixed close reason, or "" when err is not one of the fixed refusals.
+func ExecRefusal(err error) string {
+	for _, r := range []error{ErrExecForbidden, ErrExecPodSecurity} {
+		if errors.Is(err, r) {
+			return r.Error()
+		}
+	}
+	return ""
+}
+
+// IsExecRefusal reports whether reason is a fixed refusal's close reason.
+func IsExecRefusal(reason string) bool {
+	return reason == ErrExecForbidden.Error() || reason == ErrExecPodSecurity.Error()
+}
+
 type ExecOpen struct {
 	Stream     string       `json:"stream"`
 	Endpoint   string       `json:"endpoint"`
