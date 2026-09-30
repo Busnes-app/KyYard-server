@@ -446,9 +446,10 @@ func TestSweepLeavesARowSettledMeanwhile(t *testing.T) {
 		swept <- tx.Commit()
 	}()
 	for waiting := 0; waiting == 0; {
-		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'UPDATE endpoint_commands SET outcome=%'`).Scan(&waiting); err != nil {
+		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND datname = current_database() AND query LIKE 'UPDATE endpoint_commands SET outcome=%'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if err := settle.Commit(); err != nil {
 		t.Fatal(err)
