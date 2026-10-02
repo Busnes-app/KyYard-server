@@ -73,7 +73,7 @@ function EndpointSummary({ org, endpoint: e, configure }: { org: string; endpoin
       <div><span>{cluster ? 'Nodes ready' : 'CPUs'}</span><strong>{live ? cluster ? kube ? `${kube.nodes.filter((n) => n.ready).length} / ${kube.nodes.length}` : '—' : snapshot?.engine?.cpus || '—' : '—'}</strong></div>
       <div><span>{cluster ? 'Pods' : 'Memory'}</span><strong>{live ? cluster ? kube?.pods.length ?? '—' : snapshot?.engine?.memory_bytes ? `${(snapshot.engine.memory_bytes / 2 ** 30).toFixed(1)} GiB` : '—' : '—'}</strong></div>
     </div>
-    {inventory.state === 'ready' && <p className="text-muted">{!active ? 'Disconnected. Open the endpoint to inspect its historical inventory.' : inventory.state === 'denied' ? 'Inventory access denied.' : !report ? 'Waiting for inventory.' : !live ? 'Inventory is stale or its refresh failed. Open the endpoint to check it.' : `Reported ${new Date(report.received_at).toLocaleString()}${snapshot?.truncated?.length ? ' · inventory is incomplete' : ''}`}</p>}
+    {inventory.state === 'ready' && report && <p className="text-muted">{!live ? 'Inventory is stale or its refresh failed. Open the endpoint to check it.' : `Reported ${new Date(report.received_at).toLocaleString()}${snapshot?.truncated?.length ? ' · inventory is incomplete' : ''}`}</p>}
     <div className="ky-toolbar"><Link className="btn btn-secondary" to={endpointPath(org, e.id)}>{cluster ? 'Open cluster' : 'Open containers'}</Link>{configure && active && <Link className="btn" to={cluster ? workloadRunPath(org, e.id) : runPath(org, e.id)}>Run a container{cluster ? ' on Kubernetes' : ''}</Link>}</div>
   </>;
 }
