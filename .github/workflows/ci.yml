@@ -251,24 +251,24 @@ jobs:
 
       # Hand the exact image the checks above ran against to the publish job,
       # so what gets pushed is what was tested, never a second build.
-      - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      - if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
           docker save kyyard:ci | gzip > tested-image.tar.gz
-      - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      - if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tested-image
           path: tested-image.tar.gz
           retention-days: 1
 
-  # Publishes the image CI tested: only for pushes to master, only
+  # Publishes the image CI tested: pushes or manual dispatches on master, only
   # after every job passed, and with no checkout and no build of its own, so
   # the pushed bytes are the tested bytes. A pull request from a fork must
   # never reach this job or write a package.
   publish:
     needs: [go, postgres, web, security, smoke, docker]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     # No concurrency group here on purpose: GitHub cancels a *pending* job when a
     # newer one queues into the same group, which would leave that commit with no
@@ -331,7 +331,7 @@ jobs:
   # by digest and the result is asserted, so :latest is the attested manifest.
   promote:
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     concurrency:
       group: promote-master
