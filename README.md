@@ -59,6 +59,8 @@ docker compose pull && docker compose up -d
 A digest-pinned install (`KY_IMAGE` in `.env`) gets nothing from `pull`: re-run the pin recipe in
 `docker-compose.yml` with the commit sha you want first, or delete that line to follow `:latest` again.
 
+Maintainers can recover a missing release run with `gh workflow run ci.yml --ref master`. The manual run repeats every CI check, then publishes and attests the tested image through the same release jobs as a push. Dispatches on other branches run checks only.
+
 `AGENTS.md` is the contract for working in this repository.
 
 ## First sign-in
