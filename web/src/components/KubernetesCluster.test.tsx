@@ -110,18 +110,18 @@ it('reloads the inventory when a cluster toolbar command settles', async () => {
   vi.useRealTimers();
 });
 
-it('offers Run a workload only to a configuring role on a capable cluster with a granted namespace', () => {
+it('offers Run a container to a configuring role even when agent or namespace setup is needed', () => {
   const capable = { ...endpoint, capabilities: ['kubernetes.inventory', 'kubernetes.workloads', 'kubernetes.workloads.run'], deploy_namespaces: ['shop'] };
   const cluster = (e: Endpoint, role: string) => <KubernetesCluster org="a" base="/api/x" endpoint={e} inventory={empty} instances={[]} admin={false} role={role} onStatus={vi.fn()} onChanged={vi.fn()} />;
-  const link = () => screen.queryByRole('link', { name: 'Run a workload' });
+  const link = () => screen.queryByRole('link', { name: 'Run a container' });
   const { rerender } = render(cluster(capable, 'organization_admin'));
   expect(link()?.getAttribute('href')).toBe('/organizations/a/endpoints/ep_k/workloads/new');
   rerender(cluster(capable, 'environment_admin'));
   expect(link()).toBeNull();
   rerender(cluster({ ...capable, capabilities: ['kubernetes.inventory'] }, 'organization_admin'));
-  expect(link()).toBeNull();
+  expect(link()).toBeTruthy();
   rerender(cluster({ ...capable, capabilities: ['kubernetes.inventory', 'kubernetes.workloads'] }, 'organization_admin'));
-  expect(link()).toBeNull();
+  expect(link()).toBeTruthy();
   rerender(cluster({ ...capable, deploy_namespaces: [] }, 'organization_admin'));
-  expect(link()).toBeNull();
+  expect(link()).toBeTruthy();
 });

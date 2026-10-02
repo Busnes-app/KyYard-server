@@ -12,14 +12,14 @@ import { LoggingGroup, SecurityGroup } from './configurationGroups/security';
 
 type Props = {
   base: string; mode: 'edit' | 'run';
-  initial?: ContainerConfiguration; container?: Container;
+  initial?: ContainerConfiguration; container?: Container; seed?: ExplicitSpec;
   // onSent hands an accepted command to the caller, which polls it and renders the result, so
   // both survive the form unmounting; pending keeps the form locked while it is unsettled.
   onSent: (command: DirectCommand) => void;
-  pending?: boolean;
+  pending?: boolean; onStarted?: () => void;
 };
 
-const EMPTY_SPEC: ExplicitSpec = {
+export const EMPTY_SPEC: ExplicitSpec = {
   name: '', image: { reference: '', digest: '' }, image_id: '', command: [], entrypoint: [], user: '', working_dir: '', hostname: '',
   env: [], labels: {}, restart: 'no', restart_retries: 0, ports: [], mounts: [], network_mode: '', networks: [],
   resources: { nano_cpus: 0, memory_bytes: 0, memory_swap_bytes: 0, pids_limit: 0 }, healthcheck: null,
@@ -103,8 +103,8 @@ const OUTCOMES: Record<string, string> = {
   unknown: 'The outcome is unknown: the host may or may not have acted. Check the container before trying again.',
 };
 
-export function ContainerConfigurationForm({ base, mode, initial, container, onSent, pending = false }: Props) {
-  const start = initial ? toSpec(initial) : EMPTY_SPEC;
+export function ContainerConfigurationForm({ base, mode, initial, container, seed, onSent, pending = false, onStarted }: Props) {
+  const start = initial ? toSpec(initial) : seed ?? EMPTY_SPEC;
   const [draft, setDraft] = useState<ExplicitSpec>(start);
   const [logOptions, setLogOptions] = useState<[string, string][]>(Object.entries(start.log.options));
   const [acks, setAcks] = useState<ReadonlySet<string>>(new Set());
@@ -132,6 +132,7 @@ export function ContainerConfigurationForm({ base, mode, initial, container, onS
     && expected !== '' && confirm === expected && newBinds.every((b) => b !== '' && acks.has(b));
   const set = (patch: Partial<ExplicitSpec>) => setDraft((d) => ({ ...d, ...patch }));
   const submit = async () => {
+    onStarted?.();
     setBusy(true); setError('');
     const body = { spec, acknowledge_binds: newBinds, confirm };
     const url = run || !container ? `${base}/containers` : `${base}/containers/${encodeURIComponent(container.id)}/recreate`;
@@ -155,17 +156,21 @@ export function ContainerConfigurationForm({ base, mode, initial, container, onS
     </div>}
     {(run || initial) && <fieldset className="ky-config-groups" disabled={busy || pending}>
       <ImageGroup {...groupProps} initial={start} run={run} />
-      <CommandGroup {...groupProps} />
-      <EnvironmentGroup {...groupProps} />
-      <PortsGroup {...groupProps} />
-      <VolumesGroup {...groupProps} known={known} acks={acks} onAck={(source, ok) => setAcks((a) => { const next = new Set(a); if (ok) next.add(source); else next.delete(source); return next; })} />
-      <NetworkGroup {...groupProps} />
-      <RestartGroup {...groupProps} />
-      <ResourcesGroup {...groupProps} />
-      <HealthGroup {...groupProps} />
-      <SecurityGroup {...groupProps} />
-      <LoggingGroup {...groupProps} options={logOptions} onOptions={setLogOptions} />
-      <MiscGroup {...groupProps} />
+      {!run && <div><button type="button" className="btn-secondary" onClick={() => set({ image_id: '', image: { reference: draft.image.reference === start.image_id ? container?.image ?? draft.image.reference : draft.image.reference, digest: '' } })}>Pull latest image and recreate</button><p>This resolves the reference again and pulls it, even when no update check has run. Review the configuration and confirm below.</p></div>}
+
+      <details className="ky-config-disclosure"><summary>Environment</summary><EnvironmentGroup {...groupProps} /></details>
+      <details className="ky-config-disclosure"><summary>Ports</summary><PortsGroup {...groupProps} /></details>
+      <details className="ky-config-disclosure"><summary>Volumes & host paths</summary><VolumesGroup {...groupProps} known={known} acks={acks} onAck={(source, ok) => setAcks((a) => { const next = new Set(a); if (ok) next.add(source); else next.delete(source); return next; })} /></details>
+      <details className="ky-config-disclosure"><summary>Advanced settings</summary>
+        <details className="ky-config-disclosure"><summary>Command & working directory</summary><CommandGroup {...groupProps} /></details>
+      <details className="ky-config-disclosure"><summary>Networking</summary><NetworkGroup {...groupProps} /></details>
+      <details className="ky-config-disclosure"><summary>Restart policy</summary><RestartGroup {...groupProps} /></details>
+      <details className="ky-config-disclosure"><summary>Resource limits</summary><ResourcesGroup {...groupProps} /></details>
+      <details className="ky-config-disclosure"><summary>Health check</summary><HealthGroup {...groupProps} /></details>
+      <details className="ky-config-disclosure"><summary>Security</summary><SecurityGroup {...groupProps} /></details>
+      <details className="ky-config-disclosure"><summary>Logging</summary><LoggingGroup {...groupProps} options={logOptions} onOptions={setLogOptions} /></details>
+      <details className="ky-config-disclosure"><summary>Other settings</summary><MiscGroup {...groupProps} /></details>
+      </details>
     </fieldset>}
     <div className="ky-config-save">
       {run ? <p>Running creates and starts a new container on this host.</p> : <>

@@ -237,7 +237,7 @@ it('dispatches the run a workload route from the App', async () => {
   stub();
   window.history.replaceState(null, '', '/organizations/a/endpoints/ep_k/workloads/new');
   render(<App />);
-  expect(await screen.findByRole('heading', { level: 1, name: 'Run a workload' })).toBeTruthy();
+  expect(await screen.findByRole('heading', { level: 1, name: 'Run a container on Kubernetes' })).toBeTruthy();
   expect(await screen.findByRole('combobox', { name: 'Namespace' })).toBeTruthy();
 });
 

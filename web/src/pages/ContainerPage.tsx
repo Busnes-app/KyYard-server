@@ -1,3 +1,4 @@
+import { RunYAML } from '../components/RunYAML';
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { Box } from 'lucide-react';
 import { Link } from '../components/Link';
@@ -108,6 +109,8 @@ export const ContainerRunPage: React.FC<{ org: string; endpoint: string }> = ({ 
   const role = (Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role;
   const [sent, setSent] = useState<DirectCommand | null>(null);
   const { command, error } = useCommand(base, sent);
+  const [format, setFormat] = useState('form');
+  const [started, setStarted] = useState(false);
   return <div className="ky-page">
     <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link><span>/</span><Link to={endpointPath(org, endpoint)}>{details.data?.name ?? endpoint}</Link></nav>
     <h1 style={{ fontSize: 24 }}>Run a container</h1>
@@ -118,7 +121,7 @@ export const ContainerRunPage: React.FC<{ org: string; endpoint: string }> = ({ 
       : details.state !== 'ready' || !details.data ? null
       : details.data.runtime !== 'docker' ? <EmptyNotice>Containers can be run only on a Docker host.</EmptyNotice>
       : !canRunContainers(details.data) ? <EmptyNotice>Upgrade the host agent to run containers here.</EmptyNotice>
-      : <section className="panel"><ContainerConfigurationForm base={base} mode="run" pending={!!command && (!command.outcome || command.outcome === 'succeeded')} onSent={setSent} />
+      : <section className="panel"><div className="ky-toolbar"><button className="btn-secondary" aria-pressed={format === 'form'} disabled={started || !!sent} onClick={() => setFormat('form')}>Container form</button><button className="btn-secondary" aria-pressed={format === 'yaml'} disabled={started || !!sent} onClick={() => setFormat('yaml')}>Docker Compose YAML</button></div>{format === 'yaml' ? <RunYAML onStarted={() => setStarted(true)} base={base} runtime="docker" org={org} endpoint={endpoint} /> : <ContainerConfigurationForm onStarted={() => setStarted(true)} base={base} mode="run" pending={!!command && (!command.outcome || command.outcome === 'succeeded')} onSent={setSent} />}
         {command && <SentCommand command={command} error={error} org={org} endpoint={endpoint} current="" />}</section>}
   </div>;
 };

@@ -26,22 +26,23 @@ const BLANK: WorkloadContainer = { name: '', image: '', image_id: '', command: [
 const NEW_SPEC: WorkloadSpec = { resource_version: '', replicas: 1, paused: false, strategy: 'RollingUpdate', containers: [BLANK], init_containers: [], env_from: [], unsupported: [] };
 
 // onReread asks the owner for a fresh read; conflict is a settled apply refused as stale.
-type FormProps = { base: string; onSent: (command: DirectCommand, target: WorkloadRef) => void; pending?: boolean; onReread?: () => void; conflict?: boolean }
-  & ({ mode?: 'edit'; initial: WorkloadConfiguration } | { mode: 'run'; namespaces: string[] });
+type FormProps = { base: string; onSent: (command: DirectCommand, target: WorkloadRef) => void; pending?: boolean; onStarted?: () => void; onReread?: () => void; conflict?: boolean }
+  & ({ mode?: 'edit'; initial: WorkloadConfiguration } | { mode: 'run'; namespaces: string[]; seed?: WorkloadConfiguration });
 
 // WorkloadConfigurationForm edits replicas and each container's image, command, arguments,
 // literal environment and resources. Init containers, strategy and references pass through as
 // read. Save applies at the read's resource_version, so a workload changed since is refused.
 // Run mode creates a Deployment in a granted namespace instead, and may add and remove containers.
 export function WorkloadConfigurationForm(props: FormProps) {
-  const { base, onSent, pending = false, onReread, conflict = false } = props;
+  const { base, onSent, pending = false, onReread, conflict = false, onStarted } = props;
   const initial = props.mode === 'run' ? null : props.initial;
   const namespaces = props.mode === 'run' ? props.namespaces : [];
   const run = !initial;
-  const start = build(initial ? toWorkloadSpec(initial) : NEW_SPEC);
+  const seed = props.mode === 'run' ? props.seed : undefined;
+  const start = build(initial ? toWorkloadSpec(initial) : seed ? toWorkloadSpec(seed) : NEW_SPEC);
   const [draft, setDraft] = useState<WorkloadSpec>(start);
-  const [namespace, setNamespace] = useState(namespaces.length === 1 ? namespaces[0] ?? '' : '');
-  const [name, setName] = useState('');
+  const [namespace, setNamespace] = useState(seed?.target.namespace ?? (namespaces.length === 1 ? namespaces[0] ?? '' : ''));
+  const [name, setName] = useState(seed?.target.name ?? '');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -58,6 +59,7 @@ export function WorkloadConfigurationForm(props: FormProps) {
   const ready = !badReplicas && !incomplete && spec.unsupported.length === 0 && (run ? namespaces.includes(namespace) && !badName : changes.length > 0) && confirm === target.name;
   const setContainer = (i: number, patch: Partial<WorkloadContainer>) => setDraft((d) => ({ ...d, containers: d.containers.map((c, j) => j === i ? { ...c, ...patch } : c) }));
   const submit = async () => {
+    onStarted?.();
     setBusy(true); setError('');
     const [url, body] = run ? [`${base}/workloads`, { spec: { target, ...spec, managed: false }, confirm }] : [`${workloadURL(base, target)}/apply`, { resource_version: start.resource_version, spec, confirm }];
     try {
@@ -82,9 +84,9 @@ export function WorkloadConfigurationForm(props: FormProps) {
           <option value="">Choose a namespace</option>
           {namespaces.map((ns) => <option key={ns} value={ns}>{displayName(ns)}</option>)}
         </select></label>
-        <Text label="Workload name" value={name} onChange={setName} />
+        <Text label="Workload name" value={name} onChange={(next) => { setName(next); setDraft((d) => ({ ...d, containers: d.containers.map((c, i) => i === 0 && (c.name === '' || c.name === name) ? { ...c, name: next } : c) })); }} />
       </Group>}
-      {start.replicas !== undefined && <Group title="Scale"><Num label="Replicas" inputMode="numeric" value={start.replicas} onChange={(v) => setDraft((d) => ({ ...d, replicas: v.trim() === '' ? NaN : int(v) }))} /></Group>}
+      {start.replicas !== undefined && <details className="ky-config-disclosure"><summary>Scale · {Number.isFinite(draft.replicas) ? draft.replicas : 'invalid'} replicas</summary><Group title="Scale"><Num label="Replicas" inputMode="numeric" value={start.replicas} onChange={(v) => setDraft((d) => ({ ...d, replicas: v.trim() === '' ? NaN : int(v) }))} /></Group></details>}
       {initial && (initial.env_from.length > 0 || initial.init_containers.length > 0) && <Group title="Imported">
         {initial.env_from.length > 0 && <p>Imported from: {initial.env_from.map(displayName).join(', ')}</p>}
         {initial.init_containers.length > 0 && <p>Init containers: {initial.init_containers.length}, kept as read.</p>}
@@ -93,12 +95,15 @@ export function WorkloadConfigurationForm(props: FormProps) {
         // A run names containers by position; a count change remounts them, hiding revealed values.
         const who = run ? `container ${i + 1}` : c.name;
         return <Group key={run ? `${i}/${draft.containers.length}` : c.name} title={run ? `Container ${i + 1}` : `Container ${c.name}`}>
-          {run && <Text label={`Name of ${who}`} value={c.name} onChange={(n) => setContainer(i, { name: n })} />}
+          {run && i > 0 && <Text label={`Name of ${who}`} value={c.name} onChange={(n) => setContainer(i, { name: n })} />}
           <Text label={`Image of ${who}`} value={c.image} onChange={(image) => setContainer(i, { image })} />
+          <details className="ky-config-disclosure"><summary>Container settings</summary>
+          {run && i === 0 && <Text label={`Name of ${who}`} value={c.name} onChange={(n) => setContainer(i, { name: n })} />}
           <Lines label={`Command of ${who}`} value={c.command} onChange={(command) => setContainer(i, { command })} />
           <Lines label={`Arguments of ${who}`} value={c.args} onChange={(args) => setContainer(i, { args })} />
           <Group title={`Environment of ${who}`}><EnvRows noun={`${run ? `Container ${i + 1}` : c.name} variable`} env={c.env} blank={{ name: '', value: '' }} onChange={(env) => setContainer(i, { env })} /></Group>
           {RESOURCES.map(([key, label]) => <Text key={key} label={`${label} of ${who}`} placeholder="unset" value={c.resources[key]} onChange={(v) => setContainer(i, { resources: { ...c.resources, [key]: v } })} />)}
+          </details>
           {run && draft.containers.length > 1 && <div><button type="button" className="btn-secondary" onClick={() => setDraft((d) => ({ ...d, containers: d.containers.filter((_, j) => j !== i) }))}>Remove container {i + 1}</button></div>}
         </Group>;
       })}
@@ -109,9 +114,9 @@ export function WorkloadConfigurationForm(props: FormProps) {
         <p>Saving updates this {KIND_NAMES[target.kind] ?? 'workload'} in place and Kubernetes replaces its pods. Nothing rolls back.</p>
         <p>{changes.length ? `Changes: ${changes.join(', ')}` : 'No changes.'}</p>
       </>}
-      {badName && <p>Enter the workload name as a lower-case DNS label: letters, digits and hyphens, at most 63 characters.</p>}
+      {badName && name !== '' && <p>Enter the workload name as a lower-case DNS label: letters, digits and hyphens, at most 63 characters.</p>}
       {badReplicas && <p>Enter replicas as a whole number from 0 to 1000.</p>}
-      {incomplete && <p>Every container needs a unique lower-case name and an image, and every variable a name.</p>}
+      {incomplete && (name !== '' || draft.containers.some((c) => c.image !== '')) && <p>Every container needs a unique lower-case name and an image, and every variable a name.</p>}
       <label>{run ? 'Type the new workload name to confirm' : `Type the workload name ${target.name} to confirm`}<input value={confirm} autoComplete="off" onChange={(e) => setConfirm(e.target.value)} /></label>
       <div><button type="button" disabled={!ready || busy || pending || lost} onClick={() => void submit()}>{run ? 'Run workload' : 'Save and apply'}</button>
         {(lost || conflict) && onReread && <button type="button" className="btn-secondary" onClick={onReread}>Read again</button>}</div>

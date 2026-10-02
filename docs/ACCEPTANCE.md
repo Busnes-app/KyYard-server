@@ -17,6 +17,7 @@ Copied from the plan, section 7:
 Found while writing this runbook against the current UI. Each one the operator runs into goes
 in the results table.
 
+- Direct YAML runs accept the documented Compose subset and native Deployments only; other Kubernetes resource kinds use Applications. Image hints require an explicit registry check, and an unknown digest is not proof of being current.
 - Registry access (needed for update checks) is set on the Members page, not near Updates.
 - Platform audit (sign-in, password change, backup, `organization.create`, `user.create`) has
   no screen; only tenant audit does.
@@ -259,7 +260,7 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 - Configuration tab (admin): `ACCEPT_KEY` shows masked; change it to `two`, type `acc-web` in
   "Type the workload name acc-web to confirm", "Save and apply". The Last change panel shows
   "Applied." and the steps precondition, apply and rollout.
-- Run a workload (admin): the namespace toolbar's "Run a workload". Pick `acc`, name `acc-run`,
+- Run a workload (admin): the namespace toolbar's "Run a container". Pick `acc`, name `acc-run`,
   replicas `1`, one container `web` with a pinned image, type `acc-run`, and run. The Last change
   panel shows "Running." and the steps precondition, create and rollout; "Open the new workload" opens `acc-run`.
   Configuration tab: change the replicas to `2` and apply; then Delete it (type `acc-run`).

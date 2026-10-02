@@ -1,58 +1,50 @@
-import { ContainerPorts } from '../components/ContainerPorts';
 import { useEffect, useState } from 'react';
-import { ResourceTable } from '../components/ResourceTable';
-import { PAGE_KINDS } from '../components/PodControls';
-import { usePagination } from '../components/Pagination';
-import { displayName } from '../components/Endpoints';
-import { ContainerControls } from '../components/ContainerControls';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
-import { IPCell, StateCell } from '../components/ContainerCells';
-import { uptime, useNow } from '../components/containerFacts';
-import { containerPath, dnsLabel, endpointPath, orgPath, workloadPath } from '../router';
-import { canExec, useTenantResource, type MemberOrganization, type Endpoint, type Inventory } from '../tenant';
+import { useNow } from '../components/containerFacts';
+import { endpointPath, orgPath, runPath, workloadRunPath } from '../router';
+import { canConfigure, useTenantResource, type MemberOrganization, type Endpoint, type Inventory } from '../tenant';
 
-export function Dashboard({ mode = 'containers' }: { mode?: 'containers' | 'endpoints' }) {
+export function Dashboard({ mode = 'home' }: { mode?: 'home' | 'endpoints' }) {
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
   const [selected, setSelected] = useState('');
   const orgs = organizations.data ?? [];
   const org = orgs.find((o) => o.id === selected) ?? orgs[0];
   return <div className="ky-page ky-fleet-page">
-    <div className="ky-page-heading"><h1>{mode === 'containers' ? 'Containers & workloads' : 'Endpoints'}</h1>{org && <Link className="btn btn-secondary" to={orgPath(org.id)}>Environments & add endpoint</Link>}</div>
-    <p>{mode === 'containers' ? 'Browse Docker containers and Kubernetes workloads by endpoint.' : 'Connect Docker hosts and Kubernetes clusters, review enrollment, and inspect their resources.'}</p>
+    <div className="ky-page-heading"><h1>{mode === 'home' ? 'Home' : 'Endpoints'}</h1>{org && <Link className="btn btn-secondary" to={orgPath(org.id)}>Environments & add endpoint</Link>}</div>
+    <p>{mode === 'home' ? 'Your Docker hosts and Kubernetes clusters. Choose where to run or manage an application.' : 'Connect Docker hosts and Kubernetes clusters, review enrollment, and inspect their resources.'}</p>
     <StateNotice state={organizations.state} onRetry={organizations.reload} />
     {organizations.state === 'ready' && !org && <EmptyNotice>No host access yet. Ask an administrator to add your account.</EmptyNotice>}
     {org && <>
       {orgs.length > 1 && <div className="ky-toolbar"><label htmlFor="fleet-org">Access scope</label><select id="fleet-org" value={org.id} onChange={(e) => setSelected(e.target.value)} style={{ width: 'auto' }}>{orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>}
-      <Fleet key={`${org.id}-${mode}`} org={org.id} mode={mode} exec={canExec(org.role)} />
+      <Fleet key={`${org.id}-${mode}`} org={org.id} mode={mode} configure={canConfigure(org.role)} />
     </>}
   </div>;
 }
-function Fleet({ org, mode, exec }: { org: string; mode: 'containers' | 'endpoints'; exec: boolean }) {
+function Fleet({ org, mode, configure }: { org: string; mode: 'home' | 'endpoints'; configure: boolean }) {
   const [offset, setOffset] = useState(0);
-  const [selectedHost, setSelectedHost] = useState('');
+  const [search, setSearch] = useState('');
   const endpoints = useTenantResource<Endpoint[]>(`/api/organizations/${encodeURIComponent(org)}/endpoints?offset=${offset}&limit=20`);
   useEffect(() => {
     if (endpoints.state === 'denied') return;
     const timer = window.setInterval(() => { if (!document.hidden) endpoints.reload(); }, 30_000);
     return () => window.clearInterval(timer);
   }, [endpoints.state === 'denied', endpoints.reload]);
-  const hosts = endpoints.data ?? [];
-  const host = hosts.find((e) => e.id === selectedHost) ?? hosts.find((e) => e.state === 'active') ?? hosts[0];
+  const hosts = [...(endpoints.data ?? [])].sort((a, b) => Number(b.state === 'active') - Number(a.state === 'active') || a.name.localeCompare(b.name));
   return <>
     <div className="ky-toolbar">
-      {mode === 'containers' && hosts.length > 1 && <><label htmlFor="fleet-host">Endpoint</label><select id="fleet-host" value={host?.id ?? ''} onChange={(event) => setSelectedHost(event.target.value)}>{hosts.map((e) => <option key={e.id} value={e.id}>{e.name} · {e.runtime === 'kubernetes' ? 'Kubernetes' : 'Docker'} · {e.state}</option>)}</select></>}
+      {mode === 'home' && <input type="search" aria-label="Find endpoints on this page" placeholder="Search hosts or clusters…" value={search} onChange={(e) => setSearch(e.target.value)} />}
+
       <button className="btn-secondary" onClick={endpoints.reload}>Refresh endpoints</button>
     </div>
     <StateNotice state={endpoints.state} onRetry={endpoints.reload} />
     {endpoints.state === 'ready' && endpoints.data?.length === 0 && <EmptyNotice>No endpoints connected here yet. Add a Docker host or Kubernetes cluster. <Link to={orgPath(org)}>Add an endpoint.</Link></EmptyNotice>}
-    {endpoints.state === 'ready' && (mode === 'containers' ? (host ? [host] : []) : hosts).map((e) => <section className="panel" key={e.id}>
+    {mode === 'home' && endpoints.state === 'ready' && <p className="ky-fleet-totals">This page: <strong>{hosts.length} endpoints</strong> · {hosts.filter((e) => e.state === 'active').length} connected · {hosts.filter((e) => e.runtime === 'docker').length} Docker · {hosts.filter((e) => e.runtime === 'kubernetes').length} Kubernetes</p>}
+    {endpoints.state === 'ready' && (hosts.filter((e) => `${e.name} ${e.runtime} ${e.facts.hostname ?? ''}`.toLowerCase().includes(search.toLowerCase()))).map((e) => <section className="panel" key={e.id}>
       <div className="panel-header"><h2><Link to={endpointPath(org, e.id)}>{e.name}</Link></h2><span className={`badge ${e.state === 'active' ? 'badge-success' : 'badge-secondary'}`}>{e.state}</span></div>
-      <p>{e.facts.hostname || e.runtime} · <Link to={endpointPath(org, e.id)}>{e.runtime === 'kubernetes' ? 'Open cluster & resources' : 'Open containers & resources'}</Link></p>
-      {mode === 'containers' && (e.state === 'active' ? <EndpointInventory org={org} host={e} exec={exec} /> : <>
-        <EmptyNotice>This endpoint is {e.state}. Its saved inventory is historical and does not describe the server running KyYard now.</EmptyNotice>
-        <details><summary>Show last reported inventory</summary><EndpointInventory org={org} host={e} exec={false} /></details>
-      </>)}
+      <p>{e.runtime === 'kubernetes' ? 'Kubernetes cluster' : 'Docker host'}{e.facts.hostname ? ` · ${e.facts.hostname}` : ''}</p>
+      {mode === 'home' && (e.state === 'active' ? <EndpointSummary org={org} endpoint={e} configure={configure} /> : <p>Disconnected. Open the endpoint to inspect its historical inventory.</p>)}
+
     </section>)}
     {(offset > 0 || (endpoints.data?.length ?? 0) >= 20) && <div className="ky-pagination">      <button className="btn-secondary" disabled={!offset} onClick={() => setOffset(offset - 20)}>Previous endpoints</button>
       <span>{endpoints.data?.length ? `Endpoints ${offset + 1}–${offset + endpoints.data.length}` : "No endpoints on this page"}</span>
@@ -60,42 +52,28 @@ function Fleet({ org, mode, exec }: { org: string; mode: 'containers' | 'endpoin
 </div>}
   </>;
 }
-function EndpointInventory({ org, host, exec }: { org: string; host: Endpoint; exec: boolean }) {
-  const { id: endpoint, name: hostName } = host;
-  const active = host.state === 'active';
-  const cluster = host.runtime === 'kubernetes';
-  const inventory = useTenantResource<Inventory>(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}/inventory`);
+function EndpointSummary({ org, endpoint: e, configure }: { org: string; endpoint: Endpoint; configure: boolean }) {
+  const active = e.state === 'active';
+  const inventory = useTenantResource<Inventory>(`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(e.id)}/inventory`, e.state);
+  const now = useNow();
   useEffect(() => {
-    if (inventory.state === 'denied') return;
+    if (inventory.state === 'denied' || !active) return;
     const timer = window.setInterval(() => { if (!document.hidden) inventory.reload(); }, 30_000);
     return () => window.clearInterval(timer);
-  }, [inventory.state === 'denied', inventory.reload]);
-  const [search, setSearch] = useState('');
-  const [status, setStatus] = useState('');
-  const now = useNow();
-  const inv = inventory.data;
-  const rows = inv?.snapshot.containers.filter((c) => `${c.name} ${c.image}`.toLowerCase().includes(search.toLowerCase())) ?? [];
-  const pagination = usePagination(rows, search);
-  const stale = !!inv && (!Number.isFinite(Date.parse(inv.received_at)) || now - Date.parse(inv.received_at) > 180000);
-  const workloads = inv?.snapshot.kubernetes?.workloads.filter((w) => `${w.namespace}/${w.name} ${w.images.join(' ')}`.toLowerCase().includes(search.toLowerCase())) ?? [];
-  if (inventory.state === 'notfound') return <EmptyNotice>Waiting for the agent's first inventory report.</EmptyNotice>;
+  }, [active, inventory.state === 'denied', inventory.reload]);
+  const report = inventory.data;
+  const live = active && report && Number.isFinite(Date.parse(report.received_at)) && now - Date.parse(report.received_at) <= 180_000 && !inventory.refreshFailed;
+  const snapshot = report?.snapshot;
+  const cluster = e.runtime === 'kubernetes';
+  const kube = snapshot?.kubernetes;
   return <>
     <StateNotice state={inventory.state} onRetry={inventory.reload} />
-    {inventory.state === 'ready' && inv && <>
-      <p className="ky-inventory-status">Observed {new Date(inv.received_at).toLocaleString()}{stale ? ' · stale inventory' : ''}{!active ? ' · last reported state, not live' : ''}{inventory.refreshFailed ? ' · refresh failed; showing the previous report' : ''}{inv.snapshot.truncated?.length ? ` · lists truncated: ${inv.snapshot.truncated.join(', ')}` : ''} <button className="btn-secondary" onClick={inventory.reload}>Refresh</button></p>
-      {cluster ? (inv.snapshot.kubernetes ? <>
-        <p>{inv.snapshot.kubernetes.nodes.filter((n) => n.ready).length} of {inv.snapshot.kubernetes.nodes.length} nodes ready · {inv.snapshot.kubernetes.pods.length} pods · <Link to={endpointPath(org, endpoint)}>View pods, services & cluster details</Link></p>
-        <div className="ky-toolbar"><input aria-label="Find workloads on this cluster" type="search" placeholder="Find by namespace, workload or image…" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
-        <ResourceTable key={search} title="Workloads" rows={workloads} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty={search ? 'No matching workloads on this cluster.' : 'No workloads reported on this cluster.'} head={['Workload', 'Kind', 'Ready', 'Images']} render={(w) => [
-          Object.hasOwn(PAGE_KINDS, w.kind) && dnsLabel.test(w.namespace) && dnsLabel.test(w.name) ? <Link to={workloadPath(org, endpoint, w.namespace, PAGE_KINDS[w.kind] ?? '', w.name)}>{displayName(w.namespace)}/{displayName(w.name)}</Link> : `${displayName(w.namespace)}/${displayName(w.name)}`,
-          w.kind, `${w.ready}/${w.desired}${w.paused ? ' (paused)' : ''}`, w.images.map(displayName).join(', '),
-        ]} />
-      </> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>) : <>
-      <div className="ky-toolbar"><input aria-label="Find containers on this host" type="search" placeholder="Find by container name or image…" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{rows.length} containers</span></div>
-      {pagination.controls}
-      {status && <p role="status">{status}</p>}
-      {rows.length ? <div style={{ overflowX: 'auto' }}><table className="ky-table ky-responsive-table"><thead><tr><th>Container</th><th>Status</th><th>Uptime</th><th>IP</th><th>Ports</th><th>Actions</th></tr></thead><tbody>{pagination.rows.map((c) => <tr key={c.id}><td data-label="Container"><div className="ky-resource-name"><strong><Link to={containerPath(org, endpoint, c.id)}>{c.name}</Link></strong><span>{c.image}</span></div></td><td data-label="Status"><StateCell c={c} /></td><td data-label="Uptime">{active && !stale ? uptime(c.started_at, now) || '—' : '—'}</td><td data-label="IP"><IPCell c={c} /></td><td data-label="Ports"><ContainerPorts ports={c.ports} /></td><td data-label="Actions"><ContainerControls key={c.id} base={`/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`} container={c} active={active && !stale} scope={`Host ${displayName(hostName)} · Endpoint ${endpoint}`} onRefresh={inventory.reload} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} /></td></tr>)}</tbody></table></div> : <EmptyNotice>{search ? 'No matching containers on this host.' : inv.snapshot.engine && !inv.snapshot.engine.version ? 'Docker is unavailable. Check the host’s Docker service and socket access.' : 'No containers on this host.'}</EmptyNotice>}
-      </>}
-    </>}
+    <div className="ky-endpoint-summary">
+      <div><span>{cluster ? 'Workloads ready' : 'Containers running'}</span><strong>{live ? cluster ? kube ? `${kube.workloads.filter((w) => w.ready >= w.desired && w.desired > 0).length} / ${kube.workloads.length}` : '—' : `${snapshot?.containers.filter((c) => c.state === 'running').length ?? 0} / ${snapshot?.containers.length ?? 0}` : '—'}</strong></div>
+      <div><span>{cluster ? 'Nodes ready' : 'CPUs'}</span><strong>{live ? cluster ? kube ? `${kube.nodes.filter((n) => n.ready).length} / ${kube.nodes.length}` : '—' : snapshot?.engine?.cpus || '—' : '—'}</strong></div>
+      <div><span>{cluster ? 'Pods' : 'Memory'}</span><strong>{live ? cluster ? kube?.pods.length ?? '—' : snapshot?.engine?.memory_bytes ? `${(snapshot.engine.memory_bytes / 2 ** 30).toFixed(1)} GiB` : '—' : '—'}</strong></div>
+    </div>
+    {inventory.state === 'ready' && report && <p className="text-muted">{!live ? 'Inventory is stale or its refresh failed. Open the endpoint to check it.' : `Reported ${new Date(report.received_at).toLocaleString()}${snapshot?.truncated?.length ? ' · inventory is incomplete' : ''}`}</p>}
+    <div className="ky-toolbar"><Link className="btn btn-secondary" to={endpointPath(org, e.id)}>{cluster ? 'Open cluster' : 'Open containers'}</Link>{configure && active && <Link className="btn" to={cluster ? workloadRunPath(org, e.id) : runPath(org, e.id)}>Run a container{cluster ? ' on Kubernetes' : ''}</Link>}</div>
   </>;
 }

@@ -1,3 +1,5 @@
+import { ManifestRegeneration } from '../components/KubernetesManifest';
+import { RunYAML } from '../components/RunYAML';
 import React, { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { Layers } from 'lucide-react';
 import { Link } from '../components/Link';
@@ -102,10 +104,14 @@ export const WorkloadRunPage: React.FC<{ org: string; endpoint: string }> = ({ o
   const { command, error } = useCommand(base, sent?.command ?? null);
   const e = details.data;
   const namespaces = e?.deploy_namespaces ?? [];
+  const [format, setFormat] = useState('form');
+  const [started, setStarted] = useState(false);
   return <div className="ky-page">
     <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link><span>/</span><Link to={endpointPath(org, endpoint)}>{e?.name ?? endpoint}</Link></nav>
-    <h1 style={{ fontSize: 24 }}>Run a workload</h1>
+    <h1 style={{ fontSize: 24 }}>Run a container on Kubernetes</h1>
+    <p>Choose an image. Kubernetes keeps it running as a Deployment.</p>
     <StateNotice state={details.state} onRetry={details.reload} />
+    {canConfigure(role) && e?.runtime === 'kubernetes' && (!e.capabilities.includes('kubernetes.manifests.run') || namespaces.length === 0) && <section className="panel"><h2>Enable container runs</h2><p>Upgrade the cluster agent and grant the namespace where containers will run.</p><ManifestRegeneration org={org} endpoint={e} onSaved={details.reload} /></section>}
     {organizations.state === 'loading' ? <p role="status">Loading…</p>
       : !canConfigure(role) ? <EmptyNotice>Only an organization administrator can run workloads.</EmptyNotice>
       : details.state !== 'ready' || !e ? null
@@ -113,7 +119,7 @@ export const WorkloadRunPage: React.FC<{ org: string; endpoint: string }> = ({ o
       : !e.capabilities.includes('kubernetes.workloads.run') ? <EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice>
       : namespaces.length === 0 ? <EmptyNotice>The cluster manifest grants no namespace, so nothing can run here. Grant one and re-apply the manifest.</EmptyNotice>
       : <>
-        <section className="panel"><WorkloadConfigurationForm base={base} mode="run" namespaces={namespaces} pending={!!command && (!command.outcome || command.outcome === 'succeeded')} onSent={(c, target) => setSent({ command: c, target })} /></section>
+        <section className="panel"><div className="ky-toolbar"><button className="btn-secondary" aria-pressed={format === 'form'} disabled={started || !!sent} onClick={() => setFormat('form')}>Container form</button><button className="btn-secondary" aria-pressed={format === 'yaml'} disabled={started || !!sent || !e.capabilities.includes('kubernetes.manifests.run')} title={e.capabilities.includes('kubernetes.manifests.run') ? undefined : 'Upgrade the cluster agent to run native YAML'} onClick={() => setFormat('yaml')}>Kubernetes YAML</button></div>{format === 'yaml' ? <RunYAML onStarted={() => setStarted(true)} base={base} runtime="kubernetes" namespaces={namespaces} org={org} endpoint={endpoint} /> : <WorkloadConfigurationForm onStarted={() => setStarted(true)} base={base} mode="run" namespaces={namespaces} pending={!!command && (!command.outcome || command.outcome === 'succeeded')} onSent={(c, target) => setSent({ command: c, target })} />}</section>
         {command && sent && <section className="panel" aria-label="Last change">{command.outcome ? <>
           <WorkloadResult command={command} />
           {command.outcome === 'succeeded' && <p><Link to={workloadPath(org, endpoint, sent.target.namespace, 'deployment', sent.target.name, 'overview')}>Open the new workload</Link></p>}

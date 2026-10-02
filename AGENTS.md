@@ -77,12 +77,15 @@ Default section order:
 
 ## User Preferences
 
+- Home is a bounded fleet overview of Docker hosts and Kubernetes clusters, with useful runtime counts and direct run actions.
+- Keep image-run forms compact; accept direct Docker Compose and native Kubernetes Deployment YAML through a reviewed, confirmed run path. Container images must be runnable on a selected Kubernetes endpoint. Expose image-update hints and an explicit pull-and-recreate action.
+
 - Keep container lists paginated and bounded. Normal installation workflows must not require organization management; preserve authorization scope internally and explicit switching for existing multi-membership accounts.
 - Container rows use icon action buttons, never a menu that reflows the table; every container has its own page with Overview, Configuration, Logs, Terminal and Activity tabs; lists show uptime, IP and health.
 - Keep the interface coherent across the whole site: clear operational navigation, consistent Ky design patterns, readable forms and tables, and reachable controls on mobile. Prioritize interface corrections over adding more UI clutter.
 - The local Docker host connects automatically in the standard installation, without an enrollment command, separate agent container or fingerprint approval. Additional hosts retain explicit enrollment.
 - Remote-host setup is one image-pulling Docker run command with an enrollment link; do not require inspecting a server container or running a separate enrollment container.
-- Containers and endpoints are the primary navigation and home-page content; administration stays in Settings.
+- Home and Endpoints are the primary navigation. Home leads with fleet summaries; native containers and workloads live on their endpoint pages. Administration stays in Settings.
 - Use the KyPost/KyDNS fifteen-palette swatch picker in Settings and browser-local theme preferences. Remove upper-right theme dropdowns from the header and login.
 - Support configurable OAuth 2 / OIDC providers including KyIdentity; preserve local sign-in. SCIM and phone pairing are retired from the product.
 - Use Docker's existing default `bridge` network; create no dedicated KyYard network.

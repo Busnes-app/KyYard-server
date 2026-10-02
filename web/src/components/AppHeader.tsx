@@ -10,7 +10,7 @@ interface AppHeaderProps {
   onLogout: () => void;
 }
 const navItems = [
-  { name: 'dashboard', to: '/', label: 'Containers', icon: LayoutDashboard },
+  { name: 'dashboard', to: '/', label: 'Home', icon: LayoutDashboard },
   { name: 'endpoints', to: '/endpoints', label: 'Endpoints', icon: Server },
   { name: 'settings', to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];

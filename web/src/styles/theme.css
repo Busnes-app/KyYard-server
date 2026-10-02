@@ -620,3 +620,16 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-fleet-page > .panel p { margin: 0; }
 .ky-fleet-page .ky-inventory-status { font-size: 12px; color: var(--ink); }
 .ky-fleet-page > .panel > .panel { padding: 0; border: 0; background: transparent; }
+
+.ky-endpoint-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1rem; margin:1rem 0; }
+.ky-endpoint-summary > div { padding:1rem; border:1px solid var(--line); border-radius:.5rem; }
+.ky-endpoint-summary span { display:block; color:var(--ink-muted); margin-bottom:.5rem; }
+.ky-endpoint-summary strong { font-size:1.5rem; }
+.ky-config-disclosure { border:1px solid var(--line); border-radius:.5rem; padding:.8rem 1rem; }
+.ky-config-disclosure > summary { cursor:pointer; font-weight:600; }
+.ky-config-disclosure[open] > summary { margin-bottom:1rem; }
+@media (max-width:600px) { .ky-endpoint-summary { gap:.5rem; } .ky-endpoint-summary > div { padding:.6rem; } .ky-endpoint-summary strong { font-size:1.2rem; } }
+
+.ky-image-update { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin-top:.5rem; }
+
+.badge-warning { color:var(--accent); background:var(--accent-soft); border:1px solid var(--accent); }

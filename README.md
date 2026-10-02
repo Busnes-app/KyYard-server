@@ -754,7 +754,7 @@ The GitHub organisation was renamed on 2026-09-16 and the image now lives at `gh
 
 ### Compose projects
 
-Open a host from **Containers** or **Endpoints**, then expand a project under **Compose projects** to inspect its reported containers and running count. **Show containers** filters the existing controls; **Show all containers** clears the filter. Projects are currently unmanaged: discovery does not import configuration, take ownership, or deploy anything. Counts reflect the displayed inventory age and may be incomplete when the container list is truncated.
+Open a host from **Home** or **Endpoints**, then expand a project under **Compose projects** to inspect its reported containers and running count. **Show containers** filters the existing controls; **Show all containers** clears the filter. Projects are currently unmanaged: discovery does not import configuration, take ownership, or deploy anything. Counts reflect the displayed inventory age and may be incomplete when the container list is truncated.
 
 ### Container terminals
 
@@ -896,3 +896,11 @@ person's inspection budget (30 a minute): a run that cannot inspect is `blocked`
 The scheduler runs inside the server; there is nothing extra to deploy. The binary embeds the
 time-zone database (`time/tzdata`), so a bare binary on a host without `/usr/share/zoneinfo`
 evaluates zones the same way as the container.
+
+### Fleet, image runs and YAML
+
+**Home** shows Docker and Kubernetes endpoint summaries, connected endpoints first, with a direct **Run a container** action. Kubernetes runs a container image as a Deployment in a granted namespace. If setup is missing, the run page offers **Regenerate manifest** to upgrade the agent and grant namespaces; apply that manifest with cluster-admin credentials. Native YAML requires the agent capability `kubernetes.manifests.run`. Upgrade the server before the agent, and keep `KY_AGENT_IMAGE` pinned to the published release digest.
+
+The run forms show name and image first; expand Environment, Ports, Volumes or Advanced settings when needed. **Docker Compose YAML** previews the supported import subset (image, explicit string environment, restart, quoted short or long-form ports and binds/existing external named volumes). **Kubernetes YAML** previews native apps/v1 Deployment documents, preserving selectors, ports, probes and existing storage/Secret references. At most 16 resources and 64 KiB; unsupported kinds and fields refuse the entire preview. Service and PVC creation uses Applications. Each reviewed resource needs its own typed name and runs independently; a failure leaves prior successes in place. Custom service accounts and service-account token mounts are refused.
+
+Docker rows show **Updates not checked** until the administrator explicitly checks the registry. A fresh digest comparison can show **Update available**, **Up to date**, **Digest pinned**, **Image version unknown** or **Registry check failed**. **Update image** opens Configuration; **Pull latest image and recreate** resolves/pulls the reference again and replaces the container while carrying its reviewed settings. Review and type its name to submit. Data volumes are preserved; a managed application must be updated through Applications. Digest-pinned references stay pinned unless the operator changes the reference.
