@@ -26,3 +26,14 @@ No complete end-to-end product workflow or exhaustive named-theme audit is claim
 ## Reproduce
 
 Run npm ci, npm test (where configured), and npm run build in web/, then start the product with isolated local preview data following its README. Use System theme, emulate OS light/dark, and inspect both viewport sizes. Do not point preview instances at production data. For KyVault, use a configured development KyIdentity or explicitly labeled read-only browser fixtures; never bypass backend authentication.
+
+## Mixed fleet home, 2026-10-02
+
+The home page selects endpoints by runtime, prefers an active endpoint, and displays Kubernetes workloads instead of the Docker empty state. Offline inventory is collapsed and labelled historical; stale Docker reports disable lifecycle buttons and omit advancing uptime. Endpoint and inventory reads poll every 30 seconds while visible and stop on denial.
+
+Verified the real Dashboard and AppHeader components in an explicitly labelled read-only browser fixture with synthetic Docker and Kubernetes reports. This is layout evidence, not a live cluster or runtime acceptance test. No production credentials or workload mutations were used. At 1280×900 and 390×844, document scroll width stayed within viewport width. At desktop width, the five Docker actions shared one row; the endpoint picker measured 440 CSS pixels. At mobile width, actions remained reachable and tables rendered labelled rows.
+
+483 frontend tests passed, including mixed-runtime switching, historical/stale state, bounded workload search and polling/denial regressions. Typecheck, vendor verification and production build passed; the existing bundle-size warning remains. The root DOX contract and child index were left unchanged because this change stays within frontend ownership; web/AGENTS.md records the behavior.
+
+![Docker desktop fixture](docs/mixed-fleet-docker-desktop.png)
+![Kubernetes mobile fixture](docs/mixed-fleet-kubernetes-mobile.png)
