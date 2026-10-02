@@ -20,6 +20,7 @@ const (
 	// CapabilityKubernetesWorkloadsRun marks a cluster agent whose workload apply honours
 	// Create: agents from before it advertise kubernetes.workloads and refuse a run.
 	CapabilityKubernetesWorkloadsRun = "kubernetes.workloads.run"
+	CapabilityKubernetesManifestsRun = "kubernetes.manifests.run"
 	// CapabilityPodExec marks a cluster agent that opens an exec session in a pod container.
 	CapabilityPodExec = "pod.exec"
 
@@ -118,6 +119,7 @@ type WorkloadResources struct {
 // "secret/<name>" or "configmap/<name>". Managed is a workload KyYard deployed, edited through
 // its application. Unsupported names, from WorkloadUnsupportedCodes, what an apply would drop.
 type WorkloadConfiguration struct {
+	RunManifest     json.RawMessage     `json:"run_manifest,omitempty"`
 	Target          WorkloadRef         `json:"target"`
 	ObservedAt      time.Time           `json:"observed_at"`
 	ResourceVersion string              `json:"resource_version"`
@@ -155,6 +157,20 @@ func (c *WorkloadConfiguration) Validate(target WorkloadRef, now time.Time) erro
 // validSpec is everything but the target match and the observation time. A create has no
 // resource version; anything else needs one.
 func (c *WorkloadConfiguration) validSpec(create bool) error {
+	if len(c.RunManifest) > 0 {
+		if !create {
+			return workloadErr("run_manifest")
+		}
+		deployment, err := RunDeployment(c.RunManifest, c.Target)
+		if err != nil || c.Replicas == nil || *c.Replicas != *deployment.Spec.Replicas || len(c.Containers) != len(deployment.Spec.Template.Spec.Containers) {
+			return workloadErr("run_manifest")
+		}
+		for i, container := range deployment.Spec.Template.Spec.Containers {
+			if c.Containers[i].Name != container.Name || c.Containers[i].Image != container.Image {
+				return workloadErr("run_manifest")
+			}
+		}
+	}
 	kind := c.Target.Kind
 	switch {
 	case !c.Target.validObject() || kind == WorkloadPod:

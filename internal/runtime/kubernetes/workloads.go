@@ -564,7 +564,15 @@ func (r *run) createWorkload(ctx context.Context, req protocol.WorkloadApply) pr
 	})
 	r.step(service, protocol.StepCreate, func() (string, string, string) {
 		r.begin()
-		_, err := api.Create(ctx, renderWorkload(ref, req.Spec), metav1.CreateOptions{})
+		deployment := renderWorkload(ref, req.Spec)
+		if len(req.Spec.RunManifest) > 0 {
+			var err error
+			deployment, err = protocol.RunDeployment(req.Spec.RunManifest, ref)
+			if err != nil {
+				return protocol.OutcomeDenied, "configuration_unreported", ""
+			}
+		}
+		_, err := api.Create(ctx, deployment, metav1.CreateOptions{})
 		switch {
 		case err == nil:
 			return succeeded()

@@ -156,6 +156,17 @@ func (s *Server) handleRunWorkload(w http.ResponseWriter, r *http.Request, a sto
 		s.tenantError(w, store.ErrInvalid)
 		return
 	}
+	if len(body.Spec.RunManifest) > 0 {
+		ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, endpoint)
+		if err != nil {
+			s.tenantError(w, err)
+			return
+		}
+		if !slices.Contains(ep.Capabilities, protocol.CapabilityKubernetesManifestsRun) {
+			s.writeError(w, 501, "Upgrade the cluster agent to run manifests")
+			return
+		}
+	}
 	s.sendWorkloadFrame(w, r, a, endpoint, s.store.Tenancy().CreateWorkloadRun, store.WorkloadApply{Target: body.Spec.Target, Confirm: body.Confirm, Spec: body.Spec})
 }
 

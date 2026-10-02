@@ -1121,3 +1121,20 @@ func TestApplyWorkloadCreateRollout(t *testing.T) {
 		t.Fatalf("%s %s %d", res.Outcome, res.Code, len(cs.Actions()))
 	}
 }
+
+func TestApplyWorkloadRunsNativeManifest(t *testing.T) {
+	c, cs := createCluster(t, false, true)
+	req := createFrame("native", time.Minute)
+	req.Spec.RunManifest = json.RawMessage(`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"native","namespace":"shop"},"spec":{"replicas":2,"selector":{"matchLabels":{"app":"native"}},"template":{"metadata":{"labels":{"app":"native"}},"spec":{"containers":[{"name":"web","image":"ghcr.io/org/web:1","ports":[{"containerPort":8080}],"volumeMounts":[{"name":"data","mountPath":"/data"}]}],"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"existing-data"}}]}}}}`)
+	result := c.ApplyWorkload(context.Background(), req, func() {})
+	if result.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("%s %s", result.Outcome, steps(result))
+	}
+	d, err := cs.AppsV1().Deployments("shop").Get(context.Background(), "native", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Spec.Selector.MatchLabels["app"] != "native" || d.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort != 8080 || d.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName != "existing-data" || *d.Spec.Template.Spec.AutomountServiceAccountToken {
+		t.Fatal("native Deployment was simplified or token mount allowed")
+	}
+}
