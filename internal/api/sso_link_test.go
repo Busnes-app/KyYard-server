@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/Busnes-app/ky-primitives/totp"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
@@ -156,6 +158,50 @@ func TestSSOLinkRequiresBothIdentitiesAndKeepsTheLocalAccount(t *testing.T) {
 	me := do(t, srv, "GET", "/api/auth/me", session)
 	if me.Code != 200 || !strings.Contains(me.Body.String(), before.ID) {
 		t.Fatal("different SSO account", me.Code, me.Body)
+	}
+	// Provider authentication must not bypass the linked account's local MFA.
+	secret, _ := totp.GenerateSecret()
+	linked.TOTPEnabled = true
+	linked.TOTPSecretEnc, _ = crypto.EncryptAESGCM([]byte(secret), cfg.Security.EncryptionKey)
+	if err := st.Users().UpdateUser(context.Background(), linked); err != nil {
+		t.Fatal(err)
+	}
+	login = do(t, srv, "GET", "/api/sso/idp_test/login", nil)
+	dest, _ = url.Parse(login.Header().Get("Location"))
+	challenge = dest.Query().Get("code_challenge")
+	r = httptest.NewRequest("GET", "/api/sso/idp_test/callback?state="+dest.Query().Get("state")+"&code=valid-code", nil)
+	for _, c := range login.Result().Cookies() {
+		r.AddCookie(c)
+	}
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	for _, c := range w.Result().Cookies() {
+		if c.Name == auth.SessionCookieName {
+			t.Fatal("SSO bypassed local MFA")
+		}
+	}
+	mfaURL, _ := url.Parse(w.Header().Get("Location"))
+	token := strings.TrimPrefix(mfaURL.Fragment, "sso-mfa=")
+	if w.Code != 302 || len(token) != 64 {
+		t.Fatal("missing local MFA challenge", w.Code, w.Header().Get("Location"))
+	}
+	code, _ := totp.Code(secret, time.Now())
+	body, _ := json.Marshal(map[string]string{"mfa_token": token, "code": code})
+	r = httptest.NewRequest("POST", "/api/auth/mfa/totp", strings.NewReader(string(body)))
+	r.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), before.ID) {
+		t.Fatal("local MFA completion failed", w.Code, w.Body)
+	}
+	session = nil
+	for _, c := range w.Result().Cookies() {
+		if c.Name == auth.SessionCookieName {
+			session = c
+		}
+	}
+	if session == nil || do(t, srv, "GET", "/api/auth/me", session).Code != 200 {
+		t.Fatal("MFA did not issue original account session")
 	}
 	rows := auditRows(t, st, "auth.sso.link")
 	if len(rows) != 1 || rows[0].UserID != before.ID || rows[0].Result != "success" {

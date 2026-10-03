@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -92,12 +93,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Check if MFA is required
 	if user.TOTPEnabled {
-		rawChallenge := crypto.RandomHex(32)
-		if err := s.store.Sessions().CreateMFAChallenge(r.Context(), &store.MFAChallenge{
-			TokenHash: crypto.SHA256Hex([]byte(rawChallenge)),
-			UserID:    user.ID,
-			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
-		}, user.PasswordHash); err != nil {
+		rawChallenge, err := s.beginMFA(r.Context(), user)
+		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "Failed to start MFA verification")
 			return
 		}
@@ -291,4 +288,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"user":          user,
 	})
+}
+
+// beginMFA binds either password or provider verification to the same one-use
+// local second-factor transaction. No authenticated session exists yet.
+func (s *Server) beginMFA(ctx context.Context, user *store.User) (string, error) {
+	raw := crypto.RandomHex(32)
+	err := s.store.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
+		TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: user.ID, ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+	}, user.PasswordHash)
+	return raw, err
 }

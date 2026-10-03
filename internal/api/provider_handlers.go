@@ -361,6 +361,18 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, 403, "Account unavailable; contact your administrator")
 		return
 	}
+	if user.SSOProvider == "local" && user.TOTPEnabled {
+		token, err := s.beginMFA(ctx, user)
+		if err != nil {
+			s.writeError(w, 403, "Account unavailable")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		// The fragment is never sent in HTTP requests or referrers. Login removes
+		// it from browser history and completes the existing TOTP/recovery flow.
+		http.Redirect(w, r, "/#sso-mfa="+token, http.StatusFound)
+		return
+	}
 	if _, _, err = s.sessions.IssueSession(ctx, w, r, user); err != nil {
 		s.writeError(w, 403, "Account unavailable")
 		return

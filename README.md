@@ -149,7 +149,7 @@ bind and DNS overlays already in use:
   Connect single sign-on to your account**. Supply the current KyYard password, then sign in
   to the provider as the identity to connect. The same account ID and permissions are retained;
   local sign-in and operator password recovery remain available. Each provider identity can
-  belong to one account, and an account can connect one identity per provider.
+  belong to one account, and an account can connect one identity per provider. Linked local accounts retain their configured TOTP requirement: complete the KyYard authenticator or recovery-code challenge after provider sign-in before receiving a session.
 
 `GET`/`HEAD /health/live` reports process availability; `/health/ready` additionally probes
 the database with a two-second deadline and returns 503 during shutdown or database failure.
