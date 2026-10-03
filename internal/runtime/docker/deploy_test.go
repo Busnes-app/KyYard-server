@@ -985,6 +985,31 @@ func explicitSteps(res protocol.DeploymentResult) string {
 	return strings.Join(out, ",")
 }
 
+func TestDeployExplicitPreservesMACAddress(t *testing.T) {
+	for _, mac := range []string{"", "02:42:ac:11:00:05"} {
+		t.Run(mac, func(t *testing.T) {
+			f := newFakeDeployEngine(t)
+			f.oldContainer["Config"].(map[string]any)["MacAddress"] = mac
+			res := f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {})
+			if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil {
+				t.Fatalf("recreate/upgrade: %s", explicitSteps(res))
+			}
+			call, ok := f.call("POST", "/containers/create")
+			var body map[string]any
+			if !ok || json.Unmarshal([]byte(call.Body), &body) != nil {
+				t.Fatal("missing create body")
+			}
+			if mac == "" {
+				if _, set := body["MacAddress"]; set {
+					t.Fatal("pinned a MAC for a container without one")
+				}
+			} else if body["MacAddress"] != mac {
+				t.Fatalf("MAC address not preserved: %v", body["MacAddress"])
+			}
+		})
+	}
+}
+
 // (a), (b): the create body carries every explicit setting and nothing the adapter adds.
 func TestDeployExplicitCreateBody(t *testing.T) {
 	f := newFakeDeployEngine(t)

@@ -284,6 +284,15 @@ func TestReadConfigurationPlainContainerHasNoUnsupported(t *testing.T) {
 	}
 }
 
+func TestReadConfigurationMACAddressIsPreservedByRecreation(t *testing.T) {
+	got := readFixture(t, func(c map[string]any) {
+		c["Config"].(map[string]any)["MacAddress"] = "02:42:ac:11:00:05"
+	})
+	if slices.Contains(got.Unsupported, "host_config:MacAddress") {
+		t.Fatalf("preserved MAC blocked recreation: %v", got.Unsupported)
+	}
+}
+
 // An endpoint setting other than the carried IPv4 address is named, and so is an unknown one.
 func TestReadConfigurationFlagsEndpointSettings(t *testing.T) {
 	got := readFixture(t, func(c map[string]any) {

@@ -178,7 +178,7 @@ type inspectedForDeploy struct {
 	Mounts  *mountList
 	Config  *struct {
 		imageDefaults
-		User string
+		User, MacAddress string
 	}
 	HostConfig *struct {
 		NetworkMode                                                     string
@@ -712,7 +712,13 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 			ID string `json:"Id"`
 		}
 		sent = true
-		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), createBody(r.req, s, p.networkMode), &out)
+		body := createBody(r.req, s, p.networkMode)
+		if r.req.Explicit && p.before.Config != nil {
+			// Engine v1.41 reports the primary network's requested MAC in Config.
+			// Preserve it locally; the edit frame cannot change this setting.
+			body.MacAddress = p.before.Config.MacAddress
+		}
+		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), body, &out)
 		if err != nil || status != http.StatusCreated {
 			if status == http.StatusConflict {
 				return fail("name_taken")
@@ -1071,6 +1077,7 @@ type mountSpec struct {
 }
 
 // containerCreate is the create body. Fields after Labels are set only for an explicit frame;
+// MacAddress is preserved from the agent's precondition read, never supplied by the frame.
 // Cmd and Entrypoint are sent even when nil, which Docker reads as the image's, so an explicit
 // [] still clears an image entrypoint.
 type containerCreate struct {
@@ -1083,6 +1090,7 @@ type containerCreate struct {
 	User         string              `json:"User,omitempty"`
 	WorkingDir   string              `json:"WorkingDir,omitempty"`
 	Hostname     string              `json:"Hostname,omitempty"`
+	MacAddress   string              `json:"MacAddress,omitempty"`
 	Tty          bool                `json:"Tty,omitempty"`
 	OpenStdin    bool                `json:"OpenStdin,omitempty"`
 	StopSignal   string              `json:"StopSignal,omitempty"`
@@ -1118,7 +1126,7 @@ type containerCreate struct {
 // the Compose labels discovery already groups by. Nothing is copied from the old container
 // except the network mode the precondition already accepted: a Compose project's containers
 // run on "<project>_default", and dropping that would strand the new one off the project
-// network and its service-name DNS.
+// network and its service-name DNS. The explicit create step also preserves Config.MacAddress.
 func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, networkMode string) containerCreate {
 	body := containerCreate{Image: s.ImageID, Env: []string{}}
 	keys := make([]string, 0, len(s.Env))
