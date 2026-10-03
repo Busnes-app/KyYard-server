@@ -82,6 +82,8 @@ type rawInspection struct {
 var (
 	configKeys = keyCodes(map[string][]string{
 		"": {"Image", "User", "WorkingDir", "Hostname", "StopSignal", "Env", "Cmd", "Entrypoint", "Labels", "ExposedPorts", "Tty", "OpenStdin", "StopTimeout", "Healthcheck",
+			// Preserved from the agent's own precondition read during explicit recreation.
+			"MacAddress",
 			// attach settings of the client that ran it, and what the image declares (its volumes are anonymous_volume's)
 			"AttachStdin", "AttachStdout", "AttachStderr", "StdinOnce", "Volumes", "OnBuild", "ArgsEscaped", "Shell"},
 	})

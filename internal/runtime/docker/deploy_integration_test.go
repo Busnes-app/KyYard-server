@@ -412,7 +412,7 @@ func TestRecheckRealDocker(t *testing.T) {
 // image, labelled kyyard.test=<name> so cleanup removes it and anything created in its place
 // (before, for an aborted run's leftover, and after). It returns the explicit frame that
 // recreates it with the same command and label, and its identity.
-func explicitFixture(t *testing.T, ctx context.Context, name string) (protocol.DeploymentRequest, string) {
+func explicitFixture(t *testing.T, ctx context.Context, name string, options ...string) (protocol.DeploymentRequest, string) {
 	t.Helper()
 	image := os.Getenv("KY_TEST_DOCKER_INSPECTION_IMAGE")
 	if image == "" {
@@ -429,7 +429,9 @@ func explicitFixture(t *testing.T, ctx context.Context, name string) (protocol.D
 	}
 	cleanup()
 	t.Cleanup(cleanup)
-	out, err := exec.CommandContext(ctx, "docker", "run", "-d", "--pull", "never", "--name", name, "--network", "bridge", "--env", "FOO=old", "--label", "kyyard.test="+name, image, "sleep", "300").CombinedOutput()
+	args := append([]string{"run", "-d", "--pull", "never", "--name", name, "--network", "bridge", "--env", "FOO=old", "--label", "kyyard.test=" + name}, options...)
+	args = append(args, image, "sleep", "300")
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("fixture: %v: %s", err, out)
 	}
@@ -465,6 +467,7 @@ func dockerState(ctx context.Context, ref string) (id, state string) {
 // An explicit recreate changes an env value and the memory limit; the new container runs with
 // them under the old name and the old container is gone.
 func TestRecreateRealDocker(t *testing.T) {
+	t.Run("preserves requested MAC", testRecreateMACAddressRealDocker)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	name := "kyyard-recreate-fixture"
@@ -486,6 +489,30 @@ func TestRecreateRealDocker(t *testing.T) {
 	}
 	if _, state := dockerState(ctx, id.ContainerID); state != "running" {
 		t.Fatalf("new container %s", state)
+	}
+	if _, state := dockerState(ctx, oldID); state != "absent" {
+		t.Fatalf("old container %s", state)
+	}
+}
+
+func testRecreateMACAddressRealDocker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	const mac = "02:42:ac:11:00:05"
+	req, oldID := explicitFixture(t, ctx, "kyyard-recreate-mac-fixture", "--mac-address", mac)
+	c := New("/var/run/docker.sock")
+	conf, err := c.ReadConfiguration(ctx, req.Services[0].Replaces)
+	if err != nil || len(conf.Unsupported) != 0 {
+		t.Fatalf("configuration blocked: %+v, %v", conf, err)
+	}
+	req.Services[0].Env["FOO"] = "new"
+	res := c.Deploy(ctx, req, func() {})
+	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil || len(res.Services) != 1 {
+		t.Fatalf("recreate: %+v", res)
+	}
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.NetworkSettings.Networks.bridge.MacAddress}}", res.Services[0].ContainerID).Output()
+	if err != nil || strings.TrimSpace(string(out)) != mac {
+		t.Fatalf("MAC not preserved: %q, %v", out, err)
 	}
 	if _, state := dockerState(ctx, oldID); state != "absent" {
 		t.Fatalf("old container %s", state)

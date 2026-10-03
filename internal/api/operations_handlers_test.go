@@ -2,12 +2,14 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/registry"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -67,6 +69,25 @@ func TestContainerUpdateCheckUsesImmutableLocalImageAndRegistryPolicy(t *testing
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"verdict":"update_available"`) || fake.calls() != 1 {
 		t.Fatalf("check %d %s calls %d", w.Code, w.Body.String(), fake.calls())
 	}
+
+	for _, tc := range []struct {
+		err    error
+		detail string
+	}{
+		{registry.ErrUnauthorized, "unauthorized"},
+		{registry.ErrNotFound, "not_found"},
+		{registry.ErrRateLimited, "rate_limited"},
+		{registry.ErrPrivateDestination, "private_destination"},
+		{registry.ErrUnavailable, "unavailable"},
+	} {
+		api.SetDigestResolverForTest(f.s, &fakeDigests{err: fmt.Errorf("sensitive-registry-diagnostic: %w", tc.err)})
+		w := tenantRequest(f.s, f.admin, "POST", path, "", true)
+		var result map[string]string
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil || result["verdict"] != "registry_error" || result["detail"] != tc.detail || strings.Contains(w.Body.String(), "sensitive-registry-diagnostic") {
+			t.Fatalf("registry failure %s: %d %s", tc.detail, w.Code, w.Body.String())
+		}
+	}
+
 }
 
 func TestNativeYAMLRunRequiresCapabilityAndRetainsManifest(t *testing.T) {
