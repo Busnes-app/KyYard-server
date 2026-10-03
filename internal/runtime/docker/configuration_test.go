@@ -378,3 +378,17 @@ func TestReadConfigurationCutsOversizedListEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestReadConfigurationPreservesBuildLabels(t *testing.T) {
+	target, container, image := configurationFixture()
+	value := strings.Repeat("v", 981)
+	container["Config"].(map[string]any)["Labels"] = map[string]string{"CI_DOCKER_VERSION": value}
+	c := fakeInspection(t, serve(container, image))
+	got, err := c.ReadConfiguration(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Labels["CI_DOCKER_VERSION"] != value || slices.Contains(got.Unsupported, "labels_truncated") {
+		t.Fatalf("build label lost: label bytes=%d, unsupported=%v", len(got.Labels["CI_DOCKER_VERSION"]), got.Unsupported)
+	}
+}

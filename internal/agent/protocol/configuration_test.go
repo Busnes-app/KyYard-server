@@ -212,7 +212,7 @@ func TestConfigurationMaximalFitsFrame(t *testing.T) {
 	}
 	c.Labels = map[string]string{}
 	for i := range MaxLabels {
-		c.Labels[fmt.Sprintf("label-%02d-%s", i, strings.Repeat("k", 230))] = strings.Repeat("v", MaxLabelBytes)
+		c.Labels[fmt.Sprintf("label-%02d-%s", i, strings.Repeat("k", 230))] = strings.Repeat("v", MaxConfigurationLabelValueBytes)
 	}
 	entry := strings.Repeat("e", 256)
 	c.CapAdd, c.CapDrop, c.SecurityOpt, c.ExtraHosts, c.DNS = fill(entry), fill(entry), fill(entry), fill(entry), fill(entry)
@@ -257,5 +257,17 @@ func TestConfigurationRefusalNamesItsField(t *testing.T) {
 		if !errors.As(err, &fe) || fe.Field != field || err.Error() != "invalid container configuration: "+field {
 			t.Fatalf("%s: %#v", field, err)
 		}
+	}
+}
+
+func TestConfigurationLabelValueBound(t *testing.T) {
+	c := validConfiguration()
+	c.Labels = map[string]string{"build": strings.Repeat("v", MaxConfigurationLabelValueBytes)}
+	if err := c.Validate(configTarget(), configNow); err != nil {
+		t.Fatal(err)
+	}
+	c.Labels["build"] += "v"
+	if c.Validate(configTarget(), configNow) == nil {
+		t.Fatal("oversized label value accepted")
 	}
 }

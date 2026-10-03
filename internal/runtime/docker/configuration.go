@@ -428,7 +428,7 @@ func env(o *configurationRead, l []string) []protocol.EnvEntry {
 func labels(o *configurationRead, in map[string]string) map[string]string {
 	out := map[string]string{}
 	for _, k := range slices.Sorted(maps.Keys(in)) {
-		if v := in[k]; len(out) == protocol.MaxLabels || k == "" || protocol.CleanText(k, protocol.MaxLabelBytes) != k || protocol.CleanText(v, protocol.MaxLabelBytes) != v {
+		if v := in[k]; len(out) == protocol.MaxLabels || k == "" || protocol.CleanText(k, protocol.MaxLabelBytes) != k || protocol.CleanText(v, protocol.MaxConfigurationLabelValueBytes) != v {
 			o.cut("labels_truncated")
 		} else {
 			out[k] = v

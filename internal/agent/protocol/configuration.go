@@ -27,6 +27,8 @@ const (
 	MaxListEntries, MaxListEntryBytes = 32, 1024
 	MaxConfigurationNetworks          = 16 // the brief's MaxNetworks; that name is the inventory's 200
 	MaxLogOptions                     = 16
+	// Configuration carries full label values; inventory keeps its display bound.
+	MaxConfigurationLabelValueBytes = 4096
 
 	// MountTmpfs is a configuration-only mount kind; inventory reports tmpfs as "other".
 	MountTmpfs = "tmpfs"
@@ -243,7 +245,7 @@ func (c *ContainerConfiguration) Validate(target InspectionTarget, now time.Time
 		return configErr("labels")
 	}
 	for k, v := range c.Labels {
-		if k == "" || !text(k, MaxLabelBytes) || !text(v, MaxLabelBytes) {
+		if k == "" || !text(k, MaxLabelBytes) || !text(v, MaxConfigurationLabelValueBytes) {
 			return configErr("labels")
 		}
 	}
