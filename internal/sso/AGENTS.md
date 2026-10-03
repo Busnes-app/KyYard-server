@@ -7,6 +7,7 @@ Provides unified Single Sign-On federation for KySignOn, Generic OpenID Connect 
 Owns the application adapters around OAuth/OIDC login, KySignOn HMAC-SHA256 signed directory sync webhooks, and SAML metadata publication.
 
 ## Local Contracts
+- Explicit local-account links use verified provider subjects and preserve local account ownership; KySignOn directory webhooks refuse to update, deactivate or delete a linked local account.
 - `Provider` supports OIDC discovery (KyIdentity included) and OAuth 2 authorization-code providers with a JSON profile API. OAuth profile mappings use dot paths; subjects accept strings or exact JSON numbers and must be stable IDs. No account linking by email or automatic tenant grants.
 - UI-configured endpoints require HTTPS with certificate verification. They are administrator-trusted identity infrastructure (private KyIdentity hosts allowed). HTTPS discovery cannot downgrade authorization, token or signing-key endpoints to HTTP. Network calls have deadlines, redirects are refused, profile bodies are capped at 1 MiB, and credentials stay server-side. PKCE S256 is required; provider-specific nonstandard grants/profile formats are not claimed as supported.
 - `KySignOnClient.HandleSyncWebhook` verifies HMAC-SHA256 signatures before modifying local user state.

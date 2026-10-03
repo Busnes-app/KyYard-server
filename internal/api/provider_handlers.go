@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/sso"
@@ -21,7 +22,10 @@ type loginAttempt struct {
 	Provider                     sso.Provider
 	Verifier, Nonce, BrowserHash string
 	Expires                      time.Time
+	Link                         *ssoLinkAttempt
 }
+
+type ssoLinkAttempt struct{ UserID, SessionHash, PasswordHash string }
 
 func (s *Server) providers(ctx context.Context) ([]sso.Provider, error) {
 	providers := []sso.Provider{}
@@ -172,6 +176,63 @@ func (s *Server) provider(r *http.Request) (sso.Provider, bool) {
 	return sso.Provider{}, false
 }
 func (s *Server) handleProviderLogin(w http.ResponseWriter, r *http.Request) {
+	s.startProviderLogin(w, r, nil)
+}
+
+func (s *Server) handleSSOLinkOptions(w http.ResponseWriter, r *http.Request) {
+	user, _, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		s.writeError(w, 401, "Authentication required")
+		return
+	}
+	if user.SSOProvider != "local" || user.PasswordHash == "" {
+		s.writeError(w, 403, "Linking requires a local account")
+		return
+	}
+	providers, err := s.providers(r.Context())
+	if err != nil {
+		s.writeError(w, 500, "Could not load providers")
+		return
+	}
+	out := []map[string]string{}
+	for _, p := range providers {
+		if p.Enabled {
+			out = append(out, map[string]string{"id": p.ID, "name": p.Name})
+		}
+	}
+	s.writeJSON(w, 200, out)
+}
+
+func (s *Server) handleLinkProvider(w http.ResponseWriter, r *http.Request) {
+	user, session, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		s.writeError(w, 401, "Authentication required")
+		return
+	}
+	if user.SSOProvider != "local" || user.PasswordHash == "" {
+		s.writeError(w, 403, "Linking requires a local account")
+		return
+	}
+	if !s.allowAttempt("sso-link:"+user.ID, 5, time.Minute) {
+		s.writeError(w, 429, "Too many linking attempts")
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if strictJSON(r, &req) != nil || req.Password == "" || len(req.Password) > 4096 {
+		s.writeError(w, 400, "Supply your current password")
+		return
+	}
+	valid, err := password.Verify(req.Password, user.PasswordHash)
+	if err != nil || !valid {
+		s.writeError(w, 401, "Invalid credentials")
+		return
+	}
+	s.startProviderLogin(w, r, &ssoLinkAttempt{user.ID, session.TokenHash, user.PasswordHash})
+}
+
+func (s *Server) startProviderLogin(w http.ResponseWriter, r *http.Request, link *ssoLinkAttempt) {
 	p, ok := s.provider(r)
 	if !ok {
 		s.writeError(w, 404, "Sign-in provider unavailable")
@@ -212,9 +273,13 @@ func (s *Server) handleProviderLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		delete(s.logins, oldest)
 	}
-	s.logins[state] = loginAttempt{p, verifier, nonce, crypto.SHA256Hex([]byte(browser)), time.Now().Add(5 * time.Minute)}
+	s.logins[state] = loginAttempt{Provider: p, Verifier: verifier, Nonce: nonce, BrowserHash: crypto.SHA256Hex([]byte(browser)), Expires: time.Now().Add(5 * time.Minute), Link: link}
 	s.loginMu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: "ky_sso_" + state, Value: browser, Path: "/api/sso/" + p.ID + "/callback", MaxAge: 300, HttpOnly: true, Secure: s.config.Security.CookieSecure, SameSite: http.SameSiteLaxMode})
+	if link != nil {
+		s.writeJSON(w, 200, map[string]string{"authorization_url": dest})
+		return
+	}
 	http.Redirect(w, r, dest, http.StatusFound)
 }
 func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) {
@@ -251,6 +316,25 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 	claims, err := attempt.Provider.Exchange(ctx, r.URL.Query().Get("code"), attempt.Verifier, redirect, attempt.Nonce)
 	if err != nil {
 		s.writeError(w, 401, "Provider could not verify your identity")
+		return
+	}
+	if attempt.Link != nil {
+		link := attempt.Link
+		user, session, err := s.sessions.AuthenticateRequest(r)
+		if err != nil || user.ID != link.UserID || session.TokenHash != link.SessionHash {
+			s.writeError(w, 403, "The original account session is required; start linking again")
+			return
+		}
+		err = s.store.Users().LinkSSO(ctx, link.UserID, link.SessionHash, link.PasswordHash, p.ID, claims.Subject, s.requestIP(r))
+		if errors.Is(err, store.ErrAlreadyExists) {
+			s.writeError(w, 409, "This provider identity or account already has a different link")
+			return
+		}
+		if err != nil {
+			s.writeError(w, 403, "Account changed or linking was refused; start again")
+			return
+		}
+		http.Redirect(w, r, "/settings?sso=linked", http.StatusFound)
 		return
 	}
 	user, err := s.store.Users().GetUserBySSO(ctx, p.ID, claims.Subject)

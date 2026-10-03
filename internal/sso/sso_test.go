@@ -205,3 +205,34 @@ func TestKySignOnWebhookRefusesARenameOntoATakenUsername(t *testing.T) {
 	}
 	assertRefusals(t, st, "username=erin", "username=Erin")
 }
+
+func TestDirectoryCannotManageAnExplicitlyLinkedLocalAccount(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, testdb.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	user := &store.User{ID: "local-admin", Username: "local-admin", PasswordHash: "hash", Role: "admin", Status: "active", SSOProvider: "local"}
+	if err := st.Users().CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	session := &store.Session{TokenHash: "session", UserID: user.ID, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	if err := st.Sessions().CreateSession(ctx, session, "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().LinkSSO(ctx, user.ID, "session", "hash", "kysignon", "external-id", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "secret"}, st)
+	for _, event := range []string{"user.created", "user.updated", "user.deactivated", "user.deleted"} {
+		body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: event, ID: "external-id", Username: "external-admin", Role: "user", Status: "inactive", Timestamp: time.Now().Unix()})
+		if err := client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "secret")); !errors.Is(err, sso.ErrUsernameTaken) {
+			t.Fatalf("%s did not refuse: %v", event, err)
+		}
+		after, err := st.Users().GetUserByID(ctx, user.ID)
+		if err != nil || after.Status != "active" || after.Role != "admin" || after.Username != user.Username {
+			t.Fatalf("%s changed local account", event)
+		}
+	}
+}

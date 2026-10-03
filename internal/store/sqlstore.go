@@ -129,7 +129,12 @@ INSERT INTO users (
 		lastLogin = sql.NullTime{Time: *user.LastLoginAt, Valid: true}
 	}
 
-	_, err := u.store.db.ExecContext(ctx, q,
+	tx, err := u.store.beginTx(ctx, false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, q,
 		user.ID, user.Username, user.Email, user.DisplayName, user.PasswordHash,
 		user.Role, user.Status, user.SSOProvider, user.SSOSubject,
 		user.TOTPSecretEnc, user.TOTPEnabled, user.RecoveryCodesHash,
@@ -142,7 +147,10 @@ INSERT INTO users (
 		}
 		return err
 	}
-	return nil
+	if err := u.registerSSOIdentity(ctx, tx, user); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (u *userStore) scanUser(row interface{ Scan(...any) error }) (*User, error) {
@@ -207,7 +215,7 @@ SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
        recovery_codes_hash, push_device_id, must_change_password,
        totp_last_counter, created_at, updated_at, last_login_at
-FROM users WHERE sso_provider = ? AND sso_subject = ?
+FROM users WHERE id = (SELECT user_id FROM user_sso_identities WHERE provider = ? AND subject = ?)
 `)
 	return u.scanUser(u.store.db.QueryRowContext(ctx, q, provider, subject))
 }
@@ -229,7 +237,22 @@ UPDATE users SET
 WHERE id = ?
 `)
 
-	res, err := u.store.db.ExecContext(ctx, q,
+	tx, err := u.store.beginTx(ctx, false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var oldProvider, oldSubject string
+	if err := tx.QueryRowContext(ctx, u.store.rebind("SELECT sso_provider, sso_subject FROM users WHERE id = ?"), user.ID).Scan(&oldProvider, &oldSubject); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrNotFound
+		}
+		return err
+	}
+	if oldProvider != user.SSOProvider || oldSubject != user.SSOSubject {
+		return ErrInvalid
+	}
+	res, err := tx.ExecContext(ctx, q,
 		user.Username, user.Email, user.DisplayName, user.PasswordHash,
 		user.Role, user.Status, user.SSOProvider, user.SSOSubject,
 		user.TOTPSecretEnc, user.TOTPEnabled, user.RecoveryCodesHash,
@@ -246,7 +269,10 @@ WHERE id = ?
 	if rows == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if err := u.registerSSOIdentity(ctx, tx, user); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (u *userStore) UpdateRecoveryCodes(ctx context.Context, userID, oldHashes, newHashes string) error {
