@@ -365,6 +365,8 @@ func (s *Server) routes() {
 	// SSO
 	s.mux.HandleFunc("GET /api/sso/{provider}/login", s.handleProviderLogin)
 	s.mux.HandleFunc("GET /api/sso/{provider}/callback", s.handleProviderCallback)
+	s.mux.HandleFunc("GET /api/auth/sso", s.handleSSOLinkOptions)
+	s.mux.HandleFunc("POST /api/sso/{provider}/link", s.handleLinkProvider)
 	s.mux.HandleFunc("/api/sso/kysignon/sync", s.handleKySignOnSyncWebhook)
 	s.mux.HandleFunc("/saml/metadata", s.handleSAMLMetadata)
 

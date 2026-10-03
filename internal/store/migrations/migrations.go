@@ -1023,7 +1023,19 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// A direct recreate or run keeps the agent's step table, bounded like deployments.result, and
 	// the container it made, so that container's Activity lists it.
 	{Version: 38, Name: "endpoint_command_result", SQLite: commandResult, Postgres: commandResult},
+	{Version: 39, Name: "sso_identities", SQLite: ssoIdentities, Postgres: ssoIdentities},
 }
+
+// Existing external accounts keep their identity; explicit links are additive to local accounts.
+const ssoIdentities = `CREATE TABLE user_sso_identities (
+ provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+ subject TEXT NOT NULL CHECK(length(subject) BETWEEN 1 AND 255),
+ user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ PRIMARY KEY(provider, subject),
+ UNIQUE(user_id, provider)
+);
+INSERT INTO user_sso_identities (provider, subject, user_id)
+ SELECT sso_provider, sso_subject, id FROM users WHERE sso_subject <> '' AND sso_provider <> 'local';`
 
 const commandResult = `ALTER TABLE endpoint_commands ADD COLUMN result TEXT NOT NULL DEFAULT '' CHECK(length(result)<=163840);
 ALTER TABLE endpoint_commands ADD COLUMN result_container_id TEXT NOT NULL DEFAULT '';`

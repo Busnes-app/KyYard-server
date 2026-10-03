@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Key, AlertCircle, LogIn } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget';
 import { SetupGuide } from '../components/SetupGuide';
@@ -18,7 +18,16 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [captchaToken, setCaptchaToken] = useState<string>('');
-  const [mfaChallenge, setMfaChallenge] = useState<MFAChallenge | null>(null);
+  const [mfaChallenge, setMfaChallenge] = useState<MFAChallenge | null>(() => {
+    const match = /^#sso-mfa=([a-f0-9]{64})$/.exec(window.location.hash);
+    if (!match) return null;
+    return { mfa_token: match[1] };
+  });
+  useEffect(() => {
+    if (/^#sso-mfa=[a-f0-9]{64}$/.test(window.location.hash)) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }, []);
   const [mfaCode, setMfaCode] = useState<string>('');
   const [isRecoveryCode, setIsRecoveryCode] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);

@@ -89,6 +89,9 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 	switch payload.Event {
 	case "user.created", "user.updated":
 		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)
+		if err == nil && existing.SSOProvider != "kysignon" {
+			return k.refuse(ctx, existing.Username)
+		}
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
@@ -143,6 +146,9 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 
 	case "user.deactivated":
 		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)
+		if err == nil && existing.SSOProvider != "kysignon" {
+			return k.refuse(ctx, existing.Username)
+		}
 		if err != nil {
 			return nil // User might not exist locally
 		}
@@ -154,6 +160,9 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 
 	case "user.deleted":
 		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)
+		if err == nil && existing.SSOProvider != "kysignon" {
+			return k.refuse(ctx, existing.Username)
+		}
 		if err != nil {
 			return nil
 		}

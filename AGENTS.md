@@ -88,6 +88,7 @@ Default section order:
 - Home and Endpoints are the primary navigation. Home leads with fleet summaries; native containers and workloads live on their endpoint pages. Administration stays in Settings.
 - Use the KyPost/KyDNS fifteen-palette swatch picker in Settings and browser-local theme preferences. Remove upper-right theme dropdowns from the header and login.
 - Support configurable OAuth 2 / OIDC providers including KyIdentity; preserve local sign-in. SCIM and phone pairing are retired from the product.
+- Existing local accounts connect SSO explicitly by proving the current KyYard password, the original session and the provider identity. Preserve the account ID, local credentials and tenant permissions; never link automatically by username or email.
 - Use Docker's existing default `bridge` network; create no dedicated KyYard network.
 - Product requirement: support an operator-selected static Kubernetes Service ClusterIP for each deployed Ky service, stable across application updates and restarts. Nginx or cloudflared runs in the same cluster and uses these internal backend IPs for proxied HTTPS access. This requirement does not change the default KyYard server installation network.
 - Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically revoke sessions, MFA challenges and device pairings. Untouched existing accounts are not retroactively flagged.

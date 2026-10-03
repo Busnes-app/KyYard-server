@@ -37,3 +37,9 @@ Verified the real Dashboard and AppHeader components in an explicitly labelled r
 
 ![Docker desktop fixture](docs/mixed-fleet-docker-desktop.png)
 ![Kubernetes mobile fixture](docs/mixed-fleet-kubernetes-mobile.png)
+
+## Explicit account SSO linking, 2026-10-03
+
+Settings → Sign-in now contains the local-account connection form, with a provider choice and current-password field. The success redirect opens this section. Provider administration remains platform-admin-only. Long callback URLs wrap on mobile.
+
+The committed production bundle was viewed at 1280×800 and 390×844 using synthetic authenticated/provider responses on loopback. Controls fit both viewports; the mobile document fits without horizontal overflow. These are layout fixtures, not live identity or authorization evidence. Frontend tests cover CSRF and clearing the password input; real HTTP/store regressions cover the two identities, original session, changed password, consumed state and future SSO sign-in on the original account. Production callback registration is corrected, but account linking awaits deployment and an operator run. Evidence: [fixture details](docs/ui-verification/2026-10-03-sso-link/README.md).

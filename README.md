@@ -141,10 +141,15 @@ bind and DNS overlays already in use:
   Run exactly one server per database: every start settles all in-flight commands as
   `unknown`, including another live server's, so a second server (a rolling deploy or a
   stray compose project) corrupts the first one's command results.
-- SSO: configure providers in **Settings → Single sign-on**. OIDC discovery supports KyIdentity;
+- SSO: configure providers in **Settings → Sign-in**. OIDC discovery supports KyIdentity;
   OAuth 2 providers can supply explicit endpoints and JSON profile field mappings. Register the
   displayed callback URL with the provider. New identities require an organization membership
   grant. SCIM and phone pairing are not part of KyYard. Local login remains available.
+  To use SSO with an existing local account, sign in locally and open **Settings → Sign-in →
+  Connect single sign-on to your account**. Supply the current KyYard password, then sign in
+  to the provider as the identity to connect. The same account ID and permissions are retained;
+  local sign-in and operator password recovery remain available. Each provider identity can
+  belong to one account, and an account can connect one identity per provider. Linked local accounts retain their configured TOTP requirement: complete the KyYard authenticator or recovery-code challenge after provider sign-in before receiving a session.
 
 `GET`/`HEAD /health/live` reports process availability; `/health/ready` additionally probes
 the database with a two-second deadline and returns 503 during shutdown or database failure.
@@ -748,7 +753,8 @@ volume (find its name with `docker volume ls | grep kyyard-data`):
 
 On PostgreSQL run the same statements with `psql`. A single sign-on login whose username
 matches an existing account ignoring case is refused with "The username … is taken by another
-account": KyYard never links a provider's claimed name to an account it did not create.
+account": use the explicit linking flow from the existing local account when both identities
+belong to you. A matching username or email alone never links accounts.
 
 ## Upgrading after the Busnes-app owner move
 

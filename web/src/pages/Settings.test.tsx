@@ -5,7 +5,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it('keeps administration separate from the theme picker and loads providers only on demand', async () => {
  const fetcher = vi.fn(async () => new Response('[]', { headers: { 'Content-Type': 'application/json' } }));
  vi.stubGlobal('fetch', fetcher);
- render(<Settings settings={{ db_driver: 'sqlite' }} />);
+ render(<Settings settings={{ db_driver: 'sqlite' }} role="admin" />);
  expect(screen.getByRole('button', { name: 'Ocean' })).toBeTruthy();
  expect(fetcher).not.toHaveBeenCalled();
  fireEvent.click(screen.getByRole('button', { name: 'Recovery' }));
@@ -13,5 +13,5 @@ it('keeps administration separate from the theme picker and loads providers only
  expect(screen.queryByRole('button', { name: 'Ocean' })).toBeNull();
  fireEvent.click(screen.getByRole('button', { name: 'Sign-in' }));
  await screen.findByText('Add sign-in provider');
- expect(fetcher).toHaveBeenCalledTimes(1);
+ expect(fetcher).toHaveBeenCalledTimes(2);
 });
