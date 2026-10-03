@@ -80,6 +80,7 @@ Default section order:
 - Home is a bounded fleet overview of Docker hosts and Kubernetes clusters, with useful runtime counts and direct run actions.
 - Keep image-run forms compact; accept direct Docker Compose and native Kubernetes Deployment YAML through a reviewed, confirmed run path. Container images must be runnable on a selected Kubernetes endpoint. Expose image-update hints and an explicit pull-and-recreate action.
 
+- Automatically check image updates for visible Docker container rows when opening the list; keep checks bounded and show specific registry failures.
 - Keep container lists paginated and bounded. Normal installation workflows must not require organization management; preserve authorization scope internally and explicit switching for existing multi-membership accounts.
 - Container rows use icon action buttons, never a menu that reflows the table; every container has its own page with Overview, Configuration, Logs, Terminal and Activity tabs; lists show uptime, IP and health.
 - Keep the interface coherent across the whole site: clear operational navigation, consistent Ky design patterns, readable forms and tables, and reachable controls on mobile. Prioritize interface corrections over adding more UI clutter.

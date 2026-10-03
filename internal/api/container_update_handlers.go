@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"net/http"
 	"time"
@@ -107,6 +108,19 @@ func (s *Server) handleContainerUpdateCheck(w http.ResponseWriter, r *http.Reque
 	remote, err := s.resolver().Head(ctx, ref, access.Credential, private)
 	if err != nil {
 		out["verdict"] = "registry_error"
+		// Closed codes only: never send registry error text or credentials.
+		switch {
+		case errors.Is(err, registry.ErrUnauthorized):
+			out["detail"] = "unauthorized"
+		case errors.Is(err, registry.ErrNotFound):
+			out["detail"] = "not_found"
+		case errors.Is(err, registry.ErrRateLimited):
+			out["detail"] = "rate_limited"
+		case errors.Is(err, registry.ErrPrivateDestination):
+			out["detail"] = "private_destination"
+		default:
+			out["detail"] = "unavailable"
+		}
 	} else {
 		out["remote_digest"] = remote
 		if out["local_digest"] != "" {
