@@ -112,8 +112,14 @@ func TestExplicitDeploymentRequest(t *testing.T) {
 		"bad device permissions": {func(r *DeploymentRequest) {
 			r.Services[0].Explicit.Devices = []Device{{Host: "/d", Container: "/d", Permissions: "x"}}
 		}, "invalid deployment service"},
-		"too many log options":         {func(r *DeploymentRequest) { r.Services[0].Explicit.Log.Options = manyOptions(MaxLogOptions + 1) }, "invalid deployment service"},
-		"negative memory":              {func(r *DeploymentRequest) { r.Services[0].Explicit.Resources.MemoryBytes = -1 }, "invalid deployment service"},
+		"too many log options": {func(r *DeploymentRequest) { r.Services[0].Explicit.Log.Options = manyOptions(MaxLogOptions + 1) }, "invalid deployment service"},
+		"negative memory":      {func(r *DeploymentRequest) { r.Services[0].Explicit.Resources.MemoryBytes = -1 }, "invalid deployment service"},
+		"full configuration label": {func(r *DeploymentRequest) {
+			r.Services[0].Explicit.Labels = map[string]string{"build": strings.Repeat("v", MaxConfigurationLabelValueBytes)}
+		}, ""},
+		"oversized configuration label": {func(r *DeploymentRequest) {
+			r.Services[0].Explicit.Labels = map[string]string{"build": strings.Repeat("v", MaxConfigurationLabelValueBytes+1)}
+		}, "invalid deployment service"},
 		"label with control character": {func(r *DeploymentRequest) { r.Services[0].Explicit.Labels = map[string]string{"a": "b\x07"} }, "invalid deployment service"},
 		"stop timeout out of range":    {func(r *DeploymentRequest) { n := 4000; r.Services[0].Explicit.StopTimeout = &n }, "invalid deployment service"},
 	} {

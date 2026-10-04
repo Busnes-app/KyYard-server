@@ -499,12 +499,13 @@ func testRecreateMACAddressRealDocker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	const mac = "02:42:ac:11:00:05"
-	req, oldID := explicitFixture(t, ctx, "kyyard-recreate-mac-fixture", "--mac-address", mac)
+	req, oldID := explicitFixture(t, ctx, "kyyard-recreate-mac-fixture", "--mac-address", mac, "--label", "CI_DOCKER_VERSION="+strings.Repeat("v", 981))
 	c := New("/var/run/docker.sock")
 	conf, err := c.ReadConfiguration(ctx, req.Services[0].Replaces)
 	if err != nil || len(conf.Unsupported) != 0 {
 		t.Fatalf("configuration blocked: %+v, %v", conf, err)
 	}
+	req.Services[0].Explicit.Labels = conf.Labels
 	req.Services[0].Env["FOO"] = "new"
 	res := c.Deploy(ctx, req, func() {})
 	if res.Outcome != protocol.OutcomeSucceeded || res.Validate() != nil || len(res.Services) != 1 {
@@ -513,6 +514,10 @@ func testRecreateMACAddressRealDocker(t *testing.T) {
 	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.NetworkSettings.Networks.bridge.MacAddress}}", res.Services[0].ContainerID).Output()
 	if err != nil || strings.TrimSpace(string(out)) != mac {
 		t.Fatalf("MAC not preserved: %q, %v", out, err)
+	}
+	out, err = exec.CommandContext(ctx, "docker", "inspect", "--format", "{{index .Config.Labels \"CI_DOCKER_VERSION\"}}", res.Services[0].ContainerID).Output()
+	if err != nil || strings.TrimSpace(string(out)) != strings.Repeat("v", 981) {
+		t.Fatalf("build label not preserved: bytes=%d, %v", len(out), err)
 	}
 	if _, state := dockerState(ctx, oldID); state != "absent" {
 		t.Fatalf("old container %s", state)

@@ -121,7 +121,9 @@ func TestRecreateSendsAnExplicitFrameAndSettlesFromTheResult(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(prev) })
 	f := directFixture(t, directCaps)
-	w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(directSpec("web")), true)
+	spec := directSpec("web")
+	spec.Labels["CI_DOCKER_VERSION"] = strings.Repeat("v", 981)
+	w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(spec), true)
 	if w.Code != 202 {
 		t.Fatalf("recreate: %d %s", w.Code, w.Body.String())
 	}
@@ -135,6 +137,9 @@ func TestRecreateSendsAnExplicitFrameAndSettlesFromTheResult(t *testing.T) {
 	if !req.Explicit || req.Project != protocol.ExplicitProject || req.Revision != protocol.ExplicitRevision || len(req.Services) != 1 || req.Deployment != cmd.ID || req.RequestID != cmd.RequestID ||
 		svc.Explicit == nil || svc.Replaces != want || svc.ContainerName != "web" || svc.ImageID != directImage || svc.Pull != nil || svc.Env["API_KEY"] != configurationSentinel || svc.Restart != "unless-stopped" {
 		t.Fatalf("frame: %+v %+v", req, svc)
+	}
+	if svc.Explicit.Labels["CI_DOCKER_VERSION"] != spec.Labels["CI_DOCKER_VERSION"] {
+		t.Fatal("long build label lost in explicit frame")
 	}
 	for k := range svc.Explicit.Labels {
 		if strings.HasPrefix(k, "com.docker.compose.") {

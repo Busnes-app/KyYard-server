@@ -285,7 +285,7 @@ func (e ExplicitService) valid() bool {
 		return false
 	}
 	for k, v := range e.Labels {
-		if k == "" || !text(k, MaxLabelBytes) || !text(v, MaxLabelBytes) {
+		if k == "" || !text(k, MaxLabelBytes) || !text(v, MaxConfigurationLabelValueBytes) {
 			return false
 		}
 	}
