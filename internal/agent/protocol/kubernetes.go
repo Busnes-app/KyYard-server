@@ -324,9 +324,13 @@ func CheckRuntimeShape(runtime string, s *Snapshot) error {
 var kubernetesCapabilities = map[string]bool{CapabilityKubernetesInventory: true, CapabilityPodLogs: true, CapabilityKubernetesDeploy: true, CapabilityKubernetesClaims: true, CapabilityKubernetesServiceIPs: true, CapabilityKubernetesRemove: true, CapabilityKubernetesInspect: true, CapabilityKubernetesWorkloads: true, CapabilityKubernetesManifestsRun: true, CapabilityKubernetesWorkloadsRun: true, CapabilityPodExec: true}
 
 // CapabilitiesFit reports whether a hello's capabilities belong to the endpoint's runtime:
-// a cluster agent names only cluster capabilities, a Docker agent names none of them.
+// apart from runtime-neutral inventory refresh, a cluster names cluster capabilities
+// and a Docker agent names none of them.
 func CapabilitiesFit(runtime string, capabilities []string) bool {
 	for _, c := range capabilities {
+		if c == CapabilityInventoryRefresh {
+			continue
+		}
 		if (runtime == RuntimeKubernetes) != kubernetesCapabilities[c] {
 			return false
 		}

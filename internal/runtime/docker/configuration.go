@@ -332,8 +332,8 @@ func configurationFacts(in inspectedConfiguration, repoDigests []string) *config
 	cfg, h := in.Config, in.HostConfig
 	o := &configurationRead{}
 	o.Name = strings.TrimPrefix(in.Name, "/")
-	o.Image.Reference = cfg.Image
-	name, _ := protocol.SplitImageReference(cfg.Image)
+	o.Image.Reference = containerImageReference(cfg.Image)
+	name, _ := protocol.SplitImageReference(o.Image.Reference)
 	for _, d := range repoDigests {
 		if repo, digest, ok := strings.Cut(d, "@"); ok && canonicalRepository(repo) == canonicalRepository(name) {
 			o.Image.Digest = digest

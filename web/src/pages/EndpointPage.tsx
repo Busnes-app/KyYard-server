@@ -2,6 +2,7 @@ import { ContainerUpdate, useContainerUpdateChecker } from '../components/Contai
 import { useContainerImageUpdate } from '../components/useContainerImageUpdate';
 import { CommandResult } from '../components/ContainerConfigurationForm';
 import { ContainerPorts } from '../components/ContainerPorts';
+import { InventoryRefresh } from '../components/InventoryRefresh';
 import type { ApplicationInstance } from '../components/ApplicationAdoption';
 import React, { useEffect, useState } from 'react';
 import { ResourceTable } from '../components/ResourceTable';
@@ -38,7 +39,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
   const [imageSent, setImageSent] = useState<{ base: string; container: Container; command: DirectCommand } | null>(null);
   const lastImage = imageSent?.base === base ? imageSent : null;
-  const { command: imageCommand, error: imagePollError } = useCommand(base, lastImage?.command ?? null, () => { inventory.reload(); commands.reload(); });
+  const { command: imageCommand, error: imagePollError } = useCommand(base, lastImage?.command ?? null, () => { inventory.reload(); samples.reload(); commands.reload(); });
   const imageUpdate = useContainerImageUpdate(base, (command, container) => setImageSent({ base, container, command }));
   const imagePending = imageUpdate.busy || imageUpdate.lost || (!!imageCommand && (!imageCommand.outcome || imageCommand.outcome === 'unknown'));
 
@@ -84,7 +85,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
         <Server size={24} style={{ color: 'var(--accent)' }} /><span>{e?.name ?? endpoint}</span>
         {e && <span className={`badge ${e.state === 'active' ? 'badge-success' : e.state === 'pending' ? 'badge-accent' : 'badge-danger'}`}>{e.state}</span>}
       </h1>
-      <button className="btn-secondary" onClick={() => { details.reload(); inventory.reload(); samples.reload(); commands.reload(); ownership.reload(); }}>Refresh inventory</button>
+      <InventoryRefresh key={base} base={base} onRefresh={() => { details.reload(); inventory.reload(); samples.reload(); commands.reload(); ownership.reload(); }} />
       </div>
       {imageUpdate.busy && <p role="status">Reading current settings and submitting the image update…</p>}
       {imageUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{imageUpdate.error}</p>}
@@ -133,7 +134,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
           <div className="ky-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} /><span>{visibleContainers.length} containers</span>{canConfigure(role) && canRunContainers(e) && <Link className="btn btn-secondary" to={runPath(org, endpoint)}>Run a container</Link>}</div>
           {selectedProject !== null && <p>Showing containers for <strong style={{ overflowWrap: 'anywhere' }}><bdi>{selectedProject}</bdi></strong>. <button className="btn-secondary" onClick={() => setProjectFilter(null)}>Show all containers</button></p>}
           {status && <p role="status">{status}</p>}
-          <ResourceTable key={JSON.stringify([base, search, selectedProject])} title="Containers" rows={visibleContainers} rowKey={(c) => c.id} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'Status', 'Uptime', 'IP', 'Usage', 'Actions']} render={(c) => [<div className="ky-resource-name"><strong><Link to={containerPath(org, endpoint, c.id)}>{displayName(c.name)}</Link></strong><span title={c.image}>{displayName(c.image)}</span><ContainerPorts ports={c.ports} />{canConfigure(role) && <ContainerUpdate key={`${c.id}/${c.image_id}`} checkUpdate={checkUpdate} onUpdate={() => void imageUpdate.update(c)} updateDisabled={imagePending || !canRunContainers(e) || (imageCommand?.outcome === 'succeeded' && lastImage?.container.id === c.id)} container={c} active={e?.state === 'active'} org={org} endpoint={endpoint} />}{c.compose_project && <small>{displayName(c.compose_project)}</small>}</div>, <StateCell c={c} />, uptime(c.started_at, now) || '—', <IPCell c={c} />, usage(c), <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onRefresh={commands.reload} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} />]} />
+          <ResourceTable key={JSON.stringify([base, search, selectedProject])} title="Containers" rows={visibleContainers} rowKey={(c) => c.id} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'Status', 'Uptime', 'IP', 'Usage', 'Actions']} render={(c) => [<div className="ky-resource-name"><strong><Link to={containerPath(org, endpoint, c.id)}>{displayName(c.name)}</Link></strong><span title={c.image}>{displayName(c.image)}</span><ContainerPorts ports={c.ports} />{canConfigure(role) && <ContainerUpdate key={`${c.id}/${c.image_id}`} checkUpdate={checkUpdate} onUpdate={() => void imageUpdate.update(c)} updateDisabled={imagePending || !canRunContainers(e) || (imageCommand?.outcome === 'succeeded' && lastImage?.container.id === c.id)} container={c} active={e?.state === 'active'} org={org} endpoint={endpoint} />}{c.compose_project && <small>{displayName(c.compose_project)}</small>}</div>, <StateCell c={c} />, uptime(c.started_at, now) || '—', <IPCell c={c} />, usage(c), <ContainerControls key={c.id} base={base} container={c} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onRefresh={() => { inventory.reload(); samples.reload(); commands.reload(); }} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} />]} />
           </div>}
           {shown === 'images' && <><section className="panel"><h2>Pull an image</h2><ImageControls key={base} kind="pull" base={base} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onActivity={commands.reload} /><p>Use an explicit tag or digest. A pull downloads an image; it does not update running containers.</p></section>
           <ResourceTable title="Images" rows={inv.snapshot.images} rowKey={(i) => i.id} empty="No images on this host." head={['Tags', 'Size', 'ID', 'Actions']} render={(i) => [i.tags.map(displayName).join(', ') || '<untagged>', bytes(i.size_bytes), <span title={i.id}>{i.id.slice(0, 19)}</span>, <ImageControls key={`${base}/${i.id}`} kind="remove" imageID={i.id} base={base} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onActivity={commands.reload} />]} />

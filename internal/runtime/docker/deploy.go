@@ -44,7 +44,7 @@ const (
 	watchBudget = startWatch + callBudget
 )
 
-// Deploy replaces each service's mapped container with one created from the pinned image ID.
+// Deploy replaces each service's mapped container with one created from its pinned image.
 // First every service's precondition and image (pull, for a service naming a digest), in plan
 // order, with each frame volume ensured after the precondition of the first service mounting
 // it; then per service recheck, rename, create, stop, start, remove. Renaming and creating while the
@@ -178,7 +178,7 @@ type inspectedForDeploy struct {
 	Mounts  *mountList
 	Config  *struct {
 		imageDefaults
-		User, MacAddress string
+		User, MacAddress, Image string
 	}
 	HostConfig *struct {
 		NetworkMode                                                     string
@@ -549,7 +549,7 @@ func (r *deployRun) image(ctx context.Context, s *protocol.DeploymentService) {
 	if s.Pull != nil {
 		r.step(s.Name, protocol.StepPull, func() (string, string, string) {
 			outcome, code, detail, id := r.pull(ctx, *s)
-			s.ImageID = id // the replacement is created from, and verified against, the pulled ID
+			s.ImageID = id // verify the replacement's digest reference against this resolved ID
 			return outcome, code, detail
 		})
 	} else {
@@ -717,6 +717,10 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 			// Engine v1.41 reports the primary network's requested MAC in Config.
 			// Preserve it locally; the edit frame cannot change this setting.
 			body.MacAddress = p.before.Config.MacAddress
+			// Keep a previously pinned tag when an edit retains the same image.
+			if s.Pull == nil && p.before.Image == s.ImageID && containerImageReference(p.before.Config.Image) != p.before.Config.Image {
+				body.Image = p.before.Config.Image
+			}
 		}
 		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), body, &out)
 		if err != nil || status != http.StatusCreated {
@@ -1129,6 +1133,13 @@ type containerCreate struct {
 // network and its service-name DNS. The explicit create step also preserves Config.MacAddress.
 func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, networkMode string) containerCreate {
 	body := containerCreate{Image: s.ImageID, Env: []string{}}
+	if s.Pull != nil {
+		// Keep the repository visible while Docker still resolves the exact digest.
+		body.Image = s.Pull.Reference
+		if s.Pull.Tag != "" {
+			body.Image = s.Pull.Tag + "@" + s.Pull.Digest
+		}
+	}
 	keys := make([]string, 0, len(s.Env))
 	for k := range s.Env {
 		keys = append(keys, k)

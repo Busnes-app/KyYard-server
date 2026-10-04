@@ -25,19 +25,23 @@ type Envelope struct {
 
 // Frame types used by the connection lifecycle.
 const (
-	TypeChallenge = "challenge"
-	TypeAuth      = "auth"
-	TypeHello     = "hello"
-	TypeHeartbeat = "heartbeat"
-	TypeInventory = "inventory"
-	TypeMetrics   = "metrics"
-	TypeApproved  = "enrollment.approved"
-	TypeRotate    = "identity.rotate"  // agent → server: a new key signed by the current one
-	TypeRotated   = "identity.rotated" // server → agent: the operator acknowledged that key
-	TypeCommand   = "command"          // server → agent: do one thing to one named resource
-	TypeResult    = "result"           // agent → server: what became of it
-	TypeError     = "error"
+	TypeChallenge        = "challenge"
+	TypeAuth             = "auth"
+	TypeHello            = "hello"
+	TypeHeartbeat        = "heartbeat"
+	TypeInventory        = "inventory"
+	TypeInventoryRefresh = "inventory.refresh"
+	TypeMetrics          = "metrics"
+	TypeApproved         = "enrollment.approved"
+	TypeRotate           = "identity.rotate"  // agent → server: a new key signed by the current one
+	TypeRotated          = "identity.rotated" // server → agent: the operator acknowledged that key
+	TypeCommand          = "command"          // server → agent: do one thing to one named resource
+	TypeResult           = "result"           // agent → server: what became of it
+	TypeError            = "error"
 )
+
+// CapabilityInventoryRefresh supports an on-demand report on either runtime.
+const CapabilityInventoryRefresh = "inventory.refresh"
 
 // Command outcomes. Every dispatched command ends in exactly one of these, and the set is
 // closed: an outcome the server has not heard is Unknown, never a missing row.

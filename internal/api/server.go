@@ -311,6 +311,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleTenantEndpoint))
 	s.mux.HandleFunc("PATCH /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleRenameEndpoint))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/inventory", s.tenantRoute(s.handleEndpointInventory))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/inventory/refresh", s.tenantRoute(s.handleRefreshEndpointInventory))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/samples", s.tenantRoute(s.handleLatestSamples))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/samples", s.tenantRoute(s.handleContainerSamples))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/containers/{container}/rollups", s.tenantRoute(s.handleContainerRollups))
