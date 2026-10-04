@@ -392,3 +392,13 @@ func TestReadConfigurationPreservesBuildLabels(t *testing.T) {
 		t.Fatalf("build label lost: label bytes=%d, unsupported=%v", len(got.Labels["CI_DOCKER_VERSION"]), got.Unsupported)
 	}
 }
+
+func TestReadConfigurationRetainsPinnedUpdateTag(t *testing.T) {
+	target, container, image := configurationFixture()
+	container["Config"].(map[string]any)["Image"] = "docker.io/library/nginx:1.27@sha256:" + strings.Repeat("c", 64)
+	c := fakeInspection(t, serve(container, image))
+	got, err := c.ReadConfiguration(context.Background(), target)
+	if err != nil || got.Image.Reference != "docker.io/library/nginx:1.27" || got.Image.Digest != "sha256:"+strings.Repeat("c", 64) {
+		t.Fatalf("image: %+v %v", got.Image, err)
+	}
+}

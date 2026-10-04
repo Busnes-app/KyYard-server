@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -1104,6 +1105,40 @@ func TestDeployExplicitCreateBody(t *testing.T) {
 	}
 }
 
+func TestDeployExplicitRenamesAndRestoresTheOriginalNameOnFailure(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		f := newFakeDeployEngine(t)
+		if failed {
+			f.startStatus = 500
+		}
+		s := explicitService()
+		s.ContainerName = "renamed-web"
+		res := f.client().Deploy(context.Background(), explicitRequest(s), func() {})
+		if (!failed && res.Outcome != protocol.OutcomeSucceeded) || (failed && res.Outcome != protocol.OutcomeFailed) {
+			t.Fatalf("rename failed=%v: %+v", failed, res)
+		}
+		call, ok := f.call("POST", "/containers/create")
+		q, _ := url.ParseQuery(call.Query)
+		if !ok || q.Get("name") != "renamed-web" {
+			t.Fatalf("new name: %+v", call)
+		}
+		if failed {
+			f.mu.Lock()
+			last := ""
+			for _, call := range f.calls {
+				if strings.HasSuffix(call.Path, "/containers/"+oldID+"/rename") {
+					last = call.Query
+				}
+			}
+			f.mu.Unlock()
+			q, _ := url.ParseQuery(last)
+			if q.Get("name") != "shop-web-1" {
+				t.Fatalf("rollback lost old name: %s", last)
+			}
+		}
+	}
+}
+
 // A healthcheck of ["NONE"] is Docker's own "disabled" and is sent as-is; nil is the image's.
 func TestDeployExplicitHealthcheckNoneAndNil(t *testing.T) {
 	for name, hc := range map[string]*protocol.Healthcheck{"none": {Test: []string{"NONE"}}, "nil": nil} {
@@ -2109,5 +2144,23 @@ func TestDeployExplicitRunCreateUnanswered(t *testing.T) {
 	cancel()
 	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/create,POST /containers/"+oldID+"/rename") {
 		t.Errorf("recreate calls: %s", got)
+	}
+}
+
+func TestDeployExplicitKeepsPinnedUpdateTagDuringRename(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	reference := "ghcr.io/org/app:1.2@" + pullDigest
+	f.oldContainer["Config"].(map[string]any)["Image"] = reference
+	f.startedImage = oldImage
+	s := explicitService()
+	s.ImageID, s.ContainerName = oldImage, "renamed-web"
+	res := f.client().Deploy(context.Background(), explicitRequest(s), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("rename: %+v", res)
+	}
+	call, ok := f.call("POST", "/containers/create")
+	var body struct{ Image string }
+	if !ok || json.Unmarshal([]byte(call.Body), &body) != nil || body.Image != reference {
+		t.Fatalf("kept image lost its update tag: %s", call.Body)
 	}
 }

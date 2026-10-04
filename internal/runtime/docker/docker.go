@@ -193,7 +193,7 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 		if len(ct.Names) > 0 {
 			name = strings.TrimPrefix(ct.Names[0], "/")
 		}
-		pc := protocol.Container{ID: ct.ID, Name: bound(name, 255), Image: bound(ct.Image, 512), ImageID: ct.ImageID, State: ct.State, Status: bound(ct.Status, 128), CreatedAt: time.Unix(ct.Created, 0).UTC(), Ports: []protocol.Port{}, Labels: boundLabels(ct.Labels), Networks: []string{}, NetworkAttachments: []protocol.NetworkAttachment{}}
+		pc := protocol.Container{ID: ct.ID, Name: bound(name, 255), Image: bound(containerImageReference(ct.Image), 512), ImageID: ct.ImageID, State: ct.State, Status: bound(ct.Status, 128), CreatedAt: time.Unix(ct.Created, 0).UTC(), Ports: []protocol.Port{}, Labels: boundLabels(ct.Labels), Networks: []string{}, NetworkAttachments: []protocol.NetworkAttachment{}}
 		for _, p := range ct.Ports {
 			pc.Ports = append(pc.Ports, protocol.Port{HostIP: p.IP, Host: p.PublicPort, Container: p.PrivatePort, Protocol: p.Type})
 		}
@@ -378,4 +378,17 @@ func (c *Client) enrichRunning(parent context.Context, containers []protocol.Con
 		c.inspectFrom = (from + inspected) % len(running)
 	}
 	c.inspectMu.Unlock()
+}
+
+// containerImageReference exposes the original tag of a tag@digest create reference.
+// Docker still creates from the digest; inventory and configuration retain the tag for updates.
+func containerImageReference(reference string) string {
+	tag, digest, ok := strings.Cut(reference, "@")
+	if ok && protocol.ValidImageReference(tag) && protocol.ValidImageReference("image@"+digest) {
+		_, pin := protocol.SplitImageReference(tag)
+		if pin != "" && !strings.HasPrefix(pin, "sha256:") {
+			return tag
+		}
+	}
+	return reference
 }

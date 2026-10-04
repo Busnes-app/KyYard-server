@@ -372,6 +372,7 @@ func (s *Server) handleAcknowledgeEvent(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) handleEndpointInventory(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	w.Header().Set("Cache-Control", "no-store")
 	id, err := endpointID(r)
 	if err != nil {
 		s.tenantError(w, err)
@@ -383,6 +384,64 @@ func (s *Server) handleEndpointInventory(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	s.writeJSON(w, http.StatusOK, inv)
+}
+
+// A refresh succeeds only after a newer report is stored, not when a frame is queued.
+// See docs/agent-protocol.md, On-demand inventory.
+func (s *Server) handleRefreshEndpointInventory(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	w.Header().Set("Cache-Control", "no-store")
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	ep, err := s.store.Tenancy().ReadEndpoint(r.Context(), a, id)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	if !s.allowAttempt("inventory-refresh:"+id, 6, time.Minute) {
+		s.writeError(w, 429, "Too many inventory refresh requests")
+		return
+	}
+	if !slices.Contains(ep.Capabilities, protocol.CapabilityInventoryRefresh) {
+		s.writeError(w, 501, "Upgrade the host agent to refresh inventory on demand")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
+	defer cancel()
+	before, err := s.store.Tenancy().ReadInventory(ctx, a, id)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.tenantError(w, err)
+		return
+	}
+	if !s.agents.deliver(id, envelope(protocol.TypeInventoryRefresh, nil)) {
+		s.tenantError(w, store.ErrEndpointOffline)
+		return
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(37 * time.Second))
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			s.writeError(w, 504, "No new inventory report arrived")
+			return
+		case <-tick.C:
+			inv, err := s.store.Tenancy().ReadInventory(ctx, a, id)
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				s.tenantError(w, err)
+				return
+			}
+			if before == nil || inv.Generation > before.Generation {
+				s.writeJSON(w, http.StatusOK, inv)
+				return
+			}
+		}
+	}
 }
 
 func (s *Server) handleLatestSamples(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {

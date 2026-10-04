@@ -25,6 +25,8 @@ No complete end-to-end product workflow or exhaustive named-theme audit is claim
 
 ## Reproduce
 
+2026-10-04 inventory refresh: a production build in a scratch SQLite server with its built-in local Docker agent was checked in the T3 collaborative browser at 1280×800. Clicking the host's Refresh inventory advanced the stored inventory from generation 2 to 3 and displayed “Inventory refreshed.” No existing Docker containers were changed during this browser check. Separate disposable real-Docker tests proved repository-digest preservation and container renaming. This check covers refresh behavior, not a full theme or mobile audit; no additional screenshot was retained.
+
 Run npm ci, npm test (where configured), and npm run build in web/, then start the product with isolated local preview data following its README. Use System theme, emulate OS light/dark, and inspect both viewport sizes. Do not point preview instances at production data. For KyVault, use a configured development KyIdentity or explicitly labeled read-only browser fixtures; never bypass backend authentication.
 
 ## Mixed fleet home, 2026-10-02

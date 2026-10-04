@@ -158,6 +158,19 @@ func TestDeployRealDocker(t *testing.T) {
 		if out, err = docker("inspect", "--format", "{{.Image}}", pulled.ContainerID); err != nil || out != pulled.ImageID {
 			t.Fatalf("worker container image: %v %s", err, out)
 		}
+		if out, err = docker("inspect", "--format", "{{.Config.Image}}", pulled.ContainerID); err != nil || out != "docker.io/library/alpine:3.24@"+pullDigest {
+			t.Fatalf("worker lost its repository reference: %v %s", err, out)
+		}
+		conf, err := New("/var/run/docker.sock").ReadConfiguration(ctx, protocol.InspectionTarget{ContainerID: pulled.ContainerID, ImageID: pulled.ImageID, CreatedUnix: pulled.CreatedUnix})
+		if err != nil || conf.Image.Reference != "docker.io/library/alpine:3.24" || conf.Image.Digest != pullDigest {
+			t.Fatalf("pulled configuration lost its update tag: %+v %v", conf.Image, err)
+		}
+		snapshot, err := New("/var/run/docker.sock").Snapshot(ctx)
+		if err != nil || !slices.ContainsFunc(snapshot.Containers, func(c protocol.Container) bool {
+			return c.ID == pulled.ContainerID && c.Image == "docker.io/library/alpine:3.24"
+		}) {
+			t.Fatalf("pulled inventory lost its update tag: %v", err)
+		}
 		if out, err = docker("image", "inspect", "--format", "{{.Id}}", "alpine:3.24"); err != nil || out != pulled.ImageID {
 			t.Fatalf("alpine:3.24 names %s, want the pulled %s: %v", out, pulled.ImageID, err)
 		}
@@ -468,6 +481,22 @@ func dockerState(ctx context.Context, ref string) (id, state string) {
 // them under the old name and the old container is gone.
 func TestRecreateRealDocker(t *testing.T) {
 	t.Run("preserves requested MAC", testRecreateMACAddressRealDocker)
+	t.Run("renames the container", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		req, oldID := explicitFixture(t, ctx, "kyyard-rename-fixture")
+		req.Services[0].ContainerName = "kyyard-renamed-fixture"
+		res := New("/var/run/docker.sock").Deploy(ctx, req, func() {})
+		if res.Outcome != protocol.OutcomeSucceeded || len(res.Services) != 1 {
+			t.Fatalf("rename: %+v", res)
+		}
+		if id, state := dockerState(ctx, "kyyard-renamed-fixture"); id != res.Services[0].ContainerID || state != "running" {
+			t.Fatalf("new name: %s %s", id, state)
+		}
+		if _, state := dockerState(ctx, oldID); state != "absent" {
+			t.Fatalf("old container: %s", state)
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	name := "kyyard-recreate-fixture"

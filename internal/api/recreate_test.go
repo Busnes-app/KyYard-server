@@ -73,6 +73,17 @@ func directSpec(name string) protocol.ContainerConfiguration {
 func recreatePath(f terminalFixture) string {
 	return "/api/organizations/a/endpoints/" + f.ag.id + "/containers/" + terminalSpec.Container + "/recreate"
 }
+
+func TestRecreateAcceptsANewNameWithTheOldNameConfirmed(t *testing.T) {
+	f := directFixture(t, directCaps)
+	w := tenantRequest(f.s, f.admin, "POST", recreatePath(f), recreateBody(directSpec("renamed-web")), true)
+	if w.Code != 202 {
+		t.Fatalf("rename: %d %s", w.Code, w.Body.String())
+	}
+	if req := applyFrame(t, f); req.Services[0].ContainerName != "renamed-web" || req.Services[0].Replaces.ContainerID != terminalSpec.Container {
+		t.Fatalf("rename lost its target: %+v", req.Services[0])
+	}
+}
 func runPath(f terminalFixture) string {
 	return "/api/organizations/a/endpoints/" + f.ag.id + "/containers"
 }

@@ -39,6 +39,22 @@ it('round-trips a configuration with no changes and keeps Save disabled', () => 
   expect((screen.getByLabelText('Capabilities to add, one per line') as HTMLTextAreaElement).value).toBe('CAP_NET_ADMIN');
 });
 
+it('sends a new name while confirming the current container name', async () => {
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 'rename', action: 'container.recreate', outcome: '' }), { status: 202 }));
+  vi.stubGlobal('fetch', fetcher);
+  const sent = vi.fn();
+  edit({}, { onSent: sent });
+  fireEvent.change(screen.getByLabelText('Container name'), { target: { value: 'renamed-web' } });
+  confirmName('web');
+  expect(save().disabled).toBe(false);
+  await act(async () => { fireEvent.click(save()); });
+  const init: RequestInit | undefined = vi.mocked(fetch).mock.calls[0][1];
+  const body = JSON.parse(String(init?.body));
+  expect(body.spec.name).toBe('renamed-web');
+  expect(body.confirm).toBe('web');
+  expect(sent).toHaveBeenCalledOnce();
+});
+
 it('keeps environment values out of the DOM until revealed', () => {
   const { container: root } = edit();
   expect(root.innerHTML).not.toContain('hunter2');

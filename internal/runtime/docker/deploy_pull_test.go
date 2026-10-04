@@ -44,7 +44,7 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 		t.Fatalf("X-Registry-Auth: %q %v", raw, err)
 	}
 	var body struct{ Image string }
-	if err := json.Unmarshal([]byte(f.calls[8].Body), &body); err != nil || body.Image != newImage {
+	if err := json.Unmarshal([]byte(f.calls[8].Body), &body); err != nil || body.Image != "ghcr.io/org/app:1.2@"+pullDigest {
 		t.Fatalf("create body image: %q %v", body.Image, err)
 	}
 	steps := []string{}
@@ -67,6 +67,10 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 	anon.Pull.Tag = ""
 	if res := f.client().Deploy(context.Background(), request(anon), func() {}); res.Outcome != protocol.OutcomeSucceeded || len(f.pullAuth) != 1 || f.pullAuth[0] != "" {
 		t.Fatalf("anonymous pull: %+v auth=%q", res, f.pullAuth)
+	}
+	created, ok := f.call("POST", "/containers/create")
+	if !ok || json.Unmarshal([]byte(created.Body), &body) != nil || body.Image != "ghcr.io/org/app@"+pullDigest {
+		t.Fatalf("digest-pinned creation: %s", created.Body)
 	}
 	for _, c := range f.steps() {
 		if strings.HasSuffix(c, "/tag") {

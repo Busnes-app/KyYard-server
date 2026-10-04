@@ -96,6 +96,9 @@ type Options struct {
 // (kubernetes.inspect).
 func helloCapabilities(opts *Options) []string {
 	capabilities := []string{}
+	if opts.Snapshot != nil {
+		capabilities = append(capabilities, protocol.CapabilityInventoryRefresh)
+	}
 	if opts.Kubernetes {
 		capabilities = append(capabilities, protocol.CapabilityKubernetesInventory)
 		if opts.Logs != nil {
@@ -404,10 +407,19 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				}
 			}
 		case res := <-results:
+			// Publish the runtime after a mutation before its result is visible to readers.
+			if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
+				return err
+			}
 			if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
 				return err
 			}
 		case f := <-outbound:
+			if f.Type == protocol.TypeDeploymentResult {
+				if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
+					return err
+				}
+			}
 			if err := write(ctx, conn, f.Type, f.Payload); err != nil {
 				return err
 			}
@@ -425,6 +437,12 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 			return closeReason(err)
 		case f := <-frames:
 			switch f.Type {
+			case protocol.TypeInventoryRefresh:
+				if hello.State != "pending" {
+					if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
+						return err
+					}
+				}
 			case protocol.TypeApproved:
 				opts.Log.Printf("approved; reconnecting with full protocol")
 				conn.Close(websocket.StatusNormalClosure, "approved")
