@@ -10,7 +10,7 @@ const endpoint = { id: 'ep_1', environment_id: 'env-a', name: 'host-1', runtime:
 const container = (over: object = {}) => ({ id, name: 'web', image: 'nginx:1', image_id: 'sha256:1', state: 'running', status: 'Up', created_at: '2026-09-29T08:00:00Z', started_at: '2026-09-29T09:00:00Z', health: 'healthy', restart_policy: 'always', ports: [{ host: 8080, container: 80, protocol: 'tcp' }], labels: { tier: 'web' }, networks: ['bridge'], network_attachments: [{ name: 'bridge', ip: '172.17.0.2' }], mounts: [{ kind: 'volume', source: 'data', target: '/data', read_only: false }], ...over });
 function stub(role = 'organization_admin', containers: object[] = [container()], opts: { ep?: object; inventoryStatus?: number; rollups?: object[]; commands?: object[]; applications?: object[]; command?: object; epStatus?: number; orgStatus?: number; configurationStatus?: number; run?: object } = {}) {
   const now = '2026-09-29T10:00:00Z';
-  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+  const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
     if (url === '/api/organizations') return opts.orgStatus ? json({}, opts.orgStatus) : json([{ id: 'a', name: 'Team', role }]);
     if (url.endsWith('/ep_1/containers') && opts.run) return json(opts.run, 202);
@@ -340,4 +340,30 @@ it.each([
   render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
   expect(await screen.findByText(text)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Read again' })).toBeTruthy();
+});
+
+it('pulls and recreates directly from Configuration without applying unsaved edits or asking for another confirmation', async () => {
+  document.cookie = 'ky_csrf=image-token';
+  const fetcher = stub('organization_admin', [container()], { ep: { capabilities: ['container.configure', 'deployment.pull'] } });
+  const fallback = fetcher.getMockImplementation();
+  if (!fallback) throw new Error('missing fetch stub');
+  fetcher.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/recreate') && init?.method === 'POST') return json({ id: 'image-command', action: 'container.recreate', outcome: '' }, 202);
+    return fallback(input);
+  });
+  window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
+  render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
+  const button = await screen.findByRole('button', { name: 'Pull latest image and recreate' });
+  fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'unsaved' } });
+  await act(async () => { fireEvent.click(button); });
+  const post = fetcher.mock.calls.find(([url, init]) => String(url).endsWith('/recreate') && init?.method === 'POST');
+  expect(post).toBeTruthy();
+  const body = JSON.parse(String(post?.[1]?.body));
+  expect(body.spec.env).toEqual(configuration.env);
+  expect(body.spec.hostname).toBe(configuration.hostname);
+  expect(body.spec.image_id).toBe('');
+  expect(body.spec.image.digest).toBe('');
+  expect(body.confirm).toBe('web');
+  expect(new Headers(post?.[1]?.headers).get('X-CSRF-Token')).toBe('image-token');
+  expect(screen.getByRole('region', { name: 'Last change' }).textContent).toContain('waiting for the host');
 });
