@@ -395,19 +395,14 @@ it('builds the canonical spec from a draft', () => {
   expect(spec).not.toHaveProperty('stop_timeout');
 });
 
-it('forces a fresh image resolution while carrying the complete configuration', async () => {
-  const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => json({ id: 'cmd', outcome: '' }));
-  vi.stubGlobal('fetch', fetcher);
-  edit();
+it('runs the image action directly without changing or submitting the edit draft', () => {
+  const update = vi.fn();
+  const { rerender } = edit({}, { onUpdateImage: update });
+  fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'unsaved' } });
   fireEvent.click(screen.getByRole('button', { name: 'Pull latest image and recreate' }));
-  confirmName('web');
-  fireEvent.click(save());
-  await vi.waitFor(() => expect(fetcher).toHaveBeenCalled());
-  const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body ?? '{}'));
-  expect(body.spec.image_id).toBe('');
-  expect(body.spec.image.digest).toBe('');
-  expect(body.spec.image.reference).toBe('nginx:1');
-  expect(body.spec.env).toEqual(config().env);
-  expect(body.spec.mounts).toEqual(config().mounts);
-  expect(body.expects).toEqual({ image_id: imageID, created_unix: 7, state: 'running' });
+  expect(update).toHaveBeenCalledTimes(1);
+  expect(screen.getByText('Changes: hostname')).toBeTruthy();
+  expect(save().disabled).toBe(true);
+  rerender(<ContainerConfigurationForm base={base} mode="edit" initial={config()} container={container} pending onSent={() => {}} onUpdateImage={update} />);
+  expect((screen.getByRole('button', { name: 'Pull latest image and recreate' }) as HTMLButtonElement).disabled).toBe(true);
 });

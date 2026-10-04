@@ -16,7 +16,8 @@ type Props = {
   // onSent hands an accepted command to the caller, which polls it and renders the result, so
   // both survive the form unmounting; pending keeps the form locked while it is unsettled.
   onSent: (command: DirectCommand) => void;
-  pending?: boolean; onStarted?: () => void;
+  pending?: boolean;
+  onUpdateImage?: () => void; onStarted?: () => void;
 };
 
 export const EMPTY_SPEC: ExplicitSpec = {
@@ -88,7 +89,7 @@ function blockerText(code: string): string {
   const field = code.startsWith('spec_invalid:') ? code.slice('spec_invalid:'.length) : '';
   return Object.hasOwn(FIELDS, field) ? `The server refused the ${FIELDS[field]} setting.` : 'The server refused part of this configuration.';
 }
-async function failure(resp: Response): Promise<string> {
+export async function configurationFailure(resp: Response): Promise<string> {
   if (resp.status === 501) return UPGRADE;
   if (resp.status === 429) return 'Too many configuration requests. Wait a minute and try again.';
   if (resp.status !== 422) return refusal(resp, WRITE_TEXTS);
@@ -103,7 +104,7 @@ const OUTCOMES: Record<string, string> = {
   unknown: 'The outcome is unknown: the host may or may not have acted. Check the container before trying again.',
 };
 
-export function ContainerConfigurationForm({ base, mode, initial, container, seed, onSent, pending = false, onStarted }: Props) {
+export function ContainerConfigurationForm({ base, mode, initial, container, seed, onSent, pending = false, onStarted, onUpdateImage }: Props) {
   const start = initial ? toSpec(initial) : seed ?? EMPTY_SPEC;
   const [draft, setDraft] = useState<ExplicitSpec>(start);
   const [logOptions, setLogOptions] = useState<[string, string][]>(Object.entries(start.log.options));
@@ -140,7 +141,7 @@ export function ContainerConfigurationForm({ base, mode, initial, container, see
     try {
       const resp = await secureFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...expects, ...body }) });
       if (!alive.current) return;
-      if (!resp.ok) { setError(await failure(resp)); return; }
+      if (!resp.ok) { setError(await configurationFailure(resp)); return; }
       const cmd: DirectCommand = await resp.json();
       if (!alive.current) return;
       setConfirm(''); onSent(cmd);
@@ -156,7 +157,7 @@ export function ContainerConfigurationForm({ base, mode, initial, container, see
     </div>}
     {(run || initial) && <fieldset className="ky-config-groups" disabled={busy || pending}>
       <ImageGroup {...groupProps} initial={start} run={run} />
-      {!run && <div><button type="button" className="btn-secondary" onClick={() => set({ image_id: '', image: { reference: draft.image.reference === start.image_id ? container?.image ?? draft.image.reference : draft.image.reference, digest: '' } })}>Pull latest image and recreate</button><p>This resolves the reference again and pulls it, even when no update check has run. Review the configuration and confirm below.</p></div>}
+      {!run && onUpdateImage && <div><button type="button" className="btn-secondary" disabled={busy || pending || lost || start.unsupported.length > 0} onClick={onUpdateImage}>Pull latest image and recreate</button><p>Updates the running container using its current settings. Unsaved form changes are not applied.</p></div>}
 
       <details className="ky-config-disclosure"><summary>Environment</summary><EnvironmentGroup {...groupProps} /></details>
       <details className="ky-config-disclosure"><summary>Ports</summary><PortsGroup {...groupProps} /></details>

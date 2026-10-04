@@ -1,3 +1,4 @@
+import { useContainerImageUpdate } from '../components/useContainerImageUpdate';
 import { RunYAML } from '../components/RunYAML';
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { Box } from 'lucide-react';
@@ -58,8 +59,11 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
   const [status, setStatus] = useState('');
   // The page, not the form, polls a sent recreate: switching tabs or the inventory dropping the
   // replaced container unmounts the form, but the operator still needs the steps and the new one.
-  const [sent, setSent] = useState<DirectCommand | null>(null);
-  const { command, error: pollError } = useCommand(base, sent, inventory.reload);
+  const [sent, setSent] = useState<{ base: string; container: string; command: DirectCommand } | null>(null);
+  const scopedSent = sent?.base === base && sent.container === container ? sent.command : null;
+  const record = (command: DirectCommand) => setSent({ base, container, command });
+  const { command, error: pollError } = useCommand(base, scopedSent, inventory.reload);
+  const imageUpdate = useContainerImageUpdate(base, (cmd) => { record(cmd); if (cmd.outcome) inventory.reload(); });
   const settled = command?.outcome ? command : null;
   const created = settled ? newContainer(settled, container) : '';
   useEffect(() => {
@@ -83,6 +87,8 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
     </div>
     {c && <p style={{ color: 'var(--ink)' }} title={c.image}>{displayName(c.image)}</p>}
     {status && <p role="status">{status}</p>}
+    {imageUpdate.busy && <p role="status">Reading current settings and submitting the image update…</p>}
+    {imageUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{imageUpdate.error}</p>}
     <StateNotice state={details.state} onRetry={details.reload} />
     <StateNotice state={inventory.state} onRetry={inventory.reload} />
     {inventory.state === 'ready' && !c && <EmptyNotice>This container is no longer reported by <Link to={endpointPath(org, endpoint)}>{e?.name ?? endpoint}</Link>. It may have been removed or renamed.{created && <> <Link to={containerPath(org, endpoint, created, 'configuration')}>Open the new container</Link></>}</EmptyNotice>}
@@ -93,7 +99,7 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
       </nav>
       {tab === 'overview' && <Overview base={base} container={c} received={inventory.data?.received_at ?? ''} />}
       {tab === 'configuration' && (organizations.state === 'loading' || details.state === 'loading' ? <p role="status">Loading…</p> : !e ? null
-        : canConfigure(role) ? <EditConfiguration key={`${c.id}/${c.image_id}/${c.created_at}`} base={base} org={org} endpoint={e} container={c} pending={!!command && !command.outcome} onSent={(cmd) => { setSent(cmd); if (cmd.outcome) inventory.reload(); }} />
+        : canConfigure(role) ? <EditConfiguration key={`${c.id}/${c.image_id}/${c.created_at}`} base={base} org={org} endpoint={e} container={c} onUpdateImage={() => void imageUpdate.update(c)} pending={imageUpdate.busy || imageUpdate.lost || (!!command && (!command.outcome || command.outcome === 'unknown' || command.outcome === 'succeeded'))} onSent={(cmd) => { record(cmd); if (cmd.outcome) inventory.reload(); }} />
         : <Configuration base={base} container={c} capable={e.capabilities.includes('container.inspect')} />)}
       {tab === 'logs' && <section className="panel" aria-label="Logs"><ContainerLogs key={c.id} url={`${base}/containers/${encodeURIComponent(c.id)}/logs`} name={c.name} /></section>}
       {tab === 'terminal' && exec && <section className="panel" aria-label="Terminal">{c.state === 'running' && active ? <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${c.id}/${c.image_id}`} base={base} container={c} scope={scope} /></Suspense> : <EmptyNotice>The terminal needs a running container on an active host.</EmptyNotice>}</section>}
@@ -149,7 +155,7 @@ const READ_CONFLICTS: Record<string, string> = {
 // EditConfiguration reads the full configuration (environment values included) once per mount;
 // a container an adopted application owns is never read: it shows the redacted view and edits
 // through its application.
-function EditConfiguration({ base, org, endpoint, container: c, pending, onSent }: { base: string; org: string; endpoint: Endpoint; container: Container; pending: boolean; onSent: (cmd: DirectCommand) => void }) {
+function EditConfiguration({ base, org, endpoint, container: c, pending, onSent, onUpdateImage }: { base: string; org: string; endpoint: Endpoint; container: Container; pending: boolean; onSent: (cmd: DirectCommand) => void; onUpdateImage: () => void }) {
   const capable = endpoint.capabilities.includes('container.configure');
   const owners = useTenantResource<ApplicationInstance[]>(`${base}/applications`);
   const owner = owners.state === 'ready' && Array.isArray(owners.data) ? owners.data.find((i) => i.containers?.some((x) => x.id === c.id)) : undefined;
@@ -182,7 +188,7 @@ function EditConfiguration({ base, org, endpoint, container: c, pending, onSent 
   return <section className="panel" aria-label="Configuration">
     {!settled || read.kind === 'loading' ? <p role="status">Reading configuration…</p>
       : read.kind === 'error' ? <><p role="status">{read.text}</p><button type="button" className="btn-secondary" onClick={() => setAttempt((n) => n + 1)}>Read again</button></>
-      : <ContainerConfigurationForm base={base} mode="edit" container={c} initial={read.data} pending={pending} onSent={onSent} />}
+      : <ContainerConfigurationForm base={base} mode="edit" container={c} initial={read.data} pending={pending} onSent={onSent} onUpdateImage={canRunContainers(endpoint) ? onUpdateImage : undefined} />}
   </section>;
 }
 

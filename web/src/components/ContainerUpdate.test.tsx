@@ -6,7 +6,7 @@ afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const container: Container = { id: 'a'.repeat(64), image_id: 'sha256:' + 'b'.repeat(64), name: 'web', image: 'nginx:stable', state: 'running', status: 'Up', created_at: '', ports: [], labels: {}, networks: [] };
 function Rows({ containers = [container], active = true, base = '/api/host' }: { containers?: Container[]; active?: boolean; base?: string }) {
   const checkUpdate = useContainerUpdateChecker(base);
-  return <>{containers.map((c) => <ContainerUpdate key={`${c.id}/${c.image_id}`} container={c} checkUpdate={checkUpdate} active={active} org="a" endpoint="e" />)}</>;
+  return <>{containers.map((c) => <ContainerUpdate key={`${c.id}/${c.image_id}`} container={c} onUpdate={() => {}} checkUpdate={checkUpdate} active={active} org="a" endpoint="e" />)}</>;
 }
 function reply(verdict = 'update_available') { return new Response(JSON.stringify({ image_id: container.image_id, verdict })); }
 it('checks visible rows automatically, keeps refreshed results, and supports manual rechecks', async () => {
@@ -23,7 +23,7 @@ it('checks visible rows automatically, keeps refreshed results, and supports man
   fireEvent.click(screen.getByRole('button', { name: 'Check image update for web' }));
   await act(() => vi.advanceTimersByTimeAsync(5100));
   expect(fetcher).toHaveBeenCalledTimes(2);
-  expect(screen.getByRole('link', { name: 'Update image' }).getAttribute('href')).toContain('tab=configuration');
+  expect(screen.getByRole('button', { name: 'Update image' })).toBeTruthy();
 });
 it('paces requests, cancels hidden rows, and caches results across pagination', async () => {
   vi.useFakeTimers();

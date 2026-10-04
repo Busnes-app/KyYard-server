@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EndpointPage } from './EndpointPage';
+import { EMPTY_SPEC } from '../components/ContainerConfigurationForm';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -366,4 +367,85 @@ it('lists every cluster command, pod deletes included, under the cluster Activit
   expect(list.textContent).not.toContain('odd');
   expect(list.textContent).not.toContain('raw agent text');
   expect(requests).toContain('/api/organizations/a/endpoints/ep_1/commands?limit=50');
+});
+
+const imageContainer = { id: 'a'.repeat(64), name: 'web', image: 'nginx:latest', image_id: 'sha256:' + 'b'.repeat(64), state: 'running', status: 'Up', created_at: '1970-01-01T00:00:07Z', ports: [], labels: {}, networks: [] };
+const imageConfiguration = {
+  ...EMPTY_SPEC, target: { container_id: imageContainer.id, image_id: imageContainer.image_id, created_unix: 7 }, observed_at: '2026-10-03T00:00:00Z',
+  name: 'web', image_id: imageContainer.image_id, image: { reference: 'nginx:latest', digest: 'sha256:' + 'c'.repeat(64) },
+  env: [{ name: 'TOKEN', value: 'private-value' }], labels: { CI_BUILD: 'x'.repeat(981) },
+  command: ['nginx'], restart: 'always', ports: [{ host: 8080, container: 80, protocol: 'tcp' }],
+  mounts: [{ kind: 'bind', source: '/srv/data', target: '/data', read_only: false }], network_mode: 'bridge',
+  extra_hosts: ['internal:192.168.1.2'], dns: ['192.168.1.1'],
+};
+function imageRoutes(options: { configuration?: Response; losePost?: boolean } = {}) {
+  let removed = false;
+  const now = new Date().toISOString();
+  const command = { id: 'image1', action: 'container.recreate', outcome: 'succeeded', result: { steps: [{ service: 'direct', step: 'pull', outcome: 'succeeded', detail: '' }], services: [{ service: 'direct', container_id: 'd'.repeat(64), image_id: 'new', created_unix: 8 }] } };
+  const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/organizations')) return json([{ id: 'a', role: 'organization_admin' }]);
+    if (url.endsWith('/configuration')) return options.configuration ?? json(imageConfiguration);
+    if (url.endsWith('/updates/check')) return json({ image_id: imageContainer.image_id, verdict: 'update_available' });
+    if (url.endsWith('/recreate')) { if (options.losePost) throw new Error('lost'); return json({ id: 'image1', action: 'container.recreate', outcome: '' }, 202); }
+    if (url.endsWith('/commands/image1')) { removed = true; return json(command); }
+    if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, engine: {}, containers: removed ? [] : [imageContainer], images: [], networks: [], volumes: [] } });
+    if (url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications')) return json([]);
+    return json({ ...endpoint, capabilities: ['container.configure', 'deployment.pull'] });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  return fetcher;
+}
+it('updates in one click, preserves settings, and keeps the result after filtering and replacement', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  document.cookie = 'ky_csrf=one-click';
+  const fetcher = imageRoutes();
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  const update = await screen.findByRole('button', { name: 'Update image' });
+  await act(async () => { fireEvent.click(update); fireEvent.click(update); });
+  const posts = fetcher.mock.calls.filter(([url]) => String(url).endsWith('/recreate'));
+  expect(posts).toHaveLength(1);
+  const post = posts[0];
+  const body = JSON.parse(String(post?.[1]?.body));
+  const { target: _target, observed_at: _observed, ...kept } = imageConfiguration;
+  expect(body.spec).toEqual({ ...kept, image_id: '', image: { reference: 'nginx:latest', digest: '' } });
+  expect(body.confirm).toBe('web');
+  expect(body.expects).toEqual({ image_id: imageContainer.image_id, created_unix: 7, state: 'running' });
+  expect(body.acknowledge_binds).toEqual([]);
+  expect(new Headers(post?.[1]?.headers).get('X-CSRF-Token')).toBe('one-click');
+  expect(document.body.innerHTML).not.toContain('private-value');
+  fireEvent.change(screen.getByLabelText('Find containers'), { target: { value: 'missing' } });
+  expect(screen.queryByRole('button', { name: 'Update image' })).toBeNull();
+  expect(screen.getByRole('region', { name: 'Last image update' }).textContent).toContain('waiting for the host');
+  fireEvent.click(screen.getByRole('button', { name: 'Images' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(screen.getByRole('region', { name: 'Last image update' }).textContent).toContain('Done.');
+  expect(screen.getByRole('link', { name: 'Open the new container' }).getAttribute('href')).toContain('d'.repeat(64));
+  expect(posts).toHaveLength(1);
+});
+it('locks a lost update response across row unmounts instead of resubmitting', async () => {
+  const fetcher = imageRoutes({ losePost: true });
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  const update = await screen.findByRole('button', { name: 'Update image' });
+  await act(async () => { fireEvent.click(update); });
+  expect(screen.getByRole('alert').textContent).toContain('may have been sent');
+  fireEvent.change(screen.getByLabelText('Find containers'), { target: { value: 'missing' } });
+  fireEvent.change(screen.getByLabelText('Find containers'), { target: { value: '' } });
+  const button = screen.getByRole('button', { name: 'Update image' });
+  expect((button as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(button);
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/recreate'))).toHaveLength(1);
+});
+it.each([
+  [json({ code: 'application_managed', error: 'private server diagnostic' }, 409), 'An application manages'],
+  [json({ ...imageConfiguration, unsupported: ['labels_truncated'] }), 'Cannot update without losing settings'],
+  [json({ ...imageConfiguration, target: { ...imageConfiguration.target, image_id: 'wrong' } }), 'did not match this container'],
+])('refuses an unavailable or incomplete configuration without sending an update', async (configuration, text) => {
+  const fetcher = imageRoutes({ configuration });
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  const update = await screen.findByRole('button', { name: 'Update image' });
+  await act(async () => { fireEvent.click(update); });
+  expect(screen.getByRole('alert').textContent).toContain(text);
+  expect(document.body.textContent).not.toContain('private server diagnostic');
+  expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/recreate'))).toBe(false);
 });

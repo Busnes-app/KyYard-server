@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { secureFetch } from '../api';
 import type { Container } from '../tenant';
-import { containerPath } from '../router';
 import { Link } from './Link';
 
 const VERDICTS = {
@@ -80,7 +79,7 @@ export function useContainerUpdateChecker(base: string): CheckUpdate {
   }, [base]);
 }
 
-export function ContainerUpdate({ container, active, org, endpoint, checkUpdate }: { container: Container; active: boolean; org: string; endpoint: string; checkUpdate: CheckUpdate }) {
+export function ContainerUpdate({ container, active, org, checkUpdate, onUpdate, updateDisabled = false }: { container: Container; active: boolean; org: string; endpoint: string; checkUpdate: CheckUpdate; onUpdate: () => void; updateDisabled?: boolean }) {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [busy, setBusy] = useState(false);
   const request = useRef<AbortController | null>(null);
@@ -98,5 +97,5 @@ export function ContainerUpdate({ container, active, org, endpoint, checkUpdate 
     return () => request.current?.abort();
   }, [active, check]);
   const text = busy ? 'Checking…' : verdict ? VERDICTS[verdict] : 'Endpoint offline';
-  return <span className="ky-image-update"><span role="status" className={`badge ${verdict === 'update_available' ? 'badge-warning' : 'badge-secondary'}`}>{text}</span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/members#registries-heading`} title="Configure this registry in Members → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${container.name}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && <Link to={containerPath(org, endpoint, container.id, 'configuration')}>Update image</Link>}</span>;
+  return <span className="ky-image-update"><span role="status" className={`badge ${verdict === 'update_available' ? 'badge-warning' : 'badge-secondary'}`}>{text}</span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/members#registries-heading`} title="Configure this registry in Members → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${container.name}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && <button type="button" className="btn-secondary" disabled={updateDisabled} onClick={onUpdate} title="Pull the latest image and recreate using current settings">Update image</button>}</span>;
 }
