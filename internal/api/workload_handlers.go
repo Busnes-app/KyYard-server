@@ -129,6 +129,7 @@ func (s *Server) handleApplyWorkload(w http.ResponseWriter, r *http.Request, a s
 		ResourceVersion string                         `json:"resource_version"`
 		Spec            protocol.WorkloadConfiguration `json:"spec"`
 		Confirm         string                         `json:"confirm"`
+		Pull            []string                       `json:"pull"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // the frame's own bound applies in the store
 	if strictJSON(r, &body) != nil || body.ResourceVersion == "" || (body.Spec.ResourceVersion != "" && body.Spec.ResourceVersion != body.ResourceVersion) {
@@ -136,7 +137,7 @@ func (s *Server) handleApplyWorkload(w http.ResponseWriter, r *http.Request, a s
 		return
 	}
 	body.Spec.ResourceVersion = body.ResourceVersion
-	s.sendWorkloadFrame(w, r, a, endpoint, s.store.Tenancy().CreateWorkloadApply, store.WorkloadApply{Target: ref, Confirm: body.Confirm, Spec: body.Spec})
+	s.sendWorkloadFrame(w, r, a, endpoint, false, body.Pull, store.WorkloadApply{Target: ref, Confirm: body.Confirm, Spec: body.Spec})
 }
 
 // handleRunWorkload creates the Deployment spec.target names from the spec the operator wrote:
@@ -150,6 +151,7 @@ func (s *Server) handleRunWorkload(w http.ResponseWriter, r *http.Request, a sto
 	var body struct {
 		Spec    protocol.WorkloadConfiguration `json:"spec"`
 		Confirm string                         `json:"confirm"`
+		Pull    []string                       `json:"pull"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // the frame's own bound applies in the store
 	if strictJSON(r, &body) != nil {
@@ -167,18 +169,32 @@ func (s *Server) handleRunWorkload(w http.ResponseWriter, r *http.Request, a sto
 			return
 		}
 	}
-	s.sendWorkloadFrame(w, r, a, endpoint, s.store.Tenancy().CreateWorkloadRun, store.WorkloadApply{Target: body.Spec.Target, Confirm: body.Confirm, Spec: body.Spec})
+	s.sendWorkloadFrame(w, r, a, endpoint, true, body.Pull, store.WorkloadApply{Target: body.Spec.Target, Confirm: body.Confirm, Spec: body.Spec})
 }
 
-// sendWorkloadFrame records an apply or run with create and sends its frame: offline 409, unsent
-// 409 deployment_not_sent (the row settled failed), else 202 with the command.
-func (s *Server) sendWorkloadFrame(w http.ResponseWriter, r *http.Request, a store.TenantAccess, endpoint string,
-	create func(context.Context, store.TenantAccess, string, store.WorkloadApply) (*store.Command, *protocol.WorkloadApply, error), wa store.WorkloadApply) {
+// sendWorkloadFrame records an apply or a run (create) and sends its frame. With pull it first
+// runs the store's preconditions, so a refused request spends no registry call, then pins the
+// named containers. Offline 409, unsent 409 deployment_not_sent (the row settled failed), else
+// 202 with the command.
+func (s *Server) sendWorkloadFrame(w http.ResponseWriter, r *http.Request, a store.TenantAccess, endpoint string, create bool, pull []string, wa store.WorkloadApply) {
 	if !s.Connected(endpoint) {
 		s.tenantError(w, store.ErrEndpointOffline)
 		return
 	}
-	cmd, frame, err := create(r.Context(), a, endpoint, wa)
+	if len(pull) > 0 {
+		if err := s.store.Tenancy().CheckWorkloadFrame(r.Context(), a, endpoint, wa, create); err != nil {
+			s.tenantError(w, err)
+			return
+		}
+		if !s.pinWorkloadImages(w, r, a, &wa.Spec, pull) {
+			return
+		}
+	}
+	record := s.store.Tenancy().CreateWorkloadApply
+	if create {
+		record = s.store.Tenancy().CreateWorkloadRun
+	}
+	cmd, frame, err := record(r.Context(), a, endpoint, wa)
 	if err != nil {
 		s.tenantError(w, err)
 		return

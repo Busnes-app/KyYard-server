@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 
+	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/registry"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -80,4 +82,64 @@ func registryDetail(err error) string {
 		return "private_destination"
 	}
 	return "unavailable"
+}
+
+// pinWorkloadImages rewrites each container pull names to its tag at the registry's current
+// digest, one Head per reference. It writes the response and reports false on refusal: an
+// unknown or repeated name is invalid, a digest-only image or a registry failure is
+// image_unresolved, a policy refusal is the store's.
+func (s *Server) pinWorkloadImages(w http.ResponseWriter, r *http.Request, a store.TenantAccess, spec *protocol.WorkloadConfiguration, pull []string) bool {
+	containers := map[string]*protocol.WorkloadContainer{}
+	for _, group := range [][]protocol.WorkloadContainer{spec.Containers, spec.InitContainers} {
+		for i := range group {
+			containers[group[i].Name] = &group[i]
+		}
+	}
+	targets := make([]*protocol.WorkloadContainer, 0, len(pull))
+	for _, name := range pull {
+		c, ok := containers[name]
+		if !ok {
+			s.tenantError(w, store.ErrInvalid)
+			return false
+		}
+		delete(containers, name) // a repeated name is unknown the second time
+		targets = append(targets, c)
+	}
+	unresolved := &store.InvalidSpecError{Blockers: []string{"image_unresolved"}}
+	type tracked struct {
+		name string
+		ref  registry.Reference
+	}
+	refs := make([]tracked, len(targets))
+	for i, c := range targets {
+		name, ref, _, ok := trackedReference(c.Image)
+		if !ok {
+			s.tenantError(w, unresolved)
+			return false
+		}
+		refs[i] = tracked{name, ref}
+	}
+	release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
+	if !ok {
+		return false
+	}
+	defer release()
+	extendRegistryDeadline(w)
+	digests := map[string]string{}
+	for i, c := range targets {
+		digest, seen := digests[refs[i].name]
+		if !seen {
+			var err error
+			if digest, err = s.headDigest(r.Context(), a, refs[i].name, refs[i].ref); errors.Is(err, errRegistryHead) {
+				s.tenantError(w, unresolved)
+				return false
+			} else if err != nil {
+				s.tenantError(w, err)
+				return false
+			}
+			digests[refs[i].name] = digest
+		}
+		c.Image = refs[i].name + "@" + digest
+	}
+	return true
 }
