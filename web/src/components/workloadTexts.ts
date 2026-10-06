@@ -60,6 +60,8 @@ export function commandLine(c: { action: string; outcome: string; detail?: strin
 }
 
 const CONFLICTS: Record<string, string> = {
+  registry_not_configured: 'Registry access is not configured for this image. Configure it in Members → Registries.',
+  anonymous_pull_disabled: 'Anonymous pulls are off and no registry is configured for this image. Configure it in Members → Registries.',
   application_managed: MANAGED,
   command_in_progress: 'A workload apply or run, or a container change, on this cluster is waiting for its result.',
   runtime_unsupported: "This endpoint's runtime does not support this action.",
@@ -92,6 +94,7 @@ const FIELDS: Record<string, string> = {
 function blockerText(code: string): string {
   if (code === 'configuration_incomplete') return UNREPORTED;
   if (code === 'name_taken') return NAME_TAKEN;
+  if (code === 'image_unresolved') return 'The registry did not resolve the image. Check the reference and the registry access.';
   const field = code.startsWith('spec_invalid:') ? code.slice('spec_invalid:'.length) : '';
   return Object.hasOwn(FIELDS, field) ? `The server refused the ${FIELDS[field]} setting.` : 'The server refused part of this configuration.';
 }

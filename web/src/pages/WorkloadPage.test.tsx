@@ -34,6 +34,7 @@ function stub(role = 'organization_admin', opts: Opts = {}) {
     if (url === '/api/settings') return json({ app_name: 'KyYard' });
     if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role }]);
     if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_k', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, observed_at: now, engine: { runtime: 'kubernetes', version: 'v1.36', api_version: '', os: '', arch: '', kernel: '', cpus: 0, memory_bytes: 0, hostname: '' }, containers: [], images: [], networks: [], volumes: [], kubernetes } });
+    if (url.endsWith('/updates/check')) return json({ workload: 'shop/deployment/web', verdict: 'update_available' });
     if (url.endsWith('/applications')) return json(opts.applications ?? []);
     if (url.endsWith('/configuration')) return opts.configurationStatus ? json({ code: 'application_managed' }, opts.configurationStatus) : json(configuration);
     if (url.endsWith('/workloads') && init?.method === 'POST') return json({ id: 'k8', action: 'workload.run', reference: 'shop/deployment/fresh', outcome: '' }, 202);
@@ -273,4 +274,23 @@ it('runs a workload, shows Last change and links to it on success, keeping the f
   expect(within(last).getByText('Running.')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Run workload' }).hasAttribute('disabled')).toBe(true);
   expect(screen.getByLabelText('Workload name').matches(':disabled')).toBe(true);
+});
+
+it('offers Update image to an admin on an unmanaged workload and shows the sent command waiting', async () => {
+  const requests = stub();
+  page();
+  const button = await screen.findByRole('button', { name: 'Update image' });
+  await act(async () => { fireEvent.click(button); });
+  const apply = requests.find((r) => r.url === `${base}/workloads/shop/deployment/web/apply`);
+  expect(JSON.parse(String(apply?.init?.body)).pull).toEqual(['web']);
+  const last = await screen.findByRole('region', { name: 'Last change' });
+  expect(last.textContent).toContain('waiting for the cluster agent');
+  expect((screen.getByRole('button', { name: 'Update image' }) as HTMLButtonElement).disabled).toBe(true);
+});
+it('shows no update badge on a managed workload', async () => {
+  stub('organization_admin', { workload: { application: 'app-1' } });
+  page();
+  await screen.findByRole('region', { name: 'Overview' });
+  await act(async () => {});
+  expect(screen.queryByRole('button', { name: 'Update image' })).toBeNull();
 });

@@ -237,18 +237,16 @@ func (t *tenancyStore) CreateWorkloadRun(ctx context.Context, a TenantAccess, en
 	return t.createWorkloadFrame(ctx, a, endpointID, w, true)
 }
 
-func (t *tenancyStore) createWorkloadFrame(ctx context.Context, a TenantAccess, endpointID string, w WorkloadApply, create bool) (*Command, *protocol.WorkloadApply, error) {
+// newWorkloadFrame checks the request's shape and builds the command, frame and intent details.
+func newWorkloadFrame(a TenantAccess, endpointID string, w WorkloadApply, create bool) (*Command, *protocol.WorkloadApply, string, error) {
 	if parsed, err := protocol.ParseWorkloadRef(w.Target.String()); err != nil || parsed != w.Target || w.Target.Kind == protocol.WorkloadPod {
-		return nil, nil, ErrInvalid
+		return nil, nil, "", ErrInvalid
 	}
 	if w.Confirm != w.Target.Name {
-		return nil, nil, fmt.Errorf("%w: confirm must be %q", ErrInvalid, w.Target.Name)
+		return nil, nil, "", fmt.Errorf("%w: confirm must be %q", ErrInvalid, w.Target.Name)
 	}
 	if create && w.Target.Kind != protocol.WorkloadDeployment {
-		return nil, nil, invalidSpec("spec_invalid:target.kind")
-	}
-	if a.CorrelationID == "" {
-		a.CorrelationID = uuid.NewString()
+		return nil, nil, "", invalidSpec("spec_invalid:target.kind")
 	}
 	now := time.Now().UTC()
 	action := ActionWorkloadApply
@@ -259,7 +257,6 @@ func (t *tenancyStore) createWorkloadFrame(ctx context.Context, a TenantAccess, 
 	spec := w.Spec
 	spec.Target, spec.ObservedAt = w.Target, time.Time{}
 	frame := &protocol.WorkloadApply{Request: cmd.ID, Endpoint: endpointID, IssuedAt: now, Deadline: cmd.Deadline, Target: w.Target, ResourceVersion: spec.ResourceVersion, Spec: spec, Create: create}
-	target := endpointID + "/" + cmd.Reference
 	details := fmt.Sprintf("resource_version=%s containers=%d", protocol.CleanText(spec.ResourceVersion, protocol.MaxResourceVersionBytes), len(spec.Containers))
 	if create {
 		replicas := "-"
@@ -268,40 +265,78 @@ func (t *tenancyStore) createWorkloadFrame(ctx context.Context, a TenantAccess, 
 		}
 		details = fmt.Sprintf("containers=%d replicas=%s", len(spec.Containers), replicas)
 	}
-	err := t.runAs(ctx, a, permissions.ContainerConfigure, action, &target, &details, true, func(tx *sql.Tx) error {
-		var state, runtime, namespaces string
-		var err error
-		cmd.OrganizationID, cmd.EnvironmentID, state, runtime, namespaces, err = t.clusterEndpoint(ctx, tx, a, endpointID)
-		if err != nil {
-			return err
-		}
-		if state != "active" {
-			return fmt.Errorf("%w: it is %s", ErrEndpointOffline, state)
-		}
+	return cmd, frame, details, nil
+}
+
+// workloadPreconditions is everything an apply or run checks inside its transaction: an active
+// cluster in scope, no live direct command, the target (free for a run, unmanaged for an apply),
+// a complete spec and a frame the protocol accepts. sweep settles expired direct commands
+// first, which only the writing path may do.
+func (t *tenancyStore) workloadPreconditions(ctx context.Context, tx *sql.Tx, a TenantAccess, endpointID string, frame *protocol.WorkloadApply, create, sweep bool, now time.Time) (org, env string, err error) {
+	var state, runtime, namespaces string
+	org, env, state, runtime, namespaces, err = t.clusterEndpoint(ctx, tx, a, endpointID)
+	if err != nil {
+		return "", "", err
+	}
+	if state != "active" {
+		return "", "", fmt.Errorf("%w: it is %s", ErrEndpointOffline, state)
+	}
+	if sweep {
 		if err := t.sweepDirect(ctx, tx, endpointID, now); err != nil {
+			return "", "", err
+		}
+	}
+	if err := t.directBusy(ctx, tx, endpointID, now); err != nil {
+		return "", "", err
+	}
+	if create {
+		if err := t.workloadNameFree(ctx, tx, endpointID, runtime, namespaces, frame.Target); err != nil {
+			return "", "", err
+		}
+	} else if managed, _, err := t.clusterTarget(ctx, tx, endpointID, runtime, namespaces, frame.Target); err != nil {
+		return "", "", err
+	} else if managed || frame.Spec.Managed {
+		return "", "", ErrWorkloadManaged
+	}
+	if len(frame.Spec.Unsupported) > 0 {
+		return "", "", invalidSpec("configuration_incomplete")
+	}
+	if err := frame.Validate(now); err != nil {
+		field := "frame"
+		if fe := new(protocol.FieldError); errors.As(err, &fe) {
+			field = fe.Field
+		}
+		return "", "", invalidSpec("spec_invalid:" + strings.NewReplacer(", ", "_", " ", "_").Replace(field))
+	}
+	return org, env, nil
+}
+
+// CheckWorkloadFrame runs CreateWorkloadApply's (create false) or CreateWorkloadRun's (create
+// true) preconditions without writing, so the API refuses before spending registry budget.
+func (t *tenancyStore) CheckWorkloadFrame(ctx context.Context, a TenantAccess, endpointID string, w WorkloadApply, create bool) error {
+	_, frame, _, err := newWorkloadFrame(a, endpointID, w, create)
+	if err != nil {
+		return err
+	}
+	return t.readTenant(ctx, a, permissions.ContainerConfigure, func(tx *sql.Tx) error {
+		_, _, err := t.workloadPreconditions(ctx, tx, a, endpointID, frame, create, false, frame.IssuedAt)
+		return err
+	})
+}
+
+func (t *tenancyStore) createWorkloadFrame(ctx context.Context, a TenantAccess, endpointID string, w WorkloadApply, create bool) (*Command, *protocol.WorkloadApply, error) {
+	if a.CorrelationID == "" {
+		a.CorrelationID = uuid.NewString()
+	}
+	cmd, frame, details, err := newWorkloadFrame(a, endpointID, w, create)
+	if err != nil {
+		return nil, nil, err
+	}
+	target := endpointID + "/" + cmd.Reference
+	err = t.runAs(ctx, a, permissions.ContainerConfigure, cmd.Action, &target, &details, true, func(tx *sql.Tx) error {
+		var err error
+		if cmd.OrganizationID, cmd.EnvironmentID, err = t.workloadPreconditions(ctx, tx, a, endpointID, frame, create, true, cmd.CreatedAt); err != nil {
 			return err
-		}
-		if err := t.directBusy(ctx, tx, endpointID, now); err != nil {
-			return err
-		}
-		if create {
-			if err := t.workloadNameFree(ctx, tx, endpointID, runtime, namespaces, w.Target); err != nil {
-				return err
-			}
-		} else if managed, _, err := t.clusterTarget(ctx, tx, endpointID, runtime, namespaces, w.Target); err != nil {
-			return err
-		} else if managed || spec.Managed {
-			return ErrWorkloadManaged
-		}
-		if len(spec.Unsupported) > 0 {
-			return invalidSpec("configuration_incomplete")
-		}
-		if err := frame.Validate(now); err != nil {
-			field := "frame"
-			if fe := new(protocol.FieldError); errors.As(err, &fe) {
-				field = fe.Field
-			}
-			return invalidSpec("spec_invalid:" + strings.NewReplacer(", ", "_", " ", "_").Replace(field))
 		}
 		_, err = tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_commands (id,endpoint_id,organization_id,environment_id,actor_id,request_id,action,container_id,reference,expects,deadline,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
 			cmd.ID, cmd.EndpointID, cmd.OrganizationID, cmd.EnvironmentID, cmd.ActorID, cmd.RequestID, cmd.Action, "", cmd.Reference, "{}", cmd.Deadline, cmd.CreatedAt)

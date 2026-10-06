@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -91,8 +90,8 @@ func (s *Server) handleContainerUpdateCheck(w http.ResponseWriter, r *http.Reque
 		s.writeJSON(w, 200, out)
 		return
 	}
-	access, err := s.store.Tenancy().ResolveRegistryAccess(r.Context(), a, permissions.ImagePull, reference, s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
-	if err != nil {
+	// Policy before budget: a refused organization spends no registry slot.
+	if _, err := s.store.Tenancy().ResolveRegistryAccess(r.Context(), a, permissions.ImagePull, reference, s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate); err != nil {
 		s.tenantError(w, err)
 		return
 	}
@@ -102,26 +101,14 @@ func (s *Server) handleContainerUpdateCheck(w http.ResponseWriter, r *http.Reque
 	}
 	defer release()
 	extendRegistryDeadline(w)
-	ctx, cancel := context.WithTimeout(r.Context(), store.ImageCheckDeadline)
-	defer cancel()
-	private := access.Registry != nil && access.Registry.AllowPrivate
-	remote, err := s.resolver().Head(ctx, ref, access.Credential, private)
-	if err != nil {
-		out["verdict"] = "registry_error"
-		// Closed codes only: never send registry error text or credentials.
-		switch {
-		case errors.Is(err, registry.ErrUnauthorized):
-			out["detail"] = "unauthorized"
-		case errors.Is(err, registry.ErrNotFound):
-			out["detail"] = "not_found"
-		case errors.Is(err, registry.ErrRateLimited):
-			out["detail"] = "rate_limited"
-		case errors.Is(err, registry.ErrPrivateDestination):
-			out["detail"] = "private_destination"
-		default:
-			out["detail"] = "unavailable"
-		}
-	} else {
+	remote, err := s.headDigest(r.Context(), a, reference, ref)
+	switch {
+	case errors.Is(err, errRegistryHead):
+		out["verdict"], out["detail"] = "registry_error", registryDetail(err)
+	case err != nil:
+		s.tenantError(w, err)
+		return
+	default:
 		out["remote_digest"] = remote
 		if out["local_digest"] != "" {
 			if out["local_digest"] == remote {

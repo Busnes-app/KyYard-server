@@ -7,6 +7,8 @@ import { uptime, useNow } from './containerFacts';
 import type { ApplicationInstance } from './ApplicationAdoption';
 import { Link } from './Link';
 import { WorkloadControls } from './WorkloadControls';
+import { WorkloadUpdate, type CheckWorkload } from './WorkloadUpdate';
+import type { useWorkloadImageUpdate } from './useWorkloadImageUpdate';
 import { PAGE_KINDS, PodControls } from './PodControls';
 import { dnsLabel, workloadPath, workloadRunPath } from '../router';
 import { canConfigure, canOperate, type Endpoint, type KubernetesInventory, type Pod, type PodContainer } from '../tenant';
@@ -17,7 +19,7 @@ const stateBadge: Record<string, string> = { running: 'badge-success', terminate
 // and the applications mapped to it. No Docker control is rendered, and none would be accepted.
 // instances is null while the applications cannot be read. Workload and pod toolbars need the
 // agent's kubernetes.workloads, a role that may operate, and onStatus for their results.
-export function KubernetesCluster({ org, base, endpoint, inventory, instances, admin, onChanged, role, onStatus, onRefresh }: { org: string; base: string; endpoint: Endpoint; inventory: KubernetesInventory; instances: ApplicationInstance[] | null; admin: boolean; onChanged: () => void; role?: string; onStatus?: (text: string) => void; onRefresh?: () => void }) {
+export function KubernetesCluster({ org, base, endpoint, inventory, instances, admin, onChanged, role, onStatus, onRefresh, checkUpdate, imageUpdate, workloadPending = false }: { org: string; base: string; endpoint: Endpoint; inventory: KubernetesInventory; instances: ApplicationInstance[] | null; admin: boolean; onChanged: () => void; role?: string; onStatus?: (text: string) => void; onRefresh?: () => void; checkUpdate?: CheckWorkload; imageUpdate?: ReturnType<typeof useWorkloadImageUpdate>; workloadPending?: boolean }) {
   const [namespace, setNamespace] = useState('');
   const [logs, setLogs] = useState<{ pod: Pod; container: PodContainer } | null>(null);
   const now = useNow();
@@ -31,6 +33,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
   const qualified = (r: { namespace: string; name: string }) => `${displayName(r.namespace)}/${displayName(r.name)}`;
   const active = endpoint.state === 'active';
   const tools = onStatus && endpoint.capabilities.includes('kubernetes.workloads') && canOperate(role) ? onStatus : null;
+  const updates = !!checkUpdate && canConfigure(role) && endpoint.capabilities.includes('kubernetes.workloads');
   const toolProps = { base, org, endpoint: endpoint.id, active, role, capabilities: endpoint.capabilities, scope: `Cluster ${displayName(endpoint.name)} · Endpoint ${endpoint.id}`, onRefresh };
   const page = (namespace: string, kind: string, name: string, text: string) => Object.hasOwn(PAGE_KINDS, kind) && dnsLabel.test(namespace) && dnsLabel.test(name) ? <Link to={workloadPath(org, endpoint.id, namespace, PAGE_KINDS[kind] ?? '', name)}>{text}</Link> : text;
   return <>
@@ -50,8 +53,9 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
       </select></label>
       {canConfigure(role) && <Link className="btn btn-secondary" to={workloadRunPath(org, endpoint.id)}>Run a container</Link>}
     </div>
-    <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images', ...(tools ? ['Actions'] : [])]} render={(w) => [
+    <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images', ...(updates ? ['Update'] : []), ...(tools ? ['Actions'] : [])]} render={(w) => [
       page(w.namespace, w.kind, w.name, qualified(w)), w.kind, `${w.ready}/${w.desired}${w.paused ? ' (paused)' : ''}`, w.images.map(displayName).join(', '),
+      ...(updates && checkUpdate ? [Object.hasOwn(PAGE_KINDS, w.kind) && !w.application && !w.instance && <WorkloadUpdate key={`${w.kind}/${w.namespace}/${w.name}`} workload={w} pods={inventory.pods.filter((p) => p.namespace === w.namespace && p.owner_kind === w.kind && p.owner_name === w.name)} active={active} org={org} checkUpdate={checkUpdate} onUpdate={() => void imageUpdate?.update(w)} updateDisabled={!imageUpdate || workloadPending} />] : []),
       ...(tools ? [Object.hasOwn(PAGE_KINDS, w.kind) && <WorkloadControls key={`${w.kind}/${w.namespace}/${w.name}`} {...toolProps} workload={w} open onStatus={tools} />] : []),
     ]} />
     <ResourceTable key={`pods-${selected}`} title="Pods" rows={scoped(inventory.pods)} rowKey={(p) => `${p.namespace}/${p.name}`} empty="No pods." head={['Pod', 'Phase', 'Uptime', 'Node', 'Restarts', 'Containers', ...(tools ? ['Actions'] : [])]} render={(p) => [

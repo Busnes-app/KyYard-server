@@ -378,3 +378,48 @@ func TestOpenPodExecTarget(t *testing.T) {
 		t.Fatal("no pod.exec.open row")
 	}
 }
+
+// CheckWorkloadFrame refuses what CreateWorkloadApply and CreateWorkloadRun refuse, and writes
+// nothing: no command, so a later create is not busy.
+func TestCheckWorkloadFrame(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	cluster := activeClusterWith(t, ts, a, testCluster(), "shop")
+	for name, c := range map[string]struct {
+		w      func() WorkloadApply
+		create bool
+		want   error
+	}{
+		"confirm":   {func() WorkloadApply { w := testApply(); w.Confirm = "api"; return w }, false, ErrInvalid},
+		"managed":   {func() WorkloadApply { w := testApply(); w.Target.Name, w.Confirm = "api", "api"; return w }, false, ErrWorkloadManaged},
+		"namespace": {func() WorkloadApply { w := testApply(); w.Target.Namespace = "other"; return w }, false, ErrNamespaceNotGranted},
+		"absent":    {func() WorkloadApply { w := testApply(); w.Target.Name, w.Confirm = "ghost", "ghost"; return w }, false, ErrNotFound},
+		"taken":     {func() WorkloadApply { w := testRun(); w.Target.Name, w.Confirm = "web", "web"; return w }, true, nil},
+	} {
+		err := ts.CheckWorkloadFrame(ctx, a, cluster, c.w(), c.create)
+		if name == "taken" {
+			var spec *InvalidSpecError
+			if !errors.As(err, &spec) || spec.Blockers[0] != "name_taken" {
+				t.Errorf("%s: %v", name, err)
+			}
+			continue
+		}
+		if !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
+		}
+	}
+	if err := ts.CheckWorkloadFrame(ctx, a, cluster, testApply(), false); err != nil {
+		t.Fatalf("valid apply: %v", err)
+	}
+	if err := ts.CheckWorkloadFrame(ctx, a, cluster, testRun(), true); err != nil {
+		t.Fatalf("valid run: %v", err)
+	}
+	// Nothing was written: the create is not busy.
+	if _, _, err := ts.CreateWorkloadApply(ctx, a, cluster, testApply()); err != nil {
+		t.Fatalf("apply after checks: %v", err)
+	}
+	if err := ts.CheckWorkloadFrame(ctx, a, cluster, testApply(), false); !errors.Is(err, ErrCommandInProgress) {
+		t.Fatalf("check while busy: %v", err)
+	}
+}

@@ -94,3 +94,13 @@ var ErrInspectionInvalidForTest = errInspectionInvalid
 func StillAllowedForTest(s *Server, r *http.Request, a store.TenantAccess, endpointID string) bool {
 	return s.stillAllowed(r, a, endpointID)
 }
+
+var TrackedReferenceForTest = trackedReference
+var RunningDigestForTest = runningDigest
+
+// ResetAttemptsForTest clears the rate limiter so one test can make many checks. Test-only.
+func ResetAttemptsForTest(s *Server) {
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	clear(s.attempts)
+}

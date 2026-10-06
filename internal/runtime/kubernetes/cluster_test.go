@@ -277,6 +277,39 @@ func TestManifestOnARealCluster(t *testing.T) {
 	if kept, err := cs.CoreV1().PersistentVolumeClaims(deployNamespace).Get(ctx, "kind-data", metav1.GetOptions{}); err != nil || kept.DeletionTimestamp != nil {
 		t.Fatalf("the removal took the claim: %+v %v", kept, err)
 	}
+	// A standalone run written as tag@digest, as the API's pin writes it, pulls by digest: the
+	// pod reports that digest.
+	imageName, _, _ := strings.Cut(image, "@")
+	pinnedImage := imageName + ":kyyard-pin@" + digest
+	one := int32(1)
+	run := protocol.WorkloadApply{Request: "6c5d4e3f-8d4a-4e6f-9a0b-1c2d3e4f5a6b", Endpoint: "ep_kind", IssuedAt: time.Now(), Deadline: time.Now().Add(2 * time.Minute),
+		Target: protocol.WorkloadRef{Namespace: deployNamespace, Kind: protocol.WorkloadDeployment, Name: "kind-pinned"}, Create: true}
+	run.Spec = protocol.WorkloadConfiguration{Target: run.Target, Replicas: &one, Strategy: "RollingUpdate",
+		Containers: []protocol.WorkloadContainer{{Name: "pinned", Image: pinnedImage, Command: []string{}, Args: []string{}, Env: []protocol.WorkloadEnv{}}}, InitContainers: []protocol.WorkloadContainer{}, EnvFrom: []string{}}
+	if err := run.Validate(time.Now()); err != nil {
+		t.Fatalf("run frame: %v", err)
+	}
+	if res := c.ApplyWorkload(ctx, run, func() {}); res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("pinned run as the agent: %+v", res)
+	}
+	t.Cleanup(func() {
+		_ = cs.AppsV1().Deployments(deployNamespace).Delete(context.Background(), "kind-pinned", metav1.DeleteOptions{})
+	})
+	for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(time.Second) {
+		pods, err := cs.CoreV1().Pods(deployNamespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := slices.ContainsFunc(pods.Items, func(p corev1.Pod) bool {
+			return strings.HasPrefix(p.Name, "kind-pinned-") && len(p.Status.ContainerStatuses) == 1 && p.Status.ContainerStatuses[0].Ready && strings.HasSuffix(p.Status.ContainerStatuses[0].ImageID, "@"+digest)
+		})
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no ready kind-pinned pod reporting %s", digest)
+		}
+	}
 }
 
 // removeAgent deletes what the manifest creates and waits for the namespace to go, so a run

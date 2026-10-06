@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { canDestroy, canOperate } from '../tenant';
-import { diffWorkload, parseWorkloadConfiguration, toWorkloadSpec, workloadUnsupportedLabel } from './workloadConfiguration';
+import { diffWorkload, parseWorkloadConfiguration, toWorkloadSpec, tracksTag, workloadUnsupportedLabel } from './workloadConfiguration';
 
 const target = { namespace: 'default', kind: 'deployment', name: 'web' };
 const payload = (): Record<string, any> => ({
@@ -106,4 +106,13 @@ it('checks replicas and strategy per kind', () => {
   expect(as('deployment', { strategy: 'Recreate' })).not.toBeNull();
   expect(as('deployment', { strategy: 'OnDelete' })).toBeNull();
   expect(as('deployment', { strategy: '' })).not.toBeNull();
+});
+
+it('knows which images track a tag', () => {
+  const d = 'sha256:' + 'a'.repeat(64);
+  expect(tracksTag('nginx')).toBe(true);
+  expect(tracksTag('ghcr.io/acme/web:2')).toBe(true);
+  expect(tracksTag(`ghcr.io/acme/web:2@${d}`)).toBe(true);
+  expect(tracksTag(`localhost:5000/web@${d}`)).toBe(false);
+  expect(tracksTag(`ghcr.io/acme/web@${d}`)).toBe(false);
 });

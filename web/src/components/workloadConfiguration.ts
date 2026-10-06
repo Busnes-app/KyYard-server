@@ -101,3 +101,9 @@ export function diffWorkload(before: WorkloadSpec, after: WorkloadSpec): string[
   }
   return out;
 }
+
+// tracksTag is false for a digest-only image: there is no tag to resolve again (server trackedReference).
+export function tracksTag(image: string): boolean {
+  const [name = '', pinned] = image.split('@', 2);
+  return pinned === undefined || name.slice(name.lastIndexOf('/') + 1).includes(':');
+}
