@@ -353,6 +353,7 @@ type TenancyStore interface {
 	RecordWorkloadConfigurationRead(ctx context.Context, access TenantAccess, endpointID string, ref protocol.WorkloadRef, unsupported int) error
 	CreateWorkloadApply(ctx context.Context, access TenantAccess, endpointID string, w WorkloadApply) (*Command, *protocol.WorkloadApply, error)
 	CreateWorkloadRun(ctx context.Context, access TenantAccess, endpointID string, w WorkloadApply) (*Command, *protocol.WorkloadApply, error)
+	CheckWorkloadFrame(ctx context.Context, access TenantAccess, endpointID string, w WorkloadApply, create bool) error
 	FailDirectCommand(ctx context.Context, endpointID, id, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
 	// ReconcileAfterStart settles every in-flight command as unknown, fails every open policy run
