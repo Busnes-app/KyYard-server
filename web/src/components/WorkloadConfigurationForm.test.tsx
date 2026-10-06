@@ -57,7 +57,7 @@ it('posts apply with the read resource_version, the whole spec and the typed nam
   const onSent = form();
   fireEvent.change(screen.getByLabelText('Image of web'), { target: { value: 'nginx:1.30' } });
   fireEvent.change(screen.getByLabelText('Replicas'), { target: { value: '4' } });
-  expect(screen.getByText('Changes: replicas, containers.web.image')).toBeTruthy();
+  expect(screen.getByText('Changes: replicas, containers.web.image, containers.web.pin')).toBeTruthy();
   expect(save().hasAttribute('disabled')).toBe(true);
   fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
   fireEvent.click(save());
@@ -65,7 +65,7 @@ it('posts apply with the read resource_version, the whole spec and the typed nam
   expect(urls).toEqual([`${base}/workloads/shop/deployment/web/apply`]);
   const c = configuration();
   expect(bodies[0]).toEqual({
-    resource_version: '41', confirm: 'web',
+    resource_version: '41', confirm: 'web', pull: ['web'],
     spec: { resource_version: '41', replicas: 4, paused: false, strategy: 'RollingUpdate', init_containers: [], env_from: [], unsupported: [], containers: [{ ...c.containers[0], image: 'nginx:1.30' }] },
   });
 });
@@ -198,7 +198,7 @@ it('runs a new Deployment only with namespace, name, image and the typed name, p
   await waitFor(() => expect(onSent).toHaveBeenCalledWith({ id: 'k8', action: 'workload.run', reference: 'shop/deployment/fresh', outcome: '' }, { namespace: 'shop', kind: 'deployment', name: 'fresh' }));
   expect(urls).toEqual([`${base}/workloads`]);
   expect(bodies[0]).toEqual({
-    confirm: 'fresh',
+    confirm: 'fresh', pull: [],
     spec: {
       target: { namespace: 'shop', kind: 'deployment', name: 'fresh' }, resource_version: '', replicas: 2, strategy: 'RollingUpdate', paused: false,
       containers: [{ name: 'web', image: 'nginx:1.30', image_id: '', command: [], args: [], env: [{ name: 'K', value: 'v' }], resources: { cpu_request: '', cpu_limit: '', memory_request: '', memory_limit: '' } }],
@@ -283,4 +283,124 @@ it('says Running for a succeeded run and Applied for a succeeded apply', () => {
   unmount();
   render(<WorkloadResult command={{ id: 'k11', action: 'workload.apply', outcome: 'succeeded' }} />);
   expect(screen.getByText('Applied.')).toBeTruthy();
+});
+
+const digestRef = 'ghcr.io/acme/web@sha256:' + 'a'.repeat(64);
+const captureBodies = () => {
+  const bodies: { pull?: string[] }[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (_u: RequestInfo | URL, init?: RequestInit) => { bodies.push(JSON.parse(String(init?.body))); return json({ id: 'c', action: 'workload.apply', outcome: '' }, 202); }));
+  return bodies;
+};
+const pinBox = (who: string) => screen.getByRole('checkbox', { name: `Pin the current digest of ${who}` }) as HTMLInputElement;
+
+it('pins a changed image by default and shows the running digest', async () => {
+  const bodies = captureBodies();
+  const config = configuration(); config.containers[0]!.image_id = digestRef;
+  form(config);
+  expect(screen.getByText(/sha256:a{64}/)).toBeTruthy();
+  expect(pinBox('web').checked).toBe(false);
+  fireEvent.change(screen.getByLabelText('Image of web'), { target: { value: 'ghcr.io/acme/web:3' } });
+  expect(pinBox('web').checked).toBe(true);
+  expect(screen.getByText(/containers\.web\.pin/)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
+  fireEvent.click(save());
+  await waitFor(() => expect(bodies[0]?.pull).toEqual(['web']));
+});
+
+it('lets a pin with no other change save, and unticking removes it', async () => {
+  const bodies = captureBodies();
+  form();
+  fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
+  expect(save().hasAttribute('disabled')).toBe(true);
+  fireEvent.click(pinBox('web'));
+  expect(save().hasAttribute('disabled')).toBe(false);
+  expect(screen.getByText(/containers\.web\.pin/)).toBeTruthy();
+  expect(screen.getByText(/resolved at the registry and pinned by digest; the tag stays visible\./)).toBeTruthy();
+  fireEvent.click(pinBox('web'));
+  expect(save().hasAttribute('disabled')).toBe(true);
+  fireEvent.click(pinBox('web'));
+  fireEvent.click(save());
+  await waitFor(() => expect(bodies[0]?.pull).toEqual(['web']));
+});
+
+it('sends an empty pull when nothing is ticked', async () => {
+  const bodies = captureBodies();
+  form();
+  fireEvent.change(screen.getByLabelText('Replicas'), { target: { value: '4' } });
+  fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
+  fireEvent.click(save());
+  await waitFor(() => expect(bodies[0]?.pull).toEqual([]));
+});
+
+it('hides the box for a digest-only image and drops its pin', async () => {
+  const bodies = captureBodies();
+  form();
+  fireEvent.click(pinBox('web'));
+  fireEvent.change(screen.getByLabelText('Image of web'), { target: { value: digestRef } });
+  expect(screen.queryByRole('checkbox', { name: /Pin the current digest/ })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
+  fireEvent.click(save());
+  await waitFor(() => expect(bodies[0]?.pull).toEqual([]));
+});
+
+it('hides the box when the read image is digest-only', () => {
+  const config = configuration(); config.containers[0]!.image = digestRef;
+  form(config);
+  expect(screen.queryByRole('checkbox', { name: /Pin the current digest/ })).toBeNull();
+});
+
+const fillRun = () => {
+  fireEvent.change(screen.getByLabelText('Workload name'), { target: { value: 'fresh' } });
+  fireEvent.change(screen.getByLabelText('Name of container 1'), { target: { value: 'web' } });
+  fireEvent.change(screen.getByLabelText('Image of container 1'), { target: { value: 'nginx:1.30' } });
+  fireEvent.change(screen.getByLabelText('Type the new workload name to confirm'), { target: { value: 'fresh' } });
+};
+
+it('starts unticked in run mode and sends an empty pull', async () => {
+  const bodies = captureBodies();
+  runForm(['shop']);
+  fillRun();
+  expect(pinBox('container 1').checked).toBe(false);
+  fireEvent.click(runButton());
+  await waitFor(() => expect(bodies[0]?.pull).toEqual([]));
+});
+
+it('sends the name of a ticked container in run mode', async () => {
+  const bodies = captureBodies();
+  runForm(['shop']);
+  fillRun();
+  fireEvent.click(pinBox('container 1'));
+  fireEvent.click(runButton());
+  await waitFor(() => expect(bodies[0]?.pull).toEqual(['web']));
+});
+
+it('keeps a run-mode pin with its container when an earlier one is removed', async () => {
+  const bodies = captureBodies();
+  runForm(['shop']);
+  fillRun();
+  fireEvent.click(screen.getByRole('button', { name: 'Add a container' }));
+  fireEvent.change(screen.getByLabelText('Name of container 2'), { target: { value: 'sidecar' } });
+  fireEvent.change(screen.getByLabelText('Image of container 2'), { target: { value: 'busybox:1' } });
+  fireEvent.click(pinBox('container 2'));
+  fireEvent.click(screen.getByRole('button', { name: 'Remove container 1' }));
+  expect(pinBox('container 1').checked).toBe(true);
+  fireEvent.click(runButton());
+  await waitFor(() => expect(bodies[0]?.pull).toEqual(['sidecar']));
+});
+
+it('drops the pin of a removed run-mode container and starts an added one unticked', async () => {
+  const bodies = captureBodies();
+  runForm(['shop']);
+  fillRun();
+  fireEvent.click(screen.getByRole('button', { name: 'Add a container' }));
+  fireEvent.change(screen.getByLabelText('Name of container 2'), { target: { value: 'sidecar' } });
+  fireEvent.change(screen.getByLabelText('Image of container 2'), { target: { value: 'busybox:1' } });
+  fireEvent.click(pinBox('container 2'));
+  fireEvent.click(screen.getByRole('button', { name: 'Remove container 2' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add a container' }));
+  expect(pinBox('container 2').checked).toBe(false);
+  fireEvent.change(screen.getByLabelText('Name of container 2'), { target: { value: 'sidecar' } });
+  fireEvent.change(screen.getByLabelText('Image of container 2'), { target: { value: 'busybox:1' } });
+  fireEvent.click(runButton());
+  await waitFor(() => expect(bodies[0]?.pull).toEqual([]));
 });

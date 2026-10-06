@@ -3,7 +3,7 @@ import { secureFetch } from '../api';
 import { dnsLabel } from '../router';
 import type { DirectCommand, WorkloadConfiguration, WorkloadContainer, WorkloadRef } from '../tenant';
 import { RESULT_CODES, StepTable } from './ApplicationDeploymentPlan';
-import { diffWorkload, parseWorkloadConfiguration, toWorkloadSpec, workloadUnsupportedLabel, type WorkloadSpec } from './workloadConfiguration';
+import { diffWorkload, parseWorkloadConfiguration, toWorkloadSpec, tracksTag, workloadUnsupportedLabel, type WorkloadSpec } from './workloadConfiguration';
 import { Group, int, Lines, Num, Text } from './configurationGroups/fields';
 import { EnvRows } from './configurationGroups/environment';
 import { displayName } from './Endpoints';
@@ -44,6 +44,8 @@ export function WorkloadConfigurationForm(props: FormProps) {
   const [namespace, setNamespace] = useState(seed?.target.namespace ?? (namespaces.length === 1 ? namespaces[0] ?? '' : ''));
   const [name, setName] = useState(seed?.target.name ?? '');
   const [confirm, setConfirm] = useState('');
+  // Ticked pins: container names when editing, row indexes (as strings) in run mode.
+  const [pins, setPins] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [lost, setLost] = useState(false);
@@ -51,17 +53,30 @@ export function WorkloadConfigurationForm(props: FormProps) {
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const target: WorkloadRef = initial ? initial.target : { namespace, kind: 'deployment', name };
   const spec = build(draft);
-  const changes = diffWorkload(start, spec);
+  const pull = spec.containers.filter((c, i) => pins.has(run ? String(i) : c.name) && tracksTag(c.image)).map((c) => c.name);
+  const changes = [...diffWorkload(start, spec), ...(run ? [] : pull.map((n) => `containers.${n}.pin`))];
   const badReplicas = spec.replicas !== undefined && !(Number.isInteger(spec.replicas) && spec.replicas >= 0 && spec.replicas <= 1000);
   const names = spec.containers.map((c) => c.name);
   const incomplete = new Set(names).size !== names.length || spec.containers.some((c) => !dnsLabel.test(c.name) || c.image.trim() === '' || c.env.some((e) => e.name === ''));
   const badName = run && !dnsLabel.test(name);
-  const ready = !badReplicas && !incomplete && spec.unsupported.length === 0 && (run ? namespaces.includes(namespace) && !badName : changes.length > 0) && confirm === target.name;
-  const setContainer = (i: number, patch: Partial<WorkloadContainer>) => setDraft((d) => ({ ...d, containers: d.containers.map((c, j) => j === i ? { ...c, ...patch } : c) }));
+  const ready = !badReplicas && !incomplete && spec.unsupported.length === 0 && (run ? namespaces.includes(namespace) && !badName : changes.length > 0 || pull.length > 0) && confirm === target.name;
+  const togglePin = (key: string, on: boolean) => setPins((p) => { const n = new Set(p); if (on) n.add(key); else n.delete(key); return n; });
+  const setContainer = (i: number, patch: Partial<WorkloadContainer>) => {
+    setDraft((d) => ({ ...d, containers: d.containers.map((c, j) => j === i ? { ...c, ...patch } : c) }));
+    if (!run && patch.image !== undefined) {
+      const cname = draft.containers[i]?.name ?? '';
+      togglePin(cname, patch.image !== start.containers.find((c) => c.name === cname)?.image);
+    }
+  };
+  // Removing a run-mode row drops its pin and shifts the later ones down with their rows.
+  const removeContainer = (i: number) => {
+    setDraft((d) => ({ ...d, containers: d.containers.filter((_, j) => j !== i) }));
+    setPins((p) => new Set([...p].map(Number).filter((k) => k !== i).map((k) => String(k > i ? k - 1 : k))));
+  };
   const submit = async () => {
     onStarted?.();
     setBusy(true); setError('');
-    const [url, body] = run ? [`${base}/workloads`, { spec: { target, ...spec, managed: false }, confirm }] : [`${workloadURL(base, target)}/apply`, { resource_version: start.resource_version, spec, confirm }];
+    const [url, body] = run ? [`${base}/workloads`, { spec: { target, ...spec, managed: false }, confirm, pull }] : [`${workloadURL(base, target)}/apply`, { resource_version: start.resource_version, spec, confirm, pull }];
     try {
       const resp = await secureFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!alive.current) return;
@@ -97,6 +112,8 @@ export function WorkloadConfigurationForm(props: FormProps) {
         return <Group key={run ? `${i}/${draft.containers.length}` : c.name} title={run ? `Container ${i + 1}` : `Container ${c.name}`}>
           {run && i > 0 && <Text label={`Name of ${who}`} value={c.name} onChange={(n) => setContainer(i, { name: n })} />}
           <Text label={`Image of ${who}`} value={c.image} onChange={(image) => setContainer(i, { image })} />
+          {!run && c.image_id && <p>Running <code style={{ overflowWrap: 'anywhere' }}>{c.image_id}</code></p>}
+          {tracksTag(c.image) && <label><input type="checkbox" aria-label={`Pin the current digest of ${who}`} checked={pins.has(run ? String(i) : c.name)} onChange={(e) => togglePin(run ? String(i) : c.name, e.target.checked)} /> Pin the reference's current digest</label>}
           <details className="ky-config-disclosure"><summary>Container settings</summary>
           {run && i === 0 && <Text label={`Name of ${who}`} value={c.name} onChange={(n) => setContainer(i, { name: n })} />}
           <Lines label={`Command of ${who}`} value={c.command} onChange={(command) => setContainer(i, { command })} />
@@ -104,14 +121,14 @@ export function WorkloadConfigurationForm(props: FormProps) {
           <Group title={`Environment of ${who}`}><EnvRows noun={`${run ? `Container ${i + 1}` : c.name} variable`} env={c.env} blank={{ name: '', value: '' }} onChange={(env) => setContainer(i, { env })} /></Group>
           {RESOURCES.map(([key, label]) => <Text key={key} label={`${label} of ${who}`} placeholder="unset" value={c.resources[key]} onChange={(v) => setContainer(i, { resources: { ...c.resources, [key]: v } })} />)}
           </details>
-          {run && draft.containers.length > 1 && <div><button type="button" className="btn-secondary" onClick={() => setDraft((d) => ({ ...d, containers: d.containers.filter((_, j) => j !== i) }))}>Remove container {i + 1}</button></div>}
+          {run && draft.containers.length > 1 && <div><button type="button" className="btn-secondary" onClick={() => removeContainer(i)}>Remove container {i + 1}</button></div>}
         </Group>;
       })}
       {run && draft.containers.length < MAX_CONTAINERS && <div><button type="button" className="btn-secondary" onClick={() => setDraft((d) => ({ ...d, containers: [...d.containers, BLANK] }))}>Add a container</button></div>}
     </fieldset>
     <div className="ky-config-save">
       {run ? <p>Running creates a Deployment in the chosen namespace, and Kubernetes starts its pods.</p> : <>
-        <p>Saving updates this {KIND_NAMES[target.kind] ?? 'workload'} in place and Kubernetes replaces its pods. Nothing rolls back.</p>
+        <p>Saving updates this {KIND_NAMES[target.kind] ?? 'workload'} in place and Kubernetes replaces its pods. Nothing rolls back. A ticked image is resolved at the registry and pinned by digest; the tag stays visible.</p>
         <p>{changes.length ? `Changes: ${changes.join(', ')}` : 'No changes.'}</p>
       </>}
       {badName && name !== '' && <p>Enter the workload name as a lower-case DNS label: letters, digits and hyphens, at most 63 characters.</p>}
