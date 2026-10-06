@@ -31,9 +31,9 @@ optional `pull: [<container name>…]` naming entries of `spec.containers` or
 `spec.init_containers`. An unknown or duplicate name is `ErrInvalid`. For each named container,
 before the command is recorded, the server:
 
-1. parses the image with `registry.ParseReference`; a reference that already carries a digest is
-   re-resolved from its tag (the tag is what the operator is asking about), and one with no tag
-   is refused as `image_unresolved`;
+1. splits the image with `trackedReference` (see Update check); a reference that already
+   carries a digest is re-resolved from its tag (the tag is what the operator is asking about),
+   and one with a digest but no tag is refused as `image_unresolved`;
 2. resolves credentials with `ResolveRegistryAccess(…, permissions.ImagePull, …)`, under the same
    organization registry, anonymous-pull and private-destination rules as Docker;
 3. takes a registry slot (`acquireRegistrySlot`), extends the write deadline, and `Head`s the
@@ -42,9 +42,11 @@ before the command is recorded, the server:
 
 Any failure answers 422 `image_unresolved` (or the registry policy code Docker returns) and sends
 nothing. The store's existing checks run first, so a managed workload or a missing permission is
-refused before any registry call. Docker's `ResolveDirectImage` keeps its signature; the
-credential-and-Head step both paths need moves into one helper in `internal/api` so the rules
-cannot drift.
+refused before any registry call: a new read-only `CheckWorkloadFrame` runs
+`CreateWorkloadApply`'s preconditions without writing, as `CheckDirectCommand` does for Docker.
+Docker's `ResolveDirectImage` keeps its signature. The credential-and-Head step that the
+container check, the workload check and the pin share moves into one `internal/api` helper,
+`headDigest`, so the rules cannot drift.
 
 The kubelet pulls `repo:tag@digest` by digest; the tag stays readable in the spec, so the next
 update knows what to resolve again.
@@ -59,7 +61,7 @@ deployment, statefulset and daemonset.
 The answer is read from the stored inventory snapshot and registry `Head`s only:
 
 ```json
-{ "workload": "ns/deployment/name", "verdict": "update_available", "checked_at": "…",
+{ "workload": "ns/deployment/name", "verdict": "update_available", "detail": "", "checked_at": "…",
   "containers": [ { "name": "web", "reference": "nginx:1.27", "local_digest": "sha256:…",
                     "remote_digest": "sha256:…", "verdict": "update_available", "detail": "" } ] }
 ```
@@ -67,12 +69,16 @@ The answer is read from the stored inventory snapshot and registry `Head`s only:
 - The containers and references come from the workload's pods in the snapshot (`OwnerKind` and
   `OwnerName`). `local_digest` is the digest in each pod's `image_id` whose repository matches
   the reference. Pods that disagree, as they do mid-rollout, give `unknown`.
+- An image is split by `trackedReference`: the part before `@` is the tracked tag (parsed by
+  `registry.ParseReference`, which refuses a tag and digest together), the part after is the
+  pin. `repo:tag@sha256:…` tracks `repo:tag`, so a pinned workload is still offered later
+  updates. Only `repo@sha256:…` with no tag is `pinned`.
 - Per-container verdicts use Docker's words: `up_to_date`, `update_available`, `pinned`,
   `unknown`, and `registry_error` with a closed `detail` (`unauthorized`, `not_found`,
   `rate_limited`, `private_destination`, `unavailable`). Registry text is never returned.
 - The workload verdict is `update_available` if any container's is, else `registry_error` if any
   container's is, else `up_to_date` if all are, else `pinned` if all are pinned or up to date,
-  else `unknown`.
+  else `unknown`. The workload `detail` is the first `registry_error` container's.
 - A workload with the KyYard application labels answers `managed`, with no registry call. The UI
   points to the application's update flow.
 - Containers are checked one at a time inside one registry slot, at most 32 (`MaxWorkloadImages`).
@@ -88,13 +94,16 @@ The answer is read from the stored inventory snapshot and registry `Head`s only:
 - *Update image* (`useWorkloadImageUpdate`, page-owned like `useContainerImageUpdate`): it reads
   `…/configuration`, refuses when `unsupported` is non-empty, and submits `apply` with that
   configuration's `resource_version`, the configuration unchanged, `pull` set to every
-  `update_available` container and `confirm` the workload name. A lost response locks retries
+  container whose image tracks a tag (a digest-only image is skipped) and `confirm` the workload
+  name. Like Docker's button, it pulls whatever the tags name now; containers already current
+  are re-pinned to the same digest. A lost response locks retries
   and says to check recent activity.
 - It appears on the cluster page's Workloads table and on the workload page, for roles that can
   configure and only when the agent advertises `kubernetes.workloads`.
 - `WorkloadConfigurationForm`: each container shows the running digest from its pods and a *Pin
-  the reference's current digest* checkbox. The box is ticked when the reference changes and
-  starts unticked otherwise; a ticked container goes into `pull`. The "Nothing rolls back" note
+  the reference's current digest* checkbox. When editing, the box is ticked when the reference changes and
+  starts unticked otherwise; in run mode it starts unticked, so a run still works without
+  registry access configured. A ticked container goes into `pull`. The "Nothing rolls back" note
   stays, because it is true outside applications.
 
 ## Tests
