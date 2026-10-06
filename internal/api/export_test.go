@@ -94,3 +94,6 @@ var ErrInspectionInvalidForTest = errInspectionInvalid
 func StillAllowedForTest(s *Server, r *http.Request, a store.TenantAccess, endpointID string) bool {
 	return s.stillAllowed(r, a, endpointID)
 }
+
+var TrackedReferenceForTest = trackedReference
+var RunningDigestForTest = runningDigest
