@@ -1,10 +1,15 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/registry"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 var sha256Digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -38,4 +43,41 @@ func runningDigest(imageID string, ref registry.Reference) string {
 		return ""
 	}
 	return digest
+}
+
+// errRegistryHead marks a registry failure, as opposed to a registry policy refusal.
+var errRegistryHead = errors.New("registry head failed")
+
+// headDigest resolves name's current digest under the organization's registry access: the one
+// set of rules every update check and pin uses. The caller holds a registry slot.
+func (s *Server) headDigest(ctx context.Context, a store.TenantAccess, name string, ref registry.Reference) (string, error) {
+	access, err := s.store.Tenancy().ResolveRegistryAccess(ctx, a, permissions.ImagePull, name, s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, store.ImageCheckDeadline)
+	defer cancel()
+	digest, err := s.resolver().Head(ctx, ref, access.Credential, access.Registry != nil && access.Registry.AllowPrivate)
+	if err == nil && !validDigest(digest) {
+		err = registry.ErrUnavailable
+	}
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errRegistryHead, err)
+	}
+	return digest, nil
+}
+
+// registryDetail is the closed word for a registry failure: registry text never reaches a client.
+func registryDetail(err error) string {
+	switch {
+	case errors.Is(err, registry.ErrUnauthorized):
+		return "unauthorized"
+	case errors.Is(err, registry.ErrNotFound):
+		return "not_found"
+	case errors.Is(err, registry.ErrRateLimited):
+		return "rate_limited"
+	case errors.Is(err, registry.ErrPrivateDestination):
+		return "private_destination"
+	}
+	return "unavailable"
 }
