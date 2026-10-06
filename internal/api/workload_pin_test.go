@@ -75,6 +75,26 @@ func TestWorkloadApplyPinsPulledImages(t *testing.T) {
 	}
 }
 
+// A name without a tag gains the defaulted tag, so the pinned reference still tracks it.
+func TestWorkloadPinKeepsTheTag(t *testing.T) {
+	for _, image := range []string{"nginx", "registry.example.com:5000/app"} {
+		f := newWorkloadFleet(t, workloadCaps...)
+		f.anonymousPulls(t)
+		api.SetDigestResolverForTest(f.s, &countingResolver{})
+		pinned := "sha256:" + strings.Repeat("f", 64)
+		cfg := workloadConfiguration(protocol.WorkloadRef{Namespace: "shop", Kind: "deployment", Name: "web"})
+		cfg.Containers[0].Image = image
+		w := tenantRequest(f.s, f.org, "POST", f.webWorkload+"/apply", withPull(t, applyBody(t, cfg, "web"), "web"), true)
+		if w.Code != 202 {
+			t.Fatalf("%s apply: %d %s", image, w.Code, w.Body.String())
+		}
+		got := f.appliedImages(t)[0]
+		if _, _, _, ok := api.TrackedReferenceForTest(got); got != image+":latest@"+pinned || !ok {
+			t.Fatalf("%s pinned as %q (tracked %v)", image, got, ok)
+		}
+	}
+}
+
 // Refusals spend no registry call and record no command.
 func TestWorkloadPinRefusals(t *testing.T) {
 	f := newWorkloadFleet(t, workloadCaps...)

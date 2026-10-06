@@ -91,6 +91,7 @@ export function UpdateBadge({ label, identity, active, org, check: checkUpdate, 
   const request = useRef<AbortController | null>(null);
   const latest = useRef(checkUpdate);
   latest.current = checkUpdate;
+  // `identity` re-keys the check: callers remount on endpoint change and the queue cache key carries base.
   const check = useCallback(async (fresh: boolean) => {
     request.current?.abort();
     const controller = new AbortController();

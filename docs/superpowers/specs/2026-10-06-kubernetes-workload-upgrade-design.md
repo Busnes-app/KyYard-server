@@ -118,7 +118,7 @@ The answer is read from the stored inventory snapshot and registry `Head`s only:
   service token, the rate limit, a Docker endpoint (409), and a changed snapshot.
 - **Web** (vitest):
   - checker caching and the badges;
-  - *Update image* submits `pull` only for `update_available`, refuses when settings are
+  - *Update image* submits `pull` for every container whose image tracks a tag (digest-only images are skipped), refuses when settings are
     unsupported, and locks after a lost response;
   - the form checkbox defaults for a changed and an unchanged reference.
 - **Real cluster** (`KY_TEST_KUBECONFIG`, local only): applying with a pinned image rolls out and

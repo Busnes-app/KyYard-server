@@ -141,7 +141,16 @@ func (s *Server) pinWorkloadImages(w http.ResponseWriter, r *http.Request, a sto
 			}
 			digests[refs[i].name] = digest
 		}
-		c.Image = refs[i].name + "@" + digest
+		c.Image = pinnedName(refs[i].name, refs[i].ref) + "@" + digest
 	}
 	return true
+}
+
+// pinnedName keeps the operator's spelling and adds the defaulted tag when none is written, so
+// the pinned reference stays host/repository:tag@digest and tracks the tag.
+func pinnedName(name string, ref registry.Reference) string {
+	if strings.Contains(name[strings.LastIndex(name, "/")+1:], ":") {
+		return name
+	}
+	return name + ":" + ref.Tag
 }

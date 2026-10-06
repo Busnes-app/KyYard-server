@@ -113,7 +113,7 @@ export function WorkloadConfigurationForm(props: FormProps) {
           {run && i > 0 && <Text label={`Name of ${who}`} value={c.name} onChange={(n) => setContainer(i, { name: n })} />}
           <Text label={`Image of ${who}`} value={c.image} onChange={(image) => setContainer(i, { image })} />
           {!run && c.image_id && <p>Running <code style={{ overflowWrap: 'anywhere' }}>{c.image_id}</code></p>}
-          {tracksTag(c.image) && <label><input type="checkbox" aria-label={`Pin the current digest of ${who}`} checked={pins.has(run ? String(i) : c.name)} onChange={(e) => togglePin(run ? String(i) : c.name, e.target.checked)} /> Pin the reference's current digest</label>}
+          {tracksTag(c.image) && <label><input type="checkbox" checked={pins.has(run ? String(i) : c.name)} onChange={(e) => togglePin(run ? String(i) : c.name, e.target.checked)} /> {`Pin the current digest of ${who}`}</label>}
           <details className="ky-config-disclosure"><summary>Container settings</summary>
           {run && i === 0 && <Text label={`Name of ${who}`} value={c.name} onChange={(n) => setContainer(i, { name: n })} />}
           <Lines label={`Command of ${who}`} value={c.command} onChange={(command) => setContainer(i, { command })} />
