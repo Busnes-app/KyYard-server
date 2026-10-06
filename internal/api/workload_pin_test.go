@@ -1,9 +1,11 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,13 +62,15 @@ func TestWorkloadApplyPinsPulledImages(t *testing.T) {
 	keep := side
 	keep.Name, keep.Image = "keep", "ghcr.io/acme/other:1"
 	cfg.Containers = append(cfg.Containers, side, keep)
-	w := tenantRequest(f.s, f.org, "POST", f.webWorkload+"/apply", withPull(t, applyBody(t, cfg, "web"), "web", "side"), true)
+	cfg.InitContainers = []protocol.WorkloadContainer{side}
+	cfg.InitContainers[0].Name, cfg.InitContainers[0].Image = "init", "ghcr.io/acme/init:3"
+	w := tenantRequest(f.s, f.org, "POST", f.webWorkload+"/apply", withPull(t, applyBody(t, cfg, "web"), "web", "side", "init"), true)
 	if w.Code != 202 {
 		t.Fatalf("apply: %d %s", w.Code, w.Body.String())
 	}
 	got := f.appliedImages(t)
-	want := []string{"ghcr.io/acme/web:2@" + pinned, "ghcr.io/acme/web:2@" + pinned, "ghcr.io/acme/other:1"}
-	if strings.Join(got, ",") != strings.Join(want, ",") || resolver.calls.Load() != 1 {
+	want := []string{"ghcr.io/acme/web:2@" + pinned, "ghcr.io/acme/web:2@" + pinned, "ghcr.io/acme/other:1", "ghcr.io/acme/init:3@" + pinned}
+	if strings.Join(got, ",") != strings.Join(want, ",") || resolver.calls.Load() != 2 {
 		t.Fatalf("images %v, %d heads", got, resolver.calls.Load())
 	}
 }
@@ -144,4 +148,59 @@ func (f *workloadFleet) settleLast(t *testing.T) {
 		Steps:    []protocol.DeploymentStep{{Service: protocol.WorkloadApplyService, Step: protocol.StepApply, Outcome: protocol.OutcomeSucceeded}},
 		Services: []protocol.DeploymentIdentity{}})
 	f.sync(t)
+}
+
+type blockingResolver struct{ calls atomic.Int32 }
+
+func (r *blockingResolver) Head(ctx context.Context, _ registry.Reference, _ *registry.Credential, _ bool) (string, error) {
+	r.calls.Add(1)
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+// Every Head of one request shares one deadline, so two references cost one, not two.
+func TestWorkloadPinSharesOneDeadline(t *testing.T) {
+	f := newWorkloadFleet(t, workloadCaps...)
+	f.anonymousPulls(t)
+	old := store.ImageCheckDeadline
+	store.ImageCheckDeadline = 300 * time.Millisecond
+	t.Cleanup(func() { store.ImageCheckDeadline = old })
+	api.SetDigestResolverForTest(f.s, &blockingResolver{})
+	cfg := workloadConfiguration(protocol.WorkloadRef{Namespace: "shop", Kind: "deployment", Name: "web"})
+	other := cfg.Containers[0]
+	other.Name, other.Image, other.Env = "other", "ghcr.io/acme/other:1", []protocol.WorkloadEnv{}
+	cfg.Containers = append(cfg.Containers, other)
+	start := time.Now()
+	w := tenantRequest(f.s, f.org, "POST", f.webWorkload+"/apply", withPull(t, applyBody(t, cfg, "web"), "web", "other"), true)
+	if took := time.Since(start); w.Code != 422 || !strings.Contains(w.Body.String(), "image_unresolved") || took > 500*time.Millisecond {
+		t.Fatalf("%d %s after %v", w.Code, w.Body.String(), took)
+	}
+	f.sync(t)
+	commands, err := f.st.Tenancy().ListCommands(f.ctx, store.TenantAccess{ActorID: "usr_orgadmin", OrganizationID: "a"}, f.cluster.id, "", "", 50)
+	if err != nil || len(commands) != 0 {
+		t.Fatalf("recorded commands: %v %v", commands, err)
+	}
+}
+
+// A run manifest keeps its images, so a pinned run of one is refused before any registry call.
+func TestWorkloadRunManifestRefusesPull(t *testing.T) {
+	f := newWorkloadFleet(t, append(workloadCaps, protocol.CapabilityKubernetesManifestsRun)...)
+	f.anonymousPulls(t)
+	resolver := &countingResolver{}
+	api.SetDigestResolverForTest(f.s, resolver)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(workloadRunBody(t, "shop", "native", "native")), &m); err != nil {
+		t.Fatal(err)
+	}
+	m["spec"].(map[string]any)["run_manifest"] = json.RawMessage(`{"kind":"Deployment"}`)
+	m["pull"] = []string{"web"}
+	raw, _ := json.Marshal(m)
+	if w := tenantRequest(f.s, f.org, "POST", f.clusterPath+"/workloads", string(raw), true); w.Code != 400 || resolver.calls.Load() != 0 {
+		t.Fatalf("%d %s, %d heads", w.Code, w.Body.String(), resolver.calls.Load())
+	}
+	f.sync(t)
+	commands, err := f.st.Tenancy().ListCommands(f.ctx, store.TenantAccess{ActorID: "usr_orgadmin", OrganizationID: "a"}, f.cluster.id, "", "", 50)
+	if err != nil || len(commands) != 0 {
+		t.Fatalf("recorded commands: %v %v", commands, err)
+	}
 }

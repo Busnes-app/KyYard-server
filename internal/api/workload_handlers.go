@@ -182,6 +182,10 @@ func (s *Server) sendWorkloadFrame(w http.ResponseWriter, r *http.Request, a sto
 		return
 	}
 	if len(pull) > 0 {
+		if create && len(wa.Spec.RunManifest) > 0 { // the agent needs the manifest's images unchanged
+			s.tenantError(w, store.ErrInvalid)
+			return
+		}
 		if err := s.store.Tenancy().CheckWorkloadFrame(r.Context(), a, endpoint, wa, create); err != nil {
 			s.tenantError(w, err)
 			return

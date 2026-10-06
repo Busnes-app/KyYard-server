@@ -84,8 +84,8 @@ func registryDetail(err error) string {
 	return "unavailable"
 }
 
-// pinWorkloadImages rewrites each container pull names to its tag at the registry's current
-// digest, one Head per reference. It writes the response and reports false on refusal: an
+// pinWorkloadImages rewrites the image of each container pull names to its tag at the
+// registry's current digest, one Head per reference, all inside one ImageCheckDeadline. It writes the response and reports false on refusal: an
 // unknown or repeated name is invalid, a digest-only image or a registry failure is
 // image_unresolved, a policy refusal is the store's.
 func (s *Server) pinWorkloadImages(w http.ResponseWriter, r *http.Request, a store.TenantAccess, spec *protocol.WorkloadConfiguration, pull []string) bool {
@@ -125,12 +125,14 @@ func (s *Server) pinWorkloadImages(w http.ResponseWriter, r *http.Request, a sto
 	}
 	defer release()
 	extendRegistryDeadline(w)
+	ctx, cancel := context.WithTimeout(r.Context(), store.ImageCheckDeadline)
+	defer cancel()
 	digests := map[string]string{}
 	for i, c := range targets {
 		digest, seen := digests[refs[i].name]
 		if !seen {
 			var err error
-			if digest, err = s.headDigest(r.Context(), a, refs[i].name, refs[i].ref); errors.Is(err, errRegistryHead) {
+			if digest, err = s.headDigest(ctx, a, refs[i].name, refs[i].ref); errors.Is(err, errRegistryHead) || (err != nil && ctx.Err() != nil) {
 				s.tenantError(w, unresolved)
 				return false
 			} else if err != nil {
