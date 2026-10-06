@@ -331,6 +331,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/pods/{namespace}/{pod}/exec", s.tracked(s.tenantRoute(s.handlePodExec)))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/endpoints/{endpoint}/workloads/{namespace}/{kind}/{name}/configuration", s.tenantRoute(s.handleWorkloadConfiguration))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/workloads/{namespace}/{kind}/{name}/apply", s.tenantRoute(s.handleApplyWorkload))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/workloads/{namespace}/{kind}/{name}/updates/check", s.tenantRoute(s.handleWorkloadUpdateCheck))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/workloads", s.tenantRoute(s.handleRunWorkload))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/approve", s.tenantRoute(s.handleApproveEndpoint))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/manifest", s.tenantRoute(s.handleEndpointManifest))
