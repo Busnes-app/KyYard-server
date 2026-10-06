@@ -45,6 +45,9 @@ func setupTestServerWith(t *testing.T, tune func(*config.Config)) (*api.Server, 
 	cfg, _ := config.LoadFromEnv()
 	db := testdb.Config(t)
 	db.DataDir = cfg.Database.DataDir // testdb only picks the backend; keep the temp data dir
+	if db.Driver == "sqlite" {
+		copyMigratedSQLite(t, db.DSN)
+	}
 	cfg.Database = db
 	if tune != nil {
 		tune(cfg)
