@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/registry"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 type workloadCheck struct {
@@ -59,14 +61,15 @@ func TestWorkloadUpdateCheckVerdicts(t *testing.T) {
 		pods    []protocol.Pod
 		verdict string
 	}{
-		"update":       {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+old))}, "update_available"},
-		"current":      {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+remote))}, "up_to_date"},
-		"earlier pin":  {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2@"+old, "ghcr.io/acme/web@"+old))}, "update_available"},
-		"digest only":  {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web@"+old, "ghcr.io/acme/web@"+old))}, "pinned"},
-		"cri-dockerd":  {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "docker-pullable://ghcr.io/acme/web@"+remote))}, "up_to_date"},
-		"mid-rollout":  {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+old)), webPod("web-2", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+remote))}, "unknown"},
-		"no pods":      {nil, "unknown"},
-		"not reported": {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", ""))}, "unknown"},
+		"update":          {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+old))}, "update_available"},
+		"current":         {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+remote))}, "up_to_date"},
+		"earlier pin":     {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2@"+old, "ghcr.io/acme/web@"+old))}, "update_available"},
+		"digest only":     {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web@"+old, "ghcr.io/acme/web@"+old))}, "pinned"},
+		"cri-dockerd":     {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "docker-pullable://ghcr.io/acme/web@"+remote))}, "up_to_date"},
+		"mid-rollout":     {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+old)), webPod("web-2", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+remote))}, "unknown"},
+		"no pods":         {nil, "unknown"},
+		"partial sidecar": {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+remote)), webPod("web-2", running("ghcr.io/acme/web:2", "ghcr.io/acme/web@"+remote), protocol.PodContainer{Name: "sidecar", Image: "ghcr.io/acme/side:1", ImageID: "ghcr.io/acme/side@" + remote})}, "unknown"},
+		"not reported":    {[]protocol.Pod{webPod("web-1", running("ghcr.io/acme/web:2", ""))}, "unknown"},
 	} {
 		f.report(t, c.pods...)
 		api.ResetAttemptsForTest(f.s)
@@ -131,5 +134,72 @@ func TestWorkloadUpdateCheckRefusals(t *testing.T) {
 	}
 	if !limited {
 		t.Fatal("no rate limit after 13 checks")
+	}
+}
+
+func TestWorkloadUpdateCheckCapsContainers(t *testing.T) {
+	f := newWorkloadFleet(t, workloadCaps...)
+	f.anonymousPulls(t)
+	fake := &fakeDigests{digest: "sha256:" + strings.Repeat("b", 64)}
+	api.SetDigestResolverForTest(f.s, fake)
+	var cs []protocol.PodContainer
+	for i := range protocol.MaxWorkloadImages + 1 {
+		cs = append(cs, protocol.PodContainer{Name: fmt.Sprintf("c%d", i), Image: fmt.Sprintf("ghcr.io/acme/c%d:1", i)})
+	}
+	// Inventory caps one pod's containers, so the last name comes from a second pod.
+	f.report(t, webPod("web-1", cs[:protocol.MaxWorkloadImages]...), webPod("web-2", cs[protocol.MaxWorkloadImages:]...))
+	if got := f.check(t, f.webWorkload); got.Verdict != "unknown" || len(got.Containers) != 0 || fake.calls() != 0 {
+		t.Fatalf("%+v, %d heads", got, fake.calls())
+	}
+}
+
+// Pods that change while the registry answers refuse the answer.
+func TestWorkloadUpdateCheckPodsChanged(t *testing.T) {
+	f := newWorkloadFleet(t, workloadCaps...)
+	f.anonymousPulls(t)
+	old, next := "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("c", 64)
+	pod := func(id string) protocol.Pod {
+		return webPod("web-1", protocol.PodContainer{Name: "web", Image: "ghcr.io/acme/web:2", ImageID: "ghcr.io/acme/web@" + id})
+	}
+	f.report(t, pod(old))
+	gated := &fakeDigests{digest: "sha256:" + strings.Repeat("b", 64), gate: make(chan struct{}), entered: make(chan struct{}, 1)}
+	api.SetDigestResolverForTest(f.s, gated)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- tenantRequest(f.s, f.org, "POST", f.webWorkload+"/updates/check", "", true) }()
+	<-gated.entered
+	f.report(t, pod(next))
+	close(gated.gate)
+	if w := <-done; w.Code != 409 || !strings.Contains(w.Body.String(), "adoption_changed") {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+}
+
+// Every Head shares one deadline: two blocked references finish in about one, as unavailable.
+func TestWorkloadUpdateCheckSharedDeadline(t *testing.T) {
+	f := newWorkloadFleet(t, workloadCaps...)
+	f.anonymousPulls(t)
+	prev := store.ImageCheckDeadline
+	store.ImageCheckDeadline = time.Second
+	t.Cleanup(func() { store.ImageCheckDeadline = prev })
+	id := "sha256:" + strings.Repeat("a", 64)
+	f.report(t, webPod("web-1",
+		protocol.PodContainer{Name: "web", Image: "ghcr.io/acme/web:2", ImageID: "ghcr.io/acme/web@" + id},
+		protocol.PodContainer{Name: "side", Image: "ghcr.io/acme/side:1", ImageID: "ghcr.io/acme/side@" + id}))
+	blocked := &fakeDigests{gate: make(chan struct{}), entered: make(chan struct{}, 4)}
+	t.Cleanup(func() { close(blocked.gate) })
+	api.SetDigestResolverForTest(f.s, blocked)
+	start := time.Now()
+	w := tenantRequest(f.s, f.org, "POST", f.webWorkload+"/updates/check", "", true)
+	var got workloadCheck
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Verdict != "registry_error" || got.Detail != "unavailable" || len(got.Containers) != 2 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	for _, c := range got.Containers {
+		if c.Verdict != "registry_error" || c.Detail != "unavailable" {
+			t.Errorf("%+v", c)
+		}
+	}
+	if d := time.Since(start); d > 1800*time.Millisecond {
+		t.Fatalf("took %s", d)
 	}
 }

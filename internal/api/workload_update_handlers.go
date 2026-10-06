@@ -30,7 +30,7 @@ type podImage struct {
 }
 
 // workloadPodImages finds ref in the snapshot and reads its containers from its pods, in first
-// seen order. Pods that disagree on a container's image or image ID mark it not agreed.
+// seen order; more than MaxWorkloadImages distinct containers yields none. Pods that disagree on a container's image or image ID mark it not agreed.
 func workloadPodImages(snap protocol.Snapshot, ref protocol.WorkloadRef) (found, managed bool, images []podImage) {
 	if snap.Kubernetes == nil {
 		return false, false, nil
@@ -46,20 +46,34 @@ func workloadPodImages(snap protocol.Snapshot, ref protocol.WorkloadRef) (found,
 		return true, true, nil
 	}
 	index := map[string]int{}
+	var present []int
+	pods := 0
 	for _, p := range snap.Kubernetes.Pods {
 		if p.Namespace != w.Namespace || p.OwnerKind != w.Kind || p.OwnerName != w.Name {
 			continue
 		}
+		pods++
 		for _, c := range p.Containers {
 			j, seen := index[c.Name]
 			if !seen {
 				index[c.Name] = len(images)
 				images = append(images, podImage{c.Name, c.Image, c.ImageID, true})
+				present = append(present, 1)
 				continue
 			}
+			present[j]++
 			if images[j].image != c.Image || images[j].imageID != c.ImageID {
 				images[j].agreed = false
 			}
+		}
+	}
+	if len(images) > protocol.MaxWorkloadImages {
+		return true, false, nil
+	}
+	// A container only some pods have is mid-rollout, like one they disagree on.
+	for j := range images {
+		if present[j] < pods {
+			images[j].agreed = false
 		}
 	}
 	return true, false, images
@@ -161,6 +175,7 @@ func (s *Server) handleWorkloadUpdateCheck(w http.ResponseWriter, r *http.Reques
 					acquired = true
 				}
 				remote, err := s.headDigest(ctx, a, name, tracked)
+				// A policy error after the shared deadline counts as unavailable.
 				if err != nil && !errors.Is(err, errRegistryHead) && ctx.Err() == nil {
 					s.tenantError(w, err)
 					return
