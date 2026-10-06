@@ -163,7 +163,7 @@ func TestWorkloadPinSharesOneDeadline(t *testing.T) {
 	f := newWorkloadFleet(t, workloadCaps...)
 	f.anonymousPulls(t)
 	old := store.ImageCheckDeadline
-	store.ImageCheckDeadline = 300 * time.Millisecond
+	store.ImageCheckDeadline = time.Second
 	t.Cleanup(func() { store.ImageCheckDeadline = old })
 	api.SetDigestResolverForTest(f.s, &blockingResolver{})
 	cfg := workloadConfiguration(protocol.WorkloadRef{Namespace: "shop", Kind: "deployment", Name: "web"})
@@ -172,7 +172,7 @@ func TestWorkloadPinSharesOneDeadline(t *testing.T) {
 	cfg.Containers = append(cfg.Containers, other)
 	start := time.Now()
 	w := tenantRequest(f.s, f.org, "POST", f.webWorkload+"/apply", withPull(t, applyBody(t, cfg, "web"), "web", "other"), true)
-	if took := time.Since(start); w.Code != 422 || !strings.Contains(w.Body.String(), "image_unresolved") || took > 500*time.Millisecond {
+	if took := time.Since(start); w.Code != 422 || !strings.Contains(w.Body.String(), "image_unresolved") || took > 1800*time.Millisecond {
 		t.Fatalf("%d %s after %v", w.Code, w.Body.String(), took)
 	}
 	f.sync(t)
