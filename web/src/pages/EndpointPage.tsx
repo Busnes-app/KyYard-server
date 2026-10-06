@@ -1,5 +1,7 @@
 import { ContainerUpdate, useContainerUpdateChecker } from '../components/ContainerUpdate';
 import { useContainerImageUpdate } from '../components/useContainerImageUpdate';
+import { useWorkloadImageUpdate } from '../components/useWorkloadImageUpdate';
+import { useWorkloadUpdateChecker } from '../components/WorkloadUpdate';
 import { CommandResult } from '../components/ContainerConfigurationForm';
 import { ContainerPorts } from '../components/ContainerPorts';
 import { InventoryRefresh } from '../components/InventoryRefresh';
@@ -13,7 +15,7 @@ import { Server } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { containerPath, envPath, runPath } from '../router';
-import { canConfigure, canEnroll, canRunContainers, canExec, useTenantResource, type Container, type DirectCommand, type Endpoint, type Inventory, type MemberOrganization, type Sample } from '../tenant';
+import { canConfigure, canEnroll, canRunContainers, canExec, useTenantResource, type Container, type DirectCommand, type Endpoint, type Inventory, type MemberOrganization, type Sample, type Workload } from '../tenant';
 import { displayName } from '../components/Endpoints';
 import { IPCell, StateCell } from '../components/ContainerCells';
 import { KubernetesCluster } from '../components/KubernetesCluster';
@@ -26,6 +28,7 @@ import { ago, bytes, uptime, useNow } from '../components/containerFacts';
 export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org, endpoint }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/endpoints/${encodeURIComponent(endpoint)}`;
   const checkUpdate = useContainerUpdateChecker(base);
+  const checkWorkload = useWorkloadUpdateChecker(base);
   const [view, setView] = useState('containers');
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
@@ -42,6 +45,15 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const { command: imageCommand, error: imagePollError } = useCommand(base, lastImage?.command ?? null, () => { inventory.reload(); samples.reload(); commands.reload(); });
   const imageUpdate = useContainerImageUpdate(base, (command, container) => setImageSent({ base, container, command }));
   const imagePending = imageUpdate.busy || imageUpdate.lost || (!!imageCommand && (!imageCommand.outcome || imageCommand.outcome === 'unknown'));
+
+  const [workloadSent, setWorkloadSent] = useState<{ base: string; workload: Workload; command: DirectCommand } | null>(null);
+  const lastWorkload = workloadSent?.base === base ? workloadSent : null;
+  const { command: workloadCommand } = useCommand(base, lastWorkload?.command ?? null, (done) => {
+    inventory.reload(); commands.reload();
+    if (lastWorkload) setStatus(`${displayName(lastWorkload.workload.namespace)}/${displayName(lastWorkload.workload.name)} · ${commandLine(done)}`);
+  });
+  const workloadUpdate = useWorkloadImageUpdate(base, (command, workload) => setWorkloadSent({ base, workload, command }));
+  const workloadPending = workloadUpdate.busy || workloadUpdate.lost || (!!workloadCommand && (!workloadCommand.outcome || workloadCommand.outcome === 'unknown'));
 
   // The agent reports on its own schedule; poll while the page is mounted and visible so the
   // status line and usage column follow newer generations, and a host with no report yet fills
@@ -89,6 +101,8 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
       </div>
       {imageUpdate.busy && <p role="status">Reading current settings and submitting the image update…</p>}
       {imageUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{imageUpdate.error}</p>}
+      {workloadUpdate.busy && <p role="status">Reading current settings and submitting the workload image update…</p>}
+      {workloadUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{workloadUpdate.error}</p>}
       {imageCommand && lastImage && <section className="panel" aria-label="Last image update">
         <h2>Image update · {displayName(lastImage.container.name)}</h2>
         {imageCommand.outcome ? <CommandResult command={imageCommand} org={org} endpoint={endpoint} current={lastImage.container.id} />
@@ -125,7 +139,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
           </p>
           {cluster && shown === 'cluster' && e && status && <p role="status">{status}</p>}
-          {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} role={role} onStatus={setStatus} onRefresh={() => { inventory.reload(); commands.reload(); }} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
+          {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} role={role} onStatus={setStatus} onRefresh={() => { inventory.reload(); commands.reload(); }} checkUpdate={checkWorkload} imageUpdate={workloadUpdate} workloadPending={workloadPending} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
           {shown === 'projects' && <><StateNotice state={ownership.state} onRetry={ownership.reload} /><ComposeProjects ownership={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
             setProjectFilter({ base, name }); setView('containers');
             requestAnimationFrame(() => document.getElementById('endpoint-containers')?.focus());

@@ -449,3 +449,38 @@ it.each([
   expect(document.body.textContent).not.toContain('private server diagnostic');
   expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/recreate'))).toBe(false);
 });
+
+it('offers one-click Update image on an unmanaged cluster Deployment and none on a managed one', async () => {
+  const now = new Date().toISOString();
+  const cluster = { ...endpoint, runtime: 'kubernetes', capabilities: ['kubernetes.inventory', 'kubernetes.workloads'], deploy_namespaces: ['shop'] };
+  const workload = (name: string, application?: string) => ({ kind: 'Deployment', namespace: 'shop', name, desired: 1, ready: 1, updated: 1, images: ['ghcr.io/acme/web:2'], paused: false, application });
+  const kubernetes = { nodes: [], namespaces: ['shop'], workloads: [workload('web'), workload('managed', 'app-1')], pods: [], services: [], claims: [] };
+  const snapshot = { generation: 1, observed_at: now, engine: { runtime: 'kubernetes', version: '', api_version: '', os: '', arch: '', kernel: '', cpus: 0, memory_bytes: 0, hostname: '' }, containers: [], images: [], networks: [], volumes: [], kubernetes };
+  const container = { name: 'web', image: 'ghcr.io/acme/web:2', image_id: '', command: [], args: [], env: [], resources: { cpu_request: '', cpu_limit: '', memory_request: '', memory_limit: '' } };
+  const configuration = { target: { namespace: 'shop', kind: 'deployment', name: 'web' }, observed_at: now, resource_version: '42', replicas: 1, paused: false, strategy: 'RollingUpdate', containers: [container], init_containers: [], env_from: [], managed: false, unsupported: [] };
+  const calls: [string, RequestInit | undefined][] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push([url, init]);
+    if (url.endsWith('/web/updates/check')) return json({ workload: 'shop/deployment/web', verdict: 'update_available' });
+    if (url.endsWith('/updates/check')) return json({ workload: 'shop/deployment/managed', verdict: 'managed' });
+    if (url.endsWith('/configuration')) return json(configuration);
+    if (url.endsWith('/apply')) return json({ id: 'w1', action: 'workload.apply', outcome: '' }, 202);
+    if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot });
+    if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role: 'organization_admin' }]);
+    if (url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications')) return json([]);
+    return json(cluster);
+  }));
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  const buttons = await screen.findAllByRole('button', { name: 'Update image' });
+  expect(buttons).toHaveLength(1);
+  expect(screen.getByRole('button', { name: 'Check image update for shop/web' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Check image update for shop/managed' })).toBeNull();
+  await act(async () => { fireEvent.click(buttons[0]!); });
+  const apply = calls.find(([url]) => url.endsWith('/apply'));
+  const urls = calls.map(([url]) => url);
+  expect(urls.findIndex((u) => u.endsWith('/web/configuration'))).toBeGreaterThan(-1);
+  expect(urls.findIndex((u) => u.endsWith('/web/configuration'))).toBeLessThan(urls.findIndex((u) => u.endsWith('/apply')));
+  expect(apply?.[0]).toContain('/workloads/shop/deployment/web/apply');
+  expect(JSON.parse(String(apply?.[1]?.body)).pull).toEqual(['web']);
+});
