@@ -48,7 +48,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
 
   const [workloadSent, setWorkloadSent] = useState<{ base: string; workload: Workload; command: DirectCommand } | null>(null);
   const lastWorkload = workloadSent?.base === base ? workloadSent : null;
-  const { command: workloadCommand } = useCommand(base, lastWorkload?.command ?? null, (done) => {
+  const { command: workloadCommand, error: workloadPollError } = useCommand(base, lastWorkload?.command ?? null, (done) => {
     inventory.reload(); commands.reload();
     if (lastWorkload) setStatus(`${displayName(lastWorkload.workload.namespace)}/${displayName(lastWorkload.workload.name)} · ${commandLine(done)}`);
   });
@@ -103,6 +103,9 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
       {imageUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{imageUpdate.error}</p>}
       {workloadUpdate.busy && <p role="status">Reading current settings and submitting the workload image update…</p>}
       {workloadUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{workloadUpdate.error}</p>}
+      {workloadCommand && lastWorkload && !workloadCommand.outcome && (workloadPollError
+        ? <p role="alert" className="dr-alert dr-alert-error">Could not read the command result. Check the cluster's Activity tab before trying again.</p>
+        : <p role="status">Updating {displayName(lastWorkload.workload.namespace)}/{displayName(lastWorkload.workload.name)}; waiting for the cluster agent. Do not retry while its outcome is unknown.</p>)}
       {imageCommand && lastImage && <section className="panel" aria-label="Last image update">
         <h2>Image update · {displayName(lastImage.container.name)}</h2>
         {imageCommand.outcome ? <CommandResult command={imageCommand} org={org} endpoint={endpoint} current={lastImage.container.id} />

@@ -68,9 +68,10 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
     <div className="ky-page-heading">
       <h1 style={{ fontSize: 24 }}><Layers size={24} style={{ color: 'var(--accent)' }} /><span>{namespace}/{workload}</span>{w && <span className="badge badge-secondary">{w.kind}</span>}</h1>
       {w && e && <WorkloadControls base={base} org={org} endpoint={endpoint} workload={w} active={active} role={role} capabilities={caps} scope={scope} onStatus={setStatus} onRefresh={inventory.reload} />}
-      {w && e && canConfigure(role) && caps.includes('kubernetes.workloads') && !w.application && <WorkloadUpdate workload={w} pods={pods} active={active} org={org} checkUpdate={checkWorkload} onUpdate={() => void imageUpdate.update(w)} updateDisabled={imageUpdate.busy || imageUpdate.lost || (!!command && !command.outcome)} />}
+      {w && e && canConfigure(role) && caps.includes('kubernetes.workloads') && !w.application && <WorkloadUpdate workload={w} pods={pods} active={active} org={org} checkUpdate={checkWorkload} onUpdate={() => void imageUpdate.update(w)} updateDisabled={imageUpdate.busy || imageUpdate.lost || (!!command && (!command.outcome || command.outcome === 'unknown'))} />}
     </div>
     {status && <p role="status">{status}</p>}
+    {imageUpdate.busy && <p role="status">Reading current settings and submitting the image update…</p>}
     {imageUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{imageUpdate.error}</p>}
     <StateNotice state={details.state} onRetry={details.reload} />
     <StateNotice state={inventory.state} onRetry={inventory.reload} />

@@ -484,3 +484,48 @@ it('offers one-click Update image on an unmanaged cluster Deployment and none on
   expect(apply?.[0]).toContain('/workloads/shop/deployment/web/apply');
   expect(JSON.parse(String(apply?.[1]?.body)).pull).toEqual(['web']);
 });
+
+function clusterRoutes(role: string, capabilities: string[], settled: { done: boolean } = { done: false }) {
+  const now = new Date().toISOString();
+  const cluster = { ...endpoint, runtime: 'kubernetes', capabilities, deploy_namespaces: ['shop'] };
+  const kubernetes = { nodes: [], namespaces: ['shop'], workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web', desired: 1, ready: 1, updated: 1, images: ['ghcr.io/acme/web:2'], paused: false }], pods: [], services: [], claims: [] };
+  const snapshot = { generation: 1, observed_at: now, engine: { runtime: 'kubernetes', version: '', api_version: '', os: '', arch: '', kernel: '', cpus: 0, memory_bytes: 0, hostname: '' }, containers: [], images: [], networks: [], volumes: [], kubernetes };
+  const container = { name: 'web', image: 'ghcr.io/acme/web:2', image_id: '', command: [], args: [], env: [], resources: { cpu_request: '', cpu_limit: '', memory_request: '', memory_limit: '' } };
+  const configuration = { target: { namespace: 'shop', kind: 'deployment', name: 'web' }, observed_at: now, resource_version: '42', replicas: 1, paused: false, strategy: 'RollingUpdate', containers: [container], init_containers: [], env_from: [], managed: false, unsupported: [] };
+  const urls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.endsWith('/updates/check')) return json({ workload: 'shop/deployment/web', verdict: 'update_available' });
+    if (url.endsWith('/configuration')) return json(configuration);
+    if (url.endsWith('/apply')) return json({ id: 'w1', action: 'workload.apply', outcome: '' }, 202);
+    if (url.endsWith('/commands/w1')) return json({ id: 'w1', action: 'workload.apply', outcome: settled.done ? 'succeeded' : '' });
+    if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot });
+    if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role }]);
+    if (url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications')) return json([]);
+    return json(cluster);
+  }));
+  return urls;
+}
+it('explains a pending workload update, locks every Update button and reports the settled command', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const settled = { done: false };
+  clusterRoutes('organization_admin', ['kubernetes.inventory', 'kubernetes.workloads'], settled);
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  const update = await screen.findByRole('button', { name: 'Update image' });
+  await act(async () => { fireEvent.click(update); });
+  expect(screen.getAllByRole('status').some((s) => s.textContent === 'Updating shop/web; waiting for the cluster agent. Do not retry while its outcome is unknown.')).toBe(true);
+  for (const b of screen.getAllByRole('button', { name: 'Update image' })) expect((b as HTMLButtonElement).disabled).toBe(true);
+  settled.done = true;
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(screen.getAllByRole('status').some((s) => s.textContent === 'shop/web · Apply done.')).toBe(true);
+});
+it.each([['viewer', ['kubernetes.inventory', 'kubernetes.workloads']], ['organization_admin', ['kubernetes.inventory']]])('shows no Update column and checks nothing for %s with %j', async (role, capabilities) => {
+  const urls = clusterRoutes(role, capabilities);
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  await screen.findByText('shop/web');
+  await act(async () => {});
+  expect(screen.queryByRole('columnheader', { name: 'Update' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Update image' })).toBeNull();
+  expect(urls.some((u) => u.endsWith('/updates/check'))).toBe(false);
+});

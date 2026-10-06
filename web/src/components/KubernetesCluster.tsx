@@ -53,7 +53,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
       </select></label>
       {canConfigure(role) && <Link className="btn btn-secondary" to={workloadRunPath(org, endpoint.id)}>Run a container</Link>}
     </div>
-    <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images', ...(updates ? ['Image'] : []), ...(tools ? ['Actions'] : [])]} render={(w) => [
+    <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images', ...(updates ? ['Update'] : []), ...(tools ? ['Actions'] : [])]} render={(w) => [
       page(w.namespace, w.kind, w.name, qualified(w)), w.kind, `${w.ready}/${w.desired}${w.paused ? ' (paused)' : ''}`, w.images.map(displayName).join(', '),
       ...(updates && checkUpdate ? [Object.hasOwn(PAGE_KINDS, w.kind) && !w.application && <WorkloadUpdate key={`${w.kind}/${w.namespace}/${w.name}`} workload={w} pods={inventory.pods.filter((p) => p.namespace === w.namespace && p.owner_kind === w.kind && p.owner_name === w.name)} active={active} org={org} checkUpdate={checkUpdate} onUpdate={() => void imageUpdate?.update(w)} updateDisabled={!imageUpdate || workloadPending} />] : []),
       ...(tools ? [Object.hasOwn(PAGE_KINDS, w.kind) && <WorkloadControls key={`${w.kind}/${w.namespace}/${w.name}`} {...toolProps} workload={w} open onStatus={tools} />] : []),
