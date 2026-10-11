@@ -39,7 +39,8 @@ jobs:
       # from. This job runs once a day and can build cold.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: consumer/go.mod
+          go-version: stable
+          check-latest: true
           cache: false
 
       - name: Point this repository at that checkout
