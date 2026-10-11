@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
-  NODE_VERSION: "22"
+  NODE_VERSION: "26"
 
 jobs:
   go:
