@@ -166,14 +166,18 @@ it('does not re-read the configuration when a second apply is sent until it sett
     fireEvent.click(screen.getByRole('button', { name: 'Save and apply' }));
   };
   const reads = () => requests.filter((r) => r.url.endsWith('/configuration')).length;
+  const polls = () => requests.filter((r) => r.url.endsWith('/commands/k7')).length;
   await edit('nginx:1.30');
-  await screen.findByRole('region', { name: 'Last change' });
-  await act(async () => { vi.advanceTimersByTime(1500); });
-  for (let i = 0; i < 4; i++) await act(async () => {});
+  // The poll interval is armed by an effect that can run after Last change renders, so drive the
+  // clock until the settled re-read lands instead of advancing it exactly once.
+  for (let i = 0; i < 20 && reads() < 2; i++) await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
   expect(reads()).toBe(2);
   opts.command = { id: 'k7', action: 'workload.apply', outcome: '' };
   await edit('nginx:1.31');
-  for (let i = 0; i < 4; i++) await act(async () => {});
+  await screen.findByText(/Apply sent; waiting/);
+  const before = polls();
+  for (let i = 0; i < 20 && polls() === before; i++) await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(reads()).toBe(2);
 });
 
