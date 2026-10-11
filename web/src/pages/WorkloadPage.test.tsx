@@ -178,6 +178,7 @@ it('does not re-read the configuration when a second apply is sent until it sett
   const before = polls();
   for (let i = 0; i < 20 && polls() === before; i++) await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(polls()).toBeGreaterThan(before);
   expect(reads()).toBe(2);
 });
 
