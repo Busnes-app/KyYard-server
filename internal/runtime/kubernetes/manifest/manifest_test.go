@@ -210,6 +210,8 @@ func TestManifestGrantsDeployInListedNamespaces(t *testing.T) {
 				{APIGroups: []string{"apps"}, Resources: []string{"statefulsets", "daemonsets"}, Verbs: []string{"get", "list", "patch", "update", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
 				{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
+				{APIGroups: []string{"apps"}, Resources: []string{"replicasets"}, Verbs: []string{"get"}},
+				{APIGroups: []string{"batch"}, Resources: []string{"jobs", "cronjobs"}, Verbs: []string{"get"}},
 				{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"get", "list", "create", "update", "patch", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "create", "update", "patch", "delete"}},
 				{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"get", "list", "create"}},

@@ -10,7 +10,8 @@ Owns the Engine API client (`docker.New` over the Unix socket, `docker.NewHTTP` 
 - `ky.managed-by=kyquickstart` workloads belong to the suite installer. Fresh Docker
   inspection refuses lifecycle actions, replacement, removal and terminal exec before
   mutation; desired Docker deployment labels cannot claim this owner. Kubernetes
-  workload actions, configuration writes and exec refuse the same owner; deployment
+  workload actions, configuration writes, exec and pod delete refuse the same owner
+  (pods through their UID-verified controller chain, failing closed); deployment
   and removal ownership tests exclude these objects, including pod-template labels.
   Inspection and logs remain available. Upgrades require the shared installer upgrade
   path; these runtime adapters do not implement that path.

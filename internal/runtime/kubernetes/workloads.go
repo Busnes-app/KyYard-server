@@ -192,7 +192,7 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	if err != nil {
 		return operateFailure(ctx, err)
 	}
-	if h.installerManaged() {
+	if h.installerManaged() || ref.Kind == protocol.WorkloadPod && c.installerOwned(ctx, h.meta) {
 		return protocol.OutcomeDenied, "application_managed"
 	}
 	switch {

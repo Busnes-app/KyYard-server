@@ -44,6 +44,9 @@ var namespaceGrants = map[string]namespaceGrant{
 	"daemonsets":             {"DaemonSets", []string{"get", "list", "patch", "update", "delete"}, false, "get, list, patch, update and delete StatefulSets and DaemonSets"},
 	"pods":                   {"pods", []string{"delete"}, false, "delete pods"},
 	"pods/exec":              {"pods/exec", []string{"create"}, false, "open pods/exec"},
+	"replicasets":            {"ReplicaSets", []string{"get"}, false, "get ReplicaSets, Jobs and CronJobs"},
+	"jobs":                   {"Jobs", []string{"get"}, false, "get ReplicaSets, Jobs and CronJobs"},
+	"cronjobs":               {"CronJobs", []string{"get"}, false, "get ReplicaSets, Jobs and CronJobs"},
 }
 
 var ruleRE = regexp.MustCompile(`resources: \[([^\]]*)\]\n\s*verbs: \[([^\]]*)\]`)
