@@ -39,7 +39,7 @@ as described in `docs/RESTORE.md`; the extraction never writes arbitrary absolut
 Docker and Kubernetes runtime adapters refuse mutations and terminal exec against
 `ky.managed-by=kyquickstart` workloads. Read-only inspection remains available.
 
-This interface is under qualification in the isolated installer worktree. Remaining
+This interface is under qualification. Remaining
 gates include restored-process verification, explicit installer tenant
 and endpoint composition, shared upgrade orchestration and
 release provenance. Backup enrollment is refused by this first setup envelope; use
