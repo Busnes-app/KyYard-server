@@ -192,6 +192,9 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	if err != nil {
 		return operateFailure(ctx, err)
 	}
+	if h.installerManaged() {
+		return protocol.OutcomeDenied, "application_managed"
+	}
 	switch {
 	case cmd.Action == protocol.ActionWorkloadRestart:
 		err = h.patch(ctx, boundPatch(h.meta.ResourceVersion, map[string]any{"template": map[string]any{"metadata": map[string]any{"annotations": map[string]string{restartedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}}))
@@ -279,7 +282,7 @@ func (c *Client) ReadWorkload(ctx context.Context, target protocol.InspectionTar
 func configuration(ref protocol.WorkloadRef, h *handle) *protocol.WorkloadConfiguration {
 	unsupported := map[string]bool{}
 	spec := h.template.Spec
-	cfg := &protocol.WorkloadConfiguration{Target: ref, ResourceVersion: h.meta.ResourceVersion, Strategy: h.strategy, Managed: h.meta.Labels[render.LabelManagedBy] == render.ManagedBy,
+	cfg := &protocol.WorkloadConfiguration{Target: ref, ResourceVersion: h.meta.ResourceVersion, Strategy: h.strategy, Managed: h.installerManaged() || h.meta.Labels[render.LabelManagedBy] == render.ManagedBy,
 		Containers: workloadContainers(spec.Containers, unsupported), InitContainers: workloadContainers(spec.InitContainers, unsupported), EnvFrom: []string{}}
 	if h.replicas != nil {
 		n := replicas(*h.replicas)

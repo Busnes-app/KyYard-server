@@ -18,6 +18,7 @@ import (
 
 	_ "time/tzdata" // update-policy zones load the same on every host
 
+	"github.com/Busnes-app/ky-primitives/applysetup"
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
@@ -35,6 +36,12 @@ const appVersion = "1.0.0"
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "apply-setup":
+			if err := runInstaller(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
 		case "healthcheck":
 			if err := healthcheck(); err != nil {
 				log.Fatal(err)
@@ -136,6 +143,15 @@ func runServer() {
 	}
 
 	srv := api.NewServer(cfg, st)
+	socket, err := installerSocket(cfg.Database.DataDir)
+	if err != nil {
+		log.Fatalf("Installer socket: %v", err)
+	}
+	closeInstaller, err := applysetup.StartLocal(ctx, socket, srv.ApplyInstaller, nil)
+	if err != nil {
+		log.Fatalf("Installer boundary: %v", err)
+	}
+	defer closeInstaller()
 	localDone := make(chan struct{})
 	go localDockerLoop(ctx, srv.RunLocalDocker, localDone)
 	backupDone := make(chan struct{})
@@ -176,6 +192,9 @@ func runServer() {
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Shutdown error: %v", err)
+	}
+	if err := closeInstaller(); err != nil {
+		log.Printf("Installer shutdown: %v", err)
 	}
 	cancel()
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), backupWaitTimeout)

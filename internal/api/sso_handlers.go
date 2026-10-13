@@ -9,6 +9,14 @@ import (
 )
 
 func (s *Server) handleKySignOnSyncWebhook(w http.ResponseWriter, r *http.Request) {
+	if _, managed, err := s.store.InstallerConfiguration(r.Context()); err != nil || managed {
+		if err != nil {
+			s.writeError(w, 503, "Directory unavailable")
+			return
+		}
+		s.handleInstallerDirectory(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return

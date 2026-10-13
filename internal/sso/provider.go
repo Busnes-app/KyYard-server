@@ -16,6 +16,7 @@ import (
 // Provider supports OIDC discovery and OAuth2 providers with a JSON profile API.
 // The subject mapping must name a stable provider-issued account ID, never an email.
 type Provider struct {
+	InstallerManaged bool   `json:"installer_managed,omitempty"`
 	CallbackURL      string `json:"callback_url,omitempty"`
 	ID               string `json:"id"`
 	Name             string `json:"name"`

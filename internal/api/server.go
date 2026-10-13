@@ -370,6 +370,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/auth/sso", s.handleSSOLinkOptions)
 	s.mux.HandleFunc("POST /api/sso/{provider}/link", s.handleLinkProvider)
 	s.mux.HandleFunc("/api/sso/kysignon/sync", s.handleKySignOnSyncWebhook)
+	s.mux.HandleFunc("POST /api/installer/directory", s.handleInstallerDirectory)
+	s.mux.HandleFunc("GET /api/installer/network", s.handleInstallerNetwork)
 	s.mux.HandleFunc("/saml/metadata", s.handleSAMLMetadata)
 
 	// Retired mobile pairing namespace.
@@ -480,7 +482,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	}
 
-	if !s.config.SSO.Enabled && (r.URL.Path == "/api/sso/kysignon/sync" || strings.HasPrefix(r.URL.Path, "/saml/")) {
+	if !s.config.SSO.Enabled && r.URL.Path == "/api/sso/kysignon/sync" {
+		_, managed, err := s.store.InstallerConfiguration(r.Context())
+		if err != nil {
+			s.writeError(w, 503, "Directory unavailable")
+			return
+		}
+		if !managed {
+			s.writeError(w, 404, "SSO is disabled")
+			return
+		}
+	}
+	if !s.config.SSO.Enabled && strings.HasPrefix(r.URL.Path, "/saml/") {
 		s.writeError(w, http.StatusNotFound, "SSO is disabled")
 		return
 	}
@@ -504,7 +517,7 @@ func hasSessionCookie(r *http.Request) bool {
 }
 
 func csrfExempt(path string) bool {
-	return path == "/api/auth/login" || strings.HasPrefix(path, "/api/auth/mfa/") || path == "/api/sso/kysignon/sync"
+	return path == "/api/auth/login" || strings.HasPrefix(path, "/api/auth/mfa/") || path == "/api/sso/kysignon/sync" || path == "/api/installer/directory"
 }
 
 func sameOrigin(origin, appURL string) bool {

@@ -43,8 +43,9 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	}
 	container := url.PathEscape(cmd.Container)
 	var inspected struct {
-		Image string `json:"Image"`
-		State struct {
+		Config struct{ Labels map[string]string }
+		Image  string `json:"Image"`
+		State  struct {
 			Status string `json:"Status"`
 		} `json:"State"`
 	}
@@ -56,6 +57,9 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	}
 	if want := cmd.Expects.ImageDigest; want != "" && want != inspected.Image {
 		return protocol.OutcomeDenied, "the container is running a different image than the one this was decided about"
+	}
+	if installerManaged(inspected.Config.Labels) {
+		return protocol.OutcomeDenied, "application_managed"
 	}
 	if want := cmd.Expects.State; want != "" && want != inspected.State.Status {
 		return protocol.OutcomeDenied, fmt.Sprintf("the container is %s, not %s", inspected.State.Status, want)

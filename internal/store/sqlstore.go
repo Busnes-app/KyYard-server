@@ -104,6 +104,9 @@ type userStore struct {
 }
 
 func (u *userStore) CreateUser(ctx context.Context, user *User) error {
+	if user.SSOProvider == InstallerProvider {
+		return ErrInstallerOwned
+	}
 	now := time.Now().UTC()
 	if user.CreatedAt.IsZero() {
 		user.CreatedAt = now
@@ -234,7 +237,10 @@ UPDATE users SET
     totp_secret_enc = ?, totp_enabled = ?, recovery_codes_hash = ?,
     push_device_id = ?, must_change_password = ?, updated_at = ?,
     last_login_at = ?
-WHERE id = ?
+WHERE id = ? AND (
+    NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)
+    OR (username = ? AND password_hash = ? AND role = ? AND status = ? AND must_change_password = ?)
+)
 `)
 
 	tx, err := u.store.beginTx(ctx, false)
@@ -257,7 +263,8 @@ WHERE id = ?
 		user.Role, user.Status, user.SSOProvider, user.SSOSubject,
 		user.TOTPSecretEnc, user.TOTPEnabled, user.RecoveryCodesHash,
 		user.PushDeviceID, user.MustChangePassword, user.UpdatedAt,
-		lastLogin, user.ID,
+		lastLogin, user.ID, "installer.user."+user.ID,
+		user.Username, user.PasswordHash, user.Role, user.Status, user.MustChangePassword,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key") {
@@ -267,6 +274,13 @@ WHERE id = ?
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
+		var owned int
+		if err := tx.QueryRowContext(ctx, u.store.rebind("SELECT COUNT(*) FROM server_settings WHERE key=?"), "installer.user."+user.ID).Scan(&owned); err != nil {
+			return err
+		}
+		if owned != 0 {
+			return ErrInstallerOwned
+		}
 		return ErrNotFound
 	}
 	if err := u.registerSSOIdentity(ctx, tx, user); err != nil {
@@ -308,13 +322,20 @@ func (u *userStore) SpendTOTPCounter(ctx context.Context, userID string, counter
 }
 
 func (u *userStore) DeleteUser(ctx context.Context, id string) error {
-	q := u.store.rebind("DELETE FROM users WHERE id = ?")
-	res, err := u.store.db.ExecContext(ctx, q, id)
+	q := u.store.rebind("DELETE FROM users WHERE id = ? AND NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)")
+	res, err := u.store.db.ExecContext(ctx, q, id, "installer.user."+id)
 	if err != nil {
 		return err
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
+		var owned int
+		if err := u.store.db.QueryRowContext(ctx, u.store.rebind("SELECT COUNT(*) FROM server_settings WHERE key=?"), "installer.user."+id).Scan(&owned); err != nil {
+			return err
+		}
+		if owned != 0 {
+			return ErrInstallerOwned
+		}
 		return ErrNotFound
 	}
 	return nil
@@ -938,6 +959,12 @@ func (s *settingsStore) GetSetting(ctx context.Context, key string) (string, err
 }
 
 func (s *settingsStore) SetSetting(ctx context.Context, key, val string) error {
+	if strings.HasPrefix(key, "installer.") {
+		return ErrInstallerOwned
+	}
+	if key == "sso_providers_enc" {
+		return s.store.setUnmanagedProviderSetting(ctx, val, false)
+	}
 	now := time.Now().UTC()
 	q := s.store.rebind(`
 INSERT INTO server_settings (key, value, updated_at)
@@ -949,6 +976,12 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 }
 
 func (s *settingsStore) DeleteSetting(ctx context.Context, key string) error {
+	if strings.HasPrefix(key, "installer.") {
+		return ErrInstallerOwned
+	}
+	if key == "sso_providers_enc" {
+		return s.store.setUnmanagedProviderSetting(ctx, "", true)
+	}
 	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM server_settings WHERE key = ?`), key)
 	return err
 }

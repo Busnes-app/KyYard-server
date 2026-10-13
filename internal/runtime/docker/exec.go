@@ -61,15 +61,19 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 		}
 	}()
 	var inspected struct {
-		ID    string `json:"Id"`
-		Image string
-		State struct{ Running, Paused, Restarting bool }
+		Config struct{ Labels map[string]string }
+		ID     string `json:"Id"`
+		Image  string
+		State  struct{ Running, Paused, Restarting bool }
 	}
 	if err := c.get(ctx, "/containers/"+spec.Container+"/json", &inspected); err != nil {
 		return nil, err
 	}
 	if inspected.ID != spec.Container || inspected.Image != spec.ImageID || !inspected.State.Running || inspected.State.Paused || inspected.State.Restarting {
 		return nil, errors.New("exec target identity or running state changed")
+	}
+	if installerManaged(inspected.Config.Labels) {
+		return nil, errors.New("exec refused for a KyQuickStart-owned container")
 	}
 	body := struct {
 		AttachStdin, AttachStdout, AttachStderr, Tty, Privileged bool

@@ -471,6 +471,11 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	settings := backup.Settings(ctx, s.store.Settings())
+	_, managed, err := s.store.InstallerConfiguration(ctx)
+	if err != nil {
+		s.writeError(w, 503, "Cannot inspect backup configuration")
+		return
+	}
 	out := map[string]any{
 		"paired":                 false,
 		"key_pinned":             false,
@@ -479,7 +484,7 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		"allow_private_recovery": s.config.Backup.AllowPrivateRecovery,
 		// Only the SQLite path can snapshot a database into a capsule; the screen says so.
 		"database_driver": s.config.Database.Driver,
-		"members":         backup.Members(s.config),
+		"members":         backup.Members(s.config, managed),
 	}
 	if u, err := s.store.Settings().GetSetting(ctx, "kyrecovery_url"); err == nil {
 		out["recovery_url"] = u

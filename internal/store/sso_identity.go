@@ -36,6 +36,9 @@ func (u *userStore) insertSSOIdentity(ctx context.Context, tx *sql.Tx, userID, p
 // LinkSSO proves the original session and password again at the atomic write. Local
 // credentials, account ID and tenant memberships remain owned by the existing account.
 func (u *userStore) LinkSSO(ctx context.Context, userID, sessionHash, passwordHash, provider, subject, ip string) error {
+	if provider == InstallerProvider {
+		return ErrInstallerOwned
+	}
 	if provider == "" || provider == "local" || len(provider) > 64 || subject == "" || len(subject) > 255 || passwordHash == "" {
 		return ErrInvalid
 	}

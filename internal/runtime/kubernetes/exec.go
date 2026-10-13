@@ -101,6 +101,9 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 	if err := c.execAllowed(parent, t, pod); err != nil {
 		return nil, err
 	}
+	if installerManaged(pod.Labels) {
+		return nil, errors.New("exec refused for a KyQuickStart-owned pod")
+	}
 	st, err := c.executor(t.Namespace, t.Name, &corev1.PodExecOptions{Container: t.Container, Command: spec.Argv, Stdin: true, Stdout: true, TTY: true})
 	if err != nil {
 		return nil, errors.New("exec transport could not be configured")

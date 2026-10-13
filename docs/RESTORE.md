@@ -38,6 +38,8 @@ Everything a fresh server needs to be the old one:
 | `data/instance.key` | 32-byte Ed25519 identity seed; restore preserves the control-plane identity |
 | `data/recovery.pub` | The suite recovery public key, so the restored server comes back pinned (present when the backup had a key) |
 | `config/settings.json` | App name, URL, port, database driver. For your reference when re-deploying; nothing reads it |
+| `installer/client.secret` and `installer/directory.secret` | Protected OIDC and signed-directory credentials, present for installer-managed deployments |
+| `installer/credential-paths.json` | Maps those credential members to their original absolute container paths; present for installer-managed deployments |
 
 The restored directory is the live directory in the clear. Treat it like the running server's
 `data/`.
@@ -191,7 +193,9 @@ Failures you may see, and what they mean:
 find restored -type f -printf '%m %p\n'
 ```
 
-Expect three or four files, all mode `600`, under `restored/data` and `restored/config`.
+Expect the database, settings and three key files, plus a recovery public key when pinned,
+all mode `600`, under `restored/data` and `restored/config`. Installer-managed deployments
+also include the three members under `restored/installer` listed above.
 `cat restored/config/settings.json` shows the app URL and port the old server ran with.
 
 ## Step 3: put it in service
@@ -235,7 +239,16 @@ sudo rm -rf data/* data/.[!.]*
 ls -A data | wc -l
 ```
 
-With `0` confirmed, copy the restored files in and start:
+For an installer-managed deployment, inspect `restored/installer/credential-paths.json`
+before starting. Recreate each protected credential at its recorded container path using
+the corresponding extracted member, mode 0600 and ownership matching the server user;
+use private parent directories and the same container mount layout. Do not print the
+credential contents. Reject destinations that would overwrite unrelated files or traverse
+symlinks. The restore command extracts relative members only and does not follow this
+mapping to write absolute paths automatically. Keep the retained setup record unchanged;
+sign-in and signed-directory verification refuse missing or unsafe credential files.
+
+With `0` and any managed credentials confirmed, copy the restored files in and start:
 
 ```bash
 sudo cp -a restored/data/. data/ && sudo chown -R root:root data && sudo chmod 600 data/*

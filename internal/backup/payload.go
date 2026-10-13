@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Busnes-app/ky-primitives/applysetup"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
@@ -39,7 +40,7 @@ func Collect(ctx context.Context, cfg *config.Config, appVersion string) (recove
 	if strings.ToLower(cfg.Database.Driver) != "sqlite" {
 		return recoveryclient.Payload{}, fmt.Errorf("%w: %s", ErrNoDatabaseSnapshot, cfg.Database.Driver)
 	}
-	dbBytes, err := snapshotSQLite(ctx, cfg.Database.DSN, cfg.Database.DataDir)
+	dbBytes, managed, err := snapshotSQLite(ctx, cfg.Database.DSN, cfg.Database.DataDir)
 	if err != nil {
 		return recoveryclient.Payload{}, err
 	}
@@ -75,6 +76,13 @@ func Collect(ctx context.Context, cfg *config.Config, appVersion string) (recove
 		files = append(files, recoveryclient.File{Path: recoveryPubPath, Data: pub, Mode: 0600})
 	}
 
+	if managed != nil {
+		credentials, err := installerFiles(managed)
+		if err != nil {
+			return recoveryclient.Payload{}, err
+		}
+		files = append(files, credentials...)
+	}
 	payload := recoveryclient.Payload{
 		ServiceName: cfg.Server.AppName,
 		AppVersion:  appVersion,
@@ -100,44 +108,52 @@ func Collect(ctx context.Context, cfg *config.Config, appVersion string) (recove
 // under a concurrent checkpoint; the lib's SQLiteSnapshot runs VACUUM INTO through a live
 // connection. The scaffold opens its own handle from the DSN because store.Store exposes no
 // *sql.DB.
-func snapshotSQLite(ctx context.Context, dsn, dataDir string) ([]byte, error) {
+func snapshotSQLite(ctx context.Context, dsn, dataDir string) ([]byte, *applysetup.SSO, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer db.Close()
 	dir, err := os.MkdirTemp(dataDir, "snapshot-*")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "ky_server.db")
 	if err := recoveryclient.SQLiteSnapshot(ctx, db, path); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNoDatabaseSnapshot, err)
+		return nil, nil, fmt.Errorf("%w: %v", ErrNoDatabaseSnapshot, err)
 	}
 	// Scrub only the snapshot. Restores must not resurrect login or pairing grants.
 	snapshot, err := sql.Open("sqlite", path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	_, err = snapshot.ExecContext(ctx, `PRAGMA journal_mode=DELETE;
 DELETE FROM sessions; DELETE FROM mfa_challenges; DELETE FROM device_pairings;
 VACUUM;`)
+	var managed *applysetup.SSO
+	if err == nil {
+		managed, err = installerSSO(ctx, snapshot)
+	}
 	closeErr := snapshot.Close()
 	if err != nil {
-		return nil, fmt.Errorf("backup: clear restored authentication grants: %w", err)
+		return nil, nil, fmt.Errorf("backup: clear restored authentication grants: %w", err)
 	}
 	if closeErr != nil {
-		return nil, closeErr
+		return nil, nil, closeErr
 	}
-	return os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	return data, managed, err
 }
 
 // Members names what a capsule carries, for the screen; it is what Collect would seal now.
-func Members(cfg *config.Config) []string {
+func Members(cfg *config.Config, managed bool) []string {
 	m := []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath, sessionKeyPath, instanceKeyPath}
 	if _, err := os.Stat(recoveryclient.RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
 		m = append(m, recoveryPubPath)
+	}
+	if managed {
+		m = append(m, installerClientPath, installerDirectoryPath, installerPathsPath)
 	}
 	return m
 }
