@@ -46,6 +46,13 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 	return peer
 }
 
+// TrustedPeer applies the same transport-peer rule as ClientIP when interpreting
+// the forwarded scheme for the installer's public network self-check.
+func TrustedPeer(r *http.Request, trusted []netip.Prefix) bool {
+	peer, err := netip.ParseAddr(peerIP(r))
+	return err == nil && isTrusted(peer, trusted)
+}
+
 // parseForwardedEntry reads one X-Forwarded-For entry as a client address. Most proxies
 // append a bare IP, but Azure App Service and Application Gateway append "ip:port" (or
 // "[ipv6]:port"); without stripping the port, every client behind them collapses onto one

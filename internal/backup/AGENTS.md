@@ -16,6 +16,13 @@ checks (`drill.go`) and serialized drill entry point (`run_drill.go`). It holds 
 live in `recoveryclient` and in the settings rows it reads and writes through the adapter.
 
 ## Local Contracts
+- Installer-managed snapshots carry `installer/client.secret`, `installer/directory.secret`
+  and `installer/credential-paths.json` at mode 0600. Resolve their paths from the
+  snapshotted `installer.config`; bounded private credential reads must succeed before
+  sealing. The drill derives this requirement from the retained database independently
+  of the recipe, checks both credentials and their exact original-path mapping, and
+  refuses omissions or conflicting mappings. Restore extracts these members under its
+  destination; `docs/RESTORE.md` owns reinstating the protected absolute paths.
 - UI-configured SSO providers are sealed in the `sso_providers_enc` settings row. The SQLite snapshot and carried encryption key restore their credentials; `TestProviderConfigurationSecretsAndPermissions` in `internal/api` verifies decryption from the collected backup files.
 - `Settings` maps `store.ErrNotFound` to `recoveryclient.ErrNotFound`; every other error passes
   through unchanged.
@@ -64,6 +71,8 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   nothing else.
 
 ## Verification
+- `TestInstallerCredentialsSealAndDrillRequiresThem` exercises actual
+  sealing/opening and rejects independently omitted credential members and altered mappings.
 - `go test -v ./internal/backup/...` covers decoded seal/open checks, malformed recipes,
   subprocess lock contention/exit, scratch cleanup and the synthetic v0.5.0 pairing fixture
   in `testdata/pairing-v050.json`. The fixture uses a 32-byte 0x01 deployment key and retains

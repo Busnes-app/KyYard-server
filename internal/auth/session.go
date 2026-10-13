@@ -119,6 +119,9 @@ func (sm *SessionManager) AuthenticateRequest(r *http.Request) (*store.User, *st
 		_ = sm.store.Sessions().DeleteSession(r.Context(), tokenHash)
 		return nil, nil, store.ErrNotFound
 	}
+	if allowed, err := sm.store.InstallerUserAllowed(r.Context(), user); err != nil || !allowed {
+		return nil, nil, store.ErrForbidden
+	}
 
 	// The password transaction may revoke the session between the two reads.
 	// Recheck after loading the user so an old session cannot inherit a cleared flag.

@@ -177,6 +177,7 @@ type inspectedForDeploy struct {
 	Created time.Time
 	Mounts  *mountList
 	Config  *struct {
+		Labels map[string]string
 		imageDefaults
 		User, MacAddress, Image string
 	}
@@ -454,6 +455,10 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 	var networkMode string
 	var oldMounts []inspectedMount
 	if run(r.req, s) {
+		if installerManaged(s.Explicit.Labels) {
+			r.step(s.Name, protocol.StepPrecondition, func() (string, string, string) { return deny("application_managed") })
+			return prepared{s: s}
+		}
 		// An unacknowledged bind is denied at create; nothing is pulled or created first.
 		if !unacknowledgedBind(s) {
 			r.ensureVolumes(ctx, s, nil)
@@ -479,6 +484,9 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		}
 		if !reported(before) {
 			return deny("configuration_unreported")
+		}
+		if installerManaged(before.Config.Labels) || s.Explicit != nil && installerManaged(s.Explicit.Labels) {
+			return deny("application_managed")
 		}
 		// An explicit frame carries every setting the configuration read carries, so only what
 		// that read would name is refused: the same codes, whatever the frame's sender claimed.
@@ -609,6 +617,9 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 			return r.outcomeFor(cctx, err, statusOf(err))
 		}
 		// An explicit frame's precondition checked every key, so every key must still hold.
+		if now.Config != nil && installerManaged(now.Config.Labels) {
+			return deny("application_managed")
+		}
 		if now.ID != s.Replaces.ContainerID || now.Image != s.Replaces.ImageID || now.Created.Unix() != s.Replaces.CreatedUnix || !sameConfiguration(p.before, now) ||
 			(r.req.Explicit && !p.raw.sameKeys(raw)) {
 			return deny("configuration_drift")

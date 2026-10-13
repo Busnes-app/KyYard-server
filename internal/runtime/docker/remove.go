@@ -37,6 +37,7 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var in struct {
+			Config  struct{ Labels map[string]string }
 			ID      string `json:"Id"`
 			Image   string
 			Created time.Time
@@ -50,6 +51,9 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		}
 		if in.ID != t.Target.ContainerID || in.Image != t.Target.ImageID || in.Created.Unix() != t.Target.CreatedUnix {
 			return deny("identity_mismatch")
+		}
+		if installerManaged(in.Config.Labels) {
+			return deny("application_managed")
 		}
 		return succeeded()
 	})

@@ -13,12 +13,14 @@ var (
 
 // IdentityClaims holds the unified identity extracted from any SSO provider.
 type IdentityClaims struct {
-	Subject           string `json:"sub"`
-	Email             string `json:"email"`
-	Name              string `json:"name"`
-	PreferredUsername string `json:"preferred_username"`
-	Role              string `json:"role,omitempty"`
-	Provider          string `json:"provider"` // "kysignon", "oidc", "saml"
+	Issuer            string   `json:"iss"`
+	AppRoles          []string `json:"app_roles,omitempty"`
+	Subject           string   `json:"sub"`
+	Email             string   `json:"email"`
+	Name              string   `json:"name"`
+	PreferredUsername string   `json:"preferred_username"`
+	Role              string   `json:"role,omitempty"`
+	Provider          string   `json:"provider"` // "kysignon", "oidc", "saml"
 }
 
 // SSOState represents ephemeral state held during OAuth/OIDC authorization flow.

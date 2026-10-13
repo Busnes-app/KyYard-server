@@ -269,7 +269,9 @@ func (r *run) checkClaim(ctx context.Context, want *corev1.PersistentVolumeClaim
 	return true, o, code, detail
 }
 
-func (r *run) owned(o metav1.Object) bool { return o.GetLabels()[render.LabelInstance] == r.instance }
+func (r *run) owned(o metav1.Object) bool {
+	return !installerManagedObject(o) && o.GetLabels()[render.LabelInstance] == r.instance
+}
 
 func nameTaken(kind, name string) (string, string, string) {
 	return protocol.OutcomeDenied, "name_taken", kind + "/" + name

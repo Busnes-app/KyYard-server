@@ -95,11 +95,12 @@ func (f *oauthFlow) exchange(ctx context.Context, code, verifier, redirectURI, e
 
 func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 	var raw struct {
-		Sub               string `json:"sub"`
-		Email             string `json:"email"`
-		Name              string `json:"name"`
-		PreferredUsername string `json:"preferred_username"`
-		Role              string `json:"role"`
+		Sub               string   `json:"sub"`
+		Email             string   `json:"email"`
+		Name              string   `json:"name"`
+		PreferredUsername string   `json:"preferred_username"`
+		Role              string   `json:"role"`
+		AppRoles          []string `json:"app_roles"`
 	}
 	if err := idToken.Claims(&raw); err != nil || raw.Sub == "" {
 		return nil, ErrInvalidIDToken
@@ -111,5 +112,5 @@ func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 	if username == "" {
 		username = raw.Sub
 	}
-	return &IdentityClaims{Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role}, nil
+	return &IdentityClaims{Issuer: idToken.Issuer, AppRoles: raw.AppRoles, Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role}, nil
 }

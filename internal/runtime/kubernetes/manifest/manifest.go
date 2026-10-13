@@ -223,6 +223,13 @@ rules:
   - apiGroups: [""]
     resources: [pods/exec]
     verbs: [create]
+  # Exec and pod delete read a pod's controllers to refuse installer-owned workloads.
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get]
   - apiGroups: [""]
     resources: [services, configmaps]
     verbs: [get, list, create, update, patch, delete]

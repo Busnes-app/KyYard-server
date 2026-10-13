@@ -101,6 +101,12 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 	if err := c.execAllowed(parent, t, pod); err != nil {
 		return nil, err
 	}
+	ownerCtx, cancelOwner := context.WithTimeout(parent, callBudget)
+	owned := c.installerOwned(ownerCtx, pod)
+	cancelOwner()
+	if owned {
+		return nil, errors.New("exec refused: the pod is KyQuickStart-owned or its controllers could not be verified")
+	}
 	st, err := c.executor(t.Namespace, t.Name, &corev1.PodExecOptions{Container: t.Container, Command: spec.Argv, Stdin: true, Stdout: true, TTY: true})
 	if err != nil {
 		return nil, errors.New("exec transport could not be configured")

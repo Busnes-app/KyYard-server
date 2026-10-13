@@ -392,7 +392,8 @@ on `kyyard-agent-identity`, where the agent keeps its identity); in each listed 
 Role and RoleBinding `kyyard-agent-deploy` (`get`, `list`, `create`, `update`, `patch`,
 `delete` on Deployments, Services and ConfigMaps; the same on Secrets except `list`; `get`,
 `list`, `patch`, `update`, `delete` on StatefulSets and DaemonSets; `delete` on pods; `create` on
-`pods/exec`); the Secret `kyyard-agent-enrollment`; and a one-replica
+`pods/exec`; `get` on ReplicaSets, Jobs and CronJobs, to check a pod's controllers before exec or
+delete); the Secret `kyyard-agent-enrollment`; and a one-replica
 `Recreate` Deployment running `/app/kyyard-agent --kubernetes` as UID 65532 with a read-only
 root filesystem (the `emptyDir` volume `scratch` at `/var/lib/kyyard-agent`, the agent's
 `--scratch-dir`, holds its command ledgers), no privilege escalation, every capability dropped, seccomp `RuntimeDefault`,

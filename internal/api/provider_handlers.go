@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -28,6 +29,12 @@ type loginAttempt struct {
 type ssoLinkAttempt struct{ UserID, SessionHash, PasswordHash string }
 
 func (s *Server) providers(ctx context.Context) ([]sso.Provider, error) {
+	if p, managed, err := s.installerProvider(ctx); err != nil || managed {
+		if err != nil {
+			return nil, err
+		}
+		return []sso.Provider{p}, nil
+	}
 	providers := []sso.Provider{}
 	blob, err := s.store.Settings().GetSetting(ctx, providerSetting)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -89,6 +96,12 @@ func (s *Server) handleSaveProvider(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, 500, "Could not load sign-in providers")
 		return
 	}
+	for _, p := range all {
+		if p.InstallerManaged {
+			s.writeError(w, 409, "Sign-in is managed by KyQuickStart")
+			return
+		}
+	}
 	saved := []sso.Provider{}
 	for _, old := range all {
 		if old.ID != "kysignon" && old.ID != "oidc" {
@@ -101,6 +114,7 @@ func (s *Server) handleSaveProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	// Creation-only: a provider ID cannot be reassigned to another issuer's identities.
 	p.ID = "idp_" + crypto.RandomHex(12)
+	p.InstallerManaged = false
 	p.SecretSet = false
 	p.CallbackURL = ""
 	saved = append(saved, p)
@@ -196,7 +210,7 @@ func (s *Server) handleSSOLinkOptions(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []map[string]string{}
 	for _, p := range providers {
-		if p.Enabled {
+		if p.Enabled && !p.InstallerManaged {
 			out = append(out, map[string]string{"id": p.ID, "name": p.Name})
 		}
 	}
@@ -236,6 +250,10 @@ func (s *Server) startProviderLogin(w http.ResponseWriter, r *http.Request, link
 	p, ok := s.provider(r)
 	if !ok {
 		s.writeError(w, 404, "Sign-in provider unavailable")
+		return
+	}
+	if link != nil && p.InstallerManaged {
+		s.writeError(w, 403, "Managed identities require explicit installer assignment")
 		return
 	}
 	if !s.allowAttempt("sso:"+s.requestIP(r), 10, time.Minute) {
@@ -305,6 +323,10 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, 400, "Invalid or expired sign-in state")
 		return
 	}
+	if p.InstallerManaged && (attempt.Link != nil || !reflect.DeepEqual(p, attempt.Provider)) {
+		s.writeError(w, 403, "Sign-in configuration changed; start again")
+		return
+	}
 	http.SetCookie(w, &http.Cookie{Name: cookie.Name, Value: "", Path: "/api/sso/" + p.ID + "/callback", MaxAge: -1, HttpOnly: true, Secure: s.config.Security.CookieSecure, SameSite: http.SameSiteLaxMode})
 	if r.URL.Query().Get("error") != "" || r.URL.Query().Get("code") == "" {
 		s.writeError(w, 400, "Sign-in was cancelled or refused")
@@ -360,6 +382,32 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 	if err != nil || user == nil || user.Status != "active" {
 		s.writeError(w, 403, "Account unavailable; contact your administrator")
 		return
+	}
+	if p.InstallerManaged {
+		current, managed, e := s.installerProvider(ctx)
+		if e != nil || !managed || !reflect.DeepEqual(current, attempt.Provider) || claims.Issuer != current.Issuer {
+			s.writeError(w, 403, "Managed sign-in configuration changed or identity mismatched")
+			return
+		}
+		allowed, e := s.store.InstallerUserAllowed(ctx, user)
+		if e != nil || !allowed {
+			s.writeError(w, 403, "Identity is not assigned to this installation")
+			return
+		}
+		admin := false
+		for _, role := range claims.AppRoles {
+			if role == "kyyard.admin" {
+				admin = true
+			}
+		}
+		if admin != (user.Role == "admin") {
+			if e := s.store.RevokeInstallerIdentity(ctx, claims.Issuer, claims.Subject); e != nil {
+				s.writeError(w, 503, "Could not record assignment change")
+				return
+			}
+			s.writeError(w, 403, "Application role no longer matches the assigned identity")
+			return
+		}
 	}
 	if user.SSOProvider == "local" && user.TOTPEnabled {
 		token, err := s.beginMFA(ctx, user)

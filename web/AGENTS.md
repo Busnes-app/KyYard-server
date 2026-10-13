@@ -7,6 +7,11 @@ React 19 + TypeScript + Vite PWA for fleet operations, provider sign-in, recover
 Owns user interface components, service worker caching, PWA installation manifests, and frontend theme switching.
 
 ## Local Contracts
+- Settings → Sign-in identifies `installer_managed` providers as read-only KyQuickStart
+  configuration, omits provider creation/enable/remove/secret rotation in managed mode,
+  and offers Copy callback without exposing credentials. Native account linking excludes
+  the installer provider at the server boundary. Ordinary provider management remains available
+  outside installer ownership.
 - Login consumes the opaque `#sso-mfa=` challenge into component memory, removes the fragment from history immediately, and uses the existing TOTP/recovery-code form before authenticating linked local SSO accounts.
 - Settings → Sign-in offers `AccountSSO` to connect an enabled provider to the current local account. It asks for the current KyYard password, clears the input before every request, starts the CSRF-bearing link flow and follows only an HTTPS authorization URL. Provider login completes on the original account session; the success redirect opens Sign-in with a status message. Provider configuration remains platform-admin-only.
 - Host inventory refresh buttons share `InventoryRefresh`: POST the CSRF-protected endpoint refresh, disable while awaiting a new report, then reload the displayed resources. Show fixed offline, upgrade, rate-limit and failure notices; scope changes abort the request. Container action settlement reloads host inventory, samples and activity together. Container name edits use Configuration, confirm the current name and recreate with the requested new name; failed replacement restores the old name.

@@ -103,6 +103,9 @@ func (r *run) find(ctx context.Context, req protocol.RemovalRequest, found map[s
 	core, apps := r.c.cs.CoreV1(), r.c.cs.AppsV1()
 	selector := metav1.ListOptions{LabelSelector: labels.SelectorFromSet(labels.Set{render.LabelInstance: r.instance}).String()}
 	add := func(kind string, o metav1.Object, remove func(context.Context, string, metav1.DeleteOptions) error) {
+		if !r.owned(o) {
+			return
+		}
 		if s := o.GetLabels()[render.LabelService]; protocol.ValidServiceName(s) {
 			found[s] = append(found[s], doomed{kind, o.GetName(), o.GetUID(), remove})
 		}

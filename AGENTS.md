@@ -98,6 +98,8 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## KyYard product planning
 
+- Container-local installer boundary: `kyyard-server apply-setup --file /absolute/private/bundle.json [--check]` and `--capabilities`. The running server owns a private `/data/.installer/setup.sock`; CLI calls never open or migrate the database. Native provider readers activate the committed `ky.product-setup/1` record without restart. `docs/INSTALLER_SETUP.md` owns the bundle contract and remaining qualification gates.
+
 - Build the KyYard agent with runtime adapters; Portainer backend/agent integration and evaluation are out of scope by user decision.
 
 - Before implementing KyYard product work, read [KyYard-Engineering-Handoff.md](KyYard-Engineering-Handoff.md) for product requirements and [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md) for delivery order, design decisions, and acceptance gates.
@@ -113,6 +115,8 @@ When the user requests a durable behavior change, record it here or in the relev
 - First boot persists encryption, session and instance keys; config owns key lifecycle and backup owns restore identity/session semantics. Bootstrap credentials print only after the generated account is saved.
 
 ## Verification
+
+- `KY_INSTALLER_TEST_BINARY=/absolute/path/to/kyyard-server python3 scripts/installer-oidc-test.py`: disposable built-process setup and certificate-verified TLS OIDC regression (Python 3 and OpenSSL). Checks explicit owner/everyday/unassigned admission, PKCE, global-role rejection, app-role loss and durable session revocation. The installer prototype currently builds through a local `ky-primitives` workspace until the shared `applysetup` release lands.
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `make lint` equivalent: gofmt, `go vet`, `go mod tidy`/`verify`

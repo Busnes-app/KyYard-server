@@ -3,12 +3,17 @@ import { secureFetch } from '../api';
 import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 
-interface Provider { id: string; name: string; kind: string; enabled: boolean; secret_set: boolean; callback_url: string }
+interface Provider { id: string; name: string; kind: string; enabled: boolean; secret_set: boolean; callback_url: string; installer_managed?: boolean }
 export function SSOSettings() {
   const providers = useTenantResource<Provider[]>('/api/settings/sso');
   const [kind, setKind] = useState('oidc');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const managed = providers.data?.some(p => p.installer_managed === true) ?? false;
+  const copyCallback = async (url: string) => {
+    try { await navigator.clipboard.writeText(url); setMessage('Callback URL copied.'); }
+    catch { setMessage('Could not copy. Select and copy the callback URL above.'); }
+  };
   const save = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault(); const form = e.currentTarget; const data = new FormData(form);
     setBusy(true); setMessage('');
@@ -35,8 +40,8 @@ export function SSOSettings() {
     <StateNotice state={providers.state} onRetry={providers.reload} />
     {providers.state === 'ready' && <>
       {providers.data?.length === 0 && <p>No providers configured. Local sign-in remains available.</p>}
-      {providers.data?.map((p) => <div key={p.id} style={{ margin: '16px 0' }}><strong>{p.name}</strong> · {p.kind} · {p.enabled ? 'enabled' : 'disabled'}<p>Callback: <code style={{ overflowWrap: 'anywhere' }}>{p.callback_url}</code></p>{p.id.startsWith('idp_') ? <><button className="btn-secondary" disabled={busy} onClick={() => void update(p, { enabled: !p.enabled })}>{p.enabled ? 'Disable' : 'Enable'}</button>{' '}<button className="btn-secondary" disabled={busy} onClick={() => void remove(p)}>Remove provider</button><details><summary>Rotate client secret</summary><form onSubmit={(e) => { e.preventDefault(); const form = e.currentTarget; const secret = new FormData(form).get('secret'); if (typeof secret === 'string') { void update(p, { client_secret: secret }); form.reset(); } }}><label>New client secret<input name="secret" type="password" autoComplete="new-password" required /></label><button disabled={busy}>Save new secret</button></form></details></> : <p>Managed by server environment configuration.</p>}</div>)}
-      <details><summary>Add sign-in provider</summary><form onSubmit={save} style={{ display: 'grid', gap: 12, marginTop: 16, maxWidth: 640 }}>
+      {providers.data?.map((p) => <div key={p.id} style={{ margin: '16px 0' }}><strong>{p.name}</strong> · {p.kind} · {p.enabled ? 'enabled' : 'disabled'}<p>Callback: <code style={{ overflowWrap: 'anywhere' }}>{p.callback_url}</code></p><button className="btn-secondary" onClick={() => void copyCallback(p.callback_url)} aria-label={`Copy callback for ${p.name}`}>Copy callback</button>{p.installer_managed ? <p>Managed by KyQuickStart. Sign-in settings and account assignments are read-only here. Client credential: {p.secret_set ? 'configured' : 'unavailable'}.</p> : p.id.startsWith('idp_') ? <><button className="btn-secondary" disabled={busy} onClick={() => void update(p, { enabled: !p.enabled })}>{p.enabled ? 'Disable' : 'Enable'}</button>{' '}<button className="btn-secondary" disabled={busy} onClick={() => void remove(p)}>Remove provider</button><details><summary>Rotate client secret</summary><form onSubmit={(e) => { e.preventDefault(); const form = e.currentTarget; const secret = new FormData(form).get('secret'); if (typeof secret === 'string') { void update(p, { client_secret: secret }); form.reset(); } }}><label>New client secret<input name="secret" type="password" autoComplete="new-password" required /></label><button disabled={busy}>Save new secret</button></form></details></> : <p>Managed by server environment configuration.</p>}</div>)}
+      {!managed && <details><summary>Add sign-in provider</summary><form onSubmit={save} style={{ display: 'grid', gap: 12, marginTop: 16, maxWidth: 640 }}>
         <label>Provider name<input name="name" required maxLength={80} placeholder="KyIdentity" /></label>
         <label>Protocol<select value={kind} onChange={(e) => setKind(e.target.value)}><option value="oidc">OpenID Connect (including KyIdentity)</option><option value="oauth2">OAuth 2 with a JSON profile endpoint</option></select></label>
         {kind === 'oidc' ? <label>Issuer URL<input name="issuer" type="url" required placeholder="https://identity.example.com" /></label> : <>
@@ -55,7 +60,7 @@ export function SSOSettings() {
         <label>Client secret<input name="client_secret" type="password" autoComplete="new-password" /></label>
         <label><input type="checkbox" name="auto_provision" defaultChecked style={{ width: 'auto' }} /> Create an account on first sign-in. Organization access must be granted separately.</label>
         <button disabled={busy} type="submit">Add provider</button>
-      </form></details>
+      </form></details>}
     </>}
     {message && <p role="status">{message}</p>}
   </section>;

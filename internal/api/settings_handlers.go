@@ -64,6 +64,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 				delete(settings, k)
 			}
 		}
+		for key := range settings {
+			if strings.HasPrefix(key, "installer.") {
+				delete(settings, key)
+			}
+		}
 		out["extra_settings"] = settings
 	}
 

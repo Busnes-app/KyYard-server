@@ -1,5 +1,25 @@
 # Shared UI verification
 
+## Installer-managed sign-in, 2026-10-09
+
+The rebuilt embedded UI ran against a fresh disposable SQLite server in the T3 shared
+browser at 1280×800. Native bootstrap sign-in, mandatory password replacement and re-login
+worked. Settings → Sign-in displayed the KyQuickStart read-only notice, credential-present
+status and public callback; Copy callback succeeded. Provider creation, enable/remove and
+secret rotation controls were absent; the native account-link provider list excluded the
+installer provider. The real provider response contained no protected credential value.
+All 523 frontend tests, vendored UI check and production build passed.
+
+The local browser transport used an explicitly disposable loopback reverse-proxy fixture
+that mapped its Origin to the server's advertised HTTPS origin and supplied trusted
+forwarded scheme. This verifies the built UI and native authenticated projection; it
+does not establish real TLS/edge acceptance. Direct mismatched-Origin login was refused
+before using that fixture. Separate actual signed TLS OIDC/PKCE regression passes. Both
+server and proxy were removed afterward; no live service was used. Existing bundle-size
+warning remains; no mobile/theme/accessibility audit is claimed for this change.
+
+Screenshot: `/home/yoshi/.t3/userdata/browser-artifacts/browser-screenshot-localhost-mv1bcjvm-8d93d8ba.png`.
+
 ## Change
 
 Use shared Busnes colors and actual navigation states; remove an unused legacy shell block. Shared assets are pinned to ky-ui 0.2.0 with content hashes. Product layouts, saved theme keys and named presets remain local.

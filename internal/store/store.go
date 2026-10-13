@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"github.com/Busnes-app/ky-primitives/applysetup"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"time"
@@ -54,6 +55,11 @@ var (
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
 type Store interface {
+	InstallerConfiguration(context.Context) (applysetup.Common, bool, error)
+	ApplyInstaller(context.Context, applysetup.Common, bool) (applysetup.Report, error)
+	InstallerUserAllowed(context.Context, *User) (bool, error)
+	ApplyInstallerDirectory(context.Context, string, string, string, string, string, bool, bool) error
+	RevokeInstallerIdentity(context.Context, string, string) error
 	Tenancy() TenancyStore
 	Users() UserStore
 	Sessions() SessionStore

@@ -106,6 +106,7 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 		}
 		checks = append(checks, recoveryclient.Check{Name: "Environment: " + name, Passed: found, Message: message})
 	}
+	checks = append(checks, installerCredentialCheck(dir, required))
 	return checks
 }
 
