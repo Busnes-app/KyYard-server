@@ -122,13 +122,18 @@ type ContainerConfig struct {
 	AllowPrivileged bool `json:"allow_privileged"`
 }
 
-// CaptchaConfig holds anti-abuse settings (PoW default, Turnstile, Friendly).
+// CaptchaConfig holds the sign-in challenge settings.
 type CaptchaConfig struct {
-	Provider      string `json:"provider"` // "pow", "turnstile", "friendly", "none"
-	SiteKey       string `json:"site_key"`
-	SecretKey     string `json:"secret_key"`
+	Provider      string `json:"provider"` // "pow" or "none"
 	DifficultyPoW int    `json:"difficulty_pow"`
 }
+
+// DefaultPoWDifficulty is the proof of work's search space; the browser tries half of it on
+// average. Below MinPoWDifficulty the puzzle costs a script nothing.
+const (
+	DefaultPoWDifficulty = 100000
+	MinPoWDifficulty     = 10000
+)
 
 // MinDepositInterval is the shortest schedule accepted: each run snapshots the whole database
 // and uploads it, and KyRecovery admits 60 deposits per token per 15 minutes.
@@ -249,6 +254,16 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("KY_BACKUP_DEPOSIT_INTERVAL: %s is below the %s minimum (0 disables)", depositInterval, MinDepositInterval)
 	}
 
+	// Only "pow" is verified; any other name would silently mean no challenge at all.
+	captchaProvider := getEnv("KY_CAPTCHA_PROVIDER", "pow")
+	if captchaProvider != "pow" && captchaProvider != "none" {
+		return nil, fmt.Errorf("KY_CAPTCHA_PROVIDER: %q is not supported; use \"pow\" or \"none\"", captchaProvider)
+	}
+	powDifficulty := getEnvInt("KY_CAPTCHA_POW_DIFFICULTY", DefaultPoWDifficulty)
+	if powDifficulty < MinPoWDifficulty {
+		return nil, fmt.Errorf("KY_CAPTCHA_POW_DIFFICULTY: must be at least %d, got %d", MinPoWDifficulty, powDifficulty)
+	}
+
 	backupKeep := getEnvInt("KY_BACKUP_KEEP", 7)
 	if backupKeep < 1 {
 		return nil, fmt.Errorf("KY_BACKUP_KEEP: must be at least 1, got %d", backupKeep)
@@ -305,12 +320,7 @@ func LoadFromEnv() (*Config, error) {
 		},
 		Registry:  RegistryConfig{AllowPrivate: getEnvBool("KY_REGISTRY_ALLOW_PRIVATE", false)},
 		Container: ContainerConfig{AllowPrivileged: getEnvBool("KY_CONTAINER_ALLOW_PRIVILEGED", false)},
-		Captcha: CaptchaConfig{
-			Provider:      getEnv("KY_CAPTCHA_PROVIDER", "pow"),
-			SiteKey:       getEnv("KY_CAPTCHA_SITE_KEY", ""),
-			SecretKey:     getEnv("KY_CAPTCHA_SECRET_KEY", ""),
-			DifficultyPoW: getEnvInt("KY_CAPTCHA_POW_DIFFICULTY", 4),
-		},
+		Captcha:   CaptchaConfig{Provider: captchaProvider, DifficultyPoW: powDifficulty},
 	}
 
 	return cfg, nil
