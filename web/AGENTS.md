@@ -42,6 +42,7 @@ Owns user interface components, service worker caching, PWA installation manifes
 - Endpoint container controls use immutable IDs and observed image/state preconditions. Removal first fetches the server preview and requires the full observed name. Commands are never retried automatically; recent activity remains accessible for unknown outcomes.
 - Container logs support bounded reads, search, timestamps, download and SSE follow. Browser display retains 256 KiB; follow closes on error without automatic reconnection, and unmount/filter changes cancel the reader. Server notices are separate from container output during follow.
 - A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion.
+- Login passes a stable `onToken` to `CaptchaWidget` and remounts it (`key`) after a refused login: the server accepts each solved challenge once. The widget compares raw digest bytes.
 - Login shows local setup/SSH/TLS guidance for HTTP installations and offers SSO only when enabled.
 - Site branding uses Lucide’s shipping-container outline in the header, login, favicon and install icons; retain its rounded line-art style and theme color inheritance inside the app. Static icon assets carry the Lucide license and are rasterized from the same geometry.
 - Product title, PWA name, and pre-settings fallback name are `KyYard`.

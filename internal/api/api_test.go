@@ -527,9 +527,10 @@ func TestFullLimiterStillThrottlesLogin(t *testing.T) {
 		api.AllowAttemptForTest(srv, "mfa:"+strconv.Itoa(i), 3, 5*time.Minute)
 	}
 
-	loginBody, _ := json.Marshal(map[string]string{"username": "nobody", "password": "WrongPass123!"})
 	throttled := false
 	for i := 1; i <= 25; i++ {
+		// A new username each time, so the per-username backoff stays out of the way.
+		loginBody, _ := json.Marshal(map[string]string{"username": "nobody-" + strconv.Itoa(i), "password": "WrongPass123!"})
 		// A fresh MFA token before each login: under the old design this minted a new key and
 		// evicted login's window before it could ever count to its limit.
 		mfaBody, _ := json.Marshal(map[string]string{"mfa_token": "tok-" + strconv.Itoa(i), "code": "000000"})

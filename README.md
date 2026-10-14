@@ -73,6 +73,10 @@ its identity, change the password or sign out; privileged APIs remain blocked. R
 revokes existing sessions, MFA transactions and device pairings atomically. Existing accounts
 are not retroactively flagged, since the server cannot infer whether they still use a bootstrap password.
 
+Five failed sign-ins for one username, from anywhere, delay the next attempt by one minute,
+doubling to at most 15; a successful sign-in or a restart clears it. Unknown and disabled
+accounts answer exactly like a wrong password.
+
 ## Transport and advanced deployment
 
 The bare binary defaults to `127.0.0.1:9273`; the image listens on `0.0.0.0:9273` inside

@@ -18,6 +18,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -44,6 +45,12 @@ type Server struct {
 	mux         *http.ServeMux
 	attemptsMu  sync.Mutex
 	attempts    map[string]attemptWindow
+	// accounts holds windows keyed on a known account, apart from attempts, so flooding
+	// client keys cannot evict them. loginBackoff is keyed on the typed username; both are
+	// guarded by attemptsMu.
+	accounts     map[string]attemptWindow
+	loginBackoff map[string]loginBackoff
+	pow          auth.PoWVerifier
 	// claimGlobal is the service-claim bound across every address. It lives outside attempts
 	// so makeRoom cannot evict it; guarded by attemptsMu.
 	claimGlobal attemptWindow
@@ -175,16 +182,18 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 	}
 
 	s := &Server{
-		config:   cfg,
-		store:    st,
-		sessions: sessions,
-		kysignon: kysignon,
-		saml:     saml,
-		recovery: recovery,
-		mux:      http.NewServeMux(),
-		logs:     newLogRegistry(),
-		attempts: make(map[string]attemptWindow),
-		health:   healthLog,
+		config:       cfg,
+		store:        st,
+		sessions:     sessions,
+		kysignon:     kysignon,
+		saml:         saml,
+		recovery:     recovery,
+		mux:          http.NewServeMux(),
+		logs:         newLogRegistry(),
+		attempts:     make(map[string]attemptWindow),
+		accounts:     make(map[string]attemptWindow),
+		loginBackoff: make(map[string]loginBackoff),
+		health:       healthLog,
 		// Each check or update plan may hold a registry connection per service for up to
 		// store.ImageCheckDeadline.
 		registrySlots: make(chan struct{}, registrySlotsTotal),
@@ -195,14 +204,25 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 }
 
 func (s *Server) allowAttempt(key string, limit int, window time.Duration) bool {
-	now := time.Now()
 	s.attemptsMu.Lock()
 	defer s.attemptsMu.Unlock()
-	if _, known := s.attempts[key]; !known && len(s.attempts) >= attemptsCap {
-		s.makeRoom(now)
+	return allowIn(s.attempts, key, limit, window)
+}
+
+// allowAccountAttempt is allowAttempt for keys naming an existing account.
+func (s *Server) allowAccountAttempt(key string, limit int, window time.Duration) bool {
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	return allowIn(s.accounts, key, limit, window)
+}
+
+func allowIn(m map[string]attemptWindow, key string, limit int, window time.Duration) bool {
+	now := time.Now()
+	if _, known := m[key]; !known && len(m) >= attemptsCap {
+		makeRoom(m, now)
 	}
-	entry := bumpWindow(s.attempts[key], now, window)
-	s.attempts[key] = entry
+	entry := bumpWindow(m[key], now, window)
+	m[key] = entry
 	return entry.count <= limit
 }
 
@@ -210,19 +230,87 @@ func (s *Server) allowAttempt(key string, limit int, window time.Duration) bool 
 // full it drops one live entry chosen at random, never the one nearest expiry. Caller holds
 // attemptsMu. The scan is O(attemptsCap) and only runs for a new key while the map is full;
 // 10 000 entries is microseconds.
-func (s *Server) makeRoom(now time.Time) {
-	for candidate, w := range s.attempts {
+func makeRoom(m map[string]attemptWindow, now time.Time) {
+	for candidate, w := range m {
 		if now.After(w.reset) {
-			delete(s.attempts, candidate)
+			delete(m, candidate)
 		}
 	}
-	if len(s.attempts) >= attemptsCap {
+	if len(m) >= attemptsCap {
 		// Go randomises map iteration, so the first entry is an unbiased victim.
-		for candidate := range s.attempts {
-			delete(s.attempts, candidate)
+		for candidate := range m {
+			delete(m, candidate)
 			break
 		}
 	}
+}
+
+// Login backoff per typed username: loginFreeFailures failures, then a delay doubling from a
+// minute to loginMaxDelay. A delay, never a lock, so guessing at an admin cannot shut them
+// out for longer than that. An entry quiet for loginForget after its delay is dropped.
+const (
+	loginFreeFailures = 5
+	loginMaxDelay     = 15 * time.Minute
+	loginForget       = time.Hour
+)
+
+type loginBackoff struct {
+	failures int
+	until    time.Time
+}
+
+// beginLogin admits one password check for username, or refuses while it is backing off. The
+// attempt counts as a failure until loginSucceeded clears it, so parallel guesses cannot all
+// pass one open slot. Keyed on a digest: the username is caller-supplied and unbounded.
+func (s *Server) beginLogin(username string) bool {
+	key := crypto.SHA256Hex([]byte(strings.ToLower(username)))
+	now := time.Now()
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	e, known := s.loginBackoff[key]
+	if now.Before(e.until) {
+		return false
+	}
+	if now.After(e.until.Add(loginForget)) {
+		e = loginBackoff{}
+	}
+	if !known && len(s.loginBackoff) >= attemptsCap {
+		s.makeLoginRoom(now)
+	}
+	e.failures++
+	e.until = now
+	if e.failures >= loginFreeFailures {
+		e.until = now.Add(min(time.Minute<<min(e.failures-loginFreeFailures, 4), loginMaxDelay))
+	}
+	s.loginBackoff[key] = e
+	return true
+}
+
+func (s *Server) loginSucceeded(username string) {
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	delete(s.loginBackoff, crypto.SHA256Hex([]byte(strings.ToLower(username))))
+}
+
+// makeLoginRoom drops forgotten entries, then one that is not backing off if any, so a
+// flood of one-off usernames does not reset a delay being served. Caller holds attemptsMu.
+func (s *Server) makeLoginRoom(now time.Time) {
+	for k, e := range s.loginBackoff {
+		if now.After(e.until.Add(loginForget)) {
+			delete(s.loginBackoff, k)
+		}
+	}
+	if len(s.loginBackoff) < attemptsCap {
+		return
+	}
+	victim := ""
+	for k, e := range s.loginBackoff {
+		victim = k
+		if !now.Before(e.until) {
+			break
+		}
+	}
+	delete(s.loginBackoff, victim)
 }
 
 // allowGlobalClaim bumps the claim window shared by every caller.
@@ -246,6 +334,11 @@ func bumpWindow(entry attemptWindow, now time.Time, window time.Duration) attemp
 // keying on a caller-supplied header would make every limit here bypassable.
 func (s *Server) requestIP(r *http.Request) string {
 	return auth.ClientIP(r, s.config.Security.TrustedProxies)
+}
+
+// limitIP is requestIP grouped for limiter keys: an IPv6 client counts as its /64.
+func (s *Server) limitIP(r *http.Request) string {
+	return auth.RateKey(s.requestIP(r))
 }
 
 func (s *Server) routes() {

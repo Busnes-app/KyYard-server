@@ -182,7 +182,7 @@ func envelope(typ string, payload any) protocol.Envelope {
 // agent's claim about state: state comes from the store at connect and again on every frame that
 // needs it.
 func (s *Server) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
-	s.agentConnect(w, r, "agent-connect:"+s.requestIP(r))
+	s.agentConnect(w, r, "agent-connect:"+s.limitIP(r))
 }
 
 // The listener selects the budget; request headers cannot opt into the private one.

@@ -18,6 +18,8 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [captchaToken, setCaptchaToken] = useState<string>('');
+  // A solved challenge is accepted once; bumping this remounts the widget for a fresh one.
+  const [captchaRound, setCaptchaRound] = useState(0);
   const [mfaChallenge, setMfaChallenge] = useState<MFAChallenge | null>(() => {
     const match = /^#sso-mfa=([a-f0-9]{64})$/.exec(window.location.hash);
     if (!match) return null;
@@ -51,6 +53,8 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
 
       const data = await resp.json();
       if (!resp.ok) {
+        setCaptchaToken('');
+        setCaptchaRound((n) => n + 1);
         throw new Error(data.error || 'Login failed');
       }
 
@@ -220,7 +224,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
                 />
               </div>
 
-              <CaptchaWidget onToken={(tok) => setCaptchaToken(tok)} />
+              <CaptchaWidget key={captchaRound} onToken={setCaptchaToken} />
 
               <button type="submit" style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }} disabled={loading}>
                 <LogIn size={16} />

@@ -200,7 +200,7 @@ func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'
 // token selects the tenant, the proof binds the key, and every refusal is the same 401.
 func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if !s.allowAttempt("enroll:"+s.requestIP(r), 10, time.Minute) {
+	if !s.allowAttempt("enroll:"+s.limitIP(r), 10, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many enrollment attempts")
 		return
 	}

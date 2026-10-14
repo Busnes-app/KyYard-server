@@ -24,7 +24,7 @@ const (
 func (s *Server) handleClaimServiceToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	ip := s.requestIP(r)
-	if !s.allowAttempt("service-claim:"+ip, claimPerIP, claimWindow) || !s.allowGlobalClaim(claimGlobal, claimWindow) {
+	if !s.allowAttempt("service-claim:"+s.limitIP(r), claimPerIP, claimWindow) || !s.allowGlobalClaim(claimGlobal, claimWindow) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many pairing attempts; wait a minute")
 		return
 	}

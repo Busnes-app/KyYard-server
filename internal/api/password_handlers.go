@@ -27,7 +27,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusConflict, "No local password replacement is required")
 		return
 	}
-	if !s.allowAttempt("password-change:"+s.requestIP(r), 10, time.Minute) || !s.allowAttempt("password-change-user:"+user.ID, 5, time.Minute) {
+	if !s.allowAttempt("password-change:"+s.limitIP(r), 10, time.Minute) || !s.allowAccountAttempt("password-change-user:"+user.ID, 5, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many password change attempts")
 		return
 	}
