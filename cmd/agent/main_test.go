@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -63,5 +67,52 @@ func TestLedgerDir(t *testing.T) {
 	}
 	if got := ledgerDir(filepath.Join(dir, "absent"), logf); got != "" || len(lines) != 1 {
 		t.Fatalf("unwritable: %q %v", got, lines)
+	}
+}
+
+// Enrollment never follows a redirect (a 307 would replay the one-use token elsewhere), and a
+// CA file is the only trust: the system store does not vouch for the test server, the file does.
+func TestHTTPClientRefusesRedirectsAndPinsTheCA(t *testing.T) {
+	var followed atomic.Bool
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/elsewhere" {
+			followed.Store(true)
+			return
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	if _, err := newHTTPClient(filepath.Join(t.TempDir(), "missing.pem")); err == nil {
+		t.Fatal("a missing CA file was accepted")
+	}
+	junk := filepath.Join(t.TempDir(), "junk.pem")
+	if err := os.WriteFile(junk, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newHTTPClient(junk); err == nil {
+		t.Fatal("a file without a certificate was accepted")
+	}
+	system, err := newHTTPClient("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := system.Post(srv.URL+"/api/agent/v1/enroll", "application/json", strings.NewReader(`{"token":"x"}`)); err == nil {
+		t.Fatal("the system store trusted the test CA")
+	}
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := newHTTPClient(ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := pinned.Post(srv.URL+"/api/agent/v1/enroll", "application/json", strings.NewReader(`{"token":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect || followed.Load() {
+		t.Fatalf("redirect followed: %d %v", resp.StatusCode, followed.Load())
 	}
 }
