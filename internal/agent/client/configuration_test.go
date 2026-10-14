@@ -155,7 +155,7 @@ func TestConfigurationRoutedThroughTheSession(t *testing.T) {
 				return err
 			}
 			defer conn.CloseNow()
-			if err = write(ctx, conn, protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: "instance", Versions: []int{1}}); err != nil {
+			if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host)); err != nil {
 				return err
 			}
 			if _, err = read(ctx, conn); err != nil {
@@ -189,7 +189,7 @@ func TestConfigurationRoutedThroughTheSession(t *testing.T) {
 	}))
 	defer stub.Close()
 	_, key, _ := ed25519.GenerateKey(nil)
-	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
+	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: testInstanceFingerprint, Server: stub.URL}
 	opts := Options{HTTPClient: stub.Client(), IdentityDir: t.TempDir(), Log: log.New(io.Discard, "", 0), Configure: func(_ context.Context, target protocol.InspectionTarget) (*protocol.ContainerConfiguration, error) {
 		return minimalConfiguration(target), nil
 	}}

@@ -27,6 +27,9 @@ var (
 	ErrIncompatible    = errors.New("control plane does not speak this protocol version")
 )
 
+// ErrServerUnproven is retried: upgrading the server fixes it without touching the agent.
+var ErrServerUnproven = errors.New("server does not prove its identity; upgrade the server")
+
 type Options struct {
 	inspectionSlots chan struct{}
 	Inspect         func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error)
@@ -270,6 +273,14 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	}
 	if ch.InstanceFingerprint != id.InstanceFingerprint {
 		return ErrInstanceChanged
+	}
+	// The fingerprint is public; only the instance key's signature proves who sent it. Nothing
+	// is signed for a server that has not proven itself.
+	if len(ch.Signature) == 0 {
+		return ErrServerUnproven
+	}
+	if !ch.Proven(u.Host, id.InstanceFingerprint) {
+		return errors.New("the server's identity proof failed; refusing to authenticate")
 	}
 	sig := ed25519.Sign(id.signingKey(), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
 	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Fingerprint: id.fingerprint(), Version: protocol.Version, Signature: sig}); err != nil {

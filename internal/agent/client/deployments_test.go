@@ -24,6 +24,12 @@ import (
 	"github.com/coder/websocket"
 )
 
+// testInstance signs a stub server's challenges; identities pin its fingerprint.
+var (
+	testInstance            = ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	testInstanceFingerprint = protocol.Fingerprint(testInstance.Public().(ed25519.PublicKey))
+)
+
 // outFrame.Payload is any; the session loop marshals it, so the tests do the same.
 func payloadText(f outFrame) string {
 	raw, _ := json.Marshal(f.Payload)
@@ -328,7 +334,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 			return
 		}
 		checked <- func() error {
-			if err := write(ctx, conn, protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: "instance", Versions: []int{1}}); err != nil {
+			if err := write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host)); err != nil {
 				return err
 			}
 			if _, err := read(ctx, conn); err != nil {
@@ -419,7 +425,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 	}))
 	defer stub.Close()
 	_, key, _ := ed25519.GenerateKey(nil)
-	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
+	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: testInstanceFingerprint, Server: stub.URL}
 	opts := Options{HTTPClient: stub.Client(), IdentityDir: dir, Log: log.New(io.Discard, "", 0), Deploy: func(_ context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 		return protocol.DeploymentResult{Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	}, Remove: remove}

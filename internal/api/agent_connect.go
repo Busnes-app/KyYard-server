@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -257,7 +258,12 @@ admitted:
 func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *http.Request, nonce []byte) (*store.AgentIdentity, string) {
 	hctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
-	if err := s.writeFrame(hctx, conn, envelope(protocol.TypeChallenge, protocol.Challenge{Nonce: nonce, InstanceFingerprint: s.instanceFingerprint(), Versions: []int{protocol.Version}})); err != nil {
+	// Signed for the host the agent dialed, as the agent's auth is: a proxy must keep Host.
+	ch := protocol.Challenge{Nonce: nonce, Versions: []int{protocol.Version}}
+	if len(s.config.Security.InstanceKey) == ed25519.SeedSize {
+		ch = protocol.SignChallenge(ed25519.NewKeyFromSeed(s.config.Security.InstanceKey), nonce, r.Host)
+	}
+	if err := s.writeFrame(hctx, conn, envelope(protocol.TypeChallenge, ch)); err != nil {
 		return nil, protocol.CloseProtocol
 	}
 	frame, err := readFrame(hctx, conn)

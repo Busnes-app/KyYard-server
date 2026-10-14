@@ -112,7 +112,7 @@ func connect(t *testing.T, ctx context.Context, base string, ag enrolledAgent, p
 	ch := readEnvelope(t, ctx, c)
 	var challenge protocol.Challenge
 	_ = json.Unmarshal(ch.Payload, &challenge)
-	if ch.Type != protocol.TypeChallenge || challenge.InstanceFingerprint != ag.inst || len(challenge.Nonce) != 32 {
+	if ch.Type != protocol.TypeChallenge || challenge.InstanceFingerprint != ag.inst || !challenge.Proven(u.Host, ag.inst) {
 		t.Fatalf("challenge: %+v", ch)
 	}
 	sig := ed25519.Sign(priv, protocol.AuthPreimage(ag.id, challenge.Nonce, u.Host, version))

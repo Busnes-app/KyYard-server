@@ -321,7 +321,7 @@ func testExecSocketRemainsResponsive(t *testing.T, state string) {
 			return
 		}
 		defer conn.CloseNow()
-		if err = write(ctx, conn, protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: "instance", Versions: []int{1}}); err != nil {
+		if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host)); err != nil {
 			checked <- err
 			return
 		}
@@ -393,7 +393,7 @@ func testExecSocketRemainsResponsive(t *testing.T, state string) {
 	}))
 	defer stub.Close()
 	_, key, _ := ed25519.GenerateKey(nil)
-	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
+	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: testInstanceFingerprint, Server: stub.URL}
 	target, _ := ConnectURL(stub.URL)
 	b := &execBudget{}
 	opts := &Options{HTTPClient: stub.Client(), Log: log.New(io.Discard, "", 0), Exec: func(ctx context.Context, _ protocol.ExecSpec) (ExecSession, error) {
@@ -488,7 +488,7 @@ func TestExecSocketWithoutRuntimeRemainsResponsive(t *testing.T) {
 			return
 		}
 		defer conn.CloseNow()
-		if err = write(ctx, conn, protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: "instance", Versions: []int{1}}); err != nil {
+		if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host)); err != nil {
 			checked <- err
 			return
 		}
@@ -533,7 +533,7 @@ func TestExecSocketWithoutRuntimeRemainsResponsive(t *testing.T) {
 	}))
 	defer stub.Close()
 	_, key, _ := ed25519.GenerateKey(nil)
-	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
+	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: testInstanceFingerprint, Server: stub.URL}
 	target, _ := ConnectURL(stub.URL)
 	opts := &Options{HTTPClient: stub.Client(), Log: log.New(io.Discard, "", 0)}
 	ledger := openLedger(t.TempDir())
