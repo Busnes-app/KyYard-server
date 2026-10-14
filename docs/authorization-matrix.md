@@ -44,6 +44,8 @@ Any active local account may explicitly connect a configured provider to itself 
 | `organization.audit.read` | ✓ | – | – | – | – | no | success |
 | `organization.settings.manage` (*planned*, first typed setting) | ✓ | – | – | – | – | no | success |
 
+Adding a member: an organization administrator adds only a user who already shares one of their organizations; a platform administrator who is also the organization administrator may add any user. Any other user ID gets the same 404 as an unknown one (*implemented*). A membership change ends the target's streams in that organization only.
+
 Last-administrator protection: membership writes serialize per organization and refuse to leave zero active administrators (*implemented*). Only lasting memberships count; platform-granted ones do not (*proposed*, lands with `platform.tenant.assume`). External deactivation bypasses this and is repaired by `platform.tenant.assume` (*proposed*).
 
 ### Environments (*implemented*)

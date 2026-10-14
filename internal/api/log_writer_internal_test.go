@@ -97,7 +97,7 @@ func TestAnEvictedSocketLeavesTheSuccessorsReadersAlone(t *testing.T) {
 	if incumbent := s.agents.add(successor); incumbent != nil {
 		t.Fatal("the registry was not empty")
 	}
-	stream, refusal := s.logs.open("ep1", "usr_reader")
+	stream, refusal := s.logs.open("ep1", "usr_reader", "org")
 	if refusal != "" {
 		t.Fatalf("opening a stream: %s", refusal)
 	}

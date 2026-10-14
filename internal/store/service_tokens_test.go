@@ -294,7 +294,7 @@ func TestServicePrincipalDeniedAfterRevoke(t *testing.T) {
 	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_ro", Username: "ro", Role: "user", Status: "active", PasswordHash: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Tenancy().PutMembership(ctx, a, "usr_ro", "read_only", "active"); err != nil {
+	if err := st.Tenancy().SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "org_a", UserID: "usr_ro", Role: store.RoleReadOnly, Status: "active"}); err != nil {
 		t.Fatal(err)
 	}
 	ro := store.TenantAccess{ActorID: "usr_ro", OrganizationID: "org_a"}

@@ -28,13 +28,14 @@ const (
 // logStream is one reader's view of one container's log. Chunks arrive from the endpoint's
 // session goroutine and leave through the HTTP handler that opened it.
 type logStream struct {
-	id         string
-	endpointID string
-	actorID    string
-	chunks     chan protocol.LogChunk
-	done       chan struct{}
-	doneOnce   sync.Once
-	end        atomic.Pointer[protocol.LogClose]
+	id             string
+	endpointID     string
+	actorID        string
+	organizationID string
+	chunks         chan protocol.LogChunk
+	done           chan struct{}
+	doneOnce       sync.Once
+	end            atomic.Pointer[protocol.LogClose]
 	// dropped counts bytes this control plane could not queue for a slow reader. It is read
 	// and cleared by the reader, which turns it into a gap marker.
 	dropped atomic.Int64
@@ -57,7 +58,7 @@ func newLogRegistry() *logRegistry {
 func pairKey(endpointID, actorID string) string { return endpointID + "\x00" + actorID }
 
 // open reserves a stream, or says which limit stopped it: the host's, or this reader's own.
-func (r *logRegistry) open(endpointID, actorID string) (*logStream, string) {
+func (r *logRegistry) open(endpointID, actorID, organizationID string) (*logStream, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.perPair[pairKey(endpointID, actorID)] >= maxStreamsPerActor {
@@ -67,11 +68,12 @@ func (r *logRegistry) open(endpointID, actorID string) (*logStream, string) {
 		return nil, "This endpoint already has as many log streams open as it will serve"
 	}
 	s := &logStream{
-		id:         uuid.NewString(),
-		endpointID: endpointID,
-		actorID:    actorID,
-		chunks:     make(chan protocol.LogChunk, logQueueChunks),
-		done:       make(chan struct{}),
+		id:             uuid.NewString(),
+		endpointID:     endpointID,
+		actorID:        actorID,
+		organizationID: organizationID,
+		chunks:         make(chan protocol.LogChunk, logQueueChunks),
+		done:           make(chan struct{}),
 	}
 	r.streams[s.id] = s
 	r.perEnd[endpointID]++
@@ -110,11 +112,12 @@ func (r *logRegistry) find(endpointID, streamID string) *logStream {
 	return nil
 }
 
-// closeActorStreams ends every stream one person is holding, wherever it is. An administrator
-// who removes a member or takes a role away has decided they may not see this; the decision
-// takes effect in the same request rather than whenever the stream happens to end.
-func (r *logRegistry) closeActorStreams(actorID, reason string) {
-	r.closeMatching(func(s *logStream) bool { return s.actorID == actorID }, reason)
+// closeActorStreams ends every stream one person is holding in one organization. An
+// administrator who removes a member or takes a role away has decided they may not see this;
+// the decision takes effect in the same request rather than whenever the stream happens to
+// end. Another organization's streams are not theirs to end.
+func (r *logRegistry) closeActorStreams(organizationID, actorID, reason string) {
+	r.closeMatching(func(s *logStream) bool { return s.organizationID == organizationID && s.actorID == actorID }, reason)
 }
 
 // closeEndpointStreams ends every stream an endpoint has open. A session that has gone cannot

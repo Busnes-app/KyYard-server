@@ -52,8 +52,11 @@ func (t *tenancyStore) PutMembership(ctx context.Context, a TenantAccess, userID
 		if err := t.lockOrganization(ctx, tx, a.OrganizationID); err != nil {
 			return err
 		}
+		// Only a user the actor can already see is added: one sharing an organization with them,
+		// or any user for a platform administrator. Every other ID is "not found", so an
+		// organization administrator cannot probe which user IDs exist.
 		var found int
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM users WHERE id=?`), userID).Scan(&found)
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT 1 FROM users u WHERE u.id=? AND (EXISTS (SELECT 1 FROM users p WHERE p.id=? AND p.role='admin') OR EXISTS (SELECT 1 FROM organization_memberships o JOIN organization_memberships m ON m.organization_id=o.organization_id WHERE o.user_id=u.id AND m.user_id=? AND m.status='active'))`), userID, a.ActorID, a.ActorID).Scan(&found)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}

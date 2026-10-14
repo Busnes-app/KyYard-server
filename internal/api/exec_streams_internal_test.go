@@ -134,3 +134,35 @@ func TestExecNormalClosePreservesBusyControlSocket(t *testing.T) {
 		t.Fatalf("heartbeat: %s %v", raw, err)
 	}
 }
+
+func TestMembershipChangeClosesOnlyThatOrganizationsStreams(t *testing.T) {
+	var execs execRegistry
+	keep, keepCancel := context.WithCancel(context.Background())
+	defer keepCancel()
+	end, endCancel := context.WithCancel(context.Background())
+	defer endCancel()
+	execs.open(&agentConn{endpointID: "host-b"}, "member", "b", keepCancel)
+	execs.open(&agentConn{endpointID: "host-a"}, "member", "a", endCancel)
+	logs := newLogRegistry()
+	logB, _ := logs.open("host-b", "member", "b")
+	logA, _ := logs.open("host-a", "member", "a")
+
+	execs.closeActor("a", "member")
+	logs.closeActorStreams("a", "member", "withdrawn")
+	if end.Err() == nil {
+		t.Fatal("organization a terminal survived")
+	}
+	if keep.Err() != nil {
+		t.Fatal("organization a's change closed a terminal in b")
+	}
+	select {
+	case <-logA.done:
+	default:
+		t.Fatal("organization a log survived")
+	}
+	select {
+	case <-logB.done:
+		t.Fatal("organization a's change closed a log in b")
+	default:
+	}
+}

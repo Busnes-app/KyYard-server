@@ -72,7 +72,12 @@ func TestMembershipRoutesEnforceScope(t *testing.T) {
 
 	check(admin, "PUT", members+"/usr_newcomer", `{"role":"operator","organization_id":"b"}`, 400)
 	check(admin, "PUT", members+"/usr_newcomer", `{"role":"owner"}`, 400)
-	check(admin, "PUT", members+"/usr_missing", `{"role":"operator"}`, 404)
+	// A user sharing no organization with a non-platform administrator answers as a missing one.
+	missing := check(admin, "PUT", members+"/usr_missing", `{"role":"operator"}`, 404)
+	if unseen := check(admin, "PUT", members+"/usr_newcomer", `{"role":"operator"}`, 404); unseen.Body.String() != missing.Body.String() {
+		t.Fatalf("unseen user distinguishable: %s / %s", unseen.Body, missing.Body)
+	}
+	must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "b", UserID: "usr_tenant", Role: store.RoleReadOnly, Status: "active"}))
 	if w := tenantRequest(s, admin, "PUT", members+"/usr_newcomer", `{"role":"operator"}`, false); w.Code != 403 {
 		t.Fatal("membership write bypassed CSRF")
 	}

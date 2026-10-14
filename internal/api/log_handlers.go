@@ -167,7 +167,7 @@ func parseLogQuery(r *http.Request) (logQuery, error) {
 // keep up gets a gap marker naming the bytes dropped rather than a log that looks continuous,
 // and an endpoint serves only so many streams at once.
 func (s *Server) streamLog(w http.ResponseWriter, r *http.Request, a store.TenantAccess, id string, q logQuery, name string, request protocol.LogRequest) {
-	stream, refusal := s.logs.open(id, a.Principal())
+	stream, refusal := s.logs.open(id, a.Principal(), a.OrganizationID)
 	if refusal != "" {
 		s.writeError(w, http.StatusTooManyRequests, refusal)
 		return

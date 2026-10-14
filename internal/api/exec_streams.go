@@ -63,11 +63,13 @@ func (r *execRegistry) release(s *browserExec) {
 	r.mu.Unlock()
 	s.cancel()
 }
-func (r *execRegistry) closeActor(actor string) {
+
+// closeActor revokes one person's terminals in one organization only.
+func (r *execRegistry) closeActor(organization, actor string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, s := range r.streams {
-		if s.actor == actor {
+		if s.organization == organization && s.actor == actor {
 			s.revoke()
 		}
 	}
