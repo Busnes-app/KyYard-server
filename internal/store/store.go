@@ -119,13 +119,20 @@ type UserStore interface {
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
 	LinkSSO(ctx context.Context, userID, sessionHash, passwordHash, provider, subject, ip string) error
+	// UpdateUser writes every column from u, credentials included: a trusted full-row write for
+	// fixtures. A read-modify-write path uses UpdateUserIdentity instead.
 	UpdateUser(ctx context.Context, u *User) error
+	// UpdateUserIdentity writes only username, email, display name, role and status, leaving
+	// credential and MFA columns to their own compare-and-swap writers.
+	UpdateUserIdentity(ctx context.Context, u *User) error
 	ResetAdminPassword(ctx context.Context, userID, newHash string) error
 	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
 	UpdateRecoveryCodes(ctx context.Context, userID, oldHashes, newHashes string) error
 	// SpendTOTPCounter records counter as used. It returns ErrAlreadyExists when counter is
 	// not greater than the stored one, which is how a replayed code inside the skew window fails.
 	SpendTOTPCounter(ctx context.Context, userID string, counter int64) error
+	// DeleteUser and UpdateUserIdentity refuse with ErrLastAdmin to leave an organization the
+	// user administers without an active administrator, the guard membership writes keep.
 	DeleteUser(ctx context.Context, id string) error
 	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)

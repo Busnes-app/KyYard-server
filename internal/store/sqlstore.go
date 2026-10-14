@@ -324,16 +324,72 @@ func (u *userStore) SpendTOTPCounter(ctx context.Context, userID string, counter
 	return nil
 }
 
+func (u *userStore) UpdateUserIdentity(ctx context.Context, user *User) error {
+	user.UpdatedAt = time.Now().UTC()
+	return u.withAdminQuorum(ctx, user.ID, func(tx *sql.Tx) (sql.Result, error) {
+		res, err := tx.ExecContext(ctx, u.store.rebind(`
+UPDATE users SET username = ?, email = ?, display_name = ?, role = ?, status = ?, updated_at = ?
+WHERE id = ? AND (
+    NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)
+    OR (username = ? AND role = ? AND status = ?)
+)`), user.Username, user.Email, user.DisplayName, user.Role, user.Status, user.UpdatedAt,
+			user.ID, "installer.user."+user.ID, user.Username, user.Role, user.Status)
+		if err != nil && (strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key")) {
+			return nil, ErrAlreadyExists
+		}
+		return res, err
+	})
+}
+
 func (u *userStore) DeleteUser(ctx context.Context, id string) error {
-	q := u.store.rebind("DELETE FROM users WHERE id = ? AND NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)")
-	res, err := u.store.db.ExecContext(ctx, q, id, "installer.user."+id)
+	return u.withAdminQuorum(ctx, id, func(tx *sql.Tx) (sql.Result, error) {
+		return tx.ExecContext(ctx, u.store.rebind("DELETE FROM users WHERE id = ? AND NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)"), id, "installer.user."+id)
+	})
+}
+
+// withAdminQuorum runs write on one user row, then refuses with ErrLastAdmin if that left an
+// organization the active user administered without an active administrator. It locks the
+// user row, then those organizations in ID order, as membership writes do. A write touching
+// no row is ErrInstallerOwned or ErrNotFound.
+func (u *userStore) withAdminQuorum(ctx context.Context, userID string, write func(*sql.Tx) (sql.Result, error)) error {
+	tx, err := u.store.beginTx(ctx, false)
 	if err != nil {
 		return err
 	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, u.store.rebind("UPDATE users SET id = id WHERE id = ?"), userID); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, u.store.rebind(`SELECT m.organization_id FROM organization_memberships m JOIN users u ON u.id=m.user_id WHERE m.user_id=? AND m.role='organization_admin' AND m.status='active' AND u.status='active' ORDER BY m.organization_id`), userID)
+	if err != nil {
+		return err
+	}
+	var orgs []string
+	for rows.Next() {
+		var org string
+		if err := rows.Scan(&org); err != nil {
+			rows.Close()
+			return err
+		}
+		orgs = append(orgs, org)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	tenancy := &tenancyStore{store: u.store}
+	for _, org := range orgs {
+		if err := tenancy.lockOrganization(ctx, tx, org); err != nil {
+			return err
+		}
+	}
+	res, err := write(tx)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
 		var owned int
-		if err := u.store.db.QueryRowContext(ctx, u.store.rebind("SELECT COUNT(*) FROM server_settings WHERE key=?"), "installer.user."+id).Scan(&owned); err != nil {
+		if err := tx.QueryRowContext(ctx, u.store.rebind("SELECT COUNT(*) FROM server_settings WHERE key=?"), "installer.user."+userID).Scan(&owned); err != nil {
 			return err
 		}
 		if owned != 0 {
@@ -341,7 +397,12 @@ func (u *userStore) DeleteUser(ctx context.Context, id string) error {
 		}
 		return ErrNotFound
 	}
-	return nil
+	for _, org := range orgs {
+		if err := tenancy.requireActiveAdmin(ctx, tx, org); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (u *userStore) ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error) {
