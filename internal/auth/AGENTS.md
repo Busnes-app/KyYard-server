@@ -16,6 +16,7 @@ Owns session issuance and verification, TOTP token generation/validation, recove
 - PoW solutions must carry unexpired server-signed challenge metadata. `PoWVerifier` accepts each signature once, remembering it until expiry (10 000 entries; at the cap expired entries go, then a random one).
 - Password verification creates a five-minute opaque MFA transaction; MFA endpoints never accept a user ID and consume the transaction once.
 - Single-use recovery codes are invalidated immediately upon redemption.
+- `GenerateTOTPSecret`, `GenerateTOTPURL` and `GenerateRecoveryCodes` serve self-service enrolment in `internal/api`; the secret is sealed with the instance encryption key exactly as login decrypts it, and recovery codes are stored only as the digests `RedeemRecoveryCode` matches.
 - `ClientIP` is the one client-address helper: the rate limiter and session binding both use it. `X-Forwarded-For` is honoured only when the peer is in `KY_TRUSTED_PROXIES`, walking the chain from the right past trusted hops; `X-Real-IP` is ignored. Each entry may be a bare IP or `ip:port` (Azure App Service/Application Gateway append the port); anything else ends the walk and falls back to the peer. `RateKey` groups a `ClientIP` result for limiter keys only: IPv6 by /64, IPv4 unchanged.
 
 ## Verification

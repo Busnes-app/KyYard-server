@@ -3,7 +3,7 @@
 The simple control plane for your container fleet.
 
 This first slice establishes the KyYard scaffold: Go backend, embedded React PWA,
-SQLite/PostgreSQL, local authentication, MFA, configurable OAuth 2/OIDC (including KyIdentity) and KyRecovery.
+SQLite/PostgreSQL, local authentication with self-service TOTP MFA and recovery codes, configurable OAuth 2/OIDC (including KyIdentity) and KyRecovery.
 The standard installation automatically shows the local Docker host, with container inventory, lifecycle controls, image operations and logs. [Connect additional hosts](#show-containers-after-installation) when needed. Remaining milestones are tracked in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
 SAML metadata is inherited; SAML login is not yet implemented.
 
@@ -79,6 +79,23 @@ doubling to at most 15; a successful sign-in or a restart clears it. A browser t
 signed in as that username before keeps a device cookie and backs off on its own, so someone
 guessing at your account does not delay you there. Unknown and disabled accounts answer
 exactly like a wrong password.
+
+## Account security
+
+Local password accounts manage their own sign-in in **Settings → Security**:
+
+- **Two-factor authentication:** *Set up* shows a setup key and an `otpauth://` link for an
+  authenticator app (no QR code). Enter the current password and a code to turn it on; ten
+  one-time recovery codes are then shown once. Afterwards password sign-in asks for a code or a
+  recovery code. *Replace recovery codes* needs a current code and voids the old set. *Turn off*
+  needs the password and a code or recovery code. To re-enrol, turn it off first.
+- **Change password:** current password (plus a code when MFA is on) and a new password of at
+  least 12 characters. Every other session, MFA transaction and device pairing is revoked; this
+  browser stays signed in.
+
+Accounts provisioned by an SSO provider have no local password and manage these at the provider.
+Keep the recovery codes: no operator path clears MFA yet, and `init-admin` resets only the
+password, so an authenticator lost with every recovery code spent locks the account out.
 
 ## Transport and advanced deployment
 
