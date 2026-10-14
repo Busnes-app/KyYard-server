@@ -127,6 +127,23 @@ func (t *tenancyStore) preflight(ctx context.Context, tx *sql.Tx, a TenantAccess
 		out = buildKubernetesPreflight(m, spec, snapshot, was)
 	} else {
 		out = buildDeploymentPreflight(m, spec, snapshot, number == head, pins)
+		for i := range out.Services {
+			row := &out.Services[i]
+			old := ""
+			if row.InspectionTarget != nil {
+				old = row.InspectionTarget.ImageID
+			}
+			if !keepsHostBind(row.Mounts, old, row.ImageID) {
+				continue
+			}
+			allowed, err := t.hostBindAllowed(ctx, tx, a)
+			if err != nil {
+				return nil, nil, ApplicationSpec{}, protocol.Snapshot{}, "", err
+			}
+			if !allowed {
+				row.Blockers, out.Executable = append(row.Blockers, "host_bind_kept"), false
+			}
+		}
 	}
 	out.Revision, out.ReceivedAt = number, received
 	// observed_at is the agent's clock, received_at the server's.
@@ -482,6 +499,25 @@ func resolveMounts(project string, declared map[string]DeclaredVolume, volumes [
 		out = append(out, mount)
 	}
 	return out
+}
+
+// keepsHostBind reports a deploy that carries a hostBind onto an image other than old, the
+// replaced container's ("" for a new container); next is "" for a pull, known only on the host.
+func keepsHostBind(mounts []protocol.Mount, old, next string) bool {
+	return (old == "" || next != old) && slices.ContainsFunc(mounts, hostBind)
+}
+
+// hostBindAllowed reports whether a may deploy that: KY_CONTAINER_ALLOW_PRIVILEGED is on and
+// a's live role holds container.configure, which a direct edit of such a bind needs.
+func (t *tenancyStore) hostBindAllowed(ctx context.Context, tx *sql.Tx, a TenantAccess) (bool, error) {
+	if !t.store.allowPrivileged.Load() {
+		return false, nil
+	}
+	role, err := t.principalRole(ctx, tx, a, false)
+	if errors.Is(err, errNoPrincipal) {
+		return false, nil
+	}
+	return err == nil && permissions.Allows(role, permissions.ContainerConfigure), err
 }
 
 // validSHA256 accepts a full image ID or digest: sha256: and 64 lowercase hex.

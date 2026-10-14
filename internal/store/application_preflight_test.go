@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
@@ -395,6 +396,64 @@ func TestPlanDeploymentRefusesANewBindMount(t *testing.T) {
 	var blocked *PreflightBlockedError
 	if !errors.As(err, &blocked) || !reflect.DeepEqual(blocked.Blockers, []string{"bind_mount_new"}) {
 		t.Fatalf("new bind: %v", err)
+	}
+}
+
+// A deploy that carries an adopted container's host-level bind onto another image needs the
+// operator's opt-in and container.configure, checked at preflight, plan and again at apply.
+func TestDeployKeepsAHostBindOnlyWithPrivilege(t *testing.T) {
+	sock := protocol.Mount{Kind: protocol.MountBind, Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"}
+	spec := ApplicationSpec{Kind: "compose.v1", Services: []ApplicationService{{Name: "web", Image: "nginx:1", Volumes: []ApplicationVolume{{Kind: "bind", Source: sock.Source, Target: sock.Target}}}}}
+	st, a, app, m := volumesFixture(t, spec, map[string][]protocol.Mount{"web": {sock}})
+	ctx := context.Background()
+	ts := st.Tenancy()
+	developer := policyMember(t, st, a, "developer", RoleDeveloper)
+	hostBindKept := func(err error) bool {
+		var blocked *PreflightBlockedError
+		return errors.As(err, &blocked) && slices.Contains(blocked.Blockers, "host_bind_kept")
+	}
+	// The same image keeps its bind.
+	if p, err := ts.PreflightApplication(ctx, developer, app.ID); err != nil || !p.Executable {
+		t.Fatalf("same image: %+v %v", p, err)
+	}
+	// The tag moves to another image.
+	var raw string
+	if err := st.db.QueryRow(st.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), m.Preview.EndpointID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot protocol.Snapshot
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Images = []protocol.Image{{ID: "sha256:" + strings.Repeat("c", 64), Tags: []string{"nginx:1"}}}
+	putAdoptionSnapshot(t, st, m.Preview.EndpointID, snapshot)
+	for _, c := range []struct {
+		name    string
+		a       TenantAccess
+		allow   bool
+		blocked bool
+	}{{"admin without opt-in", a, false, true}, {"developer with opt-in", developer, true, true}, {"admin with opt-in", a, true, false}} {
+		st.SetAllowPrivileged(c.allow)
+		p, err := ts.PreflightApplication(ctx, c.a, app.ID)
+		if err != nil || p.Executable == c.blocked || slices.Contains(p.Services[0].Blockers, "host_bind_kept") != c.blocked {
+			t.Errorf("%s preflight: %+v %v", c.name, p, err)
+		}
+		if _, err := ts.PlanDeployment(ctx, c.a, app.ID, planRequest(m), nil, imageCheckKey, false); hostBindKept(err) != c.blocked || (!c.blocked && err != nil) {
+			t.Errorf("%s plan: %v", c.name, err)
+		}
+	}
+	// The plan the admin minted with the opt-in is refused at apply once it is off.
+	var id string
+	if err := st.db.QueryRow(st.rebind(`SELECT id FROM deployments WHERE application_id=? AND state='planned'`), app.ID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	st.SetAllowPrivileged(false)
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, id, "shop", imageCheckKey, protocol.MaxDeploymentRequestBytes); !hostBindKept(err) {
+		t.Fatalf("apply without opt-in: %v", err)
+	}
+	st.SetAllowPrivileged(true)
+	if _, _, err := ts.ApplyDeployment(ctx, a, app.ID, id, "shop", imageCheckKey, protocol.MaxDeploymentRequestBytes); err != nil {
+		t.Fatalf("apply with opt-in: %v", err)
 	}
 }
 

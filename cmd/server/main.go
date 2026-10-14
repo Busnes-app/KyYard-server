@@ -110,6 +110,7 @@ func runServer() {
 		log.Fatalf("Failed to initialize database (%s): %v", cfg.Database.Driver, err)
 	}
 	defer st.Close()
+	st.SetAllowPrivileged(cfg.Container.AllowPrivileged)
 
 	if err := bootstrapAdmin(ctx, st, cfg.Database.DataDir, os.Getenv("KY_ADMIN_PASSWORD")); err != nil {
 		log.Fatalf("Bootstrap admin: %v", err)

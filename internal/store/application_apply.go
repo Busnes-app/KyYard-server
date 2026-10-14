@@ -192,6 +192,21 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 		if !ok || spec.Services[i].Name != ps.Name {
 			return protocol.DeploymentRequest{}, ErrAdoptionChanged
 		}
+		// Rechecked here, at plan and at apply: the pull is decided after the preflight, and
+		// the role or opt-in may have changed since.
+		next := ps.ImageID
+		if ps.PullDigest != "" {
+			next = ""
+		}
+		if keepsHostBind(ps.Mounts, ps.Replaces.ImageID, next) {
+			allowed, err := t.hostBindAllowed(ctx, tx, a)
+			if err != nil {
+				return protocol.DeploymentRequest{}, err
+			}
+			if !allowed {
+				return protocol.DeploymentRequest{}, blocked([]string{"host_bind_kept"})
+			}
+		}
 		svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: serviceEnv(spec.Services[i], values), Mounts: append([]protocol.Mount{}, ps.Mounts...)}
 		if ps.PullDigest != "" {
 			svc.ImageID, svc.Pull = "", &protocol.ImagePull{Reference: ps.PullReference, Digest: ps.PullDigest}
