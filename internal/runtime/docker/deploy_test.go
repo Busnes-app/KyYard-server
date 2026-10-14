@@ -28,6 +28,8 @@ const (
 	otherOldID   = "a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6"
 	pullDigest   = "sha256:a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
 	requestID    = "0123456789abcdef0123456789abcdef"
+	staleID      = "f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8"
+	healthy      = `{"Status":"running","Running":true,"Health":{"Status":"healthy"}}` // ends the start watch at its first read
 )
 
 type engineCall struct{ Method, Path, Query, Body string }
@@ -60,6 +62,7 @@ type fakeDeployEngine struct {
 	waitBody         string        // the body once the wait ends; a stopped container by default
 	createStatus     int           // 201 default
 	createDelay      time.Duration // before POST /containers/create answers
+	createConflicts  int           // how many first creates answer 409 instead
 	discardDelay     time.Duration // before the new container's DELETE answers
 	restoreDelay     time.Duration // before a rename back or the old container's start answers
 	nameStatus       int           // GET /containers/adhoc/json, a run's container read by name; 404 when 0
@@ -67,6 +70,7 @@ type fakeDeployEngine struct {
 	nameImage        string        // its Image; newImage when ""
 	nameID           string        // its Id; newID when ""
 	nameName         string        // its Name; "/adhoc" when ""
+	nameLabels       string        // its Config.Labels as JSON; null when ""
 	startStatus      int
 	removeStatus     int
 	oldStartStatus   int      // POST /containers/{old}/start, the rollback's restart; 204 default
@@ -195,7 +199,14 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 			w.WriteHeader(cmp.Or(f.pauseStatus, 204))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/create"):
 			time.Sleep(f.createDelay)
-			w.WriteHeader(f.createStatus)
+			f.mu.Lock()
+			status := f.createStatus
+			if f.createConflicts > 0 {
+				f.createConflicts--
+				status = http.StatusConflict
+			}
+			f.mu.Unlock()
+			w.WriteHeader(status)
 			_, _ = w.Write([]byte(`{"Id":"` + f.createdID + `","Warnings":[]}`))
 		case r.Method == "POST" && strings.HasSuffix(p, "/containers/"+newID+"/start"):
 			if f.onStart != nil {
@@ -208,9 +219,11 @@ func newFakeDeployEngine(t *testing.T) *fakeDeployEngine {
 		case r.Method == "DELETE" && strings.HasSuffix(p, "/containers/"+newID):
 			time.Sleep(f.discardDelay)
 			w.WriteHeader(f.removeNewStatus)
-		case r.Method == "GET" && strings.HasSuffix(p, "/containers/adhoc/json"):
+		case r.Method == "GET" && (strings.HasSuffix(p, "/containers/adhoc/json") || strings.HasSuffix(p, "/containers/shop-web-1/json")):
 			w.WriteHeader(cmp.Or(f.nameStatus, 404))
-			_, _ = w.Write([]byte(`{"Id":"` + cmp.Or(f.nameID, newID) + `","Image":"` + cmp.Or(f.nameImage, newImage) + `","Name":"` + cmp.Or(f.nameName, "/adhoc") + `","State":` + cmp.Or(f.nameState, created) + `}`))
+			_, _ = w.Write([]byte(`{"Id":"` + cmp.Or(f.nameID, newID) + `","Image":"` + cmp.Or(f.nameImage, newImage) + `","Name":"` + cmp.Or(f.nameName, "/adhoc") + `","Config":{"Labels":` + cmp.Or(f.nameLabels, "null") + `},"State":` + cmp.Or(f.nameState, created) + `}`))
+		case r.Method == "DELETE" && strings.HasSuffix(p, "/containers/"+staleID):
+			w.WriteHeader(204)
 		case r.Method == "POST" && strings.Contains(p, "/networks/") && strings.HasSuffix(p, "/connect"):
 			w.WriteHeader(f.connectStatus)
 		case r.Method == "GET" && strings.HasSuffix(p, "/containers/"+newID+"/json"):
@@ -292,15 +305,16 @@ func stepText(s protocol.DeploymentStep) string {
 
 func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 	f := newFakeDeployEngine(t)
+	f.newStates = []string{healthy}
 	res := f.client().Deploy(context.Background(), request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeSucceeded || res.Deployment != deploymentID || res.RequestID != requestID || res.Code != "" {
 		t.Fatalf("outcome: %+v", res)
 	}
-	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json", "GET /containers/" + oldID + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
+	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "GET /images/" + newImage + "/json", "GET /containers/" + oldID + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
 	if got := f.steps(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("call order:\n got %v\nwant %v", got, want)
 	}
-	if f.calls[5].Query != "name=shop-web-1.kyyard-prev-3f2b1c9e" || f.calls[6].Query != "name=shop-web-1" || f.calls[7].Query != "t=10" || f.calls[10].Query != "" {
+	if f.calls[5].Query != "name=shop-web-1.kyyard-prev-3f2b1c9e" || f.calls[6].Query != "name=shop-web-1" || f.calls[7].Query != "t=10" || f.calls[11].Query != "" {
 		t.Fatalf("queries: %+v", f.calls)
 	}
 	var body struct {
@@ -629,10 +643,10 @@ func TestDeployStepFailuresStopTheRun(t *testing.T) {
 	}{
 		"image missing":   {func(f *fakeDeployEngine) { f.imageStatus = 404 }, protocol.OutcomeFailed, protocol.StepImage, "pinned_image_missing", 4},
 		"rename conflict": {func(f *fakeDeployEngine) { f.renameStatus = 409 }, protocol.OutcomeFailed, protocol.StepRename, "name_reserved", 6},
-		"create conflict": {func(f *fakeDeployEngine) { f.createStatus = 409 }, protocol.OutcomeFailed, protocol.StepCreate, "name_taken", 7},
-		"stop refused":    {func(f *fakeDeployEngine) { f.stopStatus = 500 }, protocol.OutcomeFailed, protocol.StepStop, "runtime_status: 500", 8},
-		"start fails":     {func(f *fakeDeployEngine) { f.startStatus = 500 }, protocol.OutcomeFailed, protocol.StepStart, "runtime_status: 500", 9},
-		"remove fails":    {func(f *fakeDeployEngine) { f.removeStatus = 409 }, protocol.OutcomeFailed, protocol.StepRemove, "runtime_status: 409", 11},
+		"create conflict": {func(f *fakeDeployEngine) { f.createStatus = 409 }, protocol.OutcomeFailed, protocol.StepCreate, "name_taken", 8},
+		"stop refused":    {func(f *fakeDeployEngine) { f.stopStatus = 500 }, protocol.OutcomeFailed, protocol.StepStop, "runtime_status: 500", 10},
+		"start fails":     {func(f *fakeDeployEngine) { f.startStatus = 500 }, protocol.OutcomeFailed, protocol.StepStart, "start_failed_rolled_back", 12},
+		"remove fails":    {func(f *fakeDeployEngine) { f.removeStatus, f.newStates = 409, []string{healthy} }, protocol.OutcomeFailed, protocol.StepRemove, "runtime_status: 409", 12},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -683,7 +697,7 @@ func TestDeployIdentityRefusalCodes(t *testing.T) {
 	}{
 		"image identity":      {func(f *fakeDeployEngine) { f.imageReportedID = oldImage }, protocol.StepImage, "image_identity_mismatch"},
 		"unusable identity":   {func(f *fakeDeployEngine) { f.createdID = "not-an-id" }, protocol.StepCreate, "identity_unusable"},
-		"unverified identity": {func(f *fakeDeployEngine) { f.startedImage = oldImage }, protocol.StepStart, "identity_unverified: " + newID},
+		"unverified identity": {func(f *fakeDeployEngine) { f.startedImage, f.removeNewStatus = oldImage, 500 }, protocol.StepStart, "identity_unverified: " + newID},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeDeployEngine(t)
@@ -749,16 +763,20 @@ func TestDeployRefusesToStartWithoutTimeToFinish(t *testing.T) {
 	}
 }
 
+// One not rolled back, here because the old container was stopped and the new one cannot be
+// removed, keeps the start's code.
 func TestDeployIdentityReadFailureNamesTheContainer(t *testing.T) {
 	f := newFakeDeployEngine(t)
-	f.inspectNewStatus = 500
+	f.inspectNewStatus, f.stopStatus, f.removeNewStatus = 500, 304, 500
 	res := f.client().Deploy(context.Background(), request(webService()), func() {})
 	if res.Outcome != protocol.OutcomeFailed || res.Steps[6].Step != protocol.StepStart || stepText(res.Steps[6]) != "identity_unreadable: "+newID || len(res.Services) != 0 || res.Validate() != nil {
 		t.Fatalf("identity read: %+v", res)
 	}
 	for _, c := range f.calls {
 		if c.Method == "DELETE" {
-			t.Fatal("old container removed although the new identity was not read")
+			if strings.HasSuffix(c.Path, "/containers/"+oldID) {
+				t.Fatal("old container removed although the new identity was not read")
+			}
 		}
 	}
 }
@@ -1244,13 +1262,19 @@ func TestDeployExplicitRollbackFailure(t *testing.T) {
 	}
 }
 
-// A non-explicit deploy never rolls back.
-func TestDeployWithoutExplicitDoesNotRollBack(t *testing.T) {
+// A definition (image update) recreate is watched and rolled back like an explicit one: a new
+// container that exits right after its start's 204 puts the old one back running under its name,
+// and the old one is never removed.
+func TestDeployWithoutExplicitRollsBack(t *testing.T) {
 	f := newFakeDeployEngine(t)
-	f.startStatus = 500
+	f.newStates = []string{exited}
 	res := f.client().Deploy(context.Background(), request(webService()), func() {})
-	if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=succeeded,stop=succeeded,start=failed:runtime_status: 500,remove=skipped" {
+	if got := explicitSteps(res); got != "precondition=succeeded,image=succeeded,recheck=succeeded,rename=succeeded,create=succeeded,stop=succeeded,start=failed:start_failed_rolled_back,rollback=succeeded,remove=skipped" || res.Validate() != nil {
 		t.Fatalf("steps: %s", got)
+	}
+	tail := "POST /containers/" + newID + "/start,GET /containers/" + newID + "/json,DELETE /containers/" + newID + ",POST /containers/" + oldID + "/rename,POST /containers/" + oldID + "/start"
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, tail) {
+		t.Fatalf("calls:\n got %s\nwant suffix %s", got, tail)
 	}
 }
 
@@ -1525,11 +1549,11 @@ func TestDeployExplicitCreateOrStopFailureRestores(t *testing.T) {
 			t.Fatalf("%s rename back: %q", name, last.Query)
 		}
 	}
-	// A definition deploy leaves the steps to say where the old container is.
+	// A definition deploy is undone the same way.
 	f := newFakeDeployEngine(t)
 	f.createStatus = 500
 	f.client().Deploy(context.Background(), request(webService()), func() {})
-	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/create") {
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/create,POST /containers/"+oldID+"/rename") || f.calls[len(f.calls)-1].Query != "name=shop-web-1" {
 		t.Fatalf("non-explicit calls: %s", got)
 	}
 }
@@ -2137,13 +2161,16 @@ func TestDeployExplicitRunCreateUnanswered(t *testing.T) {
 	if got := strings.Join(f.steps(), ","); got != "GET /info,GET /images/"+newImage+"/json" {
 		t.Errorf("deadline guard calls: %s", got)
 	}
+	// A recreate's unanswered create is looked up the same way before the old container gets its
+	// name back, so a container the daemon made does not wedge the name.
 	f = newFakeDeployEngine(t)
-	f.createDelay = holdCall
+	f.createDelay, f.nameStatus, f.nameName = holdCall, 200, "/shop-web-1"
 	ctx, cancel := unanswered(false)
-	f.client().Deploy(ctx, explicitRequest(explicitService()), func() {})
+	res = f.client().Deploy(ctx, explicitRequest(explicitService()), func() {})
 	cancel()
-	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/create,POST /containers/"+oldID+"/rename") {
-		t.Errorf("recreate calls: %s", got)
+	if got := strings.Join(f.steps(), ","); !strings.HasSuffix(got, "POST /containers/create,GET /containers/shop-web-1/json,DELETE /containers/"+newID+",POST /containers/"+oldID+"/rename") ||
+		strings.Contains(explicitSteps(res), "rollback") {
+		t.Errorf("recreate calls: %s steps: %s", got, explicitSteps(res))
 	}
 }
 
@@ -2162,5 +2189,79 @@ func TestDeployExplicitKeepsPinnedUpdateTagDuringRename(t *testing.T) {
 	var body struct{ Image string }
 	if !ok || json.Unmarshal([]byte(call.Body), &body) != nil || body.Image != reference {
 		t.Fatalf("kept image lost its update tag: %s", call.Body)
+	}
+}
+
+// A dead run that parked the old container and created the new one leaves a never-started
+// container on the name, so every retry's create would be name_taken. The create removes it,
+// unforced, and tries once more, but only that container: one another run labelled, one that
+// started, or any holder while the old container is not parked for this name, is left.
+func TestDeployReclaimsTheNameFromADeadRun(t *testing.T) {
+	const dead = `{"kyyard.deployment":"0badbeef-0000-4000-8000-000000000000"}`
+	reclaimed := "POST /containers/create,GET /containers/shop-web-1/json,DELETE /containers/" + staleID + ",POST /containers/create,"
+	for name, c := range map[string]struct {
+		explicit      bool
+		parked        string
+		state, labels string
+		steps, calls  string
+	}{
+		"definition":       {false, "/shop-web-1.kyyard-prev-0badbeef", created, dead, "create=succeeded", reclaimed},
+		"explicit":         {true, "/shop-web-1.kyyard-prev-0badbeef", created, "", "create=succeeded", reclaimed},
+		"another run":      {false, "/shop-web-1.kyyard-prev-0badbeef", created, `{"kyyard.deployment":"11111111-0000-4000-8000-000000000000"}`, "create=failed:name_taken", "POST /containers/create,GET /containers/shop-web-1/json,POST /containers/" + oldID + "/rename"},
+		"started":          {false, "/shop-web-1.kyyard-prev-0badbeef", exited, dead, "create=failed:name_taken", "POST /containers/create,GET /containers/shop-web-1/json,POST /containers/" + oldID + "/rename"},
+		"old not parked":   {false, "/shop-web-1", created, dead, "create=failed:name_taken", "POST /containers/create,POST /containers/" + oldID + "/rename"},
+		"parked elsewhere": {false, "/shop-api-1.kyyard-prev-0badbeef", created, dead, "create=failed:name_taken", "POST /containers/create,POST /containers/" + oldID + "/rename"},
+	} {
+		f := newFakeDeployEngine(t)
+		f.oldContainer["Name"] = c.parked
+		f.createConflicts, f.nameStatus, f.nameID, f.nameName, f.nameState, f.nameLabels = 1, 200, staleID, "/shop-web-1", c.state, c.labels
+		f.newStates = []string{healthy}
+		req := request(webService())
+		if c.explicit {
+			req = explicitRequest(explicitService())
+		}
+		got := explicitSteps(f.client().Deploy(context.Background(), req, func() {}))
+		if !strings.Contains(got, ",rename=succeeded,"+c.steps+",") {
+			t.Errorf("%s steps: %s", name, got)
+		}
+		if calls := strings.Join(f.steps(), ","); !strings.Contains(calls, "/rename,"+c.calls) {
+			t.Errorf("%s calls:\n got %s\nwant after the parking rename %s", name, calls, c.calls)
+		}
+		if del, ok := f.call("DELETE", "/containers/"+staleID); ok && del.Query != "" {
+			t.Errorf("%s forced the removal: %q", name, del.Query)
+		}
+	}
+}
+
+// A rollback whose rename back fails still starts the old container: it serves under its parked
+// name, and the rollback reports that it failed. So does the undo after an unanswered stop.
+func TestDeployRollbackRevivesWhenTheNameIsNotGivenBack(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.startStatus, f.renameBackStatus = 500, 500
+	got := explicitSteps(f.client().Deploy(context.Background(), explicitRequest(explicitService()), func() {}))
+	if !strings.HasSuffix(got, "start=failed:runtime_status: 500,rollback=failed:rollback_failed,remove=skipped") {
+		t.Fatalf("steps: %s", got)
+	}
+	tail := "DELETE /containers/" + newID + ",POST /containers/" + oldID + "/rename,POST /containers/" + oldID + "/start"
+	if calls := strings.Join(f.steps(), ","); !strings.HasSuffix(calls, tail) {
+		t.Fatalf("calls:\n got %s\nwant suffix %s", calls, tail)
+	}
+	f = newFakeDeployEngine(t)
+	f.stopDelay, f.renameBackStatus = holdCall, 500
+	f.oldContainer["State"] = map[string]any{"Status": "running", "Running": true, "Paused": false}
+	f.drift = func(_ string, _ int, body map[string]any) {
+		if _, stopped := f.call("POST", "/containers/"+oldID+"/stop"); stopped {
+			body["State"] = map[string]any{"Status": "exited", "Running": false, "Paused": false}
+		}
+	}
+	ctx, cancel := unanswered(false)
+	got = explicitSteps(f.client().Deploy(ctx, explicitRequest(explicitService()), func() {}))
+	cancel()
+	if !strings.HasSuffix(got, "stop=timed_out:runtime_timeout,rollback=failed:rollback_failed,start=skipped,remove=skipped") {
+		t.Fatalf("stop steps: %s", got)
+	}
+	tail = "DELETE /containers/" + newID + ",POST /containers/" + oldID + "/rename,GET /containers/" + oldID + "/json,POST /containers/" + oldID + "/start"
+	if calls := strings.Join(f.steps(), ","); !strings.HasSuffix(calls, tail) {
+		t.Fatalf("stop calls:\n got %s\nwant suffix %s", calls, tail)
 	}
 }

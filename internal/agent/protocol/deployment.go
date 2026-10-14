@@ -57,8 +57,8 @@ const (
 	// the agent's when it reads one, and between an inventory's observed and received times.
 	MaxClockSkew = 5 * time.Minute
 	// MaxDeploymentResultSteps is eight steps per service (precondition, image or pull,
-	// recheck, rename, create, stop, start, remove), one per volume and one rollback: only an
-	// explicit request, which has a single service, rolls back. A ninth step per service would
+	// recheck, rename, create, stop, start, remove), one per volume and one rollback: only the
+	// service whose step ended the run rolls back. A ninth step per service would
 	// break the MaxDeploymentResultBytes proof.
 	MaxDeploymentResultSteps = 8*MaxDeploymentServices + MaxDeploymentVolumes + 1
 )

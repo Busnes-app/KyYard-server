@@ -30,12 +30,12 @@ const stopGrace = 10
 // operationBudget, recheck, rename, create and the identity read at callBudget.
 const replaceBudget = 2*operationBudget + 4*callBudget
 
-// rollbackBudget is an explicit recreate's reserve for undoing a failed start: remove and
+// rollbackBudget is a recreate's reserve for undoing a failed start: remove and
 // rename at callBudget, restart at operationBudget. After an unanswered stop the read and the
 // wait share the two callBudgets: the wait is cut so the restart always keeps operationBudget.
 const rollbackBudget = operationBudget + 2*callBudget
 
-// startWatch is how long an explicit recreate's new container must stay running (or leave the
+// startWatch is how long a recreate's new container must stay running (or leave the
 // starting health state) before its start counts, read every startPoll. watchBudget is the
 // watch with its last read.
 const (
@@ -50,12 +50,12 @@ const (
 // it; then per service recheck, rename, create, stop, start, remove. Renaming and creating while the
 // old container still runs means a name conflict or a refused create costs no downtime. The
 // first step that is not a success ends the run and every later step is recorded as skipped.
-// Only an explicit recreate puts the host back: a failed create or stop is undone, and a failed
-// start, which includes a new container that stops running or restarts within startWatch when
-// the old one was running, is rolled back (a rollback step); otherwise the steps say where the
-// old container was left. An explicit run (no Replaces) is image, create, start. No volume is
-// ever removed. See docs/superpowers/specs/2026-09-22-deployment-runtime-design.md,
-// 2026-09-23-pull-step-design.md and 2026-09-24-volumes-design.md.
+// A recreate puts the host back: a failed create or stop is undone, and a failed start, which
+// includes a new container that stops running or restarts within startWatch when the old one
+// was running, is rolled back (a rollback step); services already replaced stay replaced. An
+// explicit run (no Replaces) is image, create, start. No volume is ever removed. See
+// docs/superpowers/specs/2026-09-22-deployment-runtime-design.md, 2026-09-23-pull-step-design.md
+// and 2026-09-24-volumes-design.md.
 // started is called once, immediately before the first phase-two call (after the first recheck's
 // deadline guard, or an explicit run's create guard); a run that ends in phase one never calls it.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
@@ -73,10 +73,7 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 		r.defaultRuntime, r.cgroupVersion = info.DefaultRuntime, info.CgroupVersion
 	}
 	icancel()
-	remaining := time.Until(req.Deadline)
-	if req.Explicit {
-		remaining -= rollbackBudget + watchBudget // the recheck guard reserves them after the pulls
-	}
+	remaining := time.Until(req.Deadline) - rollbackBudget - watchBudget // the recheck guard reserves them after the pulls
 	r.pullDeadline = time.Now().Add(pullPhase(remaining))
 	// Every service is checked and its image made present before any container is touched, so
 	// a refused precondition or a failed pull on any service leaves the host unchanged.
@@ -590,10 +587,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		}
 		return
 	}
-	budget := replaceBudget
-	if r.req.Explicit {
-		budget += rollbackBudget + watchBudget
-	}
+	budget := replaceBudget + rollbackBudget + watchBudget
 	// The old container's state at the recheck, the last read before stop: a rollback pauses it
 	// again, and an unanswered stop is checked only if it was running.
 	paused, wasRunning := false, false
@@ -632,7 +626,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	r.step(s.Name, protocol.StepRename, func() (outcome, code, detail string) {
 		name := parked(s.ContainerName, r.req.Deployment)
 		defer func() {
-			if unanswered(outcome) && r.req.Explicit {
+			if unanswered(outcome) {
 				unparked = r.unparkIfParked(ctx, p, name)
 			}
 		}()
@@ -657,9 +651,11 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	running, restored := false, true // running: the old container was running when stopped, and a rollback starts it again
 	r.step(s.Name, protocol.StepStop, func() (outcome, code, detail string) {
 		defer func() {
-			if outcome != protocol.OutcomeSucceeded && r.req.Explicit {
-				// An unanswered stop may have stopped it: start it again if a read says so.
-				restored = r.undo(ctx, p, created) && (!unanswered(outcome) || !wasRunning || r.reviveIfStopped(ctx, p, paused))
+			if outcome != protocol.OutcomeSucceeded {
+				// An unanswered stop may have stopped it: start it again if a read says so, even
+				// when the undo failed, so it serves under its parked name.
+				undone := r.undo(ctx, p, created, "")
+				restored = (!unanswered(outcome) || !wasRunning || r.reviveIfStopped(ctx, p, paused)) && undone
 			}
 		}()
 		cctx, cancel := context.WithTimeout(ctx, operationBudget)
@@ -676,7 +672,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	}
 	// A recreate's container must keep running only if the old one was: a stopped job's
 	// replacement may exit as the old one did.
-	if outcome, _ := r.start(ctx, s, created, r.req.Explicit && running); failedStep(outcome) && r.req.Explicit {
+	if outcome, _ := r.start(ctx, s, created, running); failedStep(outcome) {
 		r.rollback(ctx, p, created, running, paused)
 	}
 	r.step(s.Name, protocol.StepRemove, func() (string, string, string) {
@@ -699,12 +695,12 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 	r.step(s.Name, protocol.StepCreate, func() (outcome, code, detail string) {
 		defer func() {
 			switch {
-			case outcome == protocol.OutcomeSucceeded || !r.req.Explicit:
+			case outcome == protocol.OutcomeSucceeded:
 			case run(r.req, s) && created == "":
 				// An unanswered create may have made the container anyway.
 				restored = !sent || !unanswered(outcome) || r.settleRun(ctx, s, "", outcome)
 			default:
-				restored = r.undo(ctx, p, created)
+				restored = r.undo(ctx, p, created, outcome)
 			}
 		}()
 		if run(r.req, s) {
@@ -733,7 +729,11 @@ func (r *deployRun) create(ctx context.Context, p prepared) string {
 				body.Image = p.before.Config.Image
 			}
 		}
-		status, err := r.c.postJSON(cctx, "/containers/create?name="+url.QueryEscape(s.ContainerName), body, &out)
+		path := "/containers/create?name=" + url.QueryEscape(s.ContainerName)
+		status, err := r.c.postJSON(cctx, path, body, &out)
+		if status == http.StatusConflict && r.reclaim(cctx, p) {
+			status, err = r.c.postJSON(cctx, path, body, &out)
+		}
 		if err != nil || status != http.StatusCreated {
 			if status == http.StatusConflict {
 				return fail("name_taken")
@@ -850,15 +850,21 @@ func (r *deployRun) watch(ctx context.Context, id string) (string, string, strin
 	}
 }
 
-// rollback undoes an explicit recreate whose start failed: the new container is removed by
-// force, the old one renamed back and, if it was running, started, and paused again if it was
-// paused. It is recorded after the failed start, which the skip rule in step would otherwise
+// rollback undoes a recreate whose start failed: the new container is removed by force, the
+// old one renamed back and, if it was running, started, and paused again if it was paused. It is recorded after the failed start, which the skip rule in step would otherwise
 // swallow. Success recodes the start start_failed_rolled_back; failure is rollback_failed and
 // the start keeps its code.
 func (r *deployRun) rollback(ctx context.Context, p prepared, created string, running, paused bool) {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
-	if !r.discard(rctx, created, true) || !r.unpark(rctx, p) || (running && !r.revive(rctx, p, paused)) {
+	// Once the new container is gone the old one is started even if its name was not given back:
+	// it serves under the parked name until an operator acts.
+	restored := r.discard(rctx, created, true)
+	if restored {
+		unparked := r.unpark(rctx, p)
+		restored = (!running || r.revive(rctx, p, paused)) && unparked
+	}
+	if !restored {
 		r.rollbackFailed(p.s.Name)
 		return
 	}
@@ -916,6 +922,7 @@ var errStateUnreported = errors.New("docker: container state unreported")
 type containerNow struct {
 	ID          string `json:"Id"`
 	Name, Image string
+	Config      *struct{ Labels map[string]string }
 	State       *struct {
 		Status  string // created, running, paused, restarting, removing, exited or dead
 		Running bool
@@ -936,29 +943,58 @@ func (r *deployRun) current(ctx context.Context, id string) (containerNow, error
 }
 
 // settleRun removes a run's container that did not come up, so a retry finds the name free; it
-// reports false when that failed. After an unanswered start or create the container may have
-// started, or, with no ID, exist under the name: it is removed, by the ID read, only once a read
-// shows it was never started (created) and, found by name, has the name and the frame's image;
-// that removal is not forced, so it is refused while the container runs, but a start that
-// completes and exits after the read is not detected. Gone already counts; one that cannot be
-// read is left and reported.
+// reports false when that failed. See settle.
 func (r *deployRun) settleRun(ctx context.Context, s protocol.DeploymentService, created, outcome string) bool {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
+	return r.settle(rctx, s, created, outcome)
+}
+
+// settle removes a container this run created, by force. After an unanswered start or create the
+// container may have started, or, with no ID, exist under the name: it is removed, by the ID
+// read, only once a read shows it was never started (created) and, found by name, has the name
+// and the frame's image and is not the container being replaced; that removal is not forced, so
+// it is refused while the container runs, but a start that completes and exits after the read is
+// not detected. Gone already counts; one that cannot be read is left and reported.
+func (r *deployRun) settle(ctx context.Context, s protocol.DeploymentService, created, outcome string) bool {
 	force := true
 	if unanswered(outcome) {
-		now, err := r.current(rctx, cmp.Or(created, s.ContainerName))
+		now, err := r.current(ctx, cmp.Or(created, s.ContainerName))
 		switch {
 		case statusOf(err) == http.StatusNotFound:
 			return true
 		case err != nil || !protocol.ValidExecID(now.ID):
 			return false
-		case now.State.Status != "created", created == "" && (now.Name != "/"+s.ContainerName || now.Image != s.ImageID):
+		case now.State.Status != "created", created == "" && (now.Name != "/"+s.ContainerName || now.Image != s.ImageID || now.ID == s.Replaces.ContainerID):
 			return true
 		}
 		created, force = now.ID, false
 	}
-	return r.discard(rctx, created, force)
+	return r.discard(ctx, created, force)
+}
+
+// reclaim removes, unforced, the container a dead run of this recreate left holding the service's
+// name, so the create can take it: never started, not the old container, while the old one
+// carries a name parked for that name and, unless explicit, labelled by the run that parked it.
+// Anything else holding the name is left (name_taken). Running it twice is safe.
+func (r *deployRun) reclaim(ctx context.Context, p prepared) bool {
+	s := p.s
+	parkedBy, isParked := strings.CutPrefix(p.name, s.ContainerName+parkedSuffix)
+	if run(r.req, s) || !isParked || parkedBy == "" {
+		return false
+	}
+	now, err := r.current(ctx, s.ContainerName)
+	if err != nil || !protocol.ValidExecID(now.ID) || now.ID == s.Replaces.ContainerID || now.Name != "/"+s.ContainerName || now.State.Status != "created" {
+		return false
+	}
+	var labels map[string]string
+	if now.Config != nil {
+		labels = now.Config.Labels
+	}
+	if installerManaged(labels) || !r.req.Explicit && !strings.HasPrefix(labels["kyyard.deployment"], parkedBy) {
+		return false
+	}
+	return r.discard(ctx, now.ID, false)
 }
 
 // stopWait bounds the wait for an old container whose stop went unanswered: the daemon may still
@@ -1034,14 +1070,20 @@ func (r *deployRun) unparkIfParked(ctx context.Context, p prepared, name string)
 	return err == nil && (now.Name != "/"+name || r.unpark(rctx, p))
 }
 
-// undo puts the host back after an explicit step failed before the new container started, so a
-// retry is not wedged on the name: the new container, if any, is removed and the old one given
-// its name back. It reports false when the new container was not removed or a recreate's old
-// container did not get its name back.
-func (r *deployRun) undo(ctx context.Context, p prepared, created string) bool {
+// undo puts the host back after a step failed before the new container started, so a retry is
+// not wedged on the name: the new container, if any, is removed (with no ID after an unanswered
+// create, found by name as settle does) and the old one given its name back. It reports false
+// when the new container was not removed or a recreate's old container did not get its name back.
+func (r *deployRun) undo(ctx context.Context, p prepared, created, outcome string) bool {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
-	discarded := created == "" || r.discard(rctx, created, true)
+	discarded := true
+	switch {
+	case created != "":
+		discarded = r.discard(rctx, created, true)
+	case unanswered(outcome):
+		discarded = r.settle(rctx, p.s, "", outcome)
+	}
 	return discarded && (run(r.req, p.s) || r.unpark(rctx, p))
 }
 
