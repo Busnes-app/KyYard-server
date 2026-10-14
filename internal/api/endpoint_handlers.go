@@ -18,6 +18,7 @@ import (
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/manifest"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -390,6 +391,12 @@ func (s *Server) handleEndpointInventory(w http.ResponseWriter, r *http.Request,
 // See docs/agent-protocol.md, On-demand inventory.
 func (s *Server) handleRefreshEndpointInventory(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	w.Header().Set("Cache-Control", "no-store")
+	// A refresh makes the host do work; a service token changes nothing.
+	if a.ServiceTokenID != "" {
+		_ = s.store.Tenancy().DenyService(r.Context(), a, permissions.EndpointRead, "inventory.refresh")
+		s.tenantError(w, store.ErrForbidden)
+		return
+	}
 	id, err := endpointID(r)
 	if err != nil {
 		s.tenantError(w, err)
@@ -400,12 +407,17 @@ func (s *Server) handleRefreshEndpointInventory(w http.ResponseWriter, r *http.R
 		s.tenantError(w, err)
 		return
 	}
-	if !s.allowAttempt("inventory-refresh:"+id, 6, time.Minute) {
-		s.writeError(w, 429, "Too many inventory refresh requests")
-		return
-	}
 	if !slices.Contains(ep.Capabilities, protocol.CapabilityInventoryRefresh) {
 		s.writeError(w, 501, "Upgrade the host agent to refresh inventory on demand")
+		return
+	}
+	if !s.Connected(id) {
+		s.tenantError(w, store.ErrEndpointOffline)
+		return
+	}
+	// Per caller, so one reader cannot spend another's refreshes; the endpoint cap bounds them all.
+	if !s.allowAttempt("inventory-refresh:"+a.Principal()+":"+id, 6, time.Minute) || !s.allowAttempt("inventory-refresh:"+id, 20, time.Minute) {
+		s.writeError(w, 429, "Too many inventory refresh requests")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
