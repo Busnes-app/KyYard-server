@@ -25,7 +25,6 @@ type SQLStore struct {
 	users    *userStore
 	sessions *sessionStore
 	devices  *deviceStore
-	groups   *groupStore
 	audit    *auditStore
 	settings *settingsStore
 
@@ -56,7 +55,6 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string, lim limits) (*S
 	s.users = &userStore{store: s}
 	s.sessions = &sessionStore{store: s}
 	s.devices = &deviceStore{store: s}
-	s.groups = &groupStore{store: s}
 	s.audit = &auditStore{store: s}
 	s.settings = &settingsStore{store: s}
 
@@ -68,7 +66,6 @@ func (s *SQLStore) Tenancy() TenancyStore { return &tenancyStore{store: s} }
 func (s *SQLStore) Users() UserStore        { return s.users }
 func (s *SQLStore) Sessions() SessionStore  { return s.sessions }
 func (s *SQLStore) Devices() DeviceStore    { return s.devices }
-func (s *SQLStore) Groups() GroupStore      { return s.groups }
 func (s *SQLStore) Audit() AuditStore       { return s.audit }
 func (s *SQLStore) Settings() SettingsStore { return s.settings }
 
@@ -490,7 +487,7 @@ func (u *userStore) adminQuorum(ctx context.Context, tx *sql.Tx, userID string, 
 	return nil
 }
 
-func (u *userStore) ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error) {
+func (u *userStore) ListUsers(ctx context.Context, offset, limit int) ([]*User, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -498,42 +495,18 @@ func (u *userStore) ListUsers(ctx context.Context, offset, limit int, search str
 		offset = 0
 	}
 
-	var countQuery, listQuery string
-	var countArgs, listArgs []any
-
-	if strings.TrimSpace(search) != "" {
-		like := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
-		countQuery = "SELECT COUNT(1) FROM users WHERE LOWER(username) LIKE ? OR LOWER(display_name) LIKE ? OR LOWER(email) LIKE ?"
-		countArgs = []any{like, like, like}
-
-		listQuery = `
-SELECT id, username, email, display_name, password_hash, role, status,
-       sso_provider, sso_subject, totp_secret_enc, totp_enabled,
-       recovery_codes_hash, push_device_id, must_change_password,
-       totp_last_counter, created_at, updated_at, last_login_at
-FROM users
-WHERE LOWER(username) LIKE ? OR LOWER(display_name) LIKE ? OR LOWER(email) LIKE ?
-ORDER BY created_at DESC LIMIT ? OFFSET ?`
-		listArgs = []any{like, like, like, limit, offset}
-	} else {
-		countQuery = "SELECT COUNT(1) FROM users"
-		listQuery = `
-SELECT id, username, email, display_name, password_hash, role, status,
-       sso_provider, sso_subject, totp_secret_enc, totp_enabled,
-       recovery_codes_hash, push_device_id, must_change_password,
-       totp_last_counter, created_at, updated_at, last_login_at
-FROM users
-ORDER BY created_at DESC LIMIT ? OFFSET ?`
-		listArgs = []any{limit, offset}
-	}
-
 	var total int
-	err := u.store.db.QueryRowContext(ctx, u.store.rebind(countQuery), countArgs...).Scan(&total)
-	if err != nil {
+	if err := u.store.db.QueryRowContext(ctx, "SELECT COUNT(1) FROM users").Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := u.store.db.QueryContext(ctx, u.store.rebind(listQuery), listArgs...)
+	rows, err := u.store.db.QueryContext(ctx, u.store.rebind(`
+SELECT id, username, email, display_name, password_hash, role, status,
+       sso_provider, sso_subject, totp_secret_enc, totp_enabled,
+       recovery_codes_hash, push_device_id, must_change_password,
+       totp_last_counter, created_at, updated_at, last_login_at
+FROM users
+ORDER BY created_at DESC LIMIT ? OFFSET ?`), limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -840,194 +813,6 @@ func (d *deviceStore) CleanExpiredPairings(ctx context.Context) error {
 	q := d.store.rebind("DELETE FROM device_pairings WHERE expires_at < ?")
 	_, err := d.store.db.ExecContext(ctx, q, time.Now().UTC())
 	return err
-}
-
-// ---------------------------------------------------------------------
-// Group Store
-// ---------------------------------------------------------------------
-
-type groupStore struct {
-	store *SQLStore
-}
-
-func (g *groupStore) CreateGroup(ctx context.Context, group *Group) error {
-	now := time.Now().UTC()
-	if group.CreatedAt.IsZero() {
-		group.CreatedAt = now
-	}
-	if group.UpdatedAt.IsZero() {
-		group.UpdatedAt = now
-	}
-
-	q := g.store.rebind(`
-INSERT INTO groups (id, display_name, external_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
-`)
-	_, err := g.store.db.ExecContext(ctx, q, group.ID, group.DisplayName, group.ExternalID, group.CreatedAt, group.UpdatedAt)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key") {
-			return ErrAlreadyExists
-		}
-		return err
-	}
-	return nil
-}
-
-func (g *groupStore) GetGroupByID(ctx context.Context, id string) (*Group, error) {
-	q := g.store.rebind("SELECT id, display_name, external_id, created_at, updated_at FROM groups WHERE id = ?")
-	var grp Group
-	err := g.store.db.QueryRowContext(ctx, q, id).Scan(&grp.ID, &grp.DisplayName, &grp.ExternalID, &grp.CreatedAt, &grp.UpdatedAt)
-	if err != nil {
-		if errorsIs(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-
-	members, err := g.getMembers(ctx, grp.ID)
-	if err != nil {
-		return nil, err
-	}
-	grp.Members = members
-	return &grp, nil
-}
-
-func (g *groupStore) GetGroupByName(ctx context.Context, name string) (*Group, error) {
-	q := g.store.rebind("SELECT id, display_name, external_id, created_at, updated_at FROM groups WHERE LOWER(display_name) = LOWER(?)")
-	var grp Group
-	err := g.store.db.QueryRowContext(ctx, q, name).Scan(&grp.ID, &grp.DisplayName, &grp.ExternalID, &grp.CreatedAt, &grp.UpdatedAt)
-	if err != nil {
-		if errorsIs(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	members, err := g.getMembers(ctx, grp.ID)
-	if err != nil {
-		return nil, err
-	}
-	grp.Members = members
-	return &grp, nil
-}
-
-func (g *groupStore) getMembers(ctx context.Context, groupID string) ([]string, error) {
-	q := g.store.rebind("SELECT user_id FROM group_members WHERE group_id = ?")
-	rows, err := g.store.db.QueryContext(ctx, q, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var members []string
-	for rows.Next() {
-		var uid string
-		if err := rows.Scan(&uid); err == nil {
-			members = append(members, uid)
-		}
-	}
-	return members, rows.Err()
-}
-
-func (g *groupStore) UpdateGroup(ctx context.Context, group *Group) error {
-	group.UpdatedAt = time.Now().UTC()
-	q := g.store.rebind("UPDATE groups SET display_name = ?, external_id = ?, updated_at = ? WHERE id = ?")
-	res, err := g.store.db.ExecContext(ctx, q, group.DisplayName, group.ExternalID, group.UpdatedAt, group.ID)
-	if err != nil {
-		return err
-	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func (g *groupStore) DeleteGroup(ctx context.Context, id string) error {
-	q := g.store.rebind("DELETE FROM groups WHERE id = ?")
-	res, err := g.store.db.ExecContext(ctx, q, id)
-	if err != nil {
-		return err
-	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func (g *groupStore) ListGroups(ctx context.Context, offset, limit int) ([]*Group, int, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if offset < 0 {
-		offset = 0
-	}
-
-	var count int
-	err := g.store.db.QueryRowContext(ctx, "SELECT COUNT(1) FROM groups").Scan(&count)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	q := g.store.rebind("SELECT id, display_name, external_id, created_at, updated_at FROM groups ORDER BY display_name ASC LIMIT ? OFFSET ?")
-	rows, err := g.store.db.QueryContext(ctx, q, limit, offset)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	var groups []*Group
-	for rows.Next() {
-		var grp Group
-		if err := rows.Scan(&grp.ID, &grp.DisplayName, &grp.ExternalID, &grp.CreatedAt, &grp.UpdatedAt); err != nil {
-			return nil, 0, err
-		}
-		groups = append(groups, &grp)
-	}
-
-	for _, grp := range groups {
-		members, _ := g.getMembers(ctx, grp.ID)
-		grp.Members = members
-	}
-
-	return groups, count, rows.Err()
-}
-
-func (g *groupStore) AddGroupMember(ctx context.Context, groupID, userID string) error {
-	q := g.store.rebind("INSERT INTO group_members (group_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING")
-	_, err := g.store.db.ExecContext(ctx, q, groupID, userID)
-	return err
-}
-
-func (g *groupStore) RemoveGroupMember(ctx context.Context, groupID, userID string) error {
-	q := g.store.rebind("DELETE FROM group_members WHERE group_id = ? AND user_id = ?")
-	_, err := g.store.db.ExecContext(ctx, q, groupID, userID)
-	return err
-}
-
-func (g *groupStore) GetUserGroups(ctx context.Context, userID string) ([]*Group, error) {
-	q := g.store.rebind(`
-SELECT g.id, g.display_name, g.external_id, g.created_at, g.updated_at
-FROM groups g
-JOIN group_members gm ON g.id = gm.group_id
-WHERE gm.user_id = ?
-ORDER BY g.display_name ASC
-`)
-	rows, err := g.store.db.QueryContext(ctx, q, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var groups []*Group
-	for rows.Next() {
-		var grp Group
-		if err := rows.Scan(&grp.ID, &grp.DisplayName, &grp.ExternalID, &grp.CreatedAt, &grp.UpdatedAt); err != nil {
-			return nil, err
-		}
-		groups = append(groups, &grp)
-	}
-	return groups, rows.Err()
 }
 
 // ---------------------------------------------------------------------

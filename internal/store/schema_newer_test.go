@@ -67,3 +67,17 @@ func TestConcurrentMigrationsApplyEachVersionOnce(t *testing.T) {
 		}
 	}
 }
+
+// The retired SCIM groups are dropped, not left as unread identity data.
+func TestSCIMGroupTablesAreDropped(t *testing.T) {
+	st, err := Open(context.Background(), testdb.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, table := range []string{"group_members", "groups"} {
+		if _, err := st.(*SQLStore).db.Exec("SELECT 1 FROM " + table); err == nil {
+			t.Errorf("table %s survived", table)
+		}
+	}
+}

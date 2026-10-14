@@ -191,8 +191,7 @@ claim it. Platform administration remains separate from organization membership.
 
 Membership removal or disabling survives restart and administrator password resets. SSO and directory sync provision accounts only: no external role, group or attribute grants
 organization access, an IdP deactivation denies access live and leaves the grant in place for
-reactivation, and a deleted account's grants are gone for good. Legacy SCIM groups do not
-grant organization access. Tenant APIs enforce live membership on every
+reactivation, and a deleted account's grants are gone for good. Tenant APIs enforce live membership on every
 operation; platform administrators need explicit membership too. Membership administration is available through the tenant API and the web UI: pick an
 organization in the header, then manage environments, members and audit history under
 `/organizations/{organization}`. Links are deep-linkable and survive sign-in. Provider settings are available under Settings → Single sign-on.
