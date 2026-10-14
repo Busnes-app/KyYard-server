@@ -282,6 +282,24 @@ set it explicitly empty for a control-plane-only process. Remove the socket moun
 if the deployment must have no host Docker authority. Without a readable socket, check the
 server's `[DOCKER]` / runtime messages; KyYard's other functions remain available.
 
+### Container user
+
+The server runs as the unprivileged `kyyard` user (uid/gid 10001). The image entrypoint starts
+as root only to chown everything under `KY_DATA_DIR` (and `KY_BACKUP_DIR`) that `kyyard` does not
+already own, and to add `kyyard` to a group with the mounted socket's gid; then it drops to
+`kyyard`. Existing root-owned volumes and `./data` bind mounts are converted on the first start,
+with no manual step; a bind-mounted `./data` is then owned by uid 10001 on the host. This limits
+what a compromised server process can do inside the container, but **Docker socket access is
+still host-root-equivalent**: whoever controls the socket controls the host.
+
+If `kyyard` still cannot write the data directory, use the socket (for example a socket with mode
+0600) or read `/etc/kyyard-db-ca.crt`, the server keeps running as root, hands the files back to
+root and logs `kyyard: running as root`. Fix the cause (make the PostgreSQL CA file readable, for
+example mode 0644) and recreate the container to drop root. `docker run --user` skips the
+entrypoint's root steps; that user then needs the data directory and the socket itself.
+Run in-container CLI commands as the server user: `docker compose exec --user kyyard kyyard
+/app/kyyard-server <command>`.
+
 The local endpoint is initialized once. Revocation remains effective across restarts and
 environment deletion; startup never restores revoked authority. Its identity derives from
 the backed-up instance key, and its inventory generation resumes from the database.
@@ -762,6 +780,11 @@ remove it.
 result in service, and what to distrust afterwards. Drill it once a quarter with real cards.
 
 ## Upgrading
+
+From this release the server runs as uid 10001, not root (see [Container user](#container-user)).
+The first start chowns the data volume or `./data` to 10001 by itself. Host jobs that read
+`./data` or `KY_BACKUP_DIR` as root keep working; jobs running as another non-root user need
+access as uid 10001. Run `apply-setup` and other in-container commands with `--user kyyard`.
 
 Upgrade the server first, then every agent container (remote, or a legacy same-host one); the
 built-in local connection upgrades with the server. The server must know about mounts before an

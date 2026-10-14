@@ -136,7 +136,7 @@ printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busnes-app/kyyard@$d" || printf '%s\n
 With Docker Compose, from the repository directory, mount the capsule and an empty target
 directory into a one-off container. Create the target yourself at mode 700 and run the
 container as your own user, so what comes out is owned by you and not by root. The image's
-entrypoint is the binary, so the subcommand goes straight after the service name; `--no-deps`
+entrypoint passes its arguments to the binary, so the subcommand goes straight after the service name; `--no-deps`
 keeps the real server down:
 
 ```bash
@@ -220,8 +220,8 @@ ls -A data | wc -l
 
 That must print `0`. If it does not, the old directory still holds data, and you keep a copy
 of it before anything else: it holds every change made after the capsule was sealed, and it
-is the only record Step 5 can walk. The container runs as root, so the files are root-owned;
-copy as root into a directory you create at mode 700:
+is the only record Step 5 can walk. The files belong to the server user (uid 10001; root before
+the non-root image), so copy as root into a directory you create at mode 700:
 
 ```bash
 mkdir -m 700 old-data
@@ -251,14 +251,16 @@ sign-in and signed-directory verification refuse missing or unsafe credential fi
 With `0` and any managed credentials confirmed, copy the restored files in and start:
 
 ```bash
-sudo cp -a restored/data/. data/ && sudo chown -R root:root data && sudo chmod 600 data/*
+sudo cp -a restored/data/. data/ && sudo chown -R 10001:10001 data && sudo chmod 600 data/*
 docker compose up -d
 ```
 
 The `chown` matters: Step 1 ran the restore as your own user, so the files it wrote are yours,
-and `cp -a` keeps that. The server runs as root and refuses a key file another user owns
-(`Failed to load configuration: session.key: keyfile: key path is not a regular file owned by
-the current user`), restarting until the ownership is fixed.
+and `cp -a` keeps that. The server runs as `kyyard` (uid 10001) and refuses a key file another
+user owns (`Failed to load configuration: session.key: keyfile: key path is not a regular file
+owned by the current user`). The image entrypoint also hands the data directory to that user on
+every start, so a missed `chown` is repaired there; one done here keeps the copy private to the
+server from the first moment.
 
 Keep `KY_APP_URL` and `KY_APP_NAME` identical to the old deployment, from
 `config/settings.json`: the app name is what every capsule is sealed under and what
@@ -358,7 +360,7 @@ the snapshot. Older capsules and external database dumps may still contain them.
 
 - Delete the `restored/` directory once the server runs from its own copy, and `old-data/`
   once Step 5 is done. Both are the live directory in the clear, key included. Files in
-  `old-data/` are root-owned after the copy, so `sudo rm -rf old-data`.
+  `old-data/` keep the server user's ownership (uid 10001, or root) after the copy, so `sudo rm -rf old-data`.
 - The custodians' cards are unchanged; a restore does not consume them. If a card was
   exposed during the restore (read aloud, photographed, pasted anywhere shared), that is a
   key compromise for the whole suite, not for one server: run a new ceremony.

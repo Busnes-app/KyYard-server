@@ -8,9 +8,10 @@ and explicit administrator and everyday issuer/subject assignments. Usernames ma
 
 Run `/app/kyyard-server apply-setup --capabilities`, then
 `/app/kyyard-server apply-setup --file /data/installer/setup.json` inside the running
-container. Add `--check` to inspect existing setup without changing it. Credential
-files and the bundle must be bounded private regular files owned by the container
-user. The CLI talks to `/data/.installer/setup.sock` and never opens the database.
+container as the server user (`docker exec --user kyyard`, uid 10001). Add `--check` to
+inspect existing setup without changing it. Credential files and the bundle must be bounded
+private regular files owned by that user; the image entrypoint chowns everything under
+`/data` to it on each start. The CLI talks to `/data/.installer/setup.sock` and never opens the database.
 Configuration activates immediately; `--restart` is unsupported.
 
 Existing account names and provider configuration are never adopted. The native local
