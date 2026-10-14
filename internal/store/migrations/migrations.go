@@ -1024,7 +1024,25 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// the container it made, so that container's Activity lists it.
 	{Version: 38, Name: "endpoint_command_result", SQLite: commandResult, Postgres: commandResult},
 	{Version: 39, Name: "sso_identities", SQLite: ssoIdentities, Postgres: ssoIdentities},
+	{Version: 40, Name: "pairing_secret_hash", SQLite: pairingSecretHashSQLite, Postgres: strings.ReplaceAll(pairingSecretHashSQLite, "DATETIME", "TIMESTAMPTZ")},
 }
+
+// Like every other bearer secret, a pairing secret is stored only as its SHA-256. Pending
+// pairings live 90 seconds, so dropping them on upgrade loses nothing.
+const pairingSecretHashSQLite = `
+DROP TABLE IF EXISTS device_pairings;
+CREATE TABLE device_pairings (
+    secret_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    push_token TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX idx_pairings_expires ON device_pairings(expires_at);
+`
 
 // Existing external accounts keep their identity; explicit links are additive to local accounts.
 const ssoIdentities = `CREATE TABLE user_sso_identities (

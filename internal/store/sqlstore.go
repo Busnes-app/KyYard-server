@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
 )
 
@@ -622,11 +623,11 @@ func (d *deviceStore) CreatePairing(ctx context.Context, p *DevicePairing) error
 	}
 
 	q := d.store.rebind(`
-INSERT INTO device_pairings (secret, user_id, device_name, platform, push_token, status, created_at, expires_at)
+INSERT INTO device_pairings (secret_hash, user_id, device_name, platform, push_token, status, created_at, expires_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `)
 	_, err := d.store.db.ExecContext(ctx, q,
-		p.Secret, p.UserID, p.DeviceName, p.Platform, p.PushToken,
+		crypto.SHA256Hex([]byte(p.Secret)), p.UserID, p.DeviceName, p.Platform, p.PushToken,
 		p.Status, p.CreatedAt, p.ExpiresAt,
 	)
 	return err
@@ -634,16 +635,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 
 func (d *deviceStore) GetPairingBySecret(ctx context.Context, secret string) (*DevicePairing, error) {
 	q := d.store.rebind(`
-SELECT secret, user_id, device_name, platform, push_token, status, created_at, expires_at
-FROM device_pairings WHERE secret = ?
+SELECT user_id, device_name, platform, push_token, status, created_at, expires_at
+FROM device_pairings WHERE secret_hash = ?
 `)
-	return d.scanPairing(d.store.db.QueryRowContext(ctx, q, secret))
+	p, err := d.scanPairing(d.store.db.QueryRowContext(ctx, q, crypto.SHA256Hex([]byte(secret))))
+	if err != nil {
+		return nil, err
+	}
+	p.Secret = secret
+	return p, nil
 }
 
 func (d *deviceStore) scanPairing(row interface{ Scan(...any) error }) (*DevicePairing, error) {
 	var p DevicePairing
 	err := row.Scan(
-		&p.Secret, &p.UserID, &p.DeviceName, &p.Platform,
+		&p.UserID, &p.DeviceName, &p.Platform,
 		&p.PushToken, &p.Status, &p.CreatedAt, &p.ExpiresAt,
 	)
 	if err != nil {
@@ -661,9 +667,9 @@ func (d *deviceStore) scanPairing(row interface{ Scan(...any) error }) (*DeviceP
 func (d *deviceStore) ConsumePairing(ctx context.Context, secret, deviceName, platform, pushToken string) error {
 	q := d.store.rebind(`
 UPDATE device_pairings SET status = 'consumed', device_name = ?, platform = ?, push_token = ?
-WHERE secret = ? AND status = 'pending' AND expires_at > ?
+WHERE secret_hash = ? AND status = 'pending' AND expires_at > ?
 `)
-	res, err := d.store.db.ExecContext(ctx, q, deviceName, platform, pushToken, secret, time.Now().UTC())
+	res, err := d.store.db.ExecContext(ctx, q, deviceName, platform, pushToken, crypto.SHA256Hex([]byte(secret)), time.Now().UTC())
 	if err != nil {
 		return err
 	}
