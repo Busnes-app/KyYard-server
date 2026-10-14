@@ -1160,9 +1160,10 @@ func (s *settingsStore) GetAllSettings(ctx context.Context) (map[string]string, 
 	settings := make(map[string]string)
 	for rows.Next() {
 		var k, v string
-		if err := rows.Scan(&k, &v); err == nil {
-			settings[k] = v
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
 		}
+		settings[k] = v
 	}
 	return settings, rows.Err()
 }
