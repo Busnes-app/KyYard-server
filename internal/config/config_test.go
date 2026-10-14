@@ -16,7 +16,7 @@ func TestConfigLoadDefaults(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	if cfg.Server.Host != "127.0.0.1" || cfg.Security.CookieSecure || cfg.SSO.Enabled || cfg.SCIM.Enabled {
+	if cfg.Server.Host != "127.0.0.1" || cfg.Security.CookieSecure || cfg.SSO.Enabled || cfg.SSO.AutoProvision || cfg.SCIM.Enabled {
 		t.Fatal("unsafe or non-minimal defaults")
 	}
 
