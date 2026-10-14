@@ -225,12 +225,7 @@ func (t *tenancyStore) SettleCommand(ctx context.Context, endpointID, id, outcom
 	default:
 		return fmt.Errorf("%w: outcome %q", ErrInvalid, outcome)
 	}
-	if len(detail) > protocol.MaxResultDetailBytes {
-		detail = detail[:protocol.MaxResultDetailBytes]
-	}
-	if !displaySafe(detail) {
-		detail = ""
-	}
+	detail = protocol.CleanText(detail, protocol.MaxResultDetailBytes)
 	_, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE id=? AND endpoint_id=? AND outcome='' AND action NOT IN `+directIn),
 		append([]any{outcome, detail, time.Now().UTC(), id, endpointID}, settledByResult...)...)
 	return err
