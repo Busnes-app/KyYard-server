@@ -1026,6 +1026,9 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	{Version: 39, Name: "sso_identities", SQLite: ssoIdentities, Postgres: ssoIdentities},
 	{Version: 40, Name: "pairing_secret_hash", SQLite: pairingSecretHashSQLite, Postgres: strings.ReplaceAll(pairingSecretHashSQLite, "DATETIME", "TIMESTAMPTZ")},
 	{Version: 41, Name: "directory_events", SQLite: directoryEvents, Postgres: directoryEvents},
+	// Node health derived once per accepted snapshot, so an endpoint list decodes no snapshot.
+	// Rows from before it read unknown until the endpoint's next report.
+	{Version: 42, Name: "inventory_cluster_health", SQLite: inventoryClusterHealth, Postgres: inventoryClusterHealth},
 }
 
 // A signed directory event applies once (its ID is kept while its timestamp is acceptable) and
@@ -1060,6 +1063,8 @@ CREATE TABLE device_pairings (
 );
 CREATE INDEX idx_pairings_expires ON device_pairings(expires_at);
 `
+
+const inventoryClusterHealth = `ALTER TABLE endpoint_inventory ADD COLUMN cluster_health TEXT NOT NULL DEFAULT '';`
 
 // Existing external accounts keep their identity; explicit links are additive to local accounts.
 const ssoIdentities = `CREATE TABLE user_sso_identities (

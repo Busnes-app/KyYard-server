@@ -127,7 +127,7 @@ func (t *tenancyStore) AcceptInventory(ctx context.Context, endpointID string, g
 		return false, err
 	}
 	if len(snapshot) > 0 {
-		if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_inventory (endpoint_id,generation,observed_at,received_at,snapshot) VALUES (?,?,?,?,?) ON CONFLICT (endpoint_id) DO UPDATE SET generation=excluded.generation,observed_at=excluded.observed_at,received_at=excluded.received_at,snapshot=excluded.snapshot`), endpointID, generation, observedAt.UTC(), now, string(snapshot)); err != nil {
+		if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO endpoint_inventory (endpoint_id,generation,observed_at,received_at,snapshot,cluster_health) VALUES (?,?,?,?,?,?) ON CONFLICT (endpoint_id) DO UPDATE SET generation=excluded.generation,observed_at=excluded.observed_at,received_at=excluded.received_at,snapshot=excluded.snapshot,cluster_health=excluded.cluster_health`), endpointID, generation, observedAt.UTC(), now, string(snapshot), clusterHealth(snapshot)); err != nil {
 			return false, err
 		}
 	}

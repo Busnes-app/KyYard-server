@@ -173,53 +173,82 @@ func scanEndpoint(row interface{ Scan(...any) error }) (*Endpoint, error) {
 	return &e, nil
 }
 
-// decorate loads capabilities and unacknowledged high-severity events (bounded) for the UI.
-func (t *tenancyStore) decorate(ctx context.Context, tx *sql.Tx, e *Endpoint) error {
-	rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT capability FROM endpoint_capabilities WHERE endpoint_id=? ORDER BY capability LIMIT ?`), e.ID, MaxCapabilities)
-	if err != nil {
-		return err
+// clusterHealth is a snapshot's node health as if its endpoint were active, "" when it holds no
+// cluster inventory. AcceptInventory stores it so reading an endpoint never decodes a snapshot.
+func clusterHealth(snapshot []byte) string {
+	var s struct {
+		Kubernetes *struct {
+			Nodes []protocol.Node `json:"nodes"`
+		} `json:"kubernetes"`
+		Truncated []string `json:"truncated"`
 	}
-	for rows.Next() {
-		var c string
-		if err := rows.Scan(&c); err != nil {
-			rows.Close()
+	if json.Unmarshal(snapshot, &s) != nil || s.Kubernetes == nil {
+		return ""
+	}
+	return protocol.ClusterHealth(true, &protocol.Snapshot{Truncated: s.Truncated, Kubernetes: &protocol.KubernetesInventory{Nodes: s.Kubernetes.Nodes}})
+}
+
+// decorate loads capabilities, at most 10 unacknowledged high-severity events each and cluster
+// health for a page of endpoints, one query apiece whatever the page size.
+func (t *tenancyStore) decorate(ctx context.Context, tx *sql.Tx, page []Endpoint) error {
+	if len(page) == 0 {
+		return nil
+	}
+	byID := make(map[string]*Endpoint, len(page))
+	ids := make([]any, len(page))
+	for i := range page {
+		byID[page[i].ID] = &page[i]
+		ids[i] = page[i].ID
+		if page[i].Runtime == protocol.RuntimeKubernetes {
+			page[i].ClusterHealth = protocol.HealthUnknown
+		}
+	}
+	in := "(?" + strings.Repeat(",?", len(page)-1) + ")"
+	each := func(query string, scan func(*sql.Rows) error) error {
+		rows, err := tx.QueryContext(ctx, t.store.rebind(query), ids...)
+		if err != nil {
 			return err
 		}
-		e.Capabilities = append(e.Capabilities, c)
+		defer rows.Close()
+		for rows.Next() {
+			if err := scan(rows); err != nil {
+				return err
+			}
+		}
+		return rows.Err()
 	}
-	rows.Close()
-	if e.Runtime == protocol.RuntimeKubernetes {
-		var raw string
-		var snap *protocol.Snapshot
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), e.ID).Scan(&raw)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := each(`SELECT endpoint_id,capability FROM endpoint_capabilities WHERE endpoint_id IN `+in+` ORDER BY capability`, func(r *sql.Rows) error {
+		var id, c string
+		if err := r.Scan(&id, &c); err != nil {
 			return err
 		}
-		// Health needs the nodes and the cut lists only: decode nothing else of the snapshot.
-		var s struct {
-			Kubernetes *struct {
-				Nodes []protocol.Node `json:"nodes"`
-			} `json:"kubernetes"`
-			Truncated []string `json:"truncated"`
-		}
-		if err == nil && json.Unmarshal([]byte(raw), &s) == nil && s.Kubernetes != nil {
-			snap = &protocol.Snapshot{Truncated: s.Truncated, Kubernetes: &protocol.KubernetesInventory{Nodes: s.Kubernetes.Nodes}}
-		}
-		e.ClusterHealth = protocol.ClusterHealth(e.State == "active", snap)
-	}
-	rows, err = tx.QueryContext(ctx, t.store.rebind(`SELECT id,severity,kind,details,created_at FROM endpoint_events WHERE endpoint_id=? AND severity='high' AND acknowledged_at IS NULL ORDER BY created_at DESC LIMIT 10`), e.ID)
-	if err != nil {
+		byID[id].Capabilities = append(byID[id].Capabilities, c)
+		return nil
+	}); err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := each(`SELECT endpoint_id,cluster_health FROM endpoint_inventory WHERE endpoint_id IN `+in, func(r *sql.Rows) error {
+		var id, health string
+		if err := r.Scan(&id, &health); err != nil {
+			return err
+		}
+		// Health is unknown unless the endpoint is active (protocol.ClusterHealth).
+		if e := byID[id]; e.Runtime == protocol.RuntimeKubernetes && e.State == "active" && health != "" {
+			e.ClusterHealth = health
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return each(`SELECT endpoint_id,id,severity,kind,details,created_at FROM (SELECT endpoint_id,id,severity,kind,details,created_at,ROW_NUMBER() OVER (PARTITION BY endpoint_id ORDER BY created_at DESC) AS n FROM endpoint_events WHERE endpoint_id IN `+in+` AND severity='high' AND acknowledged_at IS NULL) alerts WHERE n<=10 ORDER BY created_at DESC`, func(r *sql.Rows) error {
+		var id string
 		var ev EndpointEvent
-		if err := rows.Scan(&ev.ID, &ev.Severity, &ev.Kind, &ev.Details, &ev.CreatedAt); err != nil {
+		if err := r.Scan(&id, &ev.ID, &ev.Severity, &ev.Kind, &ev.Details, &ev.CreatedAt); err != nil {
 			return err
 		}
-		e.Alerts = append(e.Alerts, ev)
-	}
-	return rows.Err()
+		byID[id].Alerts = append(byID[id].Alerts, ev)
+		return nil
+	})
 }
 
 func (t *tenancyStore) ListEndpoints(ctx context.Context, a TenantAccess, offset, limit int) ([]Endpoint, error) {
@@ -244,12 +273,7 @@ func (t *tenancyStore) ListEndpoints(ctx context.Context, a TenantAccess, offset
 			return err
 		}
 		rows.Close()
-		for i := range result {
-			if err := t.decorate(ctx, tx, &result[i]); err != nil {
-				return err
-			}
-		}
-		return nil
+		return t.decorate(ctx, tx, result)
 	})
 	if err != nil {
 		return nil, err
@@ -268,7 +292,10 @@ func (t *tenancyStore) ReadEndpoint(ctx context.Context, a TenantAccess, id stri
 		if err != nil {
 			return err
 		}
-		return t.decorate(ctx, tx, e)
+		page := []Endpoint{*e}
+		err = t.decorate(ctx, tx, page)
+		e = &page[0]
+		return err
 	})
 	if err != nil {
 		return nil, err

@@ -208,7 +208,7 @@ func TestKubernetesProject(t *testing.T) {
 	}
 }
 
-// cluster_health reads only the nodes and the cut lists of the stored snapshot: a list it does
+// cluster_health reads only the nodes and the cut lists of an accepted snapshot: a list it does
 // not need, even one that would not decode, does not blank the health of every endpoint read.
 func TestClusterHealthReadsOnlyNodes(t *testing.T) {
 	st, a := tenantAtomicStore(t)
@@ -222,8 +222,9 @@ func TestClusterHealthReadsOnlyNodes(t *testing.T) {
 		`{"containers":[]}`: protocol.HealthUnknown,
 		`not json`:          protocol.HealthUnknown,
 	} {
-		if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE endpoint_inventory SET snapshot=? WHERE endpoint_id=?`), raw, cluster); err != nil {
-			t.Fatal(err)
+		generation := uint64(time.Now().Unix()) - 1000 + clusterGeneration.Add(1)
+		if ok, err := ts.AcceptInventory(ctx, cluster, generation, time.Now().UTC(), []byte(raw)); err != nil || !ok {
+			t.Fatalf("%s: %v %v", raw, ok, err)
 		}
 		e, err := ts.ReadEndpoint(ctx, a, cluster)
 		if err != nil || e.ClusterHealth != want {
@@ -274,5 +275,57 @@ func TestAccessChecksAuditOnlyDenials(t *testing.T) {
 	}
 	if !slices.Equal(rows("container.operate"), []string{"denied"}) || !slices.Equal(rows("application.adopt"), []string{"denied"}) {
 		t.Fatalf("denials: %v %v", rows("container.operate"), rows("application.adopt"))
+	}
+}
+
+// A page of endpoints is decorated in one query per kind: each endpoint gets its own
+// capabilities, at most its 10 newest high alerts and, for an active cluster only, its health.
+func TestListEndpointsDecoratesEachEndpoint(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	host := activeEndpointWith(t, ts, a, nil, nil)
+	cluster := activeCluster(t, ts, a, nil, nil)
+	offline := activeCluster(t, ts, a, nil, nil)
+	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE endpoints SET state='offline' WHERE id=?`), offline); err != nil {
+		t.Fatal(err)
+	}
+	// Health was derived when the snapshot was accepted; listing never decodes the snapshot.
+	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE endpoint_inventory SET snapshot='not json' WHERE endpoint_id=?`), cluster); err != nil {
+		t.Fatal(err)
+	}
+	hostEndpoint, err := ts.ReadEndpoint(ctx, a, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 12 {
+		if err := ts.RecordEndpointEvent(ctx, hostEndpoint, "high", fmt.Sprintf("kind-%02d", i), "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := ts.ListEndpoints(ctx, a, 0, 200)
+	if err != nil || len(page) != 3 {
+		t.Fatalf("list: %v %d", err, len(page))
+	}
+	for _, e := range page {
+		switch e.ID {
+		case host:
+			if len(e.Alerts) != 10 || !slices.Contains(e.Capabilities, protocol.CapabilityContainerInspect) || e.ClusterHealth != "" {
+				t.Errorf("host: %d alerts, %v, %q", len(e.Alerts), e.Capabilities, e.ClusterHealth)
+			}
+			for i := 1; i < len(e.Alerts); i++ {
+				if e.Alerts[i].CreatedAt.After(e.Alerts[i-1].CreatedAt) {
+					t.Errorf("alerts not newest first: %+v", e.Alerts)
+				}
+			}
+		case cluster, offline:
+			want := protocol.HealthHealthy
+			if e.ID == offline {
+				want = protocol.HealthUnknown
+			}
+			if len(e.Alerts) != 0 || !slices.Contains(e.Capabilities, protocol.CapabilityKubernetesDeploy) || slices.Contains(e.Capabilities, protocol.CapabilityContainerInspect) || e.ClusterHealth != want {
+				t.Errorf("%s: %d alerts, %v, %q want %q", e.ID, len(e.Alerts), e.Capabilities, e.ClusterHealth, want)
+			}
+		}
 	}
 }
