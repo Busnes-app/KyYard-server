@@ -56,7 +56,7 @@ func TestExternalIdentityNeverGrantsTenantAccess(t *testing.T) {
 	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: secret}, st)
 	sync := func(event string) {
 		t.Helper()
-		body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: event, ID: "ext-1", Username: "sso_admin", Role: "admin", Status: "active", Timestamp: time.Now().Unix()})
+		body, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: crypto.RandomHex(8), Event: event, ID: "ext-1", Username: "sso_admin", Role: "admin", Status: "active", Timestamp: time.Now().Unix()})
 		mustTenant(t, client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, secret)))
 	}
 	sync("user.created")

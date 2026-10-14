@@ -18,6 +18,7 @@ var (
 	ErrNotFound         = errors.New("record not found")
 	ErrAlreadyExists    = errors.New("record already exists")
 	ErrLastAdmin        = errors.New("organization needs one active administrator")
+	ErrStaleEvent       = errors.New("directory event already applied or older than the last one")
 	// ErrEndpointOffline says the endpoint is not connected, so there is nowhere to send a
 	// command. It is distinct from a bad request: the caller asked for something reasonable
 	// that cannot happen right now.
@@ -134,6 +135,12 @@ type UserStore interface {
 	// DeleteUser and UpdateUserIdentity refuse with ErrLastAdmin to leave an organization the
 	// user administers without an active administrator, the guard membership writes keep.
 	DeleteUser(ctx context.Context, id string) error
+	// ClaimDirectoryEvent records a signed directory event before it is applied. It returns
+	// ErrStaleEvent for an event ID already claimed, or one older than the last claimed event
+	// for the same subject. Events are only acceptable within DirectoryEventWindow of now.
+	ClaimDirectoryEvent(ctx context.Context, provider, eventID, subject string, at time.Time) error
+	// ReleaseDirectoryEvent forgets a claimed event whose application failed, so a retry applies.
+	ReleaseDirectoryEvent(ctx context.Context, provider, eventID string) error
 	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)
 }

@@ -3,6 +3,9 @@ package sso
 import (
 	"errors"
 	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
 )
 
 var (
@@ -30,4 +33,13 @@ type SSOState struct {
 	Provider     string    `json:"provider"`
 	RedirectBack string    `json:"redirect_back"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+// LocalUsername is the account name for a provider's claimed username: the claim when it passes
+// auth.ValidateUsername, otherwise "sso_" and a hash of provider and subject, stable per identity.
+func LocalUsername(provider, subject, claimed string) string {
+	if auth.ValidateUsername(claimed) == nil {
+		return claimed
+	}
+	return "sso_" + crypto.SHA256Hex([]byte(provider + "\x00" + subject))[:16]
 }

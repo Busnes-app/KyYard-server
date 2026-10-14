@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -58,8 +59,9 @@ func (k *KySignOnClient) refuse(ctx context.Context, username string) error {
 
 // KySignOnSyncPayload defines the schema received during automatic directory replication webhooks.
 type KySignOnSyncPayload struct {
-	Event       string `json:"event"` // "user.created", "user.updated", "user.deactivated", "user.deleted"
-	ID          string `json:"id"`
+	Event       string `json:"event"`    // "user.created", "user.updated", "user.deactivated", "user.deleted"
+	EventID     string `json:"event_id"` // unique per event; an event applies once
+	ID          string `json:"id"`       // the user's stable subject
 	Username    string `json:"username"`
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name"`
@@ -69,6 +71,7 @@ type KySignOnSyncPayload struct {
 }
 
 // HandleSyncWebhook processes inbound HMAC-SHA256 signed user updates from KySignOn server.
+// Each signed event applies at most once and never after a newer event for the same user.
 func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, signature string) error {
 	if k.config.KySignOnHMACSecret == "" {
 		return errors.New("webhook HMAC secret is not configured")
@@ -82,10 +85,27 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return fmt.Errorf("invalid json payload: %w", err)
 	}
-	if payload.Timestamp == 0 || time.Since(time.Unix(payload.Timestamp, 0)).Abs() > 5*time.Minute {
+	at := time.Unix(payload.Timestamp, 0)
+	if payload.Timestamp == 0 || time.Since(at).Abs() > store.DirectoryEventWindow {
 		return errors.New("webhook timestamp is missing or expired")
 	}
+	if payload.EventID == "" || len(payload.EventID) > 128 || payload.ID == "" || len(payload.ID) > 255 {
+		return errors.New("webhook event_id or id is missing or too long")
+	}
+	if err := k.store.Users().ClaimDirectoryEvent(ctx, "kysignon", payload.EventID, payload.ID, at); err != nil {
+		return err
+	}
+	err := k.apply(ctx, payload)
+	if err != nil {
+		// A failed event is not applied, so the provider's retry must be.
+		if releaseErr := k.store.Users().ReleaseDirectoryEvent(ctx, "kysignon", payload.EventID); releaseErr != nil {
+			log.Printf("[SSO] directory event not released: %v", releaseErr)
+		}
+	}
+	return err
+}
 
+func (k *KySignOnClient) apply(ctx context.Context, payload KySignOnSyncPayload) error {
 	switch payload.Event {
 	case "user.created", "user.updated":
 		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)
@@ -107,13 +127,16 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 
 		if existing != nil {
 			privilegesChanged := existing.Role != role || existing.Status != status
-			existing.Username = payload.Username
+			// An invalid name is a refused rename; the rest of the event still applies.
+			if auth.ValidateUsername(payload.Username) == nil {
+				existing.Username = payload.Username
+			}
 			existing.Email = payload.Email
 			existing.DisplayName = payload.DisplayName
 			existing.Role = role
 			existing.Status = status
-			if err := k.store.Users().UpdateUser(ctx, existing); errors.Is(err, store.ErrAlreadyExists) {
-				return k.refuse(ctx, payload.Username)
+			if err := k.store.Users().UpdateUserIdentity(ctx, existing); errors.Is(err, store.ErrAlreadyExists) {
+				return k.refuse(ctx, existing.Username)
 			} else if err != nil {
 				return err
 			}
@@ -123,14 +146,15 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			return nil
 		}
 
-		if _, err := k.store.Users().GetUserByUsername(ctx, payload.Username); err == nil {
-			return k.refuse(ctx, payload.Username)
+		username := LocalUsername("kysignon", payload.ID, payload.Username)
+		if _, err := k.store.Users().GetUserByUsername(ctx, username); err == nil {
+			return k.refuse(ctx, username)
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
 		newUser := &store.User{
 			ID:          fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
-			Username:    payload.Username,
+			Username:    username,
 			Email:       payload.Email,
 			DisplayName: payload.DisplayName,
 			Role:        role,
@@ -140,7 +164,7 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 		}
 		err = k.store.Users().CreateUser(ctx, newUser)
 		if errors.Is(err, store.ErrAlreadyExists) {
-			return k.refuse(ctx, payload.Username)
+			return k.refuse(ctx, username)
 		}
 		return err
 
@@ -153,7 +177,7 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			return nil // User might not exist locally
 		}
 		existing.Status = "inactive"
-		if err := k.store.Users().UpdateUser(ctx, existing); err != nil {
+		if err := k.store.Users().UpdateUserIdentity(ctx, existing); err != nil {
 			return err
 		}
 		return k.store.Sessions().DeleteUserSessions(ctx, existing.ID)

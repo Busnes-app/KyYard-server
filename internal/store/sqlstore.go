@@ -347,6 +347,42 @@ func (u *userStore) DeleteUser(ctx context.Context, id string) error {
 	})
 }
 
+// DirectoryEventWindow is how far a directory event's timestamp may be from now.
+const DirectoryEventWindow = 5 * time.Minute
+
+func (u *userStore) ClaimDirectoryEvent(ctx context.Context, provider, eventID, subject string, at time.Time) error {
+	tx, err := u.store.beginTx(ctx, false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// An event older than the window is refused by its timestamp, so its ID need not be kept.
+	if _, err := tx.ExecContext(ctx, u.store.rebind("DELETE FROM directory_events WHERE event_at < ?"), time.Now().Add(-DirectoryEventWindow).Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, u.store.rebind("INSERT INTO directory_events (provider, event_id, event_at) VALUES (?, ?, ?)"), provider, eventID, at.Unix()); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key") {
+			return ErrStaleEvent
+		}
+		return err
+	}
+	// Events within one second keep arrival order; the ID check above refuses an exact replay.
+	res, err := tx.ExecContext(ctx, u.store.rebind(`INSERT INTO directory_subjects (provider, subject, event_at) VALUES (?, ?, ?)
+ON CONFLICT (provider, subject) DO UPDATE SET event_at = excluded.event_at WHERE directory_subjects.event_at <= excluded.event_at`), provider, subject, at.Unix())
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrStaleEvent
+	}
+	return tx.Commit()
+}
+
+func (u *userStore) ReleaseDirectoryEvent(ctx context.Context, provider, eventID string) error {
+	_, err := u.store.db.ExecContext(ctx, u.store.rebind("DELETE FROM directory_events WHERE provider = ? AND event_id = ?"), provider, eventID)
+	return err
+}
+
 // withAdminQuorum runs write on one user row, then refuses with ErrLastAdmin if that left an
 // organization the active user administered without an active administrator. It locks the
 // user row, then those organizations in ID order, as membership writes do. A write touching

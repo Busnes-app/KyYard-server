@@ -333,18 +333,78 @@ func TestKySignOnWebhookNameConflictIs409(t *testing.T) {
 	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_erin", Username: "erin", Role: "admin", Status: "active", SSOProvider: "local"}); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: "user.created", ID: "ext-erin", Username: "Erin", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
+	body, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: crypto.RandomHex(8), Event: "user.created", ID: "ext-erin", Username: "Erin", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
 	send := func(sig string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest("POST", "/api/sso/kysignon/sync", bytes.NewReader(body))
-		r.Header.Set("X-KySignOn-Signature", sig)
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, r)
-		return w
+		return postSync(srv, body, sig)
 	}
 	if w := send(crypto.ComputeHMACSHA256(body, "webhook-secret-999")); w.Code != 409 || !strings.Contains(w.Body.String(), "username taken") || strings.Contains(w.Body.String(), "Erin") {
 		t.Fatalf("name conflict: %d %s", w.Code, w.Body.String())
 	}
-	if w := send("bad"); w.Code != 401 {
+	// Other refusals carry a fixed message, never the internal error.
+	if w := send("bad"); w.Code != 401 || !strings.Contains(w.Body.String(), "webhook refused") || strings.Contains(w.Body.String(), "signature") {
 		t.Fatalf("bad signature: %d %s", w.Code, w.Body.String())
+	}
+	fresh, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: "evt-gus", Event: "user.created", ID: "ext-gus", Username: "gus", Status: "active", Timestamp: time.Now().Unix()})
+	sig := crypto.ComputeHMACSHA256(fresh, "webhook-secret-999")
+	if w := postSync(srv, fresh, sig); w.Code != 200 {
+		t.Fatalf("fresh event: %d %s", w.Code, w.Body.String())
+	}
+	if w := postSync(srv, fresh, sig); w.Code != 409 || !strings.Contains(w.Body.String(), "event already applied") {
+		t.Fatalf("replay: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func postSync(srv http.Handler, body []byte, sig string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "/api/sso/kysignon/sync", bytes.NewReader(body))
+	r.Header.Set("X-KySignOn-Signature", sig)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	return w
+}
+
+// A provider's username that fails auth.ValidateUsername never becomes an account name.
+func TestSSOAutoProvisionReplacesAnInvalidUsername(t *testing.T) {
+	var challenge string
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/token":
+			_ = r.ParseForm()
+			sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
+			if base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
+				w.WriteHeader(400)
+				return
+			}
+			_, _ = w.Write([]byte(`{"access_token":"profile-token","token_type":"Bearer"}`))
+		case "/user":
+			_, _ = w.Write([]byte(`{"id":"odd-at-idp","login":"<b>odd</b> name","name":"Odd"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer idp.Close()
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+	p := sso.Provider{ID: "idp_test", Name: "OAuth fixture", Kind: "oauth2", ClientID: "yard", ClientSecret: "secret", AuthorizationURL: idp.URL + "/authorize", TokenURL: idp.URL + "/token", UserInfoURL: idp.URL + "/user", SubjectField: "id", UsernameField: "login", NameField: "name", Enabled: true, AutoProvision: true}
+	plain, _ := json.Marshal([]sso.Provider{p})
+	sealed, _ := crypto.EncryptAESGCM(plain, crypto.DeriveKey(cfg.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	if err := st.Settings().SetSetting(ctx, "sso_providers_enc", sealed); err != nil {
+		t.Fatal(err)
+	}
+	login := do(t, srv, "GET", "/api/sso/idp_test/login", nil)
+	dest, _ := url.Parse(login.Header().Get("Location"))
+	challenge = dest.Query().Get("code_challenge")
+	r := httptest.NewRequest("GET", "/api/sso/idp_test/callback?state="+dest.Query().Get("state")+"&code=valid-code", nil)
+	for _, c := range login.Result().Cookies() {
+		r.AddCookie(c)
+	}
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != 302 {
+		t.Fatalf("callback: %d %s", w.Code, w.Body.String())
+	}
+	u, err := st.Users().GetUserBySSO(ctx, "idp_test", "odd-at-idp")
+	if err != nil || u.Username != sso.LocalUsername("idp_test", "odd-at-idp", "<b>odd</b> name") || !strings.HasPrefix(u.Username, "sso_") {
+		t.Fatalf("provisioned %+v %v", u, err)
 	}
 }

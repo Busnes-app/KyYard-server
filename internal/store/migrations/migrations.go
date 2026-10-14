@@ -1025,7 +1025,24 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	{Version: 38, Name: "endpoint_command_result", SQLite: commandResult, Postgres: commandResult},
 	{Version: 39, Name: "sso_identities", SQLite: ssoIdentities, Postgres: ssoIdentities},
 	{Version: 40, Name: "pairing_secret_hash", SQLite: pairingSecretHashSQLite, Postgres: strings.ReplaceAll(pairingSecretHashSQLite, "DATETIME", "TIMESTAMPTZ")},
+	{Version: 41, Name: "directory_events", SQLite: directoryEvents, Postgres: directoryEvents},
 }
+
+// A signed directory event applies once (its ID is kept while its timestamp is acceptable) and
+// never after a newer one for the same subject (one watermark per subject, kept for good).
+const directoryEvents = `CREATE TABLE directory_events (
+ provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+ event_id TEXT NOT NULL CHECK(length(event_id) BETWEEN 1 AND 128),
+ event_at BIGINT NOT NULL,
+ PRIMARY KEY(provider, event_id)
+);
+CREATE INDEX idx_directory_events_at ON directory_events(event_at);
+CREATE TABLE directory_subjects (
+ provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+ subject TEXT NOT NULL CHECK(length(subject) BETWEEN 1 AND 255),
+ event_at BIGINT NOT NULL,
+ PRIMARY KEY(provider, subject)
+);`
 
 // Like every other bearer secret, a pairing secret is stored only as its SHA-256. Pending
 // pairings live 90 seconds, so dropping them on upgrade loses nothing.

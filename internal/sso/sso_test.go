@@ -63,6 +63,7 @@ func TestKySignOnWebhookSync(t *testing.T) {
 
 	payload := sso.KySignOnSyncPayload{
 		Event:       "user.created",
+		EventID:     "evt-1",
 		ID:          "ext-usr-456",
 		Username:    "bob",
 		Email:       "bob@busnes.app",
@@ -89,6 +90,7 @@ func TestKySignOnWebhookSync(t *testing.T) {
 
 	// 2. Sync deactivation
 	payload.Event = "user.deactivated"
+	payload.EventID = "evt-2"
 	body, _ = json.Marshal(payload)
 	sig = crypto.ComputeHMACSHA256(body, hmacSecret)
 
@@ -127,7 +129,7 @@ func TestKySignOnWebhookRefusesACaseVariantUsername(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}, st)
-	body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: "user.created", ID: "ext-erin", Username: "Erin", Email: "erin@busnes.app", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
+	body, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: crypto.RandomHex(8), Event: "user.created", ID: "ext-erin", Username: "Erin", Email: "erin@busnes.app", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
 	err = client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "webhook-secret-999"))
 	if !errors.Is(err, sso.ErrUsernameTaken) || !strings.Contains(err.Error(), "Erin") {
 		t.Fatalf("case variant: %v", err)
@@ -138,16 +140,7 @@ func TestKySignOnWebhookRefusesACaseVariantUsername(t *testing.T) {
 	if u, err := st.Users().GetUserByUsername(ctx, "ERIN"); err != nil || u.ID != "usr_erin" || u.SSOProvider != "local" {
 		t.Fatalf("the local account changed: %+v %v", u, err)
 	}
-	// The audited name is cleaned of control characters and capped at 64 bytes.
-	long := "\x07" + strings.Repeat("x", 70)
-	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_long", Username: long, Role: "user", Status: "active", SSOProvider: "local"}); err != nil {
-		t.Fatal(err)
-	}
-	body, _ = json.Marshal(sso.KySignOnSyncPayload{Event: "user.created", ID: "ext-long", Username: long, Role: "user", Status: "active", Timestamp: time.Now().Unix()})
-	if err := client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "webhook-secret-999")); !errors.Is(err, sso.ErrUsernameTaken) {
-		t.Fatalf("long name: %v", err)
-	}
-	assertRefusals(t, st, "username=Erin", "username="+strings.Repeat("x", 64))
+	assertRefusals(t, st, "username=Erin")
 }
 
 // assertRefusals checks the auth.sso.refused rows carry exactly these details, in any order.
@@ -188,7 +181,7 @@ func TestKySignOnWebhookRefusesARenameOntoATakenUsername(t *testing.T) {
 	}
 	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}, st)
 	send := func(event, username string) error {
-		body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: event, ID: "ext-frank", Username: username, Email: "frank@busnes.app", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
+		body, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: crypto.RandomHex(8), Event: event, ID: "ext-frank", Username: username, Email: "frank@busnes.app", Role: "user", Status: "active", Timestamp: time.Now().Unix()})
 		return client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "webhook-secret-999"))
 	}
 	if err := send("user.created", "frank"); err != nil {
@@ -213,7 +206,8 @@ func TestDirectoryCannotManageAnExplicitlyLinkedLocalAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	user := &store.User{ID: "local-admin", Username: "local-admin", PasswordHash: "hash", Role: "admin", Status: "active", SSOProvider: "local"}
+	// The audited name is cleaned of control characters and capped at 64 bytes.
+	user := &store.User{ID: "local-admin", Username: "\x07" + strings.Repeat("x", 70), PasswordHash: "hash", Role: "admin", Status: "active", SSOProvider: "local"}
 	if err := st.Users().CreateUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +220,7 @@ func TestDirectoryCannotManageAnExplicitlyLinkedLocalAccount(t *testing.T) {
 	}
 	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "secret"}, st)
 	for _, event := range []string{"user.created", "user.updated", "user.deactivated", "user.deleted"} {
-		body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: event, ID: "external-id", Username: "external-admin", Role: "user", Status: "inactive", Timestamp: time.Now().Unix()})
+		body, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: crypto.RandomHex(8), Event: event, ID: "external-id", Username: "external-admin", Role: "user", Status: "inactive", Timestamp: time.Now().Unix()})
 		if err := client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "secret")); !errors.Is(err, sso.ErrUsernameTaken) {
 			t.Fatalf("%s did not refuse: %v", event, err)
 		}
@@ -234,5 +228,136 @@ func TestDirectoryCannotManageAnExplicitlyLinkedLocalAccount(t *testing.T) {
 		if err != nil || after.Status != "active" || after.Role != "admin" || after.Username != user.Username {
 			t.Fatalf("%s changed local account", event)
 		}
+	}
+	capped := "username=" + strings.Repeat("x", 64)
+	assertRefusals(t, st, capped, capped, capped, capped)
+}
+
+func signedEvent(t *testing.T, p sso.KySignOnSyncPayload) ([]byte, string) {
+	t.Helper()
+	body, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body, crypto.ComputeHMACSHA256(body, "webhook-secret-999")
+}
+
+func TestKySignOnWebhookAppliesEachEventOnceAndInOrder(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, testdb.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}
+	now := time.Now().Unix()
+	grant := sso.KySignOnSyncPayload{Event: "user.created", EventID: "evt-grant", ID: "ext-ann", Username: "ann", Role: "admin", Status: "active", Timestamp: now - 60}
+	body, sig := signedEvent(t, grant)
+	if err := sso.NewKySignOnClient(cfg, st).HandleSyncWebhook(ctx, body, sig); err != nil {
+		t.Fatal(err)
+	}
+	revoke := grant
+	revoke.Event, revoke.EventID, revoke.Role, revoke.Timestamp = "user.updated", "evt-revoke", "user", now
+	rb, rs := signedEvent(t, revoke)
+	if err := sso.NewKySignOnClient(cfg, st).HandleSyncWebhook(ctx, rb, rs); err != nil {
+		t.Fatal(err)
+	}
+	// A captured grant replayed, even by a fresh client after a restart, and an older event
+	// delivered late, are both refused: the account stays a plain user.
+	if err := sso.NewKySignOnClient(cfg, st).HandleSyncWebhook(ctx, body, sig); !errors.Is(err, store.ErrStaleEvent) {
+		t.Fatalf("replay: %v", err)
+	}
+	late := grant
+	late.Event, late.EventID, late.Timestamp = "user.updated", "evt-late", now-30
+	lb, ls := signedEvent(t, late)
+	if err := sso.NewKySignOnClient(cfg, st).HandleSyncWebhook(ctx, lb, ls); !errors.Is(err, store.ErrStaleEvent) {
+		t.Fatalf("out of order: %v", err)
+	}
+	if u, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-ann"); err != nil || u.Role != "user" {
+		t.Fatalf("an old grant was re-applied: %+v %v", u, err)
+	}
+	unnamed := revoke
+	unnamed.EventID = ""
+	ub, us := signedEvent(t, unnamed)
+	if err := sso.NewKySignOnClient(cfg, st).HandleSyncWebhook(ctx, ub, us); err == nil {
+		t.Fatal("an event without an ID was applied")
+	}
+}
+
+func TestKySignOnWebhookCannotRemoveAnOrganizationsLastAdministrator(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, testdb.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}, st)
+	body, sig := signedEvent(t, sso.KySignOnSyncPayload{Event: "user.created", EventID: "evt-1", ID: "ext-sole", Username: "sole", Status: "active", Timestamp: time.Now().Unix()})
+	if err := client.HandleSyncWebhook(ctx, body, sig); err != nil {
+		t.Fatal(err)
+	}
+	sole, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-sole")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := st.Tenancy()
+	if err := ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: store.InitialOrganizationID, UserID: sole.ID, Role: store.RoleOrganizationAdmin, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	for i, event := range []string{"user.deactivated", "user.deleted"} {
+		body, sig := signedEvent(t, sso.KySignOnSyncPayload{Event: event, EventID: event, ID: "ext-sole", Timestamp: time.Now().Unix() + int64(i)})
+		if err := client.HandleSyncWebhook(ctx, body, sig); !errors.Is(err, store.ErrLastAdmin) {
+			t.Fatalf("%s: %v", event, err)
+		}
+		if u, err := st.Users().GetUserByID(ctx, sole.ID); err != nil || u.Status != "active" {
+			t.Fatalf("%s changed the account: %+v %v", event, u, err)
+		}
+		// The refused event was not consumed: once another administrator exists, its retry applies.
+		if i == 1 {
+			if err := st.Users().CreateUser(ctx, &store.User{ID: "other", Username: "other", Role: "user", Status: "active", SSOProvider: "local"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: store.InitialOrganizationID, UserID: "other", Role: store.RoleOrganizationAdmin, Status: "active"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := client.HandleSyncWebhook(ctx, body, sig); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			if _, err := st.Users().GetUserByID(ctx, sole.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("retry did not delete: %v", err)
+			}
+		}
+	}
+}
+
+func TestKySignOnWebhookNeverUsesAnInvalidUsername(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, testdb.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}, st)
+	bad := "ad min‮" + strings.Repeat("x", 70)
+	now := time.Now().Unix()
+	body, sig := signedEvent(t, sso.KySignOnSyncPayload{Event: "user.created", EventID: "evt-1", ID: "ext-odd", Username: bad, Status: "active", Timestamp: now})
+	if err := client.HandleSyncWebhook(ctx, body, sig); err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-odd")
+	if err != nil || u.Username != sso.LocalUsername("kysignon", "ext-odd", bad) || !strings.HasPrefix(u.Username, "sso_") || len(u.Username) > 64 {
+		t.Fatalf("created %+v %v", u, err)
+	}
+	// A rename to an invalid name is refused; the rest of the event applies.
+	body, sig = signedEvent(t, sso.KySignOnSyncPayload{Event: "user.updated", EventID: "evt-2", ID: "ext-odd", Username: "../root", Email: "odd@busnes.app", Status: "active", Timestamp: now + 1})
+	if err := client.HandleSyncWebhook(ctx, body, sig); err != nil {
+		t.Fatal(err)
+	}
+	after, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-odd")
+	if err != nil || after.Username != u.Username || after.Email != "odd@busnes.app" {
+		t.Fatalf("updated %+v %v", after, err)
+	}
+	if sso.LocalUsername("p", "s", "valid.name") != "valid.name" {
+		t.Fatal("a valid name was replaced")
 	}
 }

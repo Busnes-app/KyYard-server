@@ -3,9 +3,11 @@ package api
 import (
 	"errors"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/Busnes-app/kyyard-server/internal/sso"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 func (s *Server) handleKySignOnSyncWebhook(w http.ResponseWriter, r *http.Request) {
@@ -33,11 +35,20 @@ func (s *Server) handleKySignOnSyncWebhook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := s.kysignon.HandleSyncWebhook(r.Context(), body, sig); errors.Is(err, sso.ErrUsernameTaken) {
+	switch err := s.kysignon.HandleSyncWebhook(r.Context(), body, sig); {
+	case err == nil:
+	case errors.Is(err, sso.ErrUsernameTaken):
 		s.writeError(w, http.StatusConflict, "username taken")
 		return
-	} else if err != nil {
-		s.writeError(w, http.StatusUnauthorized, err.Error())
+	case errors.Is(err, store.ErrStaleEvent):
+		s.writeError(w, http.StatusConflict, "event already applied or superseded")
+		return
+	case errors.Is(err, store.ErrLastAdmin):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The account is an organization's last active administrator", "code": "last_administrator"})
+		return
+	default:
+		log.Printf("[SSO] directory webhook refused: %v", err)
+		s.writeError(w, http.StatusUnauthorized, "webhook refused")
 		return
 	}
 
