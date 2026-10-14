@@ -397,7 +397,7 @@ function imageRoutes(options: { configuration?: Response; losePost?: boolean } =
   return fetcher;
 }
 it('updates in one click, preserves settings, and keeps the result after filtering and replacement', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   document.cookie = 'ky_csrf=one-click';
   const fetcher = imageRoutes();
   render(<EndpointPage org="a" endpoint="ep_1" />);
@@ -508,7 +508,7 @@ function clusterRoutes(role: string, capabilities: string[], settled: { done: bo
   return urls;
 }
 it('explains a pending workload update, locks every Update button and reports the settled command', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   const settled = { done: false };
   clusterRoutes('organization_admin', ['kubernetes.inventory', 'kubernetes.workloads'], settled);
   render(<EndpointPage org="a" endpoint="ep_1" />);

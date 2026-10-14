@@ -8,29 +8,35 @@ import { displayName } from './Endpoints';
 
 export type Command = DirectCommand;
 
-// useCommand polls a sent command every 1.5 s until it has an outcome or a read fails; it never
-// resends. onSettled runs once, for the polled answer that carries the outcome.
+// useCommand polls a sent command 1.5 s after each answer until it has an outcome or a read fails;
+// it never resends. onSettled runs once per command, for the polled answer that carries the outcome.
 export function useCommand(base: string, sent: Command | null, onSettled?: (command: Command) => void): { command: Command | null; error: string } {
   const [state, setState] = useState<{ sent: Command | null; command: Command | null; error: string }>({ sent, command: sent, error: '' });
   const current = state.sent === sent ? state : { sent, command: sent, error: '' };
   if (current !== state) setState(current);
   const settled = useRef(onSettled);
   useEffect(() => { settled.current = onSettled; });
+  const settledID = useRef('');
   const id = current.command?.id;
   const waiting = !!id && !current.command?.outcome && !current.error;
   useEffect(() => {
     if (!id || !waiting) return;
-    const abort = new AbortController();
-    const timer = window.setInterval(() => {
-      fetch(`${base}/commands/${encodeURIComponent(id)}`, { signal: abort.signal }).then(async (r) => {
+    const abort = new AbortController(); let timer = 0;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${base}/commands/${encodeURIComponent(id)}`, { signal: abort.signal });
         if (!r.ok) throw new Error('Could not read command result. Check recent activity before trying again.');
         const data: Command = await r.json();
         if (abort.signal.aborted) return;
         setState((s) => ({ ...s, command: data }));
-        if (data.outcome) settled.current?.(data);
-      }).catch((e: unknown) => { if (!abort.signal.aborted) { setState((s) => ({ ...s, error: e instanceof Error ? e.message : 'Command result unavailable.' })); window.clearInterval(timer); } });
-    }, 1500);
-    return () => { window.clearInterval(timer); abort.abort(); };
+        if (!data.outcome) { timer = window.setTimeout(() => void poll(), 1500); return; }
+        if (settledID.current === id) return;
+        settledID.current = id;
+        settled.current?.(data);
+      } catch (e: unknown) { if (!abort.signal.aborted) setState((s) => ({ ...s, error: e instanceof Error ? e.message : 'Command result unavailable.' })); }
+    };
+    timer = window.setTimeout(() => void poll(), 1500);
+    return () => { abort.abort(); window.clearTimeout(timer); };
   }, [base, id, waiting]);
   return { command: current.command, error: current.error };
 }

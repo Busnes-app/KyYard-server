@@ -123,7 +123,7 @@ it('shows a summary, not the form, to a role that cannot configure', async () =>
 });
 
 it('applies an edit and keeps the step table in Last change across a tab switch', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   const requests = stub('organization_admin', { command: { id: 'k7', action: 'workload.apply', outcome: 'denied', result: { code: 'step_failed', steps: [{ service: 'workload', step: 'precondition', outcome: 'denied', code: 'conflict', detail: '' }], services: [] } } });
   document.cookie = 'ky_csrf=csrf-p';
   window.history.replaceState(null, '', `${path}?tab=configuration`);
@@ -153,7 +153,7 @@ it('applies an edit and keeps the step table in Last change across a tab switch'
 });
 
 it('does not re-read the configuration when a second apply is sent until it settles', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   const opts: Opts = { command: { id: 'k7', action: 'workload.apply', outcome: 'succeeded' } };
   const requests = stub('organization_admin', opts);
   document.cookie = 'ky_csrf=csrf-p';
@@ -261,7 +261,7 @@ it.each([
 });
 
 it('runs a workload, shows Last change and links to it on success, keeping the form disabled', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   const opts: Opts = { command: { id: 'k8', action: 'workload.run', outcome: 'succeeded' } };
   const requests = stub('organization_admin', opts);
   document.cookie = 'ky_csrf=csrf-p';

@@ -124,7 +124,7 @@ it('shows the redacted configuration of a managed container with a link to its a
 });
 
 it('stays on the page after a recreate settles and links to the new container', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   const next = 'd'.repeat(64);
   stub('organization_admin', [container()], { ...configurable, command: { id: 'cmd9', action: 'container.recreate', outcome: 'succeeded', result: { steps: [{ service: 'direct', step: 'start', outcome: 'succeeded', detail: '' }], services: [{ service: 'direct', container_id: next, image_id: 'sha256:1', created_unix: 1 }] } } });
   window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
@@ -141,7 +141,7 @@ it('stays on the page after a recreate settles and links to the new container', 
 });
 
 it('keeps the result and the link once the inventory drops the replaced container', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   const next = 'd'.repeat(64);
   const containers = [container()];
   stub('organization_admin', containers, { ...configurable, command: { id: 'cmd9', action: 'container.recreate', outcome: 'succeeded', result: { steps: [{ service: 'direct', step: 'start', outcome: 'succeeded', detail: '' }], services: [{ service: 'direct', container_id: next, image_id: 'sha256:1', created_unix: 1 }] } } });
@@ -160,7 +160,7 @@ it('keeps the result and the link once the inventory drops the replaced containe
 });
 
 it('keeps polling a sent recreate after the operator switches tabs', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   stub('organization_admin', [container()], { ...configurable, command: { id: 'cmd9', action: 'container.recreate', outcome: 'failed', result: { code: 'step_failed', steps: [{ service: 'direct', step: 'rollback', outcome: 'succeeded', code: 'start_failed_rolled_back', detail: '' }], services: [] } } });
   window.history.replaceState(null, '', `/organizations/a/endpoints/ep_1/containers/${id}?tab=configuration`);
   render(<ContainerPage org="a" endpoint="ep_1" container={id} />);
