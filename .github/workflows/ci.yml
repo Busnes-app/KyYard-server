@@ -164,8 +164,13 @@ jobs:
         working-directory: web
 
       # web/dist is embedded into the Go binary, so a stale commit ships a stale UI.
+      # status, not diff: an uncommitted new asset is untracked and diff ignores it.
       - name: Committed web/dist matches source
-        run: git diff --exit-code -- web/dist
+        run: |
+          changed="$(git status --porcelain -- web/dist web/tsconfig.tsbuildinfo)"
+          if [ -n "$changed" ]; then
+            echo "Rebuild and commit web/dist and web/tsconfig.tsbuildinfo:"; echo "$changed"; exit 1
+          fi
 
       - name: npm audit
         run: npm audit --audit-level=high
