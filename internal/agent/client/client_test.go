@@ -747,6 +747,70 @@ func TestAgentReportsMetricsWithInventory(t *testing.T) {
 	}
 }
 
+// A hung runtime must not cost heartbeats or frames: inventory is read off the loop, and an
+// on-demand refresh during the hang merges into the read already running.
+func TestHeartbeatsContinueWhileTheRuntimeHangs(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	beats := make(chan struct{}, 64)
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		frame := func(typ string, payload any) []byte {
+			raw, _ := json.Marshal(payload)
+			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
+			return b
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), r.Host)))
+		_, _, _ = c.Read(ctx)
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
+		for {
+			_, raw, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var e protocol.Envelope
+			_ = json.Unmarshal(raw, &e)
+			if e.Type == protocol.TypeHeartbeat {
+				beats <- struct{}{}
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHeartbeat, nil))
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeInventoryRefresh, nil))
+			}
+		}
+	}))
+	defer stub.Close()
+	id := &client.Identity{EndpointID: "ep_hung", PrivateKey: priv, InstanceFingerprint: fakeInstanceFingerprint, Server: stub.URL, RotatedAt: time.Now()}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var reads atomic.Int64
+	snapshot := func(sctx context.Context) (*protocol.Snapshot, error) {
+		if reads.Add(1) > 1 {
+			<-sctx.Done() // the daemon stops answering after the connect report
+			return nil, sctx.Err()
+		}
+		return &protocol.Snapshot{Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(ctx, id, client.Options{HTTPClient: stub.Client(), Snapshot: snapshot, InventoryEvery: 50 * time.Millisecond})
+	}()
+	deadline := time.After(4500 * time.Millisecond)
+	for n := 0; n < 3; n++ {
+		select {
+		case <-beats:
+		case <-deadline:
+			t.Fatalf("only %d heartbeats while the runtime hung", n)
+		}
+	}
+	if n := reads.Load(); n != 2 {
+		t.Fatalf("%d runtime reads; the hung one should absorb every later request", n)
+	}
+	cancel()
+	<-done
+}
+
 // A slow runtime must not cost heartbeats: metrics are collected off the loop.
 func TestHeartbeatsContinueWhileMetricsAreSlow(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
