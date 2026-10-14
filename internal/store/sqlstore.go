@@ -618,9 +618,18 @@ func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expecte
 }
 
 func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error {
+	return u.replacePassword(ctx, userID, oldHash, newHash, ip, true, "forced replacement; sessions revoked")
+}
+
+// ChangePassword is the self-service change of an unflagged local password.
+func (u *userStore) ChangePassword(ctx context.Context, userID, oldHash, newHash, ip string) error {
+	return u.replacePassword(ctx, userID, oldHash, newHash, ip, false, "self-service change; sessions revoked")
+}
+
+func (u *userStore) replacePassword(ctx context.Context, userID, oldHash, newHash, ip string, forced bool, details string) error {
 	return u.store.withPassword(ctx, userID, oldHash, true, func(tx *sql.Tx) error {
 		now := time.Now().UTC()
-		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND must_change_password = ? AND sso_provider = 'local'`), newHash, false, now, userID, true)
+		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND must_change_password = ? AND sso_provider = 'local'`), newHash, false, now, userID, forced)
 		if err != nil {
 			return err
 		}
@@ -631,7 +640,7 @@ func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash,
 		if n != 1 {
 			return ErrNotFound
 		}
-		return u.revokePasswordGrants(ctx, tx, userID, "forced replacement; sessions revoked", ip, now)
+		return u.revokePasswordGrants(ctx, tx, userID, details, ip, now)
 	})
 }
 

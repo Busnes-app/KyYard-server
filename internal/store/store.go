@@ -125,7 +125,11 @@ type UserStore interface {
 	UpdateUser(ctx context.Context, u *User) error
 	ResetAdminPassword(ctx context.Context, userID, newHash string) error
 	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
+	// ChangePassword is CompletePasswordChange for an unflagged account: same revocation and audit.
+	ChangePassword(ctx context.Context, userID, oldHash, newHash, ip string) error
 	UpdateRecoveryCodes(ctx context.Context, userID, oldHashes, newHashes string) error
+	// UpdateMFA compares and swaps the MFA state under the password hash and audits action.
+	UpdateMFA(ctx context.Context, userID, passwordHash string, from, to MFAState, action, ip string) error
 	// SpendTOTPCounter records counter as used. It returns ErrAlreadyExists when counter is
 	// not greater than the stored one, which is how a replayed code inside the skew window fails.
 	SpendTOTPCounter(ctx context.Context, userID string, counter int64) error
