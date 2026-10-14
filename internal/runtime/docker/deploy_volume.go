@@ -35,13 +35,17 @@ func (v dockerVolume) owned(project string) bool {
 	return v.Labels["com.docker.compose.project"] == project && v.Driver == "local" && len(v.Options) == 0
 }
 
+// hostBacked is a volume another driver or device options may back with a host path.
+func (v dockerVolume) hostBacked() bool { return v.Driver != "local" || len(v.Options) > 0 }
+
 // ensureVolumes records a volume step for each volume s mounts that no earlier service did
 // (Validate guarantees every mounted volume is in Volumes). An absent volume is created with
 // Compose's labels. An existing one the project owns may be mounted anywhere. Any other is
 // keep-only, like a bind: s's old container must already mount it at each frame target with the
 // same write access, and every later service's precondition checks its own mounts of it (a
 // `local` volume with device options is a host path by another name). Anything else would let a
-// revision reach another application's data or a host path, or gain write access to it.
+// revision reach another application's data or a host path, or gain write access to it. An
+// explicit frame may mount any existing volume but a hostBacked one, which is keep-only too.
 func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentService, old []inspectedMount) {
 	for _, m := range s.Mounts {
 		if m.Kind != protocol.MountVolume || r.ensured[m.Source] {
@@ -54,8 +58,9 @@ func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentServ
 			var v dockerVolume
 			err := r.c.get(cctx, "/volumes/"+url.PathEscape(m.Source), &v)
 			switch {
-			case err == nil && (r.req.Explicit || v.owned(r.req.Project)):
-				// An explicit frame names each volume the operator saw and kept: used as it is.
+			case err == nil && (v.owned(r.req.Project) || r.req.Explicit && !v.hostBacked()):
+				// An explicit frame names each volume the operator saw and kept: used as it is,
+				// unless it may be a host path.
 				return succeeded()
 			case err == nil && !mountsVolume(old, m.Source):
 				return deny("volume_not_owned")
@@ -89,7 +94,7 @@ func (r *deployRun) ensureVolumes(ctx context.Context, s protocol.DeploymentServ
 				return r.outcomeFor(cctx, err, status)
 			case status != http.StatusCreated:
 				return fail("volume_create_failed")
-			case !r.req.Explicit && !v.owned(r.req.Project):
+			case !r.req.Explicit && !v.owned(r.req.Project) || v.hostBacked():
 				// Docker answers 201 with the existing volume when the name was taken meanwhile.
 				return deny("volume_not_owned")
 			}
