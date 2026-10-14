@@ -135,6 +135,10 @@ const (
 	MinPoWDifficulty     = 10000
 )
 
+// InitialAdminPasswordFile, under DataDir, holds a generated bootstrap password until the
+// admin replaces it.
+const InitialAdminPasswordFile = "initial-admin-password"
+
 // MinDepositInterval is the shortest schedule accepted: each run snapshots the whole database
 // and uploads it, and KyRecovery admits 60 deposits per token per 15 minutes.
 const MinDepositInterval = 15 * time.Minute

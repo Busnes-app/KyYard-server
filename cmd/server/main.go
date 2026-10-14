@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -12,7 +13,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,11 +26,13 @@ import (
 	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/backup"
 	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busnes-app/kyyard-server/internal/store/migrations"
+	"golang.org/x/term"
 )
 
 // appVersion is what the capsule manifest records for this build.
@@ -106,36 +111,8 @@ func runServer() {
 	}
 	defer st.Close()
 
-	// Ensure default admin user exists if database is empty
-	count, err := st.Users().CountUsers(ctx)
-	if err != nil {
-		log.Fatalf("Failed to inspect bootstrap state: %v", err)
-	}
-	if count == 0 {
-		adminPass := os.Getenv("KY_ADMIN_PASSWORD")
-		generated := adminPass == ""
-		if generated {
-			adminPass = crypto.RandomHex(12)
-		}
-		hash, err := password.Hash(adminPass)
-		if err != nil {
-			log.Fatalf("Failed to hash bootstrap admin password: %v", err)
-		}
-		if err := st.Users().CreateUser(ctx, &store.User{
-			ID:                 fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
-			Username:           "admin",
-			DisplayName:        "Administrator",
-			PasswordHash:       hash,
-			Role:               "admin",
-			Status:             "active",
-			SSOProvider:        "local",
-			MustChangePassword: true,
-		}); err != nil {
-			log.Fatalf("Failed to create bootstrap admin: %v", err)
-		}
-		if generated {
-			log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
-		}
+	if err := bootstrapAdmin(ctx, st, cfg.Database.DataDir, os.Getenv("KY_ADMIN_PASSWORD")); err != nil {
+		log.Fatalf("Bootstrap admin: %v", err)
 	}
 
 	if err := startStore(ctx, st); err != nil {
@@ -376,39 +353,119 @@ func runDeposit() {
 	}
 }
 
-func runInitAdmin(args []string) {
-	fs := flag.NewFlagSet("init-admin", flag.ExitOnError)
-	username := fs.String("username", "admin", "Admin username")
-	passwordFlag := fs.String("password", "", "Admin password (minimum 12 characters)")
-	_ = fs.Parse(args)
+// bootstrapAdmin creates the first admin on an empty database. A generated password goes to
+// an owner-only file in dataDir, written before the account so a failed write leaves no
+// account nobody can sign in to; only the path is logged.
+func bootstrapAdmin(ctx context.Context, st store.Store, dataDir, supplied string) error {
+	count, err := st.Users().CountUsers(ctx)
+	if err != nil || count > 0 {
+		return err
+	}
+	adminPass := supplied
+	if adminPass == "" {
+		adminPass = crypto.RandomHex(12)
+	} else if err := auth.ValidatePassword(adminPass); err != nil {
+		return fmt.Errorf("KY_ADMIN_PASSWORD: %w", err)
+	}
+	hash, err := password.Hash(adminPass)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dataDir, config.InitialAdminPasswordFile)
+	if supplied == "" {
+		if err := writeOwnerOnly(path, adminPass+"\n"); err != nil {
+			return err
+		}
+	}
+	if err := st.Users().CreateUser(ctx, &store.User{
+		ID:                 fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
+		Username:           "admin",
+		DisplayName:        "Administrator",
+		PasswordHash:       hash,
+		Role:               "admin",
+		Status:             "active",
+		SSOProvider:        "local",
+		MustChangePassword: true,
+	}); err != nil {
+		return err
+	}
+	if supplied == "" {
+		log.Printf("[SECURITY] Initial bootstrap: created admin account; its temporary password is in %s", path)
+	}
+	return nil
+}
 
-	if *passwordFlag == "" || len(*passwordFlag) < 12 {
-		log.Fatal("Error: -password is required and must be at least 12 characters")
+// writeOwnerOnly replaces path with a fresh 0600 file, so a leftover file's mode never applies.
+func writeOwnerOnly(path, content string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func runInitAdmin(args []string) {
+	if err := initAdmin(args, os.Stdin); err != nil {
+		log.Fatalf("Error: %v", err)
+	}
+}
+
+// initAdmin reads the password from stdin, never argv: argv is world-readable and lands in
+// shell history.
+func initAdmin(args []string, stdin *os.File) error {
+	fs := flag.NewFlagSet("init-admin", flag.ContinueOnError)
+	username := fs.String("username", "admin", "Admin username")
+	fs.String("password", "", "removed: pass the password on stdin")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	legacy := false
+	fs.Visit(func(f *flag.Flag) { legacy = legacy || f.Name == "password" })
+	if legacy {
+		return errors.New("-password is no longer accepted: it exposes the password in ps and shell history; pipe it on stdin instead, e.g. kyyard-server init-admin < password-file")
+	}
+	pass, err := readPassword(stdin)
+	if err != nil {
+		return fmt.Errorf("reading password from stdin: %w", err)
+	}
+	if err := auth.ValidatePassword(pass); err != nil {
+		return err
 	}
 
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		return fmt.Errorf("load configuration: %w", err)
 	}
 	ctx := context.Background()
 	st, err := store.Open(ctx, cfg.Database)
 	if err != nil {
-		log.Fatalf("DB error: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer st.Close()
 
-	hash, err := password.Hash(*passwordFlag)
+	hash, err := password.Hash(pass)
 	if err != nil {
-		log.Fatalf("Password hashing error: %v", err)
+		return err
 	}
 
 	existing, err := st.Users().GetUserByUsername(ctx, *username)
 	if err == nil && existing != nil {
 		if err := st.Users().ResetAdminPassword(ctx, existing.ID, hash); err != nil {
-			log.Fatalf("Failed to update admin: %v", err)
+			return fmt.Errorf("update admin: %w", err)
 		}
 		log.Printf("✓ Admin user %q password successfully reset", *username)
-		return
+		return nil
 	}
 
 	user := &store.User{
@@ -423,9 +480,25 @@ func runInitAdmin(args []string) {
 	}
 
 	if err := st.Users().CreateUser(ctx, user); err != nil {
-		log.Fatalf("Failed to create admin: %v", err)
+		return fmt.Errorf("create admin: %w", err)
 	}
 	log.Printf("✓ Admin user %q created successfully", *username)
+	return nil
+}
+
+// readPassword reads one line from in, without echo when a human is typing.
+func readPassword(in *os.File) (string, error) {
+	if term.IsTerminal(int(in.Fd())) {
+		fmt.Fprint(os.Stderr, "Admin password: ")
+		b, err := term.ReadPassword(int(in.Fd()))
+		fmt.Fprintln(os.Stderr)
+		return string(b), err
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // collectFiles is what every CLI seal uses; the sealed-only members are safe here and nowhere else.

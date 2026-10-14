@@ -200,13 +200,14 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 
 ### 1. First start and credential
 
-- `docker compose up -d`; the one-time password is in `docker compose logs kyyard` on the
-  line `[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: …`.
+- `docker compose up -d`; `docker compose logs kyyard` names the file on the line
+  `[SECURITY] Initial bootstrap: created admin account; its temporary password is in /data/initial-admin-password`.
+  Read it with `docker compose exec kyyard cat /data/initial-admin-password`.
 - Sign in as `admin`. The next screen is "Change your password": Current password, New
   password, Confirm new password, Change password (the 12-character minimum is stated in the
   paragraph above the fields). Sign in again.
 - Pass: after the second sign-in, Containers shows Local Docker; the old password is refused.
-- Record: time taken, whether the operator found the log line unaided.
+- Record: time taken, whether the operator found the password file unaided.
 
 ### 2. Environment and enrollment
 

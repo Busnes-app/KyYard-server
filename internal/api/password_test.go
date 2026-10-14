@@ -3,13 +3,17 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -74,8 +78,15 @@ func TestForcedPasswordReplacement(t *testing.T) {
 			t.Fatal(w.Code, w.Body)
 		}
 	}
+	initial := filepath.Join(cfg.Database.DataDir, config.InitialAdminPasswordFile)
+	if err := os.WriteFile(initial, []byte(oldPassword+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if w := call("POST", "/api/auth/change-password", body(oldPassword, newPassword), true, true); w.Code != 200 {
 		t.Fatal(w.Code, w.Body)
+	}
+	if _, err := os.Stat(initial); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bootstrap password file outlived its replacement: %v", err)
 	}
 	if w := call("GET", "/api/auth/me", "", false, true); strings.Contains(w.Body.String(), `"authenticated":true`) {
 		t.Fatal("old session survived")
