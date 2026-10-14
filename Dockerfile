@@ -1,27 +1,23 @@
 # Multi-stage build for kyyard-server
 
-# Stage 1: Build React PWA Frontend
-FROM node:26-alpine AS frontend-builder
-WORKDIR /app/web
-COPY web/package*.json ./
-RUN npm install
-COPY web/ ./
-RUN npm run build
-
-# Stage 2: Build Go Standalone Binary
-FROM golang:1.27.2-alpine AS backend-builder
+# Stage 1: Go binaries. The frontend is the committed web/dist that CI rebuilds and checks
+# against source, embedded as is, so the image ships exactly the checked bytes. The tag must
+# match go.mod's toolchain line (CI checks); only what the build reads enters this stage.
+FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS backend-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . ./
-COPY --from=frontend-builder /app/web/dist ./web/dist
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY web/embed.go web/
+COPY web/dist/ web/dist/
 # The agent reports this to the server; release-image.yml passes the release version.
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o kyyard-server ./cmd/server \
  && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.version=${VERSION}" -o kyyard-agent ./cmd/agent
 
-# Stage 3: Minimal Production Container
-FROM alpine:3.24
+# Stage 2: Minimal Production Container
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=backend-builder /app/kyyard-server /app/kyyard-agent /app/

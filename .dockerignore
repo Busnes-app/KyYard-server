@@ -20,6 +20,10 @@
 .claude/
 .codex/
 .superpowers/
+.worktrees/
+.playwright-mcp/
+**/*.pem
+**/*.crt
 **/.env.*
 !**/.env.example
 
