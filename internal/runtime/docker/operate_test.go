@@ -49,7 +49,7 @@ func TestAContainerIdentifierCannotShapeTheURL(t *testing.T) {
 		if segments := strings.Split(rest, "/"); len(segments) != 2 {
 			t.Fatalf("request %d addressed %q, which is not one container and one action", i, p)
 		}
-		if queries[i] != "" {
+		if queries[i] != "" && queries[i] != "t=10" {
 			t.Fatalf("request %d carried a query the caller chose: %q", i, queries[i])
 		}
 	}
@@ -107,6 +107,38 @@ func TestRemovalRefusesRatherThanForces(t *testing.T) {
 			// v=1 would take named volumes with it. Destroying data is a separate action
 			// with its own confirmation, so this request carries no options at all.
 			t.Fatalf("the delete carried options the caller never asked for: %q", queries[i])
+		}
+	}
+}
+
+// A stop or restart asks for the container's own grace, capped so the call fits its budget
+// instead of being reported timed_out while Docker waits out an hour-long StopTimeout.
+func TestStopGraceFitsTheOperationBudget(t *testing.T) {
+	for name, c := range map[string]struct {
+		stopTimeout string
+		want        string
+	}{
+		"unset":   {"null", "t=10"},
+		"shorter": {"3", "t=3"},
+		"zero":    {"0", "t=0"},
+		"an hour": {"3600", "t=20"},
+		"forever": {"-1", "t=20"},
+	} {
+		for _, action := range []string{protocol.ActionStop, protocol.ActionRestart} {
+			var query string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					query = r.URL.RawQuery
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				_, _ = w.Write([]byte(`{"Image":"sha256:abc","Config":{"StopTimeout":` + c.stopTimeout + `},"State":{"Status":"running"}}`))
+			}))
+			outcome, _ := docker.NewHTTP(srv.Client(), srv.URL).Operate(context.Background(), protocol.Command{Action: action, Container: "web"})
+			srv.Close()
+			if outcome != protocol.OutcomeSucceeded || query != c.want {
+				t.Errorf("%s %s: %s with %q, want %q", name, action, outcome, query, c.want)
+			}
 		}
 	}
 }

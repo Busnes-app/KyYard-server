@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -14,6 +15,11 @@ import (
 // operationBudget bounds one container operation. A stop waits for the container to go, so it
 // is the slowest of the three, and Docker's own default grace period is ten seconds.
 const operationBudget = 30 * time.Second
+
+// maxStopGrace caps the grace a stop or restart asks for, so the kill and a restart's start
+// still fit operationBudget: a container's own StopTimeout (up to an hour) would otherwise
+// outlast the call and be reported timed_out while Docker kept stopping it.
+const maxStopGrace = 20
 
 // Operate runs one lifecycle action against one container, after checking that the container
 // is still what the operator was looking at. Docker has no universal resource version, so the
@@ -43,9 +49,12 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	}
 	container := url.PathEscape(cmd.Container)
 	var inspected struct {
-		Config struct{ Labels map[string]string }
-		Image  string `json:"Image"`
-		State  struct {
+		Config struct {
+			Labels      map[string]string
+			StopTimeout *int
+		}
+		Image string `json:"Image"`
+		State struct {
 			Status string `json:"Status"`
 		} `json:"State"`
 	}
@@ -68,14 +77,22 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	if cmd.Action == protocol.ActionRemove {
 		return c.remove(ctx, container, inspected.State.Status)
 	}
+	// The container's own grace when it set one, Docker's default otherwise; negative is forever.
+	grace := stopGrace
+	if t := inspected.Config.StopTimeout; t != nil {
+		grace = *t
+		if grace < 0 || grace > maxStopGrace {
+			grace = maxStopGrace
+		}
+	}
 	var path string
 	switch cmd.Action {
 	case protocol.ActionStart:
 		path = "/containers/" + container + "/start"
 	case protocol.ActionStop:
-		path = "/containers/" + container + "/stop"
+		path = "/containers/" + container + "/stop?t=" + strconv.Itoa(grace)
 	case protocol.ActionRestart:
-		path = "/containers/" + container + "/restart"
+		path = "/containers/" + container + "/restart?t=" + strconv.Itoa(grace)
 	default:
 		return protocol.OutcomeDenied, "unsupported action"
 	}
