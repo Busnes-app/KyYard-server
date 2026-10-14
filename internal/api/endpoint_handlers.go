@@ -574,6 +574,21 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 	if body.Reference != "" {
 		target = body.Reference
 	}
+	// A pull goes only where a deploy's would: a configured registry or anonymous pull, and
+	// never to a private address without both opt-ins. A bad reference is CreateCommand's 400.
+	if body.Action == protocol.ActionImagePull && protocol.ValidImageReference(target) {
+		release, ok := s.acquireRegistrySlot(w, a.OrganizationID)
+		if !ok {
+			return
+		}
+		extendRegistryDeadline(w)
+		_, _, err := s.store.Tenancy().ResolveDirectImage(r.Context(), a, id, target, s.resolver(), s.config.Security.EncryptionKey, s.config.Registry.AllowPrivate)
+		release()
+		if err != nil {
+			s.tenantError(w, err)
+			return
+		}
+	}
 	cmd, err := s.store.Tenancy().CreateCommand(r.Context(), a, id, body.Action, target, body.Confirm, expects)
 	if err != nil {
 		s.tenantError(w, err)
