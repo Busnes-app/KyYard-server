@@ -456,6 +456,7 @@ func TestDeploymentStepCodeDetails(t *testing.T) {
 		{"runtime_status", "404", true},
 		{"exited_early", "", true},
 		{"exited_early", "137", false},
+		{"self_protected", "", true},
 		{"container_missing", "the container no longer exists", false},
 		{"runtime_error", "the runtime call failed", false},
 		{"legacy", "old text", false},

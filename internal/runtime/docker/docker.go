@@ -41,6 +41,8 @@ type Client struct {
 	// startWatch, startPoll, stopWait, restoreBudget, restartReserve and operateMargin (both
 	// operationBudget) override the package's for tests; zero is the default.
 	startWatch, startPoll, stopWait, restoreBudget, restartReserve, operateMargin time.Duration
+
+	self string // Protect's container
 }
 
 // callBudget bounds a call whose caller set no deadline of its own.

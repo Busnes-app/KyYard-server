@@ -33,6 +33,7 @@ const LEGACY_OUTCOME = 'The agent did not classify this outcome; upgrade the age
 export const STEP_CODES: Record<string, string> = {
   runtime_unreadable: "The daemon's default runtime could not be read.",
   application_managed: 'This workload is managed by a KyYard application; change it through the application.',
+  self_protected: "This is KyYard's own container; KyYard does not replace, remove or open it. Change it on the host.",
   namespace_not_granted: 'This namespace is not granted to KyYard on this cluster.',
   secret_ref_refused: 'A workload may keep the Secret references it already has but not add new ones; exec and logs would expose them.',
   pvc_retention: "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).",

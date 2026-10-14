@@ -102,6 +102,22 @@ func (t *tenancyStore) openPodExec(ctx context.Context, tx *sql.Tx, a TenantAcce
 // CheckEndpointAccess authorizes action on an endpoint in scope, with no success row and a
 // denied one on refusal. The API runs it before its runtime gate, so a member without the
 // permission is told so rather than told the endpoint's runtime; it grants no runtime authority.
+// On the built-in Local Docker endpoint, whose host runs KyYard itself, a localProtected action
+// also needs a platform administrator.
 func (t *tenancyStore) CheckEndpointAccess(ctx context.Context, a TenantAccess, action permissions.Action, endpointID string) error {
-	return t.readTenant(ctx, a, action, func(tx *sql.Tx) error { return t.endpointInScope(ctx, tx, a, endpointID) })
+	return t.readTenant(ctx, a, action, func(tx *sql.Tx) error {
+		if err := t.endpointInScope(ctx, tx, a, endpointID); err != nil || endpointID != LocalDockerEndpointID || !localProtected[action] {
+			return err
+		}
+		var role, status string
+		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT role,status FROM users WHERE id=?`), a.ActorID).Scan(&role, &status)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && (status != "active" || !permissions.PlatformAllows(role, permissions.PlatformAdmin)) {
+			return ErrForbidden
+		}
+		return err
+	})
 }
+
+// localProtected reach into the server's own container (its keys, database and Docker socket)
+// through the Local Docker endpoint: exec, configuration read, recreate or run, and removal.
+var localProtected = map[permissions.Action]bool{permissions.ContainerExec: true, permissions.ContainerConfigure: true, permissions.ContainerDestroy: true}

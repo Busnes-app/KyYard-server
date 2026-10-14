@@ -464,6 +464,9 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		return prepared{s: s}
 	}
 	r.step(s.Name, protocol.StepPrecondition, func() (string, string, string) {
+		if r.c.isSelf(s.Replaces.ContainerID) {
+			return deny(ErrSelfProtected.Error())
+		}
 		if r.defaultRuntime == "" && !r.req.Explicit {
 			return fail("runtime_unreadable")
 		}

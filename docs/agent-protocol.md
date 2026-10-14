@@ -230,6 +230,7 @@ parameter, never a sentence, and is bounded by `MaxDeploymentStepDetailBytes`.
 | `image_missing` | the container's image is no longer present | none |
 | `pinned_image_missing` | the pinned image is not on the host after the pull step | none |
 | `configuration_drift` | the recheck found identity or configuration changed | none |
+| `self_protected` | the target is the container the agent itself runs in (the built-in Local Docker agent: KyYard's own container) | none |
 | `name_reserved` | a container already holds the name reserved for the previous one | none |
 | `name_taken` | a container with the service's name already exists | none |
 | `identity_unusable` | the runtime returned an unusable container identity | none |

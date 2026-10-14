@@ -54,6 +54,7 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 			Labels      map[string]string
 			StopTimeout *int
 		}
+		ID    string `json:"Id"`
 		Image string `json:"Image"`
 		State struct {
 			Status string `json:"Status"`
@@ -70,6 +71,9 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	}
 	if installerManaged(inspected.Config.Labels) {
 		return protocol.OutcomeDenied, "application_managed"
+	}
+	if c.isSelf(inspected.ID) {
+		return protocol.OutcomeDenied, ErrSelfProtected.Error()
 	}
 	if want := cmd.Expects.State; want != "" && want != inspected.State.Status {
 		return protocol.OutcomeDenied, fmt.Sprintf("the container is %s, not %s", inspected.State.Status, want)

@@ -48,6 +48,9 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 	if err := spec.ValidateFor(protocol.RuntimeDocker); err != nil {
 		return nil, err
 	}
+	if c.isSelf(spec.Container) { // a full ID, which the inspection below must match
+		return nil, ErrSelfProtected
+	}
 	lifetimeCtx, stopLifetime := context.WithTimeoutCause(parent, lifetime, ErrExecLifetime)
 	ctx, cancel := context.WithCancelCause(lifetimeCtx)
 	// The opening handshake has its own short budget; it must not inherit eight hours.

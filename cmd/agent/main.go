@@ -114,6 +114,7 @@ func main() {
 		facts = cluster.Facts(ctx)
 	} else if *socket != "" {
 		engine := docker.New(*socket)
+		engine.Protect(docker.OwnContainerID())
 		if facts, err := engine.Engine(ctx); err != nil {
 			log.Printf("docker at %s not reachable (%v); reporting facts only until it is", *socket, err)
 		} else {

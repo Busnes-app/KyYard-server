@@ -244,7 +244,9 @@ The standard Compose installation mounts the host Docker socket and runs the loc
 inside KyYard. After signing in and replacing the initial password, open **Containers**:
 **Local Docker** appears in the initial organization's **Local** environment automatically.
 No separate agent container, enrollment token, shell command or fingerprint approval is needed.
-Container actions retain the same organization permissions and audit trail as remote hosts.
+Container actions retain the same organization permissions and audit trail as remote hosts,
+except that a terminal, configuration edit or removal on this host also needs a platform
+administrator. KyYard never opens, edits, stops or removes its own container through it.
 The socket grants host-level Docker authority to KyYard.
 
 **Existing installations:** update both the image and Compose file, then recreate KyYard using
@@ -807,9 +809,9 @@ devices, extra capabilities, host networking, system path binds) are refused unl
 `KY_CONTAINER_ALLOW_PRIVILEGED` is on; that guards against mistakes, not against an
 administrator (see the variable). A container whose start fails, or that stops or restarts
 within five seconds of replacing a running one, is rolled back to the old one. Environment, labels and command a container inherited
-from its image are kept as they were read, even when you change the image. Do not recreate the
-KyYard server's own container, or a host agent's, through KyYard: stopping it stops the agent
-doing the recreate. **Run a container** on a Docker host's page creates a new one the
+from its image are kept as they were read, even when you change the image. KyYard refuses to
+recreate the container its own agent runs in (the server's, or a host agent's): stopping it
+would stop the agent doing the recreate. **Run a container** on a Docker host's page creates a new one the
 same way. A container an adopted application owns is edited through that application.
 Environment values travel only inside the agent's TLS session and the HTTPS response and are
 never stored, audited or logged; audit records who read or changed which container and the
