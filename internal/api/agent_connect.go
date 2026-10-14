@@ -92,6 +92,18 @@ func (r *agentRegistry) add(c *agentConn) (incumbent *agentConn) {
 	return nil
 }
 
+// replace hands the endpoint from old to c in one step, so old's unwind never sees the slot
+// empty and marks a live endpoint offline. It fails when a third socket took the slot.
+func (r *agentRegistry) replace(old, c *agentConn) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cur := r.conns[c.endpointID]; cur != old && cur != nil {
+		return false
+	}
+	r.conns[c.endpointID] = c
+	return true
+}
+
 func (r *agentRegistry) remove(c *agentConn) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -204,15 +216,14 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 		// after two heartbeats and redials before the server's three-heartbeat timeout. Probe
 		// it; a dead incumbent is evicted, audited, and the newcomer admitted with no event.
 		if !incumbent.alive(ctx) {
-			incumbent.close(protocol.CloseTimeout)
-			s.agents.remove(incumbent)
 			// A stream was opened against the session being displaced, and the successor has
 			// never heard of it: nothing will ever arrive on it again. Ending it here is what
 			// keeps every socket transition closing the endpoint's readers exactly once --
 			// the loser's unwind must not do it, because by then the successor's own readers
 			// would go with them.
 			s.logs.closeEndpointStreams(c.endpointID, "the endpoint reconnected")
-			if again := s.agents.add(c); again == nil {
+			if s.agents.replace(incumbent, c) {
+				incumbent.close(protocol.CloseTimeout)
 				_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, incumbent.ip, "failure", "evicted: unanswering socket displaced by "+s.requestIP(r))
 				goto admitted
 			}
@@ -226,10 +237,12 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 		return
 	}
 admitted:
-	defer s.agents.remove(c)
 	defer s.execs.closeAgent(c)
 	defer s.inspections.closeAgent(c)
 	defer s.configurations.closeAgent(c)
+	// Every way out ends the session the same way: slot freed, endpoint offline, work in
+	// flight unknown -- unless a successor already holds the endpoint.
+	defer s.markOffline(ctx, c)
 	if s.stopping.Load() {
 		conn.Close(websocket.StatusGoingAway, protocol.CloseShutdown)
 		return
@@ -327,21 +340,15 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 				code = websocket.StatusGoingAway
 			}
 			c.conn.Close(code, c.reason)
-			if c.reason != protocol.CloseShutdown {
-				return
-			}
-			s.markOffline(ctx, c)
 			return
 		case e := <-c.send:
 			if err := s.writeFrame(ctx, c.conn, e); err != nil {
 				return
 			}
 		case <-timer.C:
-			s.markOffline(ctx, c)
 			c.conn.Close(websocket.StatusPolicyViolation, protocol.CloseTimeout)
 			return
 		case <-readErr:
-			s.markOffline(ctx, c)
 			return
 		case f := <-frames:
 			if !timer.Stop() {

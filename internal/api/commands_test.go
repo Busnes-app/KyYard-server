@@ -418,3 +418,43 @@ func TestImageCommandsAreScopedAndValidated(t *testing.T) {
 		}
 	}
 }
+
+// A session the server ends for a protocol violation is as gone as one that timed out: the
+// endpoint goes offline and its unanswered command is unknown rather than in flight forever.
+func TestAProtocolCloseMarksTheEndpointOfflineAndAbandonsCommands(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-violation")
+	if w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/approve", `{"fingerprint":"`+ag.fp+`"}`, true); w.Code != 204 {
+		t.Fatal("approve")
+	}
+	sock, _ := connect(t, ctx, httpSrv.URL, ag, ag.priv, protocol.Version)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{Generation: uint64(time.Now().Unix()), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}})
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
+	w := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+ag.id+"/commands", `{"action":"container.restart","container":"c1"}`, true)
+	var cmd store.Command
+	if w.Code != 202 || json.Unmarshal(w.Body.Bytes(), &cmd) != nil {
+		t.Fatalf("dispatch: %d %s", w.Code, w.Body.String())
+	}
+	if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeCommand {
+		t.Fatalf("expected the command, got %+v", f)
+	}
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeResult, protocol.Result{}) // no id: a violation
+	if _, _, err := sock.conn.Read(ctx); err == nil {
+		t.Fatal("the violation did not end the session")
+	}
+	a := store.TenantAccess{ActorID: "usr_envadmin", OrganizationID: "a"}
+	waitFor(t, func() bool {
+		e, _ := ts.ReadEndpointRaw(ctx, ag.id)
+		got, err := ts.ReadCommand(ctx, a, ag.id, cmd.ID)
+		return e != nil && e.State == "offline" && err == nil && got.Outcome == protocol.OutcomeUnknown
+	})
+}
