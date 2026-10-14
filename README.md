@@ -423,8 +423,9 @@ applied.
 
 Deploying: open an application, choose the cluster and a namespace under **Deploy to a
 Kubernetes cluster**, then plan and apply as on a Docker host. Each service becomes a
-Deployment (one replica, `Recreate`), a `ClusterIP` Service for its published ports, a
-ConfigMap and a Secret for its environment, all named `<application>-<service>` and labelled
+Deployment (one replica, rolling with no downtime, or `Recreate` when it mounts a volume), a
+`ClusterIP` Service for its published ports, a ConfigMap and a Secret for its environment
+(written per apply and pruned after the rollout), all named `<application>-<service>` and labelled
 with the application and instance; every image is pinned by digest at plan time. KyYard never
 touches an object with those names that it did not label (`name_taken`); the plan already stops
 when the cluster's inventory shows another application's or tool's Deployment under a planned

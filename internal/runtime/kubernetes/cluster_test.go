@@ -13,6 +13,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/manifest"
+	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes/render"
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -270,12 +271,11 @@ func TestManifestOnARealCluster(t *testing.T) {
 			t.Fatalf("the Deployment is still there: %v", err)
 		}
 	}
-	for _, name := range []string{"kind-idle-env", "kind-idle-secret"} {
-		_, errCM := cs.CoreV1().ConfigMaps(deployNamespace).Get(ctx, name, metav1.GetOptions{})
-		_, errS := cs.CoreV1().Secrets(deployNamespace).Get(ctx, name, metav1.GetOptions{})
-		if !apierrors.IsNotFound(errCM) || !apierrors.IsNotFound(errS) {
-			t.Fatalf("%s left behind: %v %v", name, errCM, errS)
-		}
+	set := render.Request(req)[0]
+	_, errCM := cs.CoreV1().ConfigMaps(deployNamespace).Get(ctx, set.ConfigMap.Name, metav1.GetOptions{})
+	_, errS := cs.CoreV1().Secrets(deployNamespace).Get(ctx, set.Secret.Name, metav1.GetOptions{})
+	if !apierrors.IsNotFound(errCM) || !apierrors.IsNotFound(errS) {
+		t.Fatalf("configuration left behind: %v %v", errCM, errS)
 	}
 	if kept, err := cs.CoreV1().PersistentVolumeClaims(deployNamespace).Get(ctx, "kind-data", metav1.GetOptions{}); err != nil || kept.DeletionTimestamp != nil {
 		t.Fatalf("the removal took the claim: %+v %v", kept, err)

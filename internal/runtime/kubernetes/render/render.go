@@ -4,7 +4,10 @@
 package render
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +42,19 @@ const (
 	ProgressDeadlineSeconds = 540
 	MinReadySeconds         = 10
 )
+
+// pairedConfigMap is a ConfigMap name a Secret is paired with: <name>-env-<suffix>, or an earlier
+// release's fixed <name>-env.
+var pairedConfigMap = regexp.MustCompile(`^(.+)-env(-[0-9a-f]{10})?$`)
+
+// SecretFor is the Secret rendered beside ConfigMap configMap; false for a name render never gives.
+func SecretFor(configMap string) (string, bool) {
+	m := pairedConfigMap.FindStringSubmatch(configMap)
+	if m == nil {
+		return "", false
+	}
+	return m[1] + "-secret" + m[2], true
+}
 
 // Set is one service's objects. Secret is nil when the service has no secret-backed value, and
 // Service is nil when it publishes no port. Claims are the PersistentVolumeClaims it mounts,
@@ -88,6 +104,11 @@ func service(req protocol.DeploymentRequest, s protocol.DeploymentService, name 
 		}}
 	}
 	set := Set{Service: s.Name, Name: name}
+	// Each apply writes its own ConfigMap and Secret, so the running pods keep theirs until the
+	// new ones are available. The suffix comes from the deployment ID, never the values.
+	sum := sha256.Sum256([]byte(req.Deployment))
+	suffix := "-" + hex.EncodeToString(sum[:5])
+	envName, secretName := name+"-env"+suffix, name+"-secret"+suffix
 	config := map[string]string{}
 	secret := map[string][]byte{}
 	for key, value := range s.Env {
@@ -97,11 +118,11 @@ func service(req protocol.DeploymentRequest, s protocol.DeploymentService, name 
 			config[key] = value
 		}
 	}
-	set.ConfigMap = &corev1.ConfigMap{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}, ObjectMeta: meta(name + "-env"), Data: config}
-	envFrom := []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: name + "-env"}}}}
+	set.ConfigMap = &corev1.ConfigMap{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}, ObjectMeta: meta(envName), Data: config}
+	envFrom := []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: envName}}}}
 	if len(s.SecretKeys) > 0 {
-		set.Secret = &corev1.Secret{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}, ObjectMeta: meta(name + "-secret"), Type: corev1.SecretTypeOpaque, Data: secret}
-		envFrom = append(envFrom, corev1.EnvFromSource{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: name + "-secret"}}})
+		set.Secret = &corev1.Secret{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}, ObjectMeta: meta(secretName), Type: corev1.SecretTypeOpaque, Data: secret}
+		envFrom = append(envFrom, corev1.EnvFromSource{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}}})
 	}
 	var containerPorts []corev1.ContainerPort
 	var servicePorts []corev1.ServicePort
@@ -113,12 +134,19 @@ func service(req protocol.DeploymentRequest, s protocol.DeploymentService, name 
 		servicePorts = append(servicePorts, corev1.ServicePort{Name: fmt.Sprintf("%s-%d", p.Protocol, p.Host), Port: int32(p.Host), TargetPort: intstr.FromInt32(int32(p.Container)), Protocol: proto})
 	}
 	one, automount, progress := int32(1), false, int32(ProgressDeadlineSeconds)
+	// The new pod is available before the old one stops. A claim keeps Recreate: a surge pod would
+	// mount the ReadWriteOnce volume beside the old one, or never start on another node.
+	none, surge := intstr.FromInt32(0), intstr.FromInt32(1)
+	strategy := appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType, RollingUpdate: &appsv1.RollingUpdateDeployment{MaxUnavailable: &none, MaxSurge: &surge}}
+	if len(s.Volumes) > 0 {
+		strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+	}
 	// Each apply rolls the pods, as a Docker apply recreates the container: a changed value in
 	// the ConfigMap or Secret reaches the process.
 	pod := metav1.ObjectMeta{Labels: Labels(req, s.Name), Annotations: map[string]string{AnnotationDeployment: req.Deployment}}
 	set.Deployment = &appsv1.Deployment{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}, ObjectMeta: meta(name), Spec: appsv1.DeploymentSpec{
 		Replicas:                &one,
-		Strategy:                appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+		Strategy:                strategy,
 		MinReadySeconds:         MinReadySeconds,
 		ProgressDeadlineSeconds: &progress,
 		Selector:                &metav1.LabelSelector{MatchLabels: Selector(k.InstanceID, s.Name)},

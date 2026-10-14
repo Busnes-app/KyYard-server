@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -93,12 +92,12 @@ func (r *run) remove(ctx context.Context, objects []doomed) (string, string, str
 	return succeeded()
 }
 
-// find collects, by service label, every object of the instance. A Secret is found by the name
-// of each labelled Deployment and ConfigMap (<name>-env) found -- stable, unlike the name
-// KubernetesNames would recompute from the services in this request, whose hash suffix depends
-// on which other colliding service names are present -- and, as a fallback for a service whose
-// Deployment is already gone, by the name this request itself would compute. The role grants no
-// list on Secrets, so each is read by name.
+// find collects, by service label, every object of the instance. A Secret is found by each
+// labelled ConfigMap (render.SecretFor) and, for an earlier release's fixed names, by the name of
+// each labelled Deployment found -- stable, unlike the name KubernetesNames would recompute from
+// the services in this request, whose hash suffix depends on which other colliding service names
+// are present -- and, as a fallback for a service whose Deployment is already gone, by the name
+// this request itself would compute. The role grants no list on Secrets, so each is read by name.
 func (r *run) find(ctx context.Context, req protocol.RemovalRequest, found map[string][]doomed, kept map[string][]string) (string, string, string) {
 	core, apps := r.c.cs.CoreV1(), r.c.cs.AppsV1()
 	selector := metav1.ListOptions{LabelSelector: labels.SelectorFromSet(labels.Set{render.LabelInstance: r.instance}).String()}
@@ -150,9 +149,9 @@ func (r *run) find(ctx context.Context, req protocol.RemovalRequest, found map[s
 	for i := range configs.Items {
 		cm := &configs.Items[i]
 		add("ConfigMap", cm, core.ConfigMaps(r.namespace).Delete)
-		// A service whose Deployment was never created still has its Secret beside the ConfigMap.
-		if base, ok := strings.CutSuffix(cm.Name, "-env"); ok {
-			if o, code, detail := addSecret(base + "-secret"); o != protocol.OutcomeSucceeded {
+		// Each revision's Secret is paired with its ConfigMap, also for a Deployment never created.
+		if secret, ok := render.SecretFor(cm.Name); ok {
+			if o, code, detail := addSecret(secret); o != protocol.OutcomeSucceeded {
 				return o, code, detail
 			}
 		}

@@ -59,9 +59,10 @@ func TestRenderTwoServices(t *testing.T) {
 		return metav1.ObjectMeta{Name: name, Namespace: "shop", Labels: labels(s), Annotations: map[string]string{"kyyard.busnes.app/revision": "3", "kyyard.busnes.app/deployment": deployment, "kyyard.busnes.app/spec-digest": specDigest}}
 	}
 	one, automount, progress := int32(1), false, int32(540)
+	none, surge := intstr.FromInt32(0), intstr.FromInt32(1)
 	deploymentOf := func(name, s, image string, ports []corev1.ContainerPort, envFrom []corev1.EnvFromSource) *appsv1.Deployment {
 		return &appsv1.Deployment{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}, ObjectMeta: meta(name, s), Spec: appsv1.DeploymentSpec{
-			Replicas: &one, Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}, MinReadySeconds: 10, ProgressDeadlineSeconds: &progress,
+			Replicas: &one, Strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType, RollingUpdate: &appsv1.RollingUpdateDeployment{MaxUnavailable: &none, MaxSurge: &surge}}, MinReadySeconds: 10, ProgressDeadlineSeconds: &progress,
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"kyyard.busnes.app/instance": instance, "kyyard.busnes.app/service": s}},
 			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels(s), Annotations: map[string]string{"kyyard.busnes.app/deployment": deployment}}, Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyAlways, AutomountServiceAccountToken: &automount,
@@ -72,11 +73,11 @@ func TestRenderTwoServices(t *testing.T) {
 	want := []render.Set{
 		{
 			Service: "web", Name: "shop-web",
-			ConfigMap: &corev1.ConfigMap{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}, ObjectMeta: meta("shop-web-env", "web"), Data: map[string]string{"MODE": "prod"}},
-			Secret:    &corev1.Secret{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}, ObjectMeta: meta("shop-web-secret", "web"), Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"TOKEN": []byte("s3cret")}},
+			ConfigMap: &corev1.ConfigMap{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}, ObjectMeta: meta("shop-web-env-af4875899c", "web"), Data: map[string]string{"MODE": "prod"}},
+			Secret:    &corev1.Secret{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}, ObjectMeta: meta("shop-web-secret-af4875899c", "web"), Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"TOKEN": []byte("s3cret")}},
 			Deployment: deploymentOf("shop-web", "web", "ghcr.io/org/web@"+digest,
 				[]corev1.ContainerPort{{ContainerPort: 80, Protocol: corev1.ProtocolTCP}, {ContainerPort: 53, Protocol: corev1.ProtocolUDP}},
-				[]corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "shop-web-env"}}}, {SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "shop-web-secret"}}}}),
+				[]corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "shop-web-env-af4875899c"}}}, {SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "shop-web-secret-af4875899c"}}}}),
 			Endpoint: &corev1.Service{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"}, ObjectMeta: meta("shop-web", "web"), Spec: corev1.ServiceSpec{
 				Type: corev1.ServiceTypeClusterIP, Selector: map[string]string{"kyyard.busnes.app/instance": instance, "kyyard.busnes.app/service": "web"},
 				Ports: []corev1.ServicePort{
@@ -88,8 +89,8 @@ func TestRenderTwoServices(t *testing.T) {
 		},
 		{
 			Service: "api", Name: "shop-api",
-			ConfigMap:  &corev1.ConfigMap{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}, ObjectMeta: meta("shop-api-env", "api"), Data: map[string]string{}},
-			Deployment: deploymentOf("shop-api", "api", "ghcr.io/org/api@"+digest, nil, []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "shop-api-env"}}}}),
+			ConfigMap:  &corev1.ConfigMap{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}, ObjectMeta: meta("shop-api-env-af4875899c", "api"), Data: map[string]string{}},
+			Deployment: deploymentOf("shop-api", "api", "ghcr.io/org/api@"+digest, nil, []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "shop-api-env-af4875899c"}}}}),
 		},
 	}
 	if !reflect.DeepEqual(sets, want) {
@@ -107,6 +108,22 @@ func TestRenderTwoServices(t *testing.T) {
 			if _, _, err := decoder.Decode(raw, nil, nil); err != nil {
 				t.Fatalf("%s: %v", raw, err)
 			}
+		}
+	}
+}
+
+// Each apply's ConfigMap and Secret carry a suffix of its deployment ID, and SecretFor pairs a
+// ConfigMap with its Secret, an earlier release's fixed names included, and nothing else.
+func TestRenderPairsConfigMapAndSecret(t *testing.T) {
+	again := request("shop", web())
+	again.Deployment = "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b"
+	set, prev := render.Request(again)[0], render.Request(request("shop", web()))[0]
+	if set.ConfigMap.Name != "shop-web-env-4b2180f680" || set.Secret.Name != "shop-web-secret-4b2180f680" || prev.ConfigMap.Name == set.ConfigMap.Name {
+		t.Fatalf("names %s %s", set.ConfigMap.Name, set.Secret.Name)
+	}
+	for configMap, want := range map[string]string{set.ConfigMap.Name: set.Secret.Name, "shop-web-env": "shop-web-secret", "shop-env-env": "shop-env-secret", "shop-web-environ": "", "shop-web-env-XYZ": "", "env": ""} {
+		if got, ok := render.SecretFor(configMap); got != want || ok != (want != "") {
+			t.Fatalf("SecretFor(%s) = %q %v", configMap, got, ok)
 		}
 	}
 }
@@ -175,6 +192,10 @@ func TestRenderClaims(t *testing.T) {
 	if !reflect.DeepEqual(sets[0].Claims, want) || len(sets[1].Claims) != 0 {
 		got, _ := json.MarshalIndent(sets[0].Claims, "", "  ")
 		t.Fatalf("claims:\n%s", got)
+	}
+	// A claim keeps Recreate; the service without one rolls.
+	if sets[0].Deployment.Spec.Strategy != (appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}) || sets[1].Deployment.Spec.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
+		t.Fatalf("strategies %+v %+v", sets[0].Deployment.Spec.Strategy, sets[1].Deployment.Spec.Strategy)
 	}
 	pod := sets[0].Deployment.Spec.Template.Spec
 	volumes := []corev1.Volume{

@@ -33,9 +33,9 @@ const rolloutPoll = 2 * time.Second
 // Secret, Deployment, each updated when it exists and is owned, created otherwise; one conflict
 // is re-read and retried; a refused write is forbidden without the verb, admission_denied with
 // it) and start (the rollout, polled until available, a failure the cluster reports, or the
-// deadline: rollout_timeout). The first step that is not a success ends the run and every later
-// step is skipped. Nothing is rolled back: a failed rollout leaves the objects as applied.
-// started is called once, before the first write.
+// deadline: rollout_timeout; then prune, or restore after a rollout_timeout). The first step that
+// is not a success ends the run and every later step is skipped. started is called once, before
+// the first write.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	if err := req.ValidateFor(protocol.RuntimeKubernetes, time.Now()); err != nil {
@@ -71,7 +71,14 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 			return o, code, detail
 		})
 		r.step(set.Service, protocol.StepStart, func() (string, string, string) {
-			return r.rollout(ctx, set.Deployment.Name, func(d *appsv1.Deployment) string { return r.stalled(set, d) })
+			o, code, detail := r.rollout(ctx, set.Deployment.Name, func(d *appsv1.Deployment) string { return r.stalled(set, d) })
+			switch {
+			case o == protocol.OutcomeSucceeded:
+				return r.prune(ctx, set)
+			case code == "rollout_timeout" && have[i].deployment != nil:
+				r.restore(have[i].deployment)
+			}
+			return o, code, detail
 		})
 	}
 	if r.res.Outcome == "" {
@@ -329,18 +336,6 @@ func (r *run) read(ctx context.Context, set render.Set) (existing, string, strin
 		} else if found {
 			e.secret = s
 		}
-	} else {
-		// No secret-backed values this apply: an owned Secret from an earlier revision is
-		// stale and apply drops it. One that is not ours is left alone rather than refused,
-		// since nothing here is written to it.
-		s, found, err := get(ctx, objectAPI[*corev1.Secret](core.Secrets(r.namespace)), set.Name+"-secret")
-		if err != nil {
-			o, code, detail := r.failure(ctx, err)
-			return e, o, code, detail
-		}
-		if found && r.owned(s) {
-			e.secret = s
-		}
 	}
 	d, found, err := get(ctx, objectAPI[*appsv1.Deployment](apps.Deployments(r.namespace)), set.Deployment.Name)
 	if o, code, detail := check("Deployment", set.Deployment.Name, d, found, err); o != protocol.OutcomeSucceeded {
@@ -415,11 +410,6 @@ func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.De
 		if _, o, code, detail := upsert(ctx, r, "Secret", core.Secrets(r.namespace), set.Secret, e.secret, nil); o != protocol.OutcomeSucceeded {
 			return nil, o, code, detail
 		}
-	} else if e.secret != nil {
-		// The service dropped its last secret-backed key: the stale Secret must not outlive it.
-		if o, code, detail := r.drop(ctx, "Secret", core.Secrets(r.namespace).Delete, e.secret); o != protocol.OutcomeSucceeded {
-			return nil, o, code, detail
-		}
 	}
 	d, o, code, detail := upsert(ctx, r, "Deployment", apps.Deployments(r.namespace), set.Deployment, e.deployment, nil)
 	if o != protocol.OutcomeSucceeded {
@@ -432,6 +422,59 @@ func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.De
 		}
 	}
 	return d, protocol.OutcomeSucceeded, "", ""
+}
+
+// prune deletes the ConfigMaps and Secrets earlier revisions of the service left, once its rollout
+// no longer runs a pod reading them: each ConfigMap listed by the service's labels but this
+// apply's, and the Secret SecretFor pairs with it (Secrets cannot be listed), this instance's
+// only, each at the UID read. A run that stopped before here leaves them to the next success.
+func (r *run) prune(ctx context.Context, set render.Set) (string, string, string) {
+	core := r.c.cs.CoreV1()
+	list, err := core.ConfigMaps(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: labels.SelectorFromSet(render.Selector(r.instance, set.Service)).String()})
+	if err != nil {
+		return r.failure(ctx, err)
+	}
+	for i := range list.Items {
+		cm := &list.Items[i]
+		name, ok := render.SecretFor(cm.Name)
+		if !ok || cm.Name == set.ConfigMap.Name || !r.owned(cm) {
+			continue
+		}
+		secret, found, err := get(ctx, objectAPI[*corev1.Secret](core.Secrets(r.namespace)), name)
+		if err != nil {
+			return r.failure(ctx, err)
+		}
+		if found && r.owned(secret) {
+			if o, code, detail := r.drop(ctx, "Secret", core.Secrets(r.namespace).Delete, secret); o != protocol.OutcomeSucceeded {
+				return o, code, detail
+			}
+		}
+		if o, code, detail := r.drop(ctx, "ConfigMap", core.ConfigMaps(r.namespace).Delete, cm); o != protocol.OutcomeSucceeded {
+			return o, code, detail
+		}
+	}
+	return succeeded()
+}
+
+// restore writes the pod template the precondition read back onto the Deployment, at its UID,
+// after a failed rollout: the Deployment returns to the ReplicaSet that kept serving (Recreate:
+// starts it again) rather than staying on the failed one, whose ConfigMap and Secret prune has not
+// touched. Best effort, past the request deadline: a failure is logged.
+func (r *run) restore(prev *appsv1.Deployment) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.parent), callBudget)
+	defer cancel()
+	api := r.c.cs.AppsV1().Deployments(r.namespace)
+	d, err := api.Get(ctx, prev.Name, metav1.GetOptions{})
+	if err == nil {
+		if d.UID != prev.UID || !r.owned(d) {
+			return
+		}
+		d.Spec.Template = prev.Spec.Template
+		_, err = api.Update(ctx, d, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		r.c.log.Printf("kubernetes: deploy: Deployment %s/%s keeps its failed rollout: the previous pod template was not restored: %v", r.namespace, prev.Name, err)
+	}
 }
 
 // drop deletes a stale owned object at the UID the precondition read: gone already, or replaced

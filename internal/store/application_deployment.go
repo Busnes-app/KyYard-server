@@ -64,7 +64,7 @@ type PlannedService struct {
 }
 
 // KubernetesObject names a service's objects: the Deployment and Service <name>, the
-// ConfigMap <name>-env and the Secret <name>-secret.
+// ConfigMap <name>-env-<suffix> and the Secret <name>-secret-<suffix>.
 type KubernetesObject struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
