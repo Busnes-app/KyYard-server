@@ -31,11 +31,17 @@ type fakeStreamer struct {
 	result error
 	// block makes Stream wait for its context without touching stdin or stdout.
 	block bool
-	opts  remotecommand.StreamOptions
+	// unattached never asks for a terminal size: its streams never come up.
+	unattached bool
+	opts       remotecommand.StreamOptions
 }
 
 func (f *fakeStreamer) StreamWithContext(ctx context.Context, opts remotecommand.StreamOptions) error {
 	f.opts = opts
+	if f.unattached {
+		<-ctx.Done()
+		return f.result
+	}
 	go func() {
 		for s := opts.TerminalSizeQueue.Next(); s != nil; s = opts.TerminalSizeQueue.Next() {
 			select {
@@ -263,20 +269,25 @@ func TestPodExecTransportErrorHasNoExitCode(t *testing.T) {
 	}
 }
 
+// Each deadline closes the session with its reason. A stream whose setup never completes is
+// closed by the setup budget; one that attached outlives it.
 func TestPodExecDeadlinesClose(t *testing.T) {
 	for _, tc := range []struct {
-		name           string
-		idle, lifetime time.Duration
-		want           error
+		name                  string
+		setup, idle, lifetime time.Duration
+		unattached            bool
+		want                  error
 	}{
-		{"idle", 50 * time.Millisecond, time.Hour, ErrExecIdle},
-		{"lifetime", time.Hour, 50 * time.Millisecond, ErrExecLifetime},
+		{"idle", callBudget, 50 * time.Millisecond, time.Hour, false, ErrExecIdle},
+		{"lifetime", callBudget, time.Hour, 50 * time.Millisecond, false, ErrExecLifetime},
+		{"setup", 50 * time.Millisecond, time.Hour, time.Hour, true, ErrExecSetup},
+		{"attached outlives setup", 50 * time.Millisecond, 300 * time.Millisecond, time.Hour, false, ErrExecIdle},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake(nil)
-			f.block = true
+			f.block, f.unattached = true, tc.unattached
 			c, _ := execClient(t, f, execPod(nil))
-			s, err := c.openExec(context.Background(), execSpec(), tc.idle, tc.lifetime)
+			s, err := c.openExec(context.Background(), execSpec(), tc.setup, tc.idle, tc.lifetime)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -298,7 +309,7 @@ func TestPodExecDeadlinesClose(t *testing.T) {
 func TestPodExecInputResetsTheIdleDeadline(t *testing.T) {
 	f := newFake(nil)
 	c, _ := execClient(t, f, execPod(nil))
-	s, err := c.openExec(context.Background(), execSpec(), 300*time.Millisecond, time.Hour)
+	s, err := c.openExec(context.Background(), execSpec(), callBudget, 300*time.Millisecond, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -30,6 +30,7 @@ var (
 	ErrExecClosed      = errors.New("exec stream closed; process exit is not established")
 	ErrExecIdle        = errors.New("exec input idle timeout")
 	ErrExecLifetime    = errors.New("exec absolute timeout")
+	ErrExecSetup       = errors.New("exec stream setup timed out")
 	errExecEnded       = errors.New("exec process ended")
 	errExecStream      = errors.New("exec stream failed; process exit is not established")
 )
@@ -66,6 +67,7 @@ type podExec struct {
 	idleMu          sync.Mutex
 	idle            *time.Timer
 	idleBudget      time.Duration
+	setup           *time.Timer
 	mu              sync.Mutex
 	ended           bool
 	exit            *int
@@ -76,10 +78,10 @@ type podExec struct {
 // baseline or restricted and the pod itself meets baseline (protocol.ErrExecPodSecurity), and an
 // access review allows create pods/exec on it (protocol.ErrExecForbidden). See protocol §7.
 func (c *Client) OpenExec(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {
-	return c.openExec(ctx, spec, protocol.ExecIdleTimeout, protocol.ExecAbsoluteTimeout)
+	return c.openExec(ctx, spec, callBudget, protocol.ExecIdleTimeout, protocol.ExecAbsoluteTimeout)
 }
 
-func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, lifetime time.Duration) (*podExec, error) {
+func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, setup, idle, lifetime time.Duration) (*podExec, error) {
 	if err := spec.ValidateFor(protocol.RuntimeKubernetes); err != nil {
 		return nil, err
 	}
@@ -116,6 +118,9 @@ func (c *Client) openExec(parent context.Context, spec protocol.ExecSpec, idle, 
 	s := &podExec{sizes: make(chan remotecommand.TerminalSize, 1), ctx: ctx, cancel: cancel, stopLifetime: stopLifetime, idleBudget: idle, idle: time.NewTimer(idle)}
 	s.stdinR, s.stdinW = io.Pipe()
 	s.stdoutR, s.stdoutW = io.Pipe()
+	// The upgrade has its own short budget, not eight hours: the executor asks for the first
+	// terminal size once its streams exist, which stops the timer.
+	s.setup = time.AfterFunc(setup, func() { s.closeWith(ErrExecSetup) })
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -278,8 +283,10 @@ func (s *podExec) finish(err error) {
 	s.stdinR.CloseWithError(errExecEnded)
 }
 
-// Next feeds Resize into the executor; nil stops its resize loop.
+// Next feeds Resize into the executor; nil stops its resize loop. Its first call means the
+// stream is established.
 func (s *podExec) Next() *remotecommand.TerminalSize {
+	s.setup.Stop()
 	select {
 	case size := <-s.sizes:
 		return &size
