@@ -117,7 +117,8 @@ type RegistryConfig struct {
 type ContainerConfig struct {
 	// AllowPrivileged lets a container recreate or run set host-level settings: privileged,
 	// devices, security options, capabilities beyond Docker's defaults, the host's or another
-	// container's network, or a bind of a system path. Off by default: with it, container.configure
+	// container's network, or a bind of a system path (anything under /etc but a few read-only
+	// files) or a .ssh directory. Off by default: with it, container.configure
 	// is root on the host.
 	AllowPrivileged bool `json:"allow_privileged"`
 }

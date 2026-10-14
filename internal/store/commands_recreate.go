@@ -293,10 +293,13 @@ func directBlockers(snap protocol.Snapshot, old *protocol.Container, svc *protoc
 // dockerDefaultCaps is the capability set Docker grants a container that adds none.
 var dockerDefaultCaps = []string{"CHOWN", "DAC_OVERRIDE", "FSETID", "FOWNER", "MKNOD", "NET_RAW", "SETGID", "SETUID", "SETFCAP", "SETPCAP", "NET_BIND_SERVICE", "SYS_CHROOT", "KILL", "AUDIT_WRITE"}
 
-// hostPaths are host paths a bind reaches only with the opt-in: the path and every parent, and
-// for all but / and /etc (whose files, like /etc/localtime, containers commonly read) anything
-// beneath it too. /var/run is /run on every current distribution.
+// hostPaths are host paths a bind reaches only with the opt-in: the path, every parent and,
+// for all but /, anything beneath it. /var/run is /run on every current distribution.
 var hostPaths = []string{"/", "/etc", "/run", "/var/run", "/var/spool", "/var/lib", "/usr", "/lib", "/lib64", "/bin", "/sbin", "/proc", "/sys", "/dev", "/boot", "/root"}
+
+// etcReadOnly are the only /etc paths (and what is beneath them) a read-only bind reaches
+// without the opt-in.
+var etcReadOnly = []string{"/etc/localtime", "/etc/timezone", "/etc/ssl/certs"}
 
 // hardening are the security_opt entries that only take privilege away.
 var hardening = []string{"no-new-privileges", "no-new-privileges:true"}
@@ -304,7 +307,7 @@ var hardening = []string{"no-new-privileges", "no-new-privileges:true"}
 // hostLevel reports a setting that reaches past the container into the host, which
 // KY_CONTAINER_ALLOW_PRIVILEGED gates: privileged, devices, a security option other than
 // hardening, capabilities beyond Docker's defaults, the host's or another container's network
-// (as the mode or an attachment), or a bind of hostPaths.
+// (as the mode or an attachment), or a hostBind.
 func hostLevel(svc *protocol.DeploymentService) bool {
 	e := svc.Explicit
 	if e.Privileged || len(e.Devices) > 0 || protocol.NamespaceNetwork(e.NetworkMode) ||
@@ -317,11 +320,21 @@ func hostLevel(svc *protocol.DeploymentService) bool {
 	}) {
 		return true
 	}
+	return slices.ContainsFunc(svc.Mounts, hostBind)
+}
+
+// hostBind reports a bind of hostPaths, of anything under /etc but a read-only etcReadOnly
+// path, or of a path with a .ssh segment.
+func hostBind(m protocol.Mount) bool {
+	if m.Kind != protocol.MountBind {
+		return false
+	}
 	under := func(p, dir string) bool { return p == dir || dir == "/" || strings.HasPrefix(p, dir+"/") }
-	return slices.ContainsFunc(svc.Mounts, func(m protocol.Mount) bool {
-		return m.Kind == protocol.MountBind && slices.ContainsFunc(hostPaths, func(h string) bool {
-			return under(h, m.Source) || (h != "/" && h != "/etc" && under(m.Source, h))
-		})
+	if m.ReadOnly && slices.ContainsFunc(etcReadOnly, func(e string) bool { return under(m.Source, e) }) {
+		return false
+	}
+	return slices.Contains(strings.Split(m.Source, "/"), ".ssh") || slices.ContainsFunc(hostPaths, func(h string) bool {
+		return under(h, m.Source) || (h != "/" && under(m.Source, h))
 	})
 }
 
