@@ -389,7 +389,8 @@ func workloadResourcesOf(r corev1.ResourceRequirements) protocol.WorkloadResourc
 // and the namespace's Pod Security level (pod_security, as a deploy), refuses a managed object
 // (application_managed), one at another resourceVersion than the read or without a named
 // container (conflict), one whose read is not whole (configuration_unreported: an apply
-// would drop what it did not show) and replicas that delete claims, as a scale (pvc_retention). The write is a strategic
+// would drop what it did not show), a Secret reference the object does not already carry
+// (secret_ref_refused) and replicas that delete claims, as a scale (pvc_retention). The write is a strategic
 // merge patch of only the changed paths (see bind), so fields the form does not carry, those it
 // carries unchanged and those this client's types do not know keep their exact bytes. It carries
 // the read's resourceVersion, so a concurrent write is the API server's 409, reported conflict. A
@@ -434,6 +435,8 @@ func (c *Client) ApplyWorkload(parent context.Context, req protocol.WorkloadAppl
 			return protocol.OutcomeDenied, "conflict", ""
 		case len(have.Unsupported) > 0:
 			return protocol.OutcomeDenied, "configuration_unreported", ""
+		case !secretRefsKept(h.template, req.Spec):
+			return protocol.OutcomeDenied, "secret_ref_refused", ""
 		case h.scaleDeletesClaims(req.Spec.Replicas):
 			return protocol.OutcomeDenied, "pvc_retention", ""
 		case !edit(h, req.Spec):
@@ -464,6 +467,28 @@ func (c *Client) ApplyWorkload(parent context.Context, req protocol.WorkloadAppl
 		r.res.Outcome = protocol.OutcomeSucceeded
 	}
 	return r.res
+}
+
+// secretRefsKept reports whether every Secret key spec's env references is one live already
+// references: a form may keep, move or drop a reference, never add one, since exec and logs
+// would read any Secret in the namespace. A create (an empty live template) may add none.
+func secretRefsKept(live *corev1.PodTemplateSpec, spec protocol.WorkloadConfiguration) bool {
+	have := map[string]bool{}
+	for _, c := range slices.Concat(live.Spec.Containers, live.Spec.InitContainers) {
+		for _, e := range c.Env {
+			if w, ok := workloadEnv(e); ok && w.SecretRef != "" {
+				have[w.SecretRef] = true
+			}
+		}
+	}
+	for _, c := range slices.Concat(spec.Containers, spec.InitContainers) {
+		for _, e := range c.Env {
+			if e.SecretRef != "" && !have[e.SecretRef] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // edit sets spec's fields on the object where they differ from what it reads as, so an unchanged
@@ -545,13 +570,16 @@ func setQuantity(list *corev1.ResourceList, name corev1.ResourceName, have, want
 	}
 }
 
-// createWorkload runs a create frame: precondition (the create grant, Pod Security, the name
-// free), create of renderWorkload's Deployment, and its rollout. A name that exists, or is taken
+// createWorkload runs a create frame: precondition (no Secret reference: secret_ref_refused;
+// the create grant, Pod Security, the name free), create of renderWorkload's Deployment, and its rollout. A name that exists, or is taken
 // before the create lands, is name_taken: nothing is overwritten.
 func (r *run) createWorkload(ctx context.Context, req protocol.WorkloadApply) protocol.DeploymentResult {
 	ref, service := req.Target, protocol.WorkloadApplyService
 	api := r.c.cs.AppsV1().Deployments(ref.Namespace)
 	r.step(service, protocol.StepPrecondition, func() (string, string, string) {
+		if !secretRefsKept(&corev1.PodTemplateSpec{}, req.Spec) {
+			return protocol.OutcomeDenied, "secret_ref_refused", ""
+		}
 		if o, code, detail := r.allowed(ctx); o != protocol.OutcomeSucceeded {
 			return o, code, detail
 		}

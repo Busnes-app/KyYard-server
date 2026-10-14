@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -478,7 +479,7 @@ func TestApplyWorkloadChangesOnlyTheFormsFields(t *testing.T) {
 		w.Replicas = ptr(int32(3))
 		w.Containers[0].Image = "ghcr.io/org/web:2"
 		w.Containers[0].Env[0].Value = "dev"
-		w.Containers[0].Env = append(w.Containers[0].Env, protocol.WorkloadEnv{Name: "API_KEY", SecretRef: "api/key"})
+		w.Containers[0].Env = append(w.Containers[0].Env, protocol.WorkloadEnv{Name: "API_KEY", SecretRef: "web-secret/token"})
 		w.Containers[0].Resources.CPURequest = "500m"
 		w.Containers[0].Resources.MemoryLimit = ""
 	})
@@ -510,7 +511,7 @@ func TestApplyWorkloadChangesOnlyTheFormsFields(t *testing.T) {
 		}
 	}
 	w := a.Containers[0]
-	if *after.Spec.Replicas != 3 || w.Image != "ghcr.io/org/web:2" || w.Env[0].Value != "dev" || w.Env[3].ValueFrom.SecretKeyRef.Name != "api" || w.Env[3].ValueFrom.SecretKeyRef.Key != "key" {
+	if *after.Spec.Replicas != 3 || w.Image != "ghcr.io/org/web:2" || w.Env[0].Value != "dev" || w.Env[3].ValueFrom.SecretKeyRef.Name != "web-secret" || w.Env[3].ValueFrom.SecretKeyRef.Key != "token" {
 		t.Fatalf("not applied: replicas %d %+v", *after.Spec.Replicas, w)
 	}
 	cpu, gpu := w.Resources.Requests[corev1.ResourceCPU], w.Resources.Limits["nvidia.com/gpu"]
@@ -647,6 +648,11 @@ func TestApplyWorkloadRefusals(t *testing.T) {
 		{"forbidden", true, webDeployment(), func(*protocol.WorkloadConfiguration) {}, "precondition denied forbidden"},
 		{"field ref", false, fieldRef, func(*protocol.WorkloadConfiguration) {}, "precondition denied configuration_unreported"},
 		{"unknown container", false, webDeployment(), func(w *protocol.WorkloadConfiguration) { w.Containers[0].Name = "other" }, "precondition denied conflict"},
+		// A Secret the workload does not already reference would be readable through exec and logs.
+		{"new secret ref", false, webDeployment(), func(w *protocol.WorkloadConfiguration) {
+			w.Containers[0].Env = append(w.Containers[0].Env, protocol.WorkloadEnv{Name: "STOLEN", SecretRef: "db-secret/password"})
+		}, "precondition denied secret_ref_refused"},
+		{"new key of a referenced secret", false, webDeployment(), func(w *protocol.WorkloadConfiguration) { w.Containers[0].Env[1].SecretRef = "web-secret/other" }, "precondition denied secret_ref_refused"},
 	} {
 		c, cs := workloadCluster(t, false, true, tc.object)
 		req := applyFrom(t, c, "shop/deployment/web", time.Minute, tc.edit)
@@ -938,7 +944,7 @@ func createFrame(name string, deadline time.Duration) protocol.WorkloadApply {
 		Target: ref, Replicas: ptr(int32(2)),
 		Containers: []protocol.WorkloadContainer{{
 			Name: "web", Image: "ghcr.io/org/web:1", Command: []string{"/web"}, Args: []string{"--port", "80"},
-			Env:       []protocol.WorkloadEnv{{Name: "MODE", Value: "prod"}, {Name: "TOKEN", SecretRef: "web-secret/token"}, {Name: "LEVEL", ConfigMapRef: "web-env/level"}},
+			Env:       []protocol.WorkloadEnv{{Name: "MODE", Value: "prod"}, {Name: "LEVEL", ConfigMapRef: "web-env/level"}},
 			Resources: protocol.WorkloadResources{CPURequest: "250m", MemoryLimit: "128Mi"},
 		}},
 	}}
@@ -966,6 +972,7 @@ func createCluster(t *testing.T, denied, rolls bool, objects ...runtime.Object) 
 // else, so no probes, security context or volumes.
 func TestRenderWorkload(t *testing.T) {
 	req := createFrame("web", time.Minute)
+	req.Spec.Containers[0].Env = slices.Insert(req.Spec.Containers[0].Env, 1, protocol.WorkloadEnv{Name: "TOKEN", SecretRef: "web-secret/token"})
 	labels := map[string]string{"app.kubernetes.io/name": "web", "app.kubernetes.io/instance": "web", "kyyard.busnes.app/run": "web"}
 	want := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", Labels: labels},
@@ -1065,6 +1072,7 @@ func TestApplyWorkloadCreateRefusals(t *testing.T) {
 		objects []runtime.Object
 		setup   func(*fake.Clientset)
 		started bool
+		secret  bool
 		want    string
 	}{
 		{name: "forbidden", denied: true, want: "precondition denied forbidden; create skipped; rollout skipped"},
@@ -1084,18 +1092,27 @@ func TestApplyWorkloadCreateRefusals(t *testing.T) {
 				return true, nil, apierrors.NewForbidden(gr, "web", nil)
 			})
 		}, want: "precondition succeeded; create denied admission_denied; rollout skipped"},
+		// A run may not name a Secret: exec and logs would read it.
+		{name: "secret ref", secret: true, want: "precondition denied secret_ref_refused; create skipped; rollout skipped"},
 	} {
 		c, cs := createCluster(t, tc.denied, true, tc.objects...)
 		if tc.setup != nil {
 			tc.setup(cs)
 		}
 		started := false
-		res := c.ApplyWorkload(ctx, createFrame("web", time.Minute), func() { started = true })
+		req := createFrame("web", time.Minute)
+		if tc.secret {
+			req.Spec.Containers[0].Env = append(req.Spec.Containers[0].Env, protocol.WorkloadEnv{Name: "TOKEN", SecretRef: "web-secret/token"})
+		}
+		res := c.ApplyWorkload(ctx, req, func() { started = true })
 		if res.Outcome != protocol.OutcomeDenied || steps(res) != tc.want || started != tc.started {
 			t.Fatalf("%s: %s started %v", tc.name, steps(res), started)
 		}
 		if err := res.Validate(); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if tc.secret && len(cs.Actions()) != 0 {
+			t.Fatalf("%s: called the API: %v", tc.name, cs.Actions())
 		}
 		if d, err := cs.AppsV1().Deployments("shop").Get(ctx, "web", metav1.GetOptions{}); err == nil && d.UID != testUID {
 			t.Fatalf("%s: a Deployment was created", tc.name)
