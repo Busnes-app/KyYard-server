@@ -605,3 +605,14 @@ it('names agent-side unsupported codes and drops unknown ones', () => {
   expect(t).toContain('host setting ShmSize');
   expect(t).not.toContain('bogus');
 });
+it.each([
+  [plan, 'A container that fails to start is rolled back to the previous one.'],
+  [{ ...plan, plan: { ...plan.plan, namespace: 'shop' } }, 'A rollout that fails is rolled back to the previous template.'],
+])('states that a failed start is rolled back', async (row, text) => {
+  vi.stubGlobal('fetch', stubFetch([row]));
+  render(<ApplicationDeploymentPlan {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Deployment plan' }));
+  await screen.findByLabelText('Confirm apply project');
+  expect(document.body.textContent).toContain(text);
+  expect(document.body.textContent).not.toContain('Nothing rolls back');
+});
