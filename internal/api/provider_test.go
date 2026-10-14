@@ -352,6 +352,15 @@ func TestKySignOnWebhookNameConflictIs409(t *testing.T) {
 	if w := postSync(srv, fresh, sig); w.Code != 409 || !strings.Contains(w.Body.String(), "event already applied") {
 		t.Fatalf("replay: %d %s", w.Code, w.Body.String())
 	}
+	// The body is read before its signature is checked, so it is bounded: a correctly signed
+	// event padded past 64 KiB is refused unread.
+	padded, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: "evt-big", Event: "user.created", ID: "ext-big", Username: "big", DisplayName: strings.Repeat("x", 64<<10), Status: "active", Timestamp: time.Now().Unix()})
+	if w := postSync(srv, padded, crypto.ComputeHMACSHA256(padded, "webhook-secret-999")); w.Code != 413 {
+		t.Fatalf("oversized body: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-big"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("oversized event applied: %v", err)
+	}
 }
 
 func postSync(srv http.Handler, body []byte, sig string) *httptest.ResponseRecorder {

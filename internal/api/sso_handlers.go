@@ -29,9 +29,10 @@ func (s *Server) handleKySignOnSyncWebhook(w http.ResponseWriter, r *http.Reques
 		sig = r.Header.Get("X-Signature-SHA256")
 	}
 
-	body, err := io.ReadAll(r.Body)
+	// Read before the signature is checked, so bound it: a directory event is a few hundred bytes.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "Failed to read request body")
+		s.writeError(w, http.StatusRequestEntityTooLarge, "Request body too large or unreadable")
 		return
 	}
 
