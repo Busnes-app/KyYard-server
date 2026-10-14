@@ -21,7 +21,7 @@ it('renders a fresh snapshot and flags staleness and truncation', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 7, observed_at: old, received_at: old, snapshot }) : String(input).endsWith('/samples') ? json([{ container_id: 'c1', observed_at: old, cpu_percent: 12.34, memory_bytes: 3 * 2 ** 20, memory_limit: 0, rx_bytes: 0, tx_bytes: 0, pids: 1, restart_count: 3 }]) : json(endpoint)));
   render(<EndpointPage org="a" endpoint="ep_1" />);
   expect(await screen.findByText('cpu 12.3% · mem 3 MiB · 3 restarts')).toBeTruthy();
-  const status = await screen.findByRole('status');
+  const status = await screen.findByText(/^Inventory generation/);
   expect(status.textContent).toContain('generation 7');
   expect(status.textContent).toContain('stale');
   expect(status.textContent).toContain('truncated: images');
@@ -93,11 +93,11 @@ it('polls inventory every 30s, keeping the containers table mounted', async () =
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation, observed_at: now, received_at: now, snapshot: snapshot() }) : String(input).endsWith('/samples') ? json([]) : json(endpoint)));
     render(<EndpointPage org="a" endpoint="ep_1" />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(screen.getByRole('status').textContent).toContain('generation 2');
+    expect(screen.getByText(/^Inventory generation/).textContent).toContain('generation 2');
     const table = screen.getByRole('table');
     generation = 6;
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(screen.getByRole('status').textContent).toContain('generation 6');
+    expect(screen.getByText(/^Inventory generation/).textContent).toContain('generation 6');
     expect(screen.getByRole('table')).toBe(table); // same element: the poll refetched in place, it did not unmount
   } finally {
     vi.useRealTimers();
@@ -255,7 +255,7 @@ it('renders a Kubernetes cluster, its mapped applications, filters by namespace 
   expect(health.textContent).toContain('degraded');
   expect(health.textContent).toContain('1 of 2 nodes ready');
   expect(screen.getByText('cordoned')).toBeTruthy();
-  expect(screen.getByRole('status').textContent).toContain('truncated: pods');
+  expect(screen.getByText(/^Inventory generation/).textContent).toContain('truncated: pods');
   // No Docker resource or control is rendered for a cluster.
   for (const name of ['Containers', 'Images', 'Networks', 'Volumes', 'Projects']) expect(screen.queryByRole('button', { name })).toBeNull();
   expect(screen.queryByText('Actions')).toBeNull();
