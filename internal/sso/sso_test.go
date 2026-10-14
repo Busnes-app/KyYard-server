@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -284,7 +285,9 @@ func TestKySignOnWebhookAppliesEachEventOnceAndInOrder(t *testing.T) {
 	}
 }
 
-func TestKySignOnWebhookCannotRemoveAnOrganizationsLastAdministrator(t *testing.T) {
+// A fired sole administrator must lose access: the identity provider's deactivation and
+// deletion always apply, and each organization left without an administrator gets an audit row.
+func TestKySignOnWebhookRemovesAnOrganizationsLastAdministratorAndAudits(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(ctx, testdb.Config(t))
 	if err != nil {
@@ -292,40 +295,51 @@ func TestKySignOnWebhookCannotRemoveAnOrganizationsLastAdministrator(t *testing.
 	}
 	defer st.Close()
 	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}, st)
-	body, sig := signedEvent(t, sso.KySignOnSyncPayload{Event: "user.created", EventID: "evt-1", ID: "ext-sole", Username: "sole", Status: "active", Timestamp: time.Now().Unix()})
-	if err := client.HandleSyncWebhook(ctx, body, sig); err != nil {
-		t.Fatal(err)
-	}
-	sole, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-sole")
-	if err != nil {
-		t.Fatal(err)
-	}
+	now := time.Now().Unix()
 	ts := st.Tenancy()
-	if err := ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: store.InitialOrganizationID, UserID: sole.ID, Role: store.RoleOrganizationAdmin, Status: "active"}); err != nil {
-		t.Fatal(err)
+	lost := func() []string {
+		records, _, err := st.Audit().ListAuditRecords(ctx, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var orgs []string
+		for _, r := range records {
+			if r.Action == "organization.last_admin_lost" {
+				orgs = append(orgs, r.OrganizationID+"/"+r.Resource)
+			}
+		}
+		return orgs
 	}
 	for i, event := range []string{"user.deactivated", "user.deleted"} {
-		body, sig := signedEvent(t, sso.KySignOnSyncPayload{Event: event, EventID: event, ID: "ext-sole", Timestamp: time.Now().Unix() + int64(i)})
-		if err := client.HandleSyncWebhook(ctx, body, sig); !errors.Is(err, store.ErrLastAdmin) {
-			t.Fatalf("%s: %v", event, err)
+		subject := "ext-sole-" + event
+		body, sig := signedEvent(t, sso.KySignOnSyncPayload{Event: "user.created", EventID: "create-" + event, ID: subject, Username: fmt.Sprintf("sole%d", i), Status: "active", Timestamp: now})
+		if err := client.HandleSyncWebhook(ctx, body, sig); err != nil {
+			t.Fatal(err)
 		}
-		if u, err := st.Users().GetUserByID(ctx, sole.ID); err != nil || u.Status != "active" {
-			t.Fatalf("%s changed the account: %+v %v", event, u, err)
+		sole, err := st.Users().GetUserBySSO(ctx, "kysignon", subject)
+		if err != nil {
+			t.Fatal(err)
 		}
-		// The refused event was not consumed: once another administrator exists, its retry applies.
-		if i == 1 {
-			if err := st.Users().CreateUser(ctx, &store.User{ID: "other", Username: "other", Role: "user", Status: "active", SSOProvider: "local"}); err != nil {
-				t.Fatal(err)
-			}
-			if err := ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: store.InitialOrganizationID, UserID: "other", Role: store.RoleOrganizationAdmin, Status: "active"}); err != nil {
-				t.Fatal(err)
-			}
-			if err := client.HandleSyncWebhook(ctx, body, sig); err != nil {
-				t.Fatalf("retry: %v", err)
-			}
-			if _, err := st.Users().GetUserByID(ctx, sole.ID); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("retry did not delete: %v", err)
-			}
+		org := fmt.Sprintf("org-%d", i)
+		if err := ts.CreateOrganization(ctx, &store.Organization{ID: org, Name: org}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: org, UserID: sole.ID, Role: store.RoleOrganizationAdmin, Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+		body, sig = signedEvent(t, sso.KySignOnSyncPayload{Event: event, EventID: event, ID: subject, Timestamp: now + 1})
+		if err := client.HandleSyncWebhook(ctx, body, sig); err != nil {
+			t.Fatalf("%s refused: %v", event, err)
+		}
+		u, err := st.Users().GetUserByID(ctx, sole.ID)
+		if event == "user.deactivated" && (err != nil || u.Status != "inactive") {
+			t.Fatalf("not deactivated: %+v %v", u, err)
+		}
+		if event == "user.deleted" && !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("not deleted: %v", err)
+		}
+		if got := lost(); len(got) != i+1 || !slices.Contains(got, org+"/"+sole.ID) {
+			t.Fatalf("%s: admin loss audit %v", event, got)
 		}
 	}
 }

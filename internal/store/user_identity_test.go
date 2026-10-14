@@ -41,43 +41,54 @@ func TestIdentityUpdateKeepsConcurrentCredentialWrites(t *testing.T) {
 	}
 }
 
-func TestDirectoryAccountChangesKeepAnOrganizationAdministrator(t *testing.T) {
+func TestOnlyLocalAccountChangesKeepAnOrganizationAdministrator(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
 	ts := st.Tenancy()
 	mustTenant(t, ts.CreateOrganization(ctx, &store.Organization{ID: "o", Name: "o"}))
-	for _, id := range []string{"sole", "member", "idle"} {
+	for _, id := range []string{"sole", "member"} {
 		tenantUser(t, st, id, "user", "kysignon", "active")
 	}
 	mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "o", UserID: "sole", Role: store.RoleOrganizationAdmin, Status: "active"}))
 	mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "o", UserID: "member", Role: store.RoleReadOnly, Status: "active"}))
 
+	// A local deletion cannot remove the last administrator.
+	if err := st.Users().DeleteUser(ctx, "sole"); !errors.Is(err, store.ErrLastAdmin) {
+		t.Fatalf("local deletion of the sole administrator: %v", err)
+	}
+	// The identity provider's deactivation always applies, and says what the organization lost.
 	sole, err := st.Users().GetUserByID(ctx, "sole")
 	mustTenant(t, err)
 	sole.Status = "inactive"
-	if err := st.Users().UpdateUserIdentity(ctx, sole); !errors.Is(err, store.ErrLastAdmin) {
-		t.Fatalf("sole administrator deactivated: %v", err)
+	mustTenant(t, st.Users().UpdateUserIdentity(ctx, sole))
+	if got, err := st.Users().GetUserByID(ctx, "sole"); err != nil || got.Status != "inactive" {
+		t.Fatalf("deactivation not applied: %v %+v", err, got)
 	}
-	if err := st.Users().DeleteUser(ctx, "sole"); !errors.Is(err, store.ErrLastAdmin) {
-		t.Fatalf("sole administrator deleted: %v", err)
+	lost := lastAdminLost(t, st)
+	if len(lost) != 1 || lost[0].OrganizationID != "o" || lost[0].Resource != "sole" || lost[0].Scope != "organization" {
+		t.Fatalf("admin loss audit: %+v", lost)
 	}
-	if got, err := st.Users().GetUserByID(ctx, "sole"); err != nil || got.Status != "active" {
-		t.Fatalf("refusal changed the account: %v %+v", err, got)
+	// Removing an administrator who no longer counts records nothing more.
+	mustTenant(t, st.Users().DeleteDirectoryUser(ctx, "sole"))
+	if lost := lastAdminLost(t, st); len(lost) != 1 {
+		t.Fatalf("audited a loss that already happened: %+v", lost)
 	}
-	// Accounts that administer nothing are unaffected.
-	if err := st.Users().DeleteUser(ctx, "member"); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Users().DeleteUser(ctx, "ghost"); !errors.Is(err, store.ErrNotFound) {
+	if err := st.Users().DeleteDirectoryUser(ctx, "ghost"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown user: %v", err)
 	}
-	// With a second active administrator both changes go through.
-	mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "o", UserID: "idle", Role: store.RoleOrganizationAdmin, Status: "active"}))
-	if err := st.Users().UpdateUserIdentity(ctx, sole); err != nil {
-		t.Fatal(err)
+	// A local deletion of a non-administrator is unaffected.
+	mustTenant(t, st.Users().DeleteUser(ctx, "member"))
+}
+
+func lastAdminLost(t *testing.T, st store.Store) []*store.AuditRecord {
+	t.Helper()
+	records, _, err := st.Audit().ListAuditRecords(context.Background(), 0, 100)
+	mustTenant(t, err)
+	var lost []*store.AuditRecord
+	for _, r := range records {
+		if r.Action == "organization.last_admin_lost" {
+			lost = append(lost, r)
+		}
 	}
-	// An inactive administrator was not counted, so removing them changes nothing.
-	if err := st.Users().DeleteUser(ctx, "sole"); err != nil {
-		t.Fatal(err)
-	}
+	return lost
 }

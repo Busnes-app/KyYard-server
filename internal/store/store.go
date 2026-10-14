@@ -123,8 +123,10 @@ type UserStore interface {
 	// UpdateUser writes every column from u, credentials included: a trusted full-row write for
 	// fixtures. A read-modify-write path uses UpdateUserIdentity instead.
 	UpdateUser(ctx context.Context, u *User) error
-	// UpdateUserIdentity writes only username, email, display name, role and status, leaving
-	// credential and MFA columns to their own compare-and-swap writers.
+	// UpdateUserIdentity is the identity provider's write: only username, email, display name,
+	// role and status, leaving credential and MFA columns to their own compare-and-swap writers.
+	// It always applies; an organization it leaves without an active administrator gets an
+	// organization.last_admin_lost audit row.
 	UpdateUserIdentity(ctx context.Context, u *User) error
 	ResetAdminPassword(ctx context.Context, userID, newHash string) error
 	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
@@ -132,9 +134,12 @@ type UserStore interface {
 	// SpendTOTPCounter records counter as used. It returns ErrAlreadyExists when counter is
 	// not greater than the stored one, which is how a replayed code inside the skew window fails.
 	SpendTOTPCounter(ctx context.Context, userID string, counter int64) error
-	// DeleteUser and UpdateUserIdentity refuse with ErrLastAdmin to leave an organization the
+	// DeleteUser is a local deletion: it refuses with ErrLastAdmin to leave an organization the
 	// user administers without an active administrator, the guard membership writes keep.
 	DeleteUser(ctx context.Context, id string) error
+	// DeleteDirectoryUser is the identity provider's deletion: it always applies, auditing like
+	// UpdateUserIdentity.
+	DeleteDirectoryUser(ctx context.Context, id string) error
 	// ClaimDirectoryEvent records a signed directory event before it is applied. It returns
 	// ErrStaleEvent for an event ID already claimed, or one older than the last claimed event
 	// for the same subject. Events are only acceptable within DirectoryEventWindow of now.

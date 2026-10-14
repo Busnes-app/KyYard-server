@@ -190,7 +190,7 @@ func (k *KySignOnClient) apply(ctx context.Context, payload KySignOnSyncPayload)
 		if err != nil {
 			return nil
 		}
-		return k.store.Users().DeleteUser(ctx, existing.ID)
+		return k.store.Users().DeleteDirectoryUser(ctx, existing.ID)
 	}
 
 	return nil

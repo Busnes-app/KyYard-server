@@ -326,7 +326,7 @@ func (u *userStore) SpendTOTPCounter(ctx context.Context, userID string, counter
 
 func (u *userStore) UpdateUserIdentity(ctx context.Context, user *User) error {
 	user.UpdatedAt = time.Now().UTC()
-	return u.withAdminQuorum(ctx, user.ID, func(tx *sql.Tx) (sql.Result, error) {
+	return u.withAdminQuorum(ctx, user.ID, true, func(tx *sql.Tx) (sql.Result, error) {
 		res, err := tx.ExecContext(ctx, u.store.rebind(`
 UPDATE users SET username = ?, email = ?, display_name = ?, role = ?, status = ?, updated_at = ?
 WHERE id = ? AND (
@@ -342,7 +342,15 @@ WHERE id = ? AND (
 }
 
 func (u *userStore) DeleteUser(ctx context.Context, id string) error {
-	return u.withAdminQuorum(ctx, id, func(tx *sql.Tx) (sql.Result, error) {
+	return u.deleteUser(ctx, id, false)
+}
+
+func (u *userStore) DeleteDirectoryUser(ctx context.Context, id string) error {
+	return u.deleteUser(ctx, id, true)
+}
+
+func (u *userStore) deleteUser(ctx context.Context, id string, external bool) error {
+	return u.withAdminQuorum(ctx, id, external, func(tx *sql.Tx) (sql.Result, error) {
 		return tx.ExecContext(ctx, u.store.rebind("DELETE FROM users WHERE id = ? AND NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)"), id, "installer.user."+id)
 	})
 }
@@ -383,12 +391,14 @@ func (u *userStore) ReleaseDirectoryEvent(ctx context.Context, provider, eventID
 	return err
 }
 
-// withAdminQuorum runs write on one user row, then refuses with ErrLastAdmin if that left an
-// organization the active user administered without an active administrator. It locks the
-// user row, then those organizations in ID order, as membership writes do. A write touching
-// no row is ErrInstallerOwned or ErrNotFound.
-func (u *userStore) withAdminQuorum(ctx context.Context, userID string, write func(*sql.Tx) (sql.Result, error)) error {
-	tx, err := u.store.beginTx(ctx, false)
+// withAdminQuorum runs write on one user row, then checks each organization the active user
+// administered still has an active administrator. A local change is refused with ErrLastAdmin;
+// an external (identity provider) one always applies, because a removed person must lose access,
+// and records organization.last_admin_lost there instead. It locks the user row, then those
+// organizations in ID order, as membership writes do. A write touching no row is
+// ErrInstallerOwned or ErrNotFound.
+func (u *userStore) withAdminQuorum(ctx context.Context, userID string, external bool, write func(*sql.Tx) (sql.Result, error)) error {
+	tx, err := u.store.beginTx(ctx, external)
 	if err != nil {
 		return err
 	}
@@ -434,7 +444,11 @@ func (u *userStore) withAdminQuorum(ctx context.Context, userID string, write fu
 		return ErrNotFound
 	}
 	for _, org := range orgs {
-		if err := tenancy.requireActiveAdmin(ctx, tx, org); err != nil {
+		err := tenancy.requireActiveAdmin(ctx, tx, org)
+		if errorsIs(err, ErrLastAdmin) && external {
+			_, err = tx.ExecContext(ctx, u.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), "directory", "organization.last_admin_lost", userID, "repair: a platform administrator must grant a new organization administrator", time.Now().UTC(), "organization", org, "", "", "success")
+		}
+		if err != nil {
 			return err
 		}
 	}

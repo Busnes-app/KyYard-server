@@ -43,9 +43,6 @@ func (s *Server) handleKySignOnSyncWebhook(w http.ResponseWriter, r *http.Reques
 	case errors.Is(err, store.ErrStaleEvent):
 		s.writeError(w, http.StatusConflict, "event already applied or superseded")
 		return
-	case errors.Is(err, store.ErrLastAdmin):
-		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "The account is an organization's last active administrator", "code": "last_administrator"})
-		return
 	default:
 		log.Printf("[SSO] directory webhook refused: %v", err)
 		s.writeError(w, http.StatusUnauthorized, "webhook refused")
