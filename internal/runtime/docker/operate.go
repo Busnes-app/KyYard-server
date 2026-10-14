@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -16,10 +17,9 @@ import (
 // is the slowest of the three, and Docker's own default grace period is ten seconds.
 const operationBudget = 30 * time.Second
 
-// maxStopGrace caps the grace a stop or restart asks for, so the kill and a restart's start
-// still fit operationBudget: a container's own StopTimeout (up to an hour) would otherwise
-// outlast the call and be reported timed_out while Docker kept stopping it.
-const maxStopGrace = 20
+// maxStopGrace bounds the grace a stop or restart asks for when the container's own is longer or
+// unbounded (negative): the ceiling an edit allows.
+const maxStopGrace = 3600
 
 // Operate runs one lifecycle action against one container, after checking that the container
 // is still what the operator was looking at. Docker has no universal resource version, so the
@@ -34,6 +34,7 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	case protocol.ActionImageRemove:
 		return c.removeImage(ctx, cmd.Reference, cmd.Expects.ImageDigest)
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, operationBudget)
 	defer cancel()
 
@@ -78,6 +79,8 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 		return c.remove(ctx, container, inspected.State.Status)
 	}
 	// The container's own grace when it set one, Docker's default otherwise; negative is forever.
+	// The call waits out the grace and then operationBudget for the kill and a restart's start, so
+	// a slow shutdown is reported as it ended, not timed_out, and is never cut short.
 	grace := stopGrace
 	if t := inspected.Config.StopTimeout; t != nil {
 		grace = *t
@@ -96,6 +99,12 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	default:
 		return protocol.OutcomeDenied, "unsupported action"
 	}
+	budget := cmp.Or(c.operateMargin, operationBudget)
+	if cmd.Action != protocol.ActionStart {
+		budget += time.Duration(grace) * time.Second
+	}
+	ctx, cancel = context.WithTimeout(parent, budget)
+	defer cancel()
 	status, err := c.post(ctx, path)
 	switch {
 	case err != nil && ctx.Err() != nil:

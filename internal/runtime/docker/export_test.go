@@ -28,5 +28,11 @@ func (c *Client) ReserveRestartFor(d time.Duration) *Client {
 	return c
 }
 
+// OperateMarginFor sets what a container action may take beyond its stop grace.
+func (c *Client) OperateMarginFor(d time.Duration) *Client {
+	c.operateMargin = d
+	return c
+}
+
 // WaitBound is waitBound.
 var WaitBound = waitBound

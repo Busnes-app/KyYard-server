@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
@@ -111,18 +112,20 @@ func TestRemovalRefusesRatherThanForces(t *testing.T) {
 	}
 }
 
-// A stop or restart asks for the container's own grace, capped so the call fits its budget
-// instead of being reported timed_out while Docker waits out an hour-long StopTimeout.
-func TestStopGraceFitsTheOperationBudget(t *testing.T) {
+// A stop or restart asks for the container's own grace, never cut short, and its call waits out
+// that grace before it counts as timed out: a database given two minutes to shut down is not
+// killed early, and its stop is reported as it ended.
+func TestStopKeepsTheContainersGrace(t *testing.T) {
 	for name, c := range map[string]struct {
 		stopTimeout string
 		want        string
 	}{
-		"unset":   {"null", "t=10"},
-		"shorter": {"3", "t=3"},
-		"zero":    {"0", "t=0"},
-		"an hour": {"3600", "t=20"},
-		"forever": {"-1", "t=20"},
+		"unset":     {"null", "t=10"},
+		"shorter":   {"3", "t=3"},
+		"zero":      {"0", "t=0"},
+		"two min":   {"120", "t=120"},
+		"over edit": {"7200", "t=3600"},
+		"forever":   {"-1", "t=3600"},
 	} {
 		for _, action := range []string{protocol.ActionStop, protocol.ActionRestart} {
 			var query string
@@ -139,6 +142,22 @@ func TestStopGraceFitsTheOperationBudget(t *testing.T) {
 			if outcome != protocol.OutcomeSucceeded || query != c.want {
 				t.Errorf("%s %s: %s with %q, want %q", name, action, outcome, query, c.want)
 			}
+		}
+	}
+	// A daemon answering after the margin but within grace plus margin is an answer.
+	for stopTimeout, want := range map[string]string{"0": protocol.OutcomeTimedOut, "1": protocol.OutcomeSucceeded} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				time.Sleep(300 * time.Millisecond)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			_, _ = w.Write([]byte(`{"Image":"sha256:abc","Config":{"StopTimeout":` + stopTimeout + `},"State":{"Status":"running"}}`))
+		}))
+		outcome, _ := docker.NewHTTP(srv.Client(), srv.URL).OperateMarginFor(100*time.Millisecond).Operate(context.Background(), protocol.Command{Action: protocol.ActionStop, Container: "web"})
+		srv.Close()
+		if outcome != want {
+			t.Errorf("StopTimeout %s answered after the margin: %s, want %s", stopTimeout, outcome, want)
 		}
 	}
 }

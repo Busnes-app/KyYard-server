@@ -38,9 +38,9 @@ type Client struct {
 	infoMu   sync.Mutex
 	info     daemon
 	infoRead time.Time
-	// startWatch, startPoll, stopWait, restoreBudget and restartReserve (operationBudget) override
-	// the package's for tests; zero is the default.
-	startWatch, startPoll, stopWait, restoreBudget, restartReserve time.Duration
+	// startWatch, startPoll, stopWait, restoreBudget, restartReserve and operateMargin (both
+	// operationBudget) override the package's for tests; zero is the default.
+	startWatch, startPoll, stopWait, restoreBudget, restartReserve, operateMargin time.Duration
 }
 
 // callBudget bounds a call whose caller set no deadline of its own.
