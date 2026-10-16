@@ -11,10 +11,13 @@ Owns the client-go typed clientset (`New`, `InCluster`, `NewFromClientset` for t
   ownership: refuse workload mutations and pod exec, project configuration as managed,
   and exclude objects from KyYard deployment/removal ownership even if they also carry
   KyYard instance labels. Pod exec and pod delete also walk the pod's controller references
-  (`installerOwned`, at most two hops: ReplicaSet → Deployment, Job → CronJob, StatefulSet,
-  DaemonSet), matching each owner's UID, and refuse when any link is installer-managed or an
-  owner is unreadable, gone, replaced or of another kind. Regression tests
-  (`TestInstallerOwnershipFollowsPodControllers`) assert no API mutation or exec transport.
+  (`installerOwned`, at most three hops: ReplicaSet → Deployment → custom resource; built-in
+  workloads read typed for their pod-template labels, any other kind as metadata through the
+  discovery RESTMapper), matching each owner's UID, and refuse when any link is
+  installer-managed or an owner is unreadable, gone, replaced, unmapped or past the bound. The
+  shipped RBAC grants no `get` on custom resources, so operator-controlled pods stay refused.
+  Regression tests (`TestInstallerOwnershipFollowsPodControllers`) assert no API mutation or
+  exec transport.
 - Native Deployment runs use the validated `run_manifest` object in the existing create step, preserving selectors, container ports, probes, security and existing volume/Secret references. The existing namespace access review, enforced Pod Security, free-name check, create-only API call, command ledger and rollout bound all apply. Other resource kinds are not dispatched through this path. `TestApplyWorkloadRunsNativeManifest` verifies the object the clientset actually creates.
 - Static Service IPs (docs/application-schema.md and docs/agent-protocol.md, Static Service IPs): render the requested `ClusterIP`, reject a changed existing IP before writes and on conflict retries, and allocate/update the Service before that service's claims/configuration/Deployment. The actual Kubernetes create validates range and availability; dry-run does not reliably reject allocated addresses. Allocator refusal is `service_ip_unavailable`; existing-address mismatch is `service_ip_immutable`, with `Service/<name>`. Updates preserve assigned addresses and IP families. Inventory includes instance/service ownership labels for backend URLs. `TestStaticServiceIPCreateAndPreserve` and `TestStaticServiceIPRefusalsBeforeWorkloadWrites` cover preservation and retries; `TestManifestOnARealCluster` proves real allocator refusal and a pinned address across reapply, and a workload run written `tag@digest` whose pod reports that digest.
 - `Snapshot` lists nodes, namespaces, deployments, statefulsets, daemonsets, pods, services, persistentvolumeclaims and storageclasses (`StorageClasses`: name, default when the `storageclass.kubernetes.io/is-default-class` or its beta annotation is `true`, sorted by name) with `List` (`Limit` 500, `Continue` paging, stopping once past the cap), all at once and alongside the server version (`serverVersion`, the one `ServerVersionWithContext` call `Facts` also uses), so the snapshot costs the slowest list, not the sum; sorts each list by namespace then name, and leaves the cut and the byte fit to `protocol.Clamp`/`Shrink`. A list that fails is reported empty and named in `Truncated` with a log line; `Snapshot` never returns an error. `Engine` is `Runtime: kubernetes`, the API server's `GitVersion`, `Major.Minor`, and `Platform` split into OS and arch.
