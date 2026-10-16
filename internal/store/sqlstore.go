@@ -618,9 +618,18 @@ func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expecte
 }
 
 func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error {
+	return u.replacePassword(ctx, userID, oldHash, newHash, ip, true, "forced replacement; sessions revoked")
+}
+
+// ChangePassword is the self-service change of an unflagged local password.
+func (u *userStore) ChangePassword(ctx context.Context, userID, oldHash, newHash, ip string) error {
+	return u.replacePassword(ctx, userID, oldHash, newHash, ip, false, "self-service change; sessions revoked")
+}
+
+func (u *userStore) replacePassword(ctx context.Context, userID, oldHash, newHash, ip string, forced bool, details string) error {
 	return u.store.withPassword(ctx, userID, oldHash, true, func(tx *sql.Tx) error {
 		now := time.Now().UTC()
-		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND must_change_password = ? AND sso_provider = 'local'`), newHash, false, now, userID, true)
+		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND must_change_password = ? AND sso_provider = 'local'`), newHash, false, now, userID, forced)
 		if err != nil {
 			return err
 		}
@@ -631,11 +640,12 @@ func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash,
 		if n != 1 {
 			return ErrNotFound
 		}
-		return u.revokePasswordGrants(ctx, tx, userID, "forced replacement; sessions revoked", ip, now)
+		return u.revokePasswordGrants(ctx, tx, userID, details, ip, now)
 	})
 }
 
-// ResetAdminPassword is the operator recovery path, including disabled local accounts.
+// ResetAdminPassword is the operator recovery path, including disabled local accounts. It
+// clears MFA too: the operator has the host, and a lost authenticator otherwise locks them out.
 func (u *userStore) ResetAdminPassword(ctx context.Context, userID, newHash string) error {
 	tx, err := u.store.beginTx(ctx, true)
 	if err != nil {
@@ -643,7 +653,7 @@ func (u *userStore) ResetAdminPassword(ctx context.Context, userID, newHash stri
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
-	result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, status = 'active', role = 'admin', updated_at = ? WHERE id = ? AND sso_provider = 'local'`), newHash, true, now, userID)
+	result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, status = 'active', role = 'admin', totp_secret_enc = '', totp_enabled = ?, recovery_codes_hash = '', updated_at = ? WHERE id = ? AND sso_provider = 'local'`), newHash, true, false, now, userID)
 	if err != nil {
 		return err
 	}
@@ -654,7 +664,7 @@ func (u *userStore) ResetAdminPassword(ctx context.Context, userID, newHash stri
 	if n != 1 {
 		return ErrNotFound
 	}
-	if err := u.revokePasswordGrants(ctx, tx, userID, "operator reset; sessions revoked", "", now); err != nil {
+	if err := u.revokePasswordGrants(ctx, tx, userID, "operator reset; sessions and MFA cleared", "", now); err != nil {
 		return err
 	}
 	return tx.Commit()

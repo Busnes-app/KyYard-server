@@ -496,6 +496,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/me", s.handleMe)
 	s.mux.HandleFunc("/api/auth/change-password", s.handleChangePassword)
 
+	// Self-service sign-in security. Not under /api/auth/mfa/, which is CSRF-exempt.
+	s.mux.HandleFunc("POST /api/account/password", s.handleAccountPassword)
+	s.mux.HandleFunc("POST /api/account/mfa/enrol", s.handleMFAEnrol)
+	s.mux.HandleFunc("POST /api/account/mfa/confirm", s.handleMFAConfirm)
+	s.mux.HandleFunc("POST /api/account/mfa/disable", s.handleMFADisable)
+	s.mux.HandleFunc("POST /api/account/mfa/recovery-codes", s.handleMFARecoveryCodes)
+
 	// SSO
 	s.mux.HandleFunc("GET /api/sso/{provider}/login", s.handleProviderLogin)
 	s.mux.HandleFunc("GET /api/sso/{provider}/callback", s.handleProviderCallback)

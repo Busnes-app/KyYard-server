@@ -14,7 +14,7 @@
 | Read Only | organization | read everything non-secret |
 | Pulse reader (service token) | organization | read-only: organization, environments, endpoints, inventory, samples, container logs without follow, audit feed; no mutation, no exec, no secrets |
 
-The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing account's password; neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
+The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing local account's password and clears its MFA; neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
 
 Per-environment grants (`role_bindings`) are not introduced; the handoff allows them only if fixed organization roles prove insufficient.
 
@@ -34,6 +34,10 @@ Columns: OA organization admin, EA environment admin, Op operator, Dev developer
 ### Account identity linking (*implemented*)
 
 Any active local account may explicitly connect a configured provider to itself through Settings → Sign-in. `POST /api/sso/{provider}/link` requires its current password and CSRF, then PKCE/nonce/browser-bound provider verification. The callback requires the original session; the store rechecks that session, the verified password hash, active local ownership and completed bootstrap replacement inside the identity/audit transaction. `auth.sso.link` records the local actor and provider in platform scope, without credentials or provider subject. Linking grants no role or membership and preserves the local password/recovery path. Provider identities have one account owner; username/email similarity is never authority. Directory synchronization cannot manage a local account through an additive sign-in link. Each signed directory event applies once and in order: its replay marker, the subject's watermark, the account change and session revocation commit in one transaction or not at all.
+
+### Account security (*implemented*)
+
+Any active local password account manages its own second factor and password in Settings → Security; no role or membership is involved and none is granted. Routes are `POST /api/account/mfa/{enrol,confirm,recovery-codes,disable}` and `POST /api/account/password`, session-authenticated with CSRF (outside the CSRF-exempt `/api/auth/mfa/` login prefix). Enrolment stores a sealed pending secret; enabling needs the password and a spent TOTP code; replacing recovery codes needs a TOTP code; disabling needs the password and a TOTP or recovery code; re-enrolment needs disabling first. A password change needs the password (and a TOTP code when enabled) and revokes every other session, MFA transaction and device pairing. Every MFA write is one compare-and-swap on the whole MFA state under the verified password hash, audited in the same transaction (`auth.mfa.enrol_started`, `auth.mfa.enabled`, `auth.mfa.recovery_codes_regenerated`, `auth.mfa.disabled`, `auth.password_changed`) with no secret or code in the row. Code checks spend the per-account `mfa-user:` budget (5 per 5 minutes) shared with the login challenge. SSO-provisioned accounts (no local password) and sessions still owing a forced replacement are refused.
 
 ### Organization and membership (*implemented*)
 
