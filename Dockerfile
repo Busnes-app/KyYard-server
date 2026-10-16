@@ -15,8 +15,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . ./
 COPY --from=frontend-builder /app/web/dist ./web/dist
+# The agent reports this to the server; release-image.yml passes the release version.
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o kyyard-server ./cmd/server \
- && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o kyyard-agent ./cmd/agent
+ && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.version=${VERSION}" -o kyyard-agent ./cmd/agent
 
 # Stage 3: Minimal Production Container
 FROM alpine:3.24
