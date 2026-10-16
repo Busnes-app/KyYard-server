@@ -425,6 +425,8 @@ func TestDeploymentStepCodeDetails(t *testing.T) {
 		{"identity_mismatch", "", true},
 		{"image_identity_mismatch", "", true},
 		{"configuration_unreported", "", true},
+		{"secret_ref_refused", "", true},
+		{"secret_ref_refused", "Secret/db", false},
 		{"unsupported", "privileged", true},
 		{"bind_missing", "", true},
 		{"volume_mount_missing", "", true},
@@ -478,7 +480,7 @@ func TestDeploymentStepCodeDetails(t *testing.T) {
 			t.Errorf("code %q detail %q: %v", tc.code, tc.detail, err)
 		}
 	}
-	if len(stepCodes) != 44 || len(resultCodes) != 8 {
+	if len(stepCodes) != 45 || len(resultCodes) != 8 {
 		t.Fatalf("closed sets: %d step codes, %d result codes", len(stepCodes), len(resultCodes))
 	}
 }

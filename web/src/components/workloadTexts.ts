@@ -11,6 +11,7 @@ export const UNREPORTED = 'This workload has settings the form cannot carry; not
 export const POD_SECURITY = 'This namespace does not enforce Pod Security baseline or restricted; KyYard refuses to change workloads there.';
 export const MANAGED = 'Managed by a KyYard application. Edit it there.';
 export const PVC_RETENTION = "Scaling down would delete this StatefulSet's volume claims (whenScaled: Delete).";
+export const SECRET_REF_REFUSED = 'A workload may keep the Secret references it already has but not add new ones; exec and logs would expose them.';
 export const NAME_TAKEN = 'A workload with this name already exists in the namespace. Choose another name.';
 // A run's 404 is the endpoint or its inventory; the server's body does not say which.
 export const RUN_NOT_FOUND = 'The endpoint or its inventory was not found.';
@@ -18,7 +19,7 @@ export const RUN_NOT_FOUND = 'The endpoint or its inventory was not found.';
 // Step codes of a workload apply whose wording differs from an application deployment's.
 export const WORKLOAD_STEPS: Record<string, string> = {
   forbidden: FORBIDDEN, conflict: CONFLICT, not_found: NOT_FOUND, namespace_not_granted: NOT_GRANTED,
-  configuration_unreported: UNREPORTED, application_managed: MANAGED, pod_security: POD_SECURITY, pvc_retention: PVC_RETENTION, name_taken: NAME_TAKEN,
+  configuration_unreported: UNREPORTED, application_managed: MANAGED, pod_security: POD_SECURITY, pvc_retention: PVC_RETENTION, name_taken: NAME_TAKEN, secret_ref_refused: SECRET_REF_REFUSED,
 };
 // Detail words of a settled workload or pod command (the cluster agent's Operate).
 const DETAILS: Record<string, string> = {

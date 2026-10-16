@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -27,6 +29,9 @@ const (
 	testInstance = "66666666-7777-4888-9999-aaaaaaaaaaaa"
 	testUID      = "0f1e2d3c-4b5a-4968-8776-655443322110"
 )
+
+// webEnv and webSecret are the ConfigMap and Secret deployRequest renders for web.
+const webEnv, webSecret = "shop-web-env-af4875899c", "shop-web-secret-af4875899c"
 
 var deploymentsResource = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 
@@ -135,8 +140,9 @@ func owned(service string) metav1.ObjectMeta {
 }
 
 // A first apply creates every object labelled as the instance's and waits for each rollout; the
-// run reports Deployment identities. A second apply updates the same objects in place, keeping
-// the Service's cluster IP. started is called once, after every precondition and before the
+// run reports Deployment identities. A second apply updates the Service (keeping its cluster IP)
+// and Deployment in place, writes its own ConfigMap and Secret, and deletes the first apply's
+// once the rollout is done. started is called once, after every precondition and before the
 // first write.
 func TestDeployCreatesThenUpdatesOwnedObjects(t *testing.T) {
 	c, cs := deployCluster(t, true, false)
@@ -162,7 +168,7 @@ func TestDeployCreatesThenUpdatesOwnedObjects(t *testing.T) {
 	if len(res.Services) != 2 || res.Services[0] != (protocol.DeploymentIdentity{Service: "web", Kind: protocol.KindDeployment, Namespace: "shop", Name: "shop-web", UID: testUID, Generation: 1, ImageDigest: testDigest}) {
 		t.Fatalf("identities %+v", res.Services)
 	}
-	secret, err := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-web-secret", metav1.GetOptions{})
+	secret, err := cs.CoreV1().Secrets("shop").Get(context.Background(), webSecret, metav1.GetOptions{})
 	if err != nil || string(secret.Data["TOKEN"]) != "s3cret" || secret.Labels[render.LabelInstance] != testInstance {
 		t.Fatalf("secret %+v %v", secret, err)
 	}
@@ -180,10 +186,10 @@ func TestDeployCreatesThenUpdatesOwnedObjects(t *testing.T) {
 	if res.Outcome != protocol.OutcomeSucceeded || res.Services[0].Generation != 2 {
 		t.Fatalf("update %+v", res)
 	}
-	if !slices.Equal(writes(cs), []string{"update services", "update configmaps", "update secrets", "update deployments", "update configmaps", "update deployments"}) {
+	if !slices.Equal(writes(cs), []string{"update services", "create configmaps", "create secrets", "update deployments", "delete secrets", "delete configmaps", "create configmaps", "update deployments", "delete configmaps"}) {
 		t.Fatalf("writes %v", writes(cs))
 	}
-	cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{})
+	cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env-4b2180f680", metav1.GetOptions{})
 	svc, _ = cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
 	if cm.Data["MODE"] != "staging" || cm.Annotations[render.AnnotationRevision] != "2" || svc.Spec.ClusterIP != "10.96.0.7" {
 		t.Fatalf("updated %+v %+v", cm, svc.Spec)
@@ -194,7 +200,7 @@ func TestDeployCreatesThenUpdatesOwnedObjects(t *testing.T) {
 // naming its kind and name; so does a grant the agent does not hold.
 func TestDeployRefusesBeforeWriting(t *testing.T) {
 	foreign := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-api", Labels: map[string]string{"app": "api"}}}
-	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-web-secret", Labels: map[string]string{render.LabelInstance: "99999999-7777-4888-9999-aaaaaaaaaaaa"}}}
+	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: webSecret, Labels: map[string]string{render.LabelInstance: "99999999-7777-4888-9999-aaaaaaaaaaaa"}}}
 	for name, tc := range map[string]struct {
 		objects      []runtime.Object
 		denied       bool
@@ -202,7 +208,7 @@ func TestDeployRefusesBeforeWriting(t *testing.T) {
 		code, detail string
 	}{
 		"unlabelled Deployment":     {[]runtime.Object{foreign}, false, "api", "name_taken", "Deployment/shop-api"},
-		"another instance's Secret": {[]runtime.Object{other}, false, "web", "name_taken", "Secret/shop-web-secret"},
+		"another instance's Secret": {[]runtime.Object{other}, false, "web", "name_taken", "Secret/" + webSecret},
 		"no grant":                  {nil, true, "web", "forbidden", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -228,7 +234,7 @@ func TestDeployRefusesBeforeWriting(t *testing.T) {
 func TestDeployRetriesOneConflict(t *testing.T) {
 	for _, conflicts := range []int{1, 2} {
 		existing := &corev1.ConfigMap{ObjectMeta: owned("web")}
-		existing.Name = "shop-web-env"
+		existing.Name = webEnv
 		c, cs := deployCluster(t, true, false, existing)
 		left := conflicts
 		cs.PrependReactor("update", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
@@ -236,7 +242,7 @@ func TestDeployRetriesOneConflict(t *testing.T) {
 				return false, nil, nil
 			}
 			left--
-			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", nil)
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, webEnv, nil)
 		})
 		res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
 		if conflicts == 1 && res.Outcome != protocol.OutcomeSucceeded {
@@ -244,7 +250,7 @@ func TestDeployRetriesOneConflict(t *testing.T) {
 		}
 		if conflicts == 2 {
 			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
-			if res.Outcome != protocol.OutcomeFailed || i < 0 || res.Steps[i].Step != protocol.StepCreate || res.Steps[i].Code != "conflict" || res.Steps[i].Detail != "ConfigMap/shop-web-env" || res.Validate() != nil {
+			if res.Outcome != protocol.OutcomeFailed || i < 0 || res.Steps[i].Step != protocol.StepCreate || res.Steps[i].Code != "conflict" || res.Steps[i].Detail != "ConfigMap/"+webEnv || res.Validate() != nil {
 				t.Fatalf("two conflicts: %+v", res)
 			}
 		}
@@ -305,6 +311,8 @@ func TestRemoveDeletesOnlyTheInstancesObjects(t *testing.T) {
 		&corev1.Service{ObjectMeta: obj("shop-web", "web")},
 		&corev1.ConfigMap{ObjectMeta: obj("shop-web-env", "web")},
 		&corev1.Secret{ObjectMeta: obj("shop-web-secret", "web")},
+		&corev1.ConfigMap{ObjectMeta: obj(webEnv, "web")},
+		&corev1.Secret{ObjectMeta: obj(webSecret, "web")},
 		&appsv1.Deployment{ObjectMeta: obj("shop-old", "old")},
 		&corev1.Secret{ObjectMeta: obj("shop-old-secret", "old")},
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-api-env"}},
@@ -336,7 +344,7 @@ func TestRemoveDeletesOnlyTheInstancesObjects(t *testing.T) {
 		}
 	}
 	slices.Sort(deleted)
-	if !slices.Equal(deleted, []string{"configmaps/shop-web-env", "deployments/shop-old", "deployments/shop-web", "secrets/shop-old-secret", "secrets/shop-web-secret", "services/shop-web"}) {
+	if !slices.Equal(deleted, []string{"configmaps/shop-web-env", "configmaps/" + webEnv, "deployments/shop-old", "deployments/shop-web", "secrets/shop-old-secret", "secrets/shop-web-secret", "secrets/" + webSecret, "services/shop-web"}) {
 		t.Fatalf("deleted %v", deleted)
 	}
 	for _, a := range cs.Actions() {
@@ -410,37 +418,92 @@ func TestRemoveGuardsDeletesByTheUIDItRead(t *testing.T) {
 	}
 }
 
-// Dropping a service's last secret-backed key deletes the stale Secret an earlier apply left; an
-// unowned Secret under the same planned name is left alone rather than refused, since this apply
-// does not write to it.
-func TestDeployDropsAStaleSecretWhenKeysAreRemoved(t *testing.T) {
-	c, cs := deployCluster(t, true, false)
-	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
-	if res.Outcome != protocol.OutcomeSucceeded {
-		t.Fatalf("first deploy: %+v", res)
+// A Deployment write the cluster refuses leaves the running pods' ConfigMap and Secret as they
+// were (an earlier release's fixed names here): the apply writes its own beside them. The next
+// successful apply deletes what earlier revisions left, the refused one's included, once its
+// rollout is done, each at the UID it read; a paired Secret that is not this instance's stays.
+func TestDeployKeepsTheRunningConfigUntilTheRollout(t *testing.T) {
+	obj := func(name string, labels map[string]string) metav1.ObjectMeta {
+		return metav1.ObjectMeta{Namespace: "shop", Name: name, Labels: labels, UID: types.UID(name)}
 	}
+	ours := owned("web").Labels
+	legacyEnv := &corev1.ConfigMap{ObjectMeta: obj("shop-web-env", ours), Data: map[string]string{"MODE": "prod"}}
+	legacySecret := &corev1.Secret{ObjectMeta: obj("shop-web-secret", ours), Data: map[string][]byte{"TOKEN": []byte("s3cret")}}
+	running := &appsv1.Deployment{ObjectMeta: obj("shop-web", ours)}
+	strayEnv := &corev1.ConfigMap{ObjectMeta: obj("shop-web-env-0123456789", ours)}
+	foreignSecret := &corev1.Secret{ObjectMeta: obj("shop-web-secret-0123456789", map[string]string{render.LabelInstance: "99999999-7777-4888-9999-aaaaaaaaaaaa"})}
+	c, cs := deployCluster(t, true, false, legacyEnv, legacySecret, running, strayEnv, foreignSecret)
+	refuse := true
+	cs.PrependReactor("update", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if !refuse {
+			return false, nil, nil
+		}
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "shop-web", errors.New("policy"))
+	})
+	refused := deployRequest(time.Minute)
+	refused.Services[0].Env = map[string]string{"MODE": "staging"}
+	refused.Services[0].SecretKeys = nil
+	if res := c.Deploy(context.Background(), refused, func() {}); res.Outcome != protocol.OutcomeDenied {
+		t.Fatalf("refused write: %+v", res)
+	}
+	cm, errCM := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{})
+	secret, errS := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-web-secret", metav1.GetOptions{})
+	if errCM != nil || errS != nil || cm.Data["MODE"] != "prod" || string(secret.Data["TOKEN"]) != "s3cret" {
+		t.Fatalf("the running config changed under a refused Deployment write: %+v %v %+v %v", cm, errCM, secret, errS)
+	}
+
+	refuse = false
 	again := deployRequest(time.Minute)
 	again.Deployment, again.Revision = "4a3b2c1d-8d4a-4e6f-9a0b-1c2d3e4f5a6b", 2
 	again.Services[0].SecretKeys = nil
-	res = c.Deploy(context.Background(), again, func() {})
-	if res.Outcome != protocol.OutcomeSucceeded {
+	if res := c.Deploy(context.Background(), again, func() {}); res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("second deploy: %+v", res)
 	}
-	if _, err := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-web-secret", metav1.GetOptions{}); err == nil {
-		t.Fatal("the stale Secret survived a redeploy without secret keys")
+	var left []string
+	cms, _ := cs.CoreV1().ConfigMaps("shop").List(context.Background(), metav1.ListOptions{})
+	for _, o := range cms.Items {
+		left = append(left, "configmap/"+o.Name)
 	}
+	for _, name := range []string{"shop-web-secret", webSecret, "shop-web-secret-0123456789"} {
+		if _, err := cs.CoreV1().Secrets("shop").Get(context.Background(), name, metav1.GetOptions{}); err == nil {
+			left = append(left, "secret/"+name)
+		}
+	}
+	slices.Sort(left)
+	if !slices.Equal(left, []string{"configmap/shop-api-env-4b2180f680", "configmap/shop-web-env-4b2180f680", "secret/shop-web-secret-0123456789"}) {
+		t.Fatalf("left after a successful apply: %v", left)
+	}
+	// The seeded objects' UIDs are their names (the fake assigns none to the ones the run creates).
+	guarded := 0
+	for _, a := range cs.Actions() {
+		if d, ok := a.(k8stesting.DeleteActionImpl); ok && strings.HasPrefix(d.Name, "shop-web-") && !strings.Contains(d.Name, "af4875899c") {
+			if p := d.DeleteOptions.Preconditions; p == nil || p.UID == nil || string(*p.UID) != d.Name {
+				t.Fatalf("%s deleted without the UID it read: %+v", d.Name, d.DeleteOptions)
+			}
+			guarded++
+		}
+	}
+	if guarded != 3 {
+		t.Fatalf("%d seeded objects deleted, want the legacy ConfigMap and Secret and the stray ConfigMap", guarded)
+	}
+}
 
-	foreign := owned("api")
-	foreign.Labels = map[string]string{} // unowned: no instance label
-	foreign.Name = "shop-api-secret"
-	c, cs = deployCluster(t, true, false, &corev1.Secret{ObjectMeta: foreign})
-	res = c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
-	if res.Outcome != protocol.OutcomeSucceeded {
-		t.Fatalf("deploy beside a foreign secret: %+v", res)
+// A rollout that fails puts the pod template the precondition read back onto the Deployment, so
+// it does not stay on the failed rollout.
+func TestDeployRestoresThePreviousTemplateAfterAFailedRollout(t *testing.T) {
+	prev := &appsv1.Deployment{ObjectMeta: owned("web"), Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{render.AnnotationDeployment: "previous"}},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: "ghcr.io/org/web@" + testDigest}}},
+	}}}
+	prev.Name, prev.UID = "shop-web", testUID
+	c, cs := deployCluster(t, false, false, prev)
+	res := c.Deploy(context.Background(), deployRequest(300*time.Millisecond), func() {})
+	if i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" }); i < 0 || res.Steps[i].Code != "rollout_timeout" {
+		t.Fatalf("result %+v", res)
 	}
-	kept, err := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-api-secret", metav1.GetOptions{})
-	if err != nil || len(kept.Labels) != 0 {
-		t.Fatalf("the foreign secret was touched: %+v %v", kept, err)
+	d, err := cs.AppsV1().Deployments("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
+	if err != nil || d.Spec.Template.Annotations[render.AnnotationDeployment] != "previous" || d.Spec.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
+		t.Fatalf("not restored: %+v %v", d, err)
 	}
 }
 
@@ -549,14 +612,14 @@ func TestDeployRequiresPodSecurityBaseline(t *testing.T) {
 func TestDeployAdmissionDenied(t *testing.T) {
 	c, cs := deployCluster(t, true, false)
 	cs.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", errors.New("exceeded quota: secret-canary"))
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, webEnv, errors.New("exceeded quota: secret-canary"))
 	})
 	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
 	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
 	if res.Outcome != protocol.OutcomeDenied || i < 0 || res.Validate() != nil {
 		t.Fatalf("result %+v %v", res, res.Validate())
 	}
-	if s := res.Steps[i]; s.Service != "web" || s.Step != protocol.StepCreate || s.Code != "admission_denied" || s.Detail != "ConfigMap/shop-web-env" {
+	if s := res.Steps[i]; s.Service != "web" || s.Step != protocol.StepCreate || s.Code != "admission_denied" || s.Detail != "ConfigMap/"+webEnv {
 		t.Fatalf("step %+v", s)
 	}
 }
@@ -742,8 +805,8 @@ func TestDeployReapplyIsIdempotent(t *testing.T) {
 	if !slices.Equal(writes(cs), []string{"update services", "update configmaps", "update secrets", "update deployments", "update configmaps", "update deployments"}) {
 		t.Fatalf("writes %v", writes(cs))
 	}
-	cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{})
-	secret, _ := cs.CoreV1().Secrets("shop").Get(context.Background(), "shop-web-secret", metav1.GetOptions{})
+	cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), webEnv, metav1.GetOptions{})
+	secret, _ := cs.CoreV1().Secrets("shop").Get(context.Background(), webSecret, metav1.GetOptions{})
 	if len(cm.Data) != 1 || cm.Data["MODE"] != "prod" || len(secret.Data) != 1 || string(secret.Data["TOKEN"]) != "s3cret" {
 		t.Fatalf("re-apply changed content: %v %v", cm.Data, secret.Data)
 	}
@@ -752,19 +815,19 @@ func TestDeployReapplyIsIdempotent(t *testing.T) {
 // An owned object deleted between the precondition read and its update is created instead.
 func TestDeployUpdateOfAVanishedObjectCreates(t *testing.T) {
 	existing := &corev1.ConfigMap{ObjectMeta: owned("web")}
-	existing.Name = "shop-web-env"
+	existing.Name = webEnv
 	c, cs := deployCluster(t, true, false, existing)
 	cs.PrependReactor("update", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
-		if err := cs.Tracker().Delete(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "shop", "shop-web-env"); err != nil {
+		if err := cs.Tracker().Delete(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "shop", webEnv); err != nil {
 			return false, nil, nil // already deleted: let the tracker answer NotFound again
 		}
-		return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "shop-web-env")
+		return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, webEnv)
 	})
 	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
 	if res.Outcome != protocol.OutcomeSucceeded {
 		t.Fatalf("result %+v", res)
 	}
-	if cm, err := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{}); err != nil || cm.Labels[render.LabelInstance] != testInstance {
+	if cm, err := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), webEnv, metav1.GetOptions{}); err != nil || cm.Labels[render.LabelInstance] != testInstance {
 		t.Fatalf("configmap %+v %v", cm, err)
 	}
 }
@@ -773,11 +836,11 @@ func TestDeployUpdateOfAVanishedObjectCreates(t *testing.T) {
 // name_taken (never overwritten), and one this instance holds is written again.
 func TestDeployRaceRereadsTheObject(t *testing.T) {
 	foreign := func() *corev1.ConfigMap {
-		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-web-env", Labels: map[string]string{"app": "other"}}}
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: webEnv, Labels: map[string]string{"app": "other"}}}
 	}
 	ours := func() *corev1.ConfigMap {
 		m := owned("web")
-		m.Name = "shop-web-env"
+		m.Name = webEnv
 		return &corev1.ConfigMap{ObjectMeta: m}
 	}
 	cmResource := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
@@ -788,9 +851,9 @@ func TestDeployRaceRereadsTheObject(t *testing.T) {
 		lost     error
 		code     string
 	}{
-		"conflict, now foreign":    {ours(), "update", foreign(), apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", nil), "name_taken"},
-		"exists race, now foreign": {nil, "create", foreign(), apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, "shop-web-env"), "name_taken"},
-		"exists race, ours":        {nil, "create", ours(), apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, "shop-web-env"), ""},
+		"conflict, now foreign":    {ours(), "update", foreign(), apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, webEnv, nil), "name_taken"},
+		"exists race, now foreign": {nil, "create", foreign(), apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, webEnv), "name_taken"},
+		"exists race, ours":        {nil, "create", ours(), apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, webEnv), ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var objects []runtime.Object
@@ -804,7 +867,7 @@ func TestDeployRaceRereadsTheObject(t *testing.T) {
 					return false, nil, nil
 				}
 				raced = true
-				if err := cs.Tracker().Delete(cmResource, "shop", "shop-web-env"); err != nil && !apierrors.IsNotFound(err) {
+				if err := cs.Tracker().Delete(cmResource, "shop", webEnv); err != nil && !apierrors.IsNotFound(err) {
 					return true, nil, err
 				}
 				if err := cs.Tracker().Add(tc.winner); err != nil {
@@ -823,10 +886,10 @@ func TestDeployRaceRereadsTheObject(t *testing.T) {
 				return
 			}
 			i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
-			if res.Outcome != protocol.OutcomeDenied || i < 0 || res.Steps[i].Step != protocol.StepCreate || res.Steps[i].Code != tc.code || res.Steps[i].Detail != "ConfigMap/shop-web-env" {
+			if res.Outcome != protocol.OutcomeDenied || i < 0 || res.Steps[i].Step != protocol.StepCreate || res.Steps[i].Code != tc.code || res.Steps[i].Detail != "ConfigMap/"+webEnv {
 				t.Fatalf("result %+v", res)
 			}
-			if cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{}); cm.Labels["app"] != "other" {
+			if cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), webEnv, metav1.GetOptions{}); cm.Labels["app"] != "other" {
 				t.Fatalf("the foreign ConfigMap was overwritten: %+v", cm)
 			}
 		})
@@ -843,12 +906,12 @@ func TestDeployWriteRefusalNamesItsCause(t *testing.T) {
 		code, detail string
 	}{
 		"verb not granted": {false, protocol.OutcomeDenied, "forbidden", ""},
-		"admission":        {true, protocol.OutcomeDenied, "admission_denied", "ConfigMap/shop-web-env"},
+		"admission":        {true, protocol.OutcomeDenied, "admission_denied", "ConfigMap/" + webEnv},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, cs := deployCluster(t, true, false)
 			cs.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
-				return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", errors.New("secret-canary"))
+				return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, webEnv, errors.New("secret-canary"))
 			})
 			var asked []authorizationv1.ResourceAttributes
 			cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -869,7 +932,7 @@ func TestDeployWriteRefusalNamesItsCause(t *testing.T) {
 			if s := res.Steps[i]; s.Step != protocol.StepCreate || s.Code != tc.code || s.Detail != tc.detail {
 				t.Fatalf("step %+v", s)
 			}
-			want := authorizationv1.ResourceAttributes{Namespace: "shop", Verb: "create", Resource: "configmaps", Name: "shop-web-env"}
+			want := authorizationv1.ResourceAttributes{Namespace: "shop", Verb: "create", Resource: "configmaps", Name: webEnv}
 			if !slices.Contains(asked, want) {
 				t.Fatalf("no access review for the failing write: %+v", asked)
 			}
@@ -968,7 +1031,7 @@ func TestDeployWriteRefusalReviewFailureIsNotAdmissionDenied(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c, cs := deployCluster(t, true, false)
 			cs.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
-				return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "shop-web-env", errors.New("secret-canary"))
+				return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, webEnv, errors.New("secret-canary"))
 			})
 			cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
 				review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
@@ -994,8 +1057,8 @@ func TestDeployWriteRefusalReviewFailureIsNotAdmissionDenied(t *testing.T) {
 // retry the following race needs to tell a foreign object apart from a retryable one.
 func TestDeployVanishThenRaceIsNameTaken(t *testing.T) {
 	existing := &corev1.ConfigMap{ObjectMeta: owned("web")}
-	existing.Name = "shop-web-env"
-	foreign := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-web-env", Labels: map[string]string{"app": "other"}}}
+	existing.Name = webEnv
+	foreign := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: webEnv, Labels: map[string]string{"app": "other"}}}
 	cmResource := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	c, cs := deployCluster(t, true, false, existing)
 	vanished := false
@@ -1004,10 +1067,10 @@ func TestDeployVanishThenRaceIsNameTaken(t *testing.T) {
 			return false, nil, nil
 		}
 		vanished = true
-		if err := cs.Tracker().Delete(cmResource, "shop", "shop-web-env"); err != nil {
+		if err := cs.Tracker().Delete(cmResource, "shop", webEnv); err != nil {
 			return true, nil, err
 		}
-		return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "shop-web-env")
+		return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, webEnv)
 	})
 	raced := false
 	cs.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
@@ -1018,17 +1081,17 @@ func TestDeployVanishThenRaceIsNameTaken(t *testing.T) {
 		if err := cs.Tracker().Add(foreign); err != nil {
 			return true, nil, err
 		}
-		return true, nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, "shop-web-env")
+		return true, nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, webEnv)
 	})
 	res := c.Deploy(context.Background(), deployRequest(time.Minute), func() {})
 	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" })
 	if res.Outcome != protocol.OutcomeDenied || i < 0 || res.Validate() != nil {
 		t.Fatalf("result %+v %v", res, res.Validate())
 	}
-	if s := res.Steps[i]; s.Step != protocol.StepCreate || s.Code != "name_taken" || s.Detail != "ConfigMap/shop-web-env" {
+	if s := res.Steps[i]; s.Step != protocol.StepCreate || s.Code != "name_taken" || s.Detail != "ConfigMap/"+webEnv {
 		t.Fatalf("step %+v", s)
 	}
-	if cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), "shop-web-env", metav1.GetOptions{}); cm.Labels["app"] != "other" {
+	if cm, _ := cs.CoreV1().ConfigMaps("shop").Get(context.Background(), webEnv, metav1.GetOptions{}); cm.Labels["app"] != "other" {
 		t.Fatalf("the foreign ConfigMap was overwritten: %+v", cm)
 	}
 }

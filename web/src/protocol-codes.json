@@ -36,6 +36,7 @@
     "runtime_status",
     "runtime_timeout",
     "runtime_unreadable",
+    "secret_ref_refused",
     "service_ip_immutable",
     "service_ip_unavailable",
     "start_failed_rolled_back",
