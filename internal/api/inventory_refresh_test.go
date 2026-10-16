@@ -1,8 +1,11 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,9 +49,27 @@ func TestInventoryRefreshIsScopedAndWaitsForANewerReport(t *testing.T) {
 	}
 }
 
+// Refusals spend no refresh budget: the seventh request to an older agent is still told why.
 func TestInventoryRefreshRefusesAnOlderAgent(t *testing.T) {
 	f := directFixture(t, directCaps)
-	if w := tenantRequest(f.s, f.admin, "POST", "/api/organizations/a/endpoints/"+f.ag.id+"/inventory/refresh", "", true); w.Code != 501 {
-		t.Fatalf("old agent: %d %s", w.Code, w.Body.String())
+	for i := range 8 {
+		if w := tenantRequest(f.s, f.admin, "POST", "/api/organizations/a/endpoints/"+f.ag.id+"/inventory/refresh", "", true); w.Code != 501 {
+			t.Fatalf("old agent, request %d: %d %s", i+1, w.Code, w.Body.String())
+		}
 	}
+}
+
+func TestServiceTokenCannotRefreshInventory(t *testing.T) {
+	srv, st, cookie, csrf, org := tenantAdminFixture(t)
+	token := pairAndClaim(t, srv, cookie, csrf, org)
+	if w := bearer(srv, "POST", "/api/organizations/"+org+"/endpoints/ep_none/inventory/refresh", token); w.Code != http.StatusForbidden {
+		t.Fatalf("service refresh: %d %s", w.Code, w.Body)
+	}
+	rows, _, _ := st.Audit().ListAuditRecords(context.Background(), 0, 50)
+	for _, r := range rows {
+		if r.Details == "inventory.refresh" && r.Result == "denied" && strings.HasPrefix(r.UserID, "service:") {
+			return
+		}
+	}
+	t.Fatal("service refresh refusal must be audited")
 }

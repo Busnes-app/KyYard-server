@@ -3,7 +3,10 @@ package protocol
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"net/url"
 	"strconv"
 	"time"
 )
@@ -85,11 +88,60 @@ const (
 	CloseKeyPending   = "key_pending_review" // keep using the approved key
 )
 
-// Challenge is the server's first frame: a fresh nonce and its pinned identity.
+// Challenge is the server's first frame: a fresh nonce and its pinned identity, proven by the
+// instance key's signature (SignChallenge). Servers before the proof, and any server answering
+// a dial without an agent nonce, omit both fields.
 type Challenge struct {
 	Nonce               []byte `json:"nonce"`
 	InstanceFingerprint string `json:"instance_fingerprint"`
 	Versions            []int  `json:"versions"`
+	InstanceKey         []byte `json:"instance_key,omitempty"`
+	Signature           []byte `json:"signature,omitempty"`
+}
+
+// AgentNonceParam is the dial query parameter carrying the agent's fresh nonce, unpadded
+// base64url, so the server's proof covers a value the server could not have seen before.
+const AgentNonceParam = "agent_nonce"
+
+// AgentNonce reads the agent's nonce from the dial query: nil when absent, an error unless it
+// is exactly one value decoding to 32 bytes.
+func AgentNonce(q url.Values) ([]byte, error) {
+	v, ok := q[AgentNonceParam]
+	if !ok {
+		return nil, nil
+	}
+	if len(v) != 1 {
+		return nil, errors.New("agent_nonce: want exactly one value")
+	}
+	n, err := base64.RawURLEncoding.Strict().DecodeString(v[0])
+	if err != nil || len(n) != 32 {
+		return nil, errors.New("agent_nonce: want 32 bytes, unpadded base64url")
+	}
+	return n, nil
+}
+
+// ChallengePreimage binds the instance key's signature to both nonces, the host the agent
+// dialed and the fingerprint it pins, so a signature cannot be replayed for another socket, a
+// later handshake or another name.
+func ChallengePreimage(nonce, agentNonce []byte, serverHost, instanceFingerprint string) []byte {
+	return Preimage(ContextServer, nonce, agentNonce, []byte(serverHost), []byte(instanceFingerprint))
+}
+
+// SignChallenge is the server's challenge for nonce, signed by its instance key over the
+// agent's nonce.
+func SignChallenge(instance ed25519.PrivateKey, nonce, agentNonce []byte, serverHost string) Challenge {
+	pub := instance.Public().(ed25519.PublicKey)
+	fp := Fingerprint(pub)
+	return Challenge{Nonce: nonce, InstanceFingerprint: fp, Versions: []int{Version}, InstanceKey: pub, Signature: ed25519.Sign(instance, ChallengePreimage(nonce, agentNonce, serverHost, fp))}
+}
+
+// Proven reports whether the challenge was signed, for serverHost and the agent's outstanding
+// nonce, by the instance key whose fingerprint the agent pinned.
+func (c Challenge) Proven(agentNonce []byte, serverHost, pinned string) bool {
+	if len(c.InstanceKey) != ed25519.PublicKeySize || len(c.Nonce) != 32 || len(agentNonce) != 32 || len(c.Signature) != ed25519.SignatureSize || Fingerprint(c.InstanceKey) != pinned {
+		return false
+	}
+	return ed25519.Verify(ed25519.PublicKey(c.InstanceKey), ChallengePreimage(c.Nonce, agentNonce, serverHost, pinned), c.Signature)
 }
 
 // Auth is the agent's reply, signed under ContextAuth by its endpoint key.

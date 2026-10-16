@@ -328,7 +328,7 @@ func (d *deployer) run(sessionCtx context.Context, out chan<- outFrame, id, requ
 		link := d.finish(res)
 		d.runs.Done()
 		if link != nil {
-			send(link.ctx, link.out, resultFrame(res))
+			send(link.ctx, link.out, outFrame{protocol.TypeDeploymentResult, mutation{res}})
 		}
 	}()
 }

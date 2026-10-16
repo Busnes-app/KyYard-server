@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"crypto/ed25519"
+	cryptorand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,9 @@ var (
 	ErrInstanceChanged = errors.New("control plane identity changed; re-enroll this host")
 	ErrIncompatible    = errors.New("control plane does not speak this protocol version")
 )
+
+// ErrServerUnproven is retried: upgrading the server fixes it without touching the agent.
+var ErrServerUnproven = errors.New("server does not prove its identity; upgrade the server")
 
 type Options struct {
 	inspectionSlots chan struct{}
@@ -246,8 +251,16 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	ctx, endSession := context.WithCancel(ctx)
 	defer endSession()
 	u, _ := url.Parse(target)
+	// A fresh nonce per dial, which the server's proof must cover: a proof recorded from an
+	// earlier handshake does not.
+	agentNonce := make([]byte, 32)
+	if _, err := cryptorand.Read(agentNonce); err != nil {
+		return err
+	}
+	dialURL := *u
+	dialURL.RawQuery = url.Values{protocol.AgentNonceParam: {base64.RawURLEncoding.EncodeToString(agentNonce)}}.Encode()
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	conn, _, err := websocket.Dial(dctx, target, &websocket.DialOptions{HTTPClient: opts.HTTPClient})
+	conn, _, err := websocket.Dial(dctx, dialURL.String(), &websocket.DialOptions{HTTPClient: opts.HTTPClient})
 	cancel()
 	if err != nil {
 		return err
@@ -270,6 +283,14 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	}
 	if ch.InstanceFingerprint != id.InstanceFingerprint {
 		return ErrInstanceChanged
+	}
+	// The fingerprint is public; only the instance key's signature proves who sent it. Nothing
+	// is signed for a server that has not proven itself.
+	if len(ch.Signature) == 0 {
+		return ErrServerUnproven
+	}
+	if !ch.Proven(agentNonce, u.Host, id.InstanceFingerprint) {
+		return errors.New("the server's identity proof failed; refusing to authenticate")
 	}
 	sig := ed25519.Sign(id.signingKey(), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
 	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Fingerprint: id.fingerprint(), Version: protocol.Version, Signature: sig}); err != nil {
@@ -334,8 +355,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 		return err
 	}
 	metricsOut := make(chan protocol.Metrics, 1)
+	snaps := &snapshots{ready: make(chan *protocol.Snapshot, 1)}
 	if hello.State != "pending" {
-		if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
+		// Before the loop, so replayed results follow the session's first report.
+		if err := publishInventory(ctx, conn, id, opts, readSnapshot(ctx, opts), metricsOut); err != nil {
 			return err
 		}
 		// Attach before the re-send, so a run finishing in between is delivered here or re-sent.
@@ -402,26 +425,27 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 			}
 		case <-inventory.C:
 			if hello.State != "pending" {
-				if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
-					return err
-				}
+				snaps.request(ctx, opts)
 			}
 		case res := <-results:
 			// Publish the runtime after a mutation before its result is visible to readers.
-			if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
-				return err
-			}
-			if err := write(ctx, conn, protocol.TypeResult, res); err != nil {
-				return err
-			}
+			snaps.request(ctx, opts, outFrame{protocol.TypeResult, res})
 		case f := <-outbound:
-			if f.Type == protocol.TypeDeploymentResult {
-				if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
-					return err
-				}
+			if m, ok := f.Payload.(mutation); ok {
+				snaps.request(ctx, opts, outFrame{f.Type, m.DeploymentResult})
+				break
 			}
 			if err := write(ctx, conn, f.Type, f.Payload); err != nil {
 				return err
+			}
+		case snap := <-snaps.ready:
+			if err := publishInventory(ctx, conn, id, opts, snap, metricsOut); err != nil {
+				return err
+			}
+			for _, f := range snaps.done(ctx, opts) {
+				if err := write(ctx, conn, f.Type, f.Payload); err != nil {
+					return err
+				}
 			}
 		case m := <-metricsOut:
 			if err := write(ctx, conn, protocol.TypeMetrics, m); err != nil {
@@ -439,9 +463,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 			switch f.Type {
 			case protocol.TypeInventoryRefresh:
 				if hello.State != "pending" {
-					if err := sendInventory(ctx, conn, id, opts, metricsOut); err != nil {
-						return err
-					}
+					snaps.request(ctx, opts)
 				}
 			case protocol.TypeApproved:
 				opts.Log.Printf("approved; reconnecting with full protocol")
@@ -671,28 +693,68 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 	return write(ctx, conn, protocol.TypeRotate, protocol.Rotate{PublicKey: pub, Signature: sig})
 }
 
-// sendInventory reads the runtime (or reports facts only) under a generation that rises across
-// restarts. The persisted counter is the only source of truth: trusting a fast host wall clock
-// can create a generation the server rejects for being in the future and persist the wedge.
-func sendInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options, metricsOut chan<- protocol.Metrics) error {
-	gen := id.Generation + 1
-	var snap *protocol.Snapshot
+// mutation marks a live run's deployment result: the loop sends it only after a snapshot read
+// once the run finished. Replayed and refused results are sent as they are.
+type mutation struct{ protocol.DeploymentResult }
+
+// snapshots runs one runtime read at a time off the session loop, so a slow or hung daemon never
+// holds heartbeats or frames; requests made while one runs merge into a single follow-up. A
+// mutation result waits for the first read that starts after it arrived, so a reader who sees
+// the result also sees its effect. Loop goroutine only; the reader hands back through ready.
+type snapshots struct {
+	ready   chan *protocol.Snapshot
+	running bool
+	again   bool
+	riding  []outFrame // sent after the running read is published
+	waiting []outFrame // sent after the next one
+}
+
+func (s *snapshots) request(ctx context.Context, opts *Options, after ...outFrame) {
+	s.waiting = append(s.waiting, after...)
+	if s.running {
+		s.again = true
+		return
+	}
+	s.running, s.again = true, false
+	s.riding, s.waiting = s.waiting, nil
+	go func() { s.ready <- readSnapshot(ctx, opts) }()
+}
+
+// done returns the frames that rode on the read just received and starts any follow-up.
+func (s *snapshots) done(ctx context.Context, opts *Options) []outFrame {
+	held := s.riding
+	s.running, s.riding = false, nil
+	if s.again || len(s.waiting) > 0 {
+		s.request(ctx, opts)
+	}
+	return held
+}
+
+// readSnapshot reads the runtime, or reports facts only when it cannot, so the endpoint stays
+// active and the next periodic read retries.
+func readSnapshot(ctx context.Context, opts *Options) *protocol.Snapshot {
 	if opts.Snapshot != nil {
 		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		s, err := opts.Snapshot(sctx)
 		cancel()
 		if err != nil {
 			opts.Log.Printf("runtime snapshot failed: %v; reporting facts only", err)
-		} else {
-			snap = s
+		} else if s != nil {
+			return s
 		}
 	}
-	if snap == nil {
-		snap = &protocol.Snapshot{ObservedAt: time.Now().UTC(), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
-		if opts.Kubernetes {
-			snap.Kubernetes = &protocol.KubernetesInventory{}
-		}
+	snap := &protocol.Snapshot{ObservedAt: time.Now().UTC(), Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}
+	if opts.Kubernetes {
+		snap.Kubernetes = &protocol.KubernetesInventory{}
 	}
+	return snap
+}
+
+// publishInventory sends snap under a generation that rises across restarts. The persisted
+// counter is the only source of truth: trusting a fast host wall clock can create a generation
+// the server rejects for being in the future and persist the wedge.
+func publishInventory(ctx context.Context, conn *websocket.Conn, id *Identity, opts *Options, snap *protocol.Snapshot, metricsOut chan<- protocol.Metrics) error {
+	gen := id.Generation + 1
 	snap.Generation = gen
 	if err := write(ctx, conn, protocol.TypeInventory, snap); err != nil {
 		return err

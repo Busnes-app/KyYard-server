@@ -110,7 +110,7 @@ func TestInspectionTransportKeepsHeartbeatsResponsive(t *testing.T) {
 			return
 		}
 		defer conn.CloseNow()
-		if err = write(ctx, conn, protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: "instance", Versions: []int{1}}); err != nil {
+		if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), agentNonce(r), r.Host)); err != nil {
 			checked <- err
 			return
 		}
@@ -170,7 +170,7 @@ func TestInspectionTransportKeepsHeartbeatsResponsive(t *testing.T) {
 	}))
 	defer stub.Close()
 	_, key, _ := ed25519.GenerateKey(nil)
-	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
+	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: testInstanceFingerprint, Server: stub.URL}
 	done := make(chan error, 1)
 	opts := Options{HTTPClient: stub.Client(), IdentityDir: t.TempDir(), Log: log.New(io.Discard, "", 0), Inspect: func(ctx context.Context, _ protocol.InspectionTarget) (*protocol.ContainerInspection, error) {
 		close(started)

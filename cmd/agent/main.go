@@ -10,6 +10,8 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -43,6 +45,7 @@ func main() {
 	kube := flag.Bool("kubernetes", false, "inventory the cluster this agent runs in, as its ServiceAccount (needs --docker-socket=)")
 	identitySecret := flag.String("identity-secret", "kyyard-agent-identity", "with --kubernetes: the Secret in the agent's namespace that holds its identity")
 	scratch := flag.String("scratch-dir", "/var/lib/kyyard-agent", "with --kubernetes: writable directory for the command ledgers (the identity stays in its Secret)")
+	caFile := flag.String("ca-file", "", "PEM CA bundle trusted for the server certificate instead of the system store (pass on every start)")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	if err := checkFlags(*kube, *socket, *link, *linkFile); err != nil {
@@ -68,7 +71,10 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient, err := newHTTPClient(*caFile)
+	if err != nil {
+		log.Fatalf("--ca-file: %v", err)
+	}
 	// The Docker adapter is optional at start: a host whose daemon is down still enrolls and
 	// reports facts, and the snapshot call keeps retrying the socket on its own schedule.
 	var snapshot func(context.Context) (*protocol.Snapshot, error)
@@ -175,6 +181,28 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+}
+
+// newHTTPClient serves enrollment and the socket dial. It never follows a redirect: a 307/308
+// would replay the enroll body, one-use token included, to wherever it points. A CA file
+// replaces the system trust store.
+func newHTTPClient(caFile string) (*http.Client, error) {
+	c := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if caFile == "" {
+		return c, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, errors.New("no PEM certificate in " + caFile)
+	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	c.Transport = t
+	return c, nil
 }
 
 // checkFlags refuses combinations that cannot mean anything.

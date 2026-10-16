@@ -24,6 +24,12 @@ import (
 	"github.com/coder/websocket"
 )
 
+// testInstance signs a stub server's challenges; identities pin its fingerprint.
+var (
+	testInstance            = ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	testInstanceFingerprint = protocol.Fingerprint(testInstance.Public().(ed25519.PublicKey))
+)
+
 // outFrame.Payload is any; the session loop marshals it, so the tests do the same.
 func payloadText(f outFrame) string {
 	raw, _ := json.Marshal(f.Payload)
@@ -328,7 +334,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 			return
 		}
 		checked <- func() error {
-			if err := write(ctx, conn, protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: "instance", Versions: []int{1}}); err != nil {
+			if err := write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), agentNonce(r), r.Host)); err != nil {
 				return err
 			}
 			if _, err := read(ctx, conn); err != nil {
@@ -341,6 +347,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 			removal := testRemoval("endpoint")
 			removal.Deployment = "5b4d3e2f-0a9c-4d8e-9f7a-3e4f5a6b7c8d"
 			advertised, advertisedRemove, resent, applied, removed := false, false, false, false, !withRemove
+			published := false // an inventory since the last request was sent
 			// The ledger replay is a separate goroutine's frame and may land after the apply result,
 			// so the loop waits for it too; the context deadline bounds the wait.
 			for !applied || !removed || !resent {
@@ -357,18 +364,24 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 					if err := write(ctx, conn, protocol.TypeDeploymentApply, req); err != nil {
 						return err
 					}
+					published = false
+				case protocol.TypeInventory:
+					published = true
 				case protocol.TypeDeploymentResult:
 					var res protocol.DeploymentResult
 					_ = json.Unmarshal(f.Payload, &res)
 					switch {
 					case res.Deployment == saved:
 						resent = true
+					case !published:
+						return errors.New("a live result preceded the inventory read after it")
 					case res.Deployment == req.Deployment && res.Outcome == protocol.OutcomeSucceeded:
 						applied = true
 						if withRemove {
 							if err := write(ctx, conn, protocol.TypeDeploymentRemove, removal); err != nil {
 								return err
 							}
+							published = false
 						}
 					case withRemove && res.Deployment == removal.Deployment && res.Outcome == protocol.OutcomeSucceeded:
 						removed = true
@@ -419,7 +432,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 	}))
 	defer stub.Close()
 	_, key, _ := ed25519.GenerateKey(nil)
-	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: "instance", Server: stub.URL}
+	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: testInstanceFingerprint, Server: stub.URL}
 	opts := Options{HTTPClient: stub.Client(), IdentityDir: dir, Log: log.New(io.Discard, "", 0), Deploy: func(_ context.Context, req protocol.DeploymentRequest, _ func()) protocol.DeploymentResult {
 		return protocol.DeploymentResult{Outcome: protocol.OutcomeSucceeded, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
 	}, Remove: remove}
@@ -952,4 +965,64 @@ func TestDeployerIgnoresAnUnattributableFrame(t *testing.T) {
 	if stored, err := os.ReadFile(filepath.Join(dir, "deployments.json")); err == nil && strings.TrimSpace(string(stored)) != "" && strings.TrimSpace(string(stored)) != "{}" {
 		t.Fatalf("ledger file written for an unattributable frame: %s", stored)
 	}
+}
+
+// A reconnect re-sends the ledger; those runs changed nothing just now, so the session's first
+// report covers them and none costs a runtime read of its own.
+func TestReplayedResultsDoNotReadTheRuntime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	saved := map[string]deploymentEntry{}
+	for _, id := range []string{"4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b70", "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b71", "4a3c2d1e-9f8b-4c7d-8e6f-2d3e4f5a6b72"} {
+		saved[id] = deploymentEntry{Result: protocol.DeploymentResult{Deployment: id, Outcome: protocol.OutcomeFailed, Code: protocol.ResultStepFailed, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}, Finished: time.Now().UTC()}
+	}
+	ledger, _ := json.Marshal(saved)
+	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), ledger, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var reads atomic.Int64
+	counted := make(chan int64, 1)
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		_ = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), agentNonce(r), r.Host))
+		_, _ = read(ctx, conn)
+		_ = write(ctx, conn, protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 5})
+		replayed := 0
+		for replayed < len(saved) {
+			f, err := read(ctx, conn)
+			if err != nil {
+				return
+			}
+			if f.Type == protocol.TypeDeploymentResult {
+				replayed++
+			}
+		}
+		counted <- reads.Load()
+		<-ctx.Done()
+	}))
+	defer stub.Close()
+	_, key, _ := ed25519.GenerateKey(nil)
+	id := &Identity{EndpointID: "endpoint", PrivateKey: key, InstanceFingerprint: testInstanceFingerprint, Server: stub.URL}
+	opts := Options{HTTPClient: stub.Client(), IdentityDir: dir, Log: log.New(io.Discard, "", 0), InventoryEvery: time.Hour,
+		Snapshot: func(context.Context) (*protocol.Snapshot, error) {
+			reads.Add(1)
+			return nil, errors.New("facts only")
+		}}
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, id, opts) }()
+	select {
+	case n := <-counted:
+		if n != 1 {
+			t.Fatalf("%d runtime reads for one connect and %d replayed results", n, len(saved))
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	cancel()
+	<-done
 }
