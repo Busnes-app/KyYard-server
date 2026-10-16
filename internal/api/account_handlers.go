@@ -36,7 +36,7 @@ func (s *Server) accountUser(w http.ResponseWriter, r *http.Request, budget stri
 		s.writeError(w, http.StatusForbidden, "Only accounts with a local password can change their sign-in security")
 		return nil, nil, false
 	}
-	if !s.allowAttempt(budget+user.ID, limit, window) {
+	if !s.allowAccountAttempt(budget+user.ID, limit, window) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many attempts; wait a few minutes")
 		return nil, nil, false
 	}
@@ -206,7 +206,7 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user.TOTPEnabled {
-		if !s.allowAttempt("mfa-user:"+user.ID, 5, 5*time.Minute) {
+		if !s.allowAccountAttempt("mfa-user:"+user.ID, 5, 5*time.Minute) {
 			s.writeError(w, http.StatusTooManyRequests, "Too many attempts; wait a few minutes")
 			return
 		}

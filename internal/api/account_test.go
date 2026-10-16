@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -264,4 +266,36 @@ func TestSelfServicePasswordChangeRequiresTOTP(t *testing.T) {
 	const replacement = "ReplacementPassword456!"
 	want(t, call("/api/account/password", map[string]string{"password": accountPassword, "new_password": replacement}), 401)
 	want(t, call("/api/account/password", map[string]string{"password": accountPassword, "new_password": replacement, "code": code}), 200)
+}
+
+// The self-service routes spend the same per-account budgets as login MFA and the forced
+// change, on the account-keyed limiter a client-key flood cannot evict.
+func TestAccountRoutesShareAccountBudgets(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	call := accountSession(t, srv, st, cfg, &store.User{ID: "usr_share", Username: "share", Role: "user", Status: "active", SSOProvider: "local"})
+	for range 5 {
+		api.AllowAccountAttemptForTest(srv, "mfa-user:usr_share", 5, 5*time.Minute)
+		api.AllowAccountAttemptForTest(srv, "password-change-user:usr_share", 5, time.Minute)
+	}
+	want(t, call("/api/account/mfa/confirm", map[string]string{"password": accountPassword, "code": "000000"}), 429)
+	want(t, call("/api/account/password", map[string]string{"password": accountPassword, "new_password": "ReplacementPassword456!"}), 429)
+
+	u, secret := enabledMFAUser(t, cfg, "usr_sharemfa")
+	mfa := accountSession(t, srv, st, cfg, u)
+	for range 5 {
+		api.AllowAccountAttemptForTest(srv, "mfa-user:usr_sharemfa", 5, 5*time.Minute)
+	}
+	code, _ := stepCodes(t, secret)
+	want(t, mfa("/api/account/password", map[string]string{"password": accountPassword, "new_password": "ReplacementPassword456!", "code": code}), 429)
+
+	for i := 0; i < api.AttemptsCapForTest+50; i++ {
+		api.AllowAttemptForTest(srv, "login:198.51.100."+strconv.Itoa(i), 20, time.Minute)
+	}
+	keys := api.AccountKeysForTest(srv)
+	for _, k := range []string{"mfa-user:usr_share", "password-change-user:usr_share", "mfa-user:usr_sharemfa"} {
+		if !slices.Contains(keys, k) {
+			t.Fatalf("account window %s missing after a client-key flood", k)
+		}
+	}
+	want(t, call("/api/account/mfa/confirm", map[string]string{"password": accountPassword, "code": "000000"}), 429)
 }
