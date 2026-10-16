@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/suite"
 )
 
 // Config encapsulates all runtime configuration for kyyard-server.
@@ -24,6 +26,7 @@ type Config struct {
 	Registry  RegistryConfig  `json:"registry"`
 	Container ContainerConfig `json:"container"`
 	Captcha   CaptchaConfig   `json:"captcha"`
+	Suite     SuiteConfig     `json:"suite"`
 }
 
 // ServerConfig defines HTTP and network settings.
@@ -121,6 +124,12 @@ type ContainerConfig struct {
 	// files) or a .ssh directory. Off by default: with it, container.configure
 	// is root on the host.
 	AllowPrivileged bool `json:"allow_privileged"`
+}
+
+// SuiteConfig locates the suite runner KyQuickStart's hand-off installs beside KyYard.
+type SuiteConfig struct {
+	// RunnerSocket is the runner's Unix socket; empty turns suite management off.
+	RunnerSocket string `json:"runner_socket"`
 }
 
 // CaptchaConfig holds the sign-in challenge settings.
@@ -269,6 +278,13 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("KY_CAPTCHA_POW_DIFFICULTY: must be at least %d, got %d", MinPoWDifficulty, powDifficulty)
 	}
 
+	runnerSocket := getEnv("KY_SUITE_RUNNER_SOCKET", "")
+	if runnerSocket != "" {
+		if err := suite.CheckSocketPath(runnerSocket); err != nil {
+			return nil, fmt.Errorf("KY_SUITE_RUNNER_SOCKET: %w", err)
+		}
+	}
+
 	backupKeep := getEnvInt("KY_BACKUP_KEEP", 7)
 	if backupKeep < 1 {
 		return nil, fmt.Errorf("KY_BACKUP_KEEP: must be at least 1, got %d", backupKeep)
@@ -326,6 +342,7 @@ func LoadFromEnv() (*Config, error) {
 		Registry:  RegistryConfig{AllowPrivate: getEnvBool("KY_REGISTRY_ALLOW_PRIVATE", false)},
 		Container: ContainerConfig{AllowPrivileged: getEnvBool("KY_CONTAINER_ALLOW_PRIVILEGED", false)},
 		Captcha:   CaptchaConfig{Provider: captchaProvider, DifficultyPoW: powDifficulty},
+		Suite:     SuiteConfig{RunnerSocket: runnerSocket},
 	}
 
 	return cfg, nil

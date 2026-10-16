@@ -69,6 +69,8 @@ services:
       - KY_BACKUP_ALLOW_PRIVATE_RECOVERY=${KY_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
       - KY_REGISTRY_ALLOW_PRIVATE=${KY_REGISTRY_ALLOW_PRIVATE:-false}
       - KY_CONTAINER_ALLOW_PRIVILEGED=${KY_CONTAINER_ALLOW_PRIVILEGED:-false}
+      # Suite management stays off until KyQuickStart's hand-off sets KY_SUITE_RUNNER_SOCKET
+      # and mounts the runner's socket directory.
     volumes:
       - kyyard-data:/data
       # Built-in local connection: Docker socket access grants host-level authority.
