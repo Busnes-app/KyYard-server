@@ -65,7 +65,6 @@ type Store interface {
 	Users() UserStore
 	Sessions() SessionStore
 	Devices() DeviceStore
-	Groups() GroupStore
 	Audit() AuditStore
 	Settings() SettingsStore
 
@@ -143,7 +142,7 @@ type UserStore interface {
 	// for the same subject. Events are only acceptable within DirectoryEventWindow of now.
 	// apply must not use the Store itself: it would wait on this transaction.
 	ApplyDirectoryEvent(ctx context.Context, ev DirectoryEvent, apply func(DirectoryTx) error) error
-	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
+	ListUsers(ctx context.Context, offset, limit int) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)
 }
 
@@ -184,19 +183,6 @@ type DeviceStore interface {
 	GetPairingBySecret(ctx context.Context, secret string) (*DevicePairing, error)
 	ConsumePairing(ctx context.Context, secret, deviceName, platform, pushToken string) error
 	CleanExpiredPairings(ctx context.Context) error
-}
-
-// GroupStore defines repository operations for SCIM and RBAC groups.
-type GroupStore interface {
-	CreateGroup(ctx context.Context, g *Group) error
-	GetGroupByID(ctx context.Context, id string) (*Group, error)
-	GetGroupByName(ctx context.Context, name string) (*Group, error)
-	UpdateGroup(ctx context.Context, g *Group) error
-	DeleteGroup(ctx context.Context, id string) error
-	ListGroups(ctx context.Context, offset, limit int) ([]*Group, int, error)
-	AddGroupMember(ctx context.Context, groupID, userID string) error
-	RemoveGroupMember(ctx context.Context, groupID, userID string) error
-	GetUserGroups(ctx context.Context, userID string) ([]*Group, error)
 }
 
 // AuditStore logs security events.

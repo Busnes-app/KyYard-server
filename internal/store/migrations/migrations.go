@@ -1026,7 +1026,16 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	{Version: 39, Name: "sso_identities", SQLite: ssoIdentities, Postgres: ssoIdentities},
 	{Version: 40, Name: "pairing_secret_hash", SQLite: pairingSecretHashSQLite, Postgres: strings.ReplaceAll(pairingSecretHashSQLite, "DATETIME", "TIMESTAMPTZ")},
 	{Version: 41, Name: "directory_events", SQLite: directoryEvents, Postgres: directoryEvents},
+	// Node health derived once per accepted snapshot, so an endpoint list decodes no snapshot.
+	// Rows from before it read unknown until the endpoint's next report.
+	{Version: 42, Name: "inventory_cluster_health", SQLite: inventoryClusterHealth, Postgres: inventoryClusterHealth},
+	{Version: 43, Name: "drop_scim_groups", SQLite: dropSCIMGroups, Postgres: dropSCIMGroups},
 }
+
+// The retired global SCIM groups never conferred tenant access and nothing reads them; they
+// are identity data with no purpose left.
+const dropSCIMGroups = `DROP TABLE IF EXISTS group_members;
+DROP TABLE IF EXISTS groups;`
 
 // A signed directory event applies once (its ID is kept while its timestamp is acceptable) and
 // never after a newer one for the same subject (one watermark per subject, kept for good).
@@ -1060,6 +1069,8 @@ CREATE TABLE device_pairings (
 );
 CREATE INDEX idx_pairings_expires ON device_pairings(expires_at);
 `
+
+const inventoryClusterHealth = `ALTER TABLE endpoint_inventory ADD COLUMN cluster_health TEXT NOT NULL DEFAULT '';`
 
 // Existing external accounts keep their identity; explicit links are additive to local accounts.
 const ssoIdentities = `CREATE TABLE user_sso_identities (
@@ -1177,6 +1188,10 @@ CREATE INDEX idx_application_migrations_destination ON application_migrations(de
 ALTER TABLE deployments ADD COLUMN migration_id TEXT REFERENCES application_migrations(id) ON DELETE SET NULL;
 `
 
+// migrationLockKey is the PostgreSQL session advisory lock serializing migrators. As one
+// bigint it cannot collide with the audit lock's (7345103, table OID) pair.
+const migrationLockKey = 7345104
+
 // Latest returns the highest registered migration version: the schema this binary runs.
 func Latest() int {
 	latest := 0
@@ -1191,6 +1206,20 @@ func Run(ctx context.Context, db *sql.DB, driver string) error {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
+	}
+
+	// Every statement runs on one connection: on PostgreSQL it holds the advisory lock that
+	// keeps a second server's migrator out until this one is done.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to reserve a migration connection: %w", err)
+	}
+	defer conn.Close()
+	if driver == "postgres" {
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+			return fmt.Errorf("failed to take the migration lock: %w", err)
+		}
+		defer conn.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockKey)
 	}
 
 	// Create schema_migrations table
@@ -1209,14 +1238,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );`
 	}
 
-	if _, err := db.ExecContext(ctx, initTableQuery); err != nil {
+	if _, err := conn.ExecContext(ctx, initTableQuery); err != nil {
 		return fmt.Errorf("failed to init schema_migrations: %w", err)
 	}
 
 	// An older binary must not serve a schema it has never read (a downgrade, or a restore
 	// onto an older build); migrating forward is the only direction Run knows.
 	var applied int
-	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&applied); err != nil {
 		return fmt.Errorf("failed to read schema version: %w", err)
 	}
 	if applied > Latest() {
@@ -1225,10 +1254,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 	for _, m := range registry {
 		var exists int
-		err := db.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations WHERE version = $1", m.Version).Scan(&exists)
+		err := conn.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations WHERE version = $1", m.Version).Scan(&exists)
 		if err != nil {
 			// Try SQLite positional ? parameter if $1 failed
-			err = db.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations WHERE version = ?", m.Version).Scan(&exists)
+			err = conn.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations WHERE version = ?", m.Version).Scan(&exists)
 			if err != nil {
 				return fmt.Errorf("failed to check migration version %d: %w", m.Version, err)
 			}
@@ -1243,9 +1272,28 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			ddl = m.Postgres
 		}
 
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("failed to begin migration tx for v%d: %w", m.Version, err)
+		}
+
+		// Claiming the version is the first statement, so on SQLite it takes the write lock
+		// before anything is read; a concurrent migrator waits here, then finds it taken.
+		recordQuery := "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?) ON CONFLICT (version) DO NOTHING"
+		if driver == "postgres" {
+			recordQuery = "INSERT INTO schema_migrations (version, name, applied_at) VALUES ($1, $2, $3) ON CONFLICT (version) DO NOTHING"
+		}
+		claimed, err := tx.ExecContext(ctx, recordQuery, m.Version, m.Name, time.Now().UTC())
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("failed to record migration v%d: %w", m.Version, err)
+		}
+		if n, err := claimed.RowsAffected(); err != nil || n == 0 {
+			_ = tx.Rollback()
+			if err != nil {
+				return fmt.Errorf("failed to record migration v%d: %w", m.Version, err)
+			}
+			continue
 		}
 
 		if m.Check != nil {
@@ -1258,16 +1306,6 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if _, err := tx.ExecContext(ctx, ddl); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("failed executing migration v%d (%s): %w", m.Version, m.Name, err)
-		}
-
-		recordQuery := "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)"
-		if driver == "postgres" {
-			recordQuery = "INSERT INTO schema_migrations (version, name, applied_at) VALUES ($1, $2, $3)"
-		}
-
-		if _, err := tx.ExecContext(ctx, recordQuery, m.Version, m.Name, time.Now().UTC()); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("failed to record migration v%d: %w", m.Version, err)
 		}
 
 		if err := tx.Commit(); err != nil {

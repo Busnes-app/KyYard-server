@@ -32,7 +32,7 @@ Everything a fresh server needs to be the old one:
 
 | Path in the capsule | What it is |
 |---|---|
-| `data/ky_server.db` | Users, MFA enrolments, devices, SCIM groups, organizations, environments, endpoints and their keys, commands, applications, deployments, registries, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
+| `data/ky_server.db` | Users, MFA enrolments, devices, organizations, environments, endpoints and their keys, commands, applications, deployments, registries, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
 | `data/encryption.key` | 32 bytes. Every TOTP secret, registry credential, application environment value, SSO provider secret and the KyRecovery pairing token are encrypted under it |
 | `data/session.key` | 32-byte proof-of-work challenge key, including the active environment override |
 | `data/instance.key` | 32-byte Ed25519 identity seed; restore preserves the control-plane identity |
@@ -301,7 +301,7 @@ in `data/ky_server.db` as the README's upgrade notes show, then start again.
 
 The restore proves the service works. It does not make the restored state current or safe.
 Everything comes back as of the capsule's `created_at`: users, passwords, MFA enrolments,
-paired devices, SCIM state, organizations, endpoints, applications and registries. Anything
+paired devices, organizations, endpoints, applications and registries. Anything
 you revoked or changed after that moment is undone. New capsules exclude sessions, pending MFA challenges and device pairings from
 the snapshot. Older capsules and external database dumps may still contain them.
 
@@ -318,7 +318,7 @@ the snapshot. Older capsules and external database dumps may still contain them.
 2. Walk the old audit log in `old-data/ky_server.db` from `created_at` to the moment the old
    server was lost (the restored server's log stops at `created_at`), and re-apply what
    happened after the capsule: disabled accounts, rotated passwords, removed devices, reset
-   MFA, SCIM changes.
+   MFA.
 3. Re-check endpoints. The audit walk lists every `endpoint.revoke` after `created_at`:
    a capsule from before a revocation brings that agent identity back, so revoke it again on
    the environment screen (Hosts, Revoke). Hosts enrolled after `created_at` are unknown to
@@ -348,8 +348,6 @@ the snapshot. Older capsules and external database dumps may still contain them.
      agent pinned at enrollment, and it derives the built-in local Docker binding. Rotating
      it changes that fingerprint, so every agent refuses the server. Never rotate it during a
      restore, and never copy it to another active installation.
-   - `KY_SCIM_TOKEN` is the SCIM bearer. Replace it the same way and give the new value to the
-     identity provider. If it was never set, the server mints a fresh one at every start.
    - The KyRecovery pairing token: ask the KyRecovery admin to revoke this service and pair
      again from the screen; the same key comes back, so the pairing is accepted.
 

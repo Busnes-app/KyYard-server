@@ -115,7 +115,7 @@ type adminUser struct {
 
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	users, _, err := s.store.Users().ListUsers(r.Context(), 0, adminUserListMax, "")
+	users, _, err := s.store.Users().ListUsers(r.Context(), 0, adminUserListMax)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to list users")
 		return

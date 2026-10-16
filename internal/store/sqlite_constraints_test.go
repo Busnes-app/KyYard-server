@@ -61,3 +61,20 @@ func TestSQLiteCustomPragmaPreservesTenantConstraints(t *testing.T) {
 		})
 	}
 }
+
+// SQLite lets a TEXT primary key hold NULL. A row GetAllSettings cannot read is an error, not a
+// setting that silently vanishes from the map.
+func TestGetAllSettingsReportsAnUnreadableRow(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "test.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.(*SQLStore).db.ExecContext(ctx, "INSERT INTO server_settings (key, value, updated_at) VALUES (NULL, 'x', CURRENT_TIMESTAMP)"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.Settings().GetAllSettings(ctx); err == nil {
+		t.Fatalf("an unreadable row was skipped: %v", got)
+	}
+}

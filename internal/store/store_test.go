@@ -90,7 +90,7 @@ func TestUserStoreLifecycle(t *testing.T) {
 	}
 
 	// 6. List & Count
-	users, count, err := st.Users().ListUsers(ctx, 0, 10, "alice")
+	users, count, err := st.Users().ListUsers(ctx, 0, 10)
 	if err != nil {
 		t.Fatalf("ListUsers error: %v", err)
 	}
@@ -182,45 +182,6 @@ func TestDevicePairingLifecycle(t *testing.T) {
 	updated, _ := st.Devices().GetPairingBySecret(ctx, pairing.Secret)
 	if updated.Status != "consumed" || updated.PushToken != "fcm-token-xyz" {
 		t.Errorf("pairing update failed: %+v", updated)
-	}
-}
-
-func TestGroupStoreAndMembers(t *testing.T) {
-	ctx := context.Background()
-	st := newTestStore(t)
-
-	u1 := &store.User{ID: uuid.NewString(), Username: "u1", Role: "user", Status: "active"}
-	u2 := &store.User{ID: uuid.NewString(), Username: "u2", Role: "user", Status: "active"}
-	_ = st.Users().CreateUser(ctx, u1)
-	_ = st.Users().CreateUser(ctx, u2)
-
-	grp := &store.Group{
-		ID:          uuid.NewString(),
-		DisplayName: "Engineering",
-		ExternalID:  "okta-grp-eng-001",
-	}
-
-	if err := st.Groups().CreateGroup(ctx, grp); err != nil {
-		t.Fatalf("CreateGroup error: %v", err)
-	}
-
-	_ = st.Groups().AddGroupMember(ctx, grp.ID, u1.ID)
-	_ = st.Groups().AddGroupMember(ctx, grp.ID, u2.ID)
-
-	got, err := st.Groups().GetGroupByID(ctx, grp.ID)
-	if err != nil {
-		t.Fatalf("GetGroupByID error: %v", err)
-	}
-	if len(got.Members) != 2 {
-		t.Errorf("expected 2 members, got %d", len(got.Members))
-	}
-
-	u1Groups, err := st.Groups().GetUserGroups(ctx, u1.ID)
-	if err != nil {
-		t.Fatalf("GetUserGroups error: %v", err)
-	}
-	if len(u1Groups) != 1 || u1Groups[0].DisplayName != "Engineering" {
-		t.Errorf("unexpected user groups: %+v", u1Groups)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 )
@@ -178,5 +179,30 @@ func TestListCommandsFiltersByContainer(t *testing.T) {
 	only, err := ts.ListCommands(ctx, a, endpointID, one, "", 0)
 	if err != nil || len(only) != 1 || only[0].ContainerID != one {
 		t.Fatalf("filtered: %v %+v", err, only)
+	}
+}
+
+// An agent's error text is often long, multi-line and non-ASCII; it is cleaned and cut on a rune
+// boundary, never dropped and never stored as invalid UTF-8 (PostgreSQL refuses that).
+func TestSettleCommandKeepsALongMultiByteDetail(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	endpointID := activeEndpointWith(t, ts, a, nil, nil)
+	cmd, err := ts.CreateCommand(ctx, a, endpointID, protocol.ActionRestart, strings.Repeat("a", 64), "", protocol.Expectation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := "pull failed:\n" + strings.Repeat("é", protocol.MaxResultDetailBytes)
+	if err := ts.SettleCommand(ctx, endpointID, cmd.ID, protocol.OutcomeFailed, detail); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ts.ListCommands(ctx, a, endpointID, "", "", 0)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("list: %v %d", err, len(got))
+	}
+	d := got[0].Detail
+	if got[0].Outcome != protocol.OutcomeFailed || !strings.HasPrefix(d, "pull failed:é") || len(d) > protocol.MaxResultDetailBytes || !utf8.ValidString(d) {
+		t.Fatalf("settled %q with %d bytes %q...", got[0].Outcome, len(d), d[:min(len(d), 20)])
 	}
 }

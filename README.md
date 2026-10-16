@@ -191,8 +191,7 @@ claim it. Platform administration remains separate from organization membership.
 
 Membership removal or disabling survives restart and administrator password resets. SSO and directory sync provision accounts only: no external role, group or attribute grants
 organization access, an IdP deactivation denies access live and leaves the grant in place for
-reactivation, and a deleted account's grants are gone for good. Legacy SCIM groups do not
-grant organization access. Tenant APIs enforce live membership on every
+reactivation, and a deleted account's grants are gone for good. Tenant APIs enforce live membership on every
 operation; platform administrators need explicit membership too. Membership administration is available through the tenant API and the web UI: pick an
 organization in the header, then manage environments, members and audit history under
 `/organizations/{organization}`. Links are deep-linkable and survive sign-in. Provider settings are available under Settings → Single sign-on.
@@ -785,6 +784,10 @@ From this release the server runs as uid 10001, not root (see [Container user](#
 The first start chowns the data volume or `./data` to 10001 by itself. Host jobs that read
 `./data` or `KY_BACKUP_DIR` as root keep working; jobs running as another non-root user need
 access as uid 10001. Run `apply-setup` and other in-container commands with `--user kyyard`.
+
+This release deletes the retired SCIM group tables (`groups`, `group_members`) on first start.
+Nothing has read them since SCIM was retired; back up the database first if you want to keep
+that data.
 
 Upgrade the server first, then every agent container (remote, or a legacy same-host one); the
 built-in local connection upgrades with the server. The server must know about mounts before an

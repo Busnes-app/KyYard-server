@@ -45,10 +45,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out["scim_enabled"] = false
 	out["db_driver"] = s.config.Database.Driver
 
-	// extra_settings holds secrets such as the SCIM bearer token. The KyRecovery pairing
+	// extra_settings holds secrets such as a legacy SCIM bearer token. The KyRecovery pairing
 	// token is sealed at rest and never leaves the process in either form: an admin can see
 	// that a recovery URL is set, never the token that authenticates to it.
 	if user.Role == "admin" {

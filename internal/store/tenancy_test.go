@@ -36,8 +36,6 @@ func TestTenancyBootstrapOnce(t *testing.T) {
 	tenantUser(t, st, "disabled", "admin", "local", "disabled")
 	tenantUser(t, st, "other-admin", "admin", "local", "active")
 	tenantUser(t, st, "admin", "admin", "local", "active")
-	mustTenant(t, st.Groups().CreateGroup(ctx, &store.Group{ID: "global", DisplayName: "Administrators"}))
-	mustTenant(t, st.Groups().AddGroupMember(ctx, "global", "ordinary"))
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Add(1)

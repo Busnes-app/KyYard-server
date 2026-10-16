@@ -107,6 +107,9 @@ func TestSettingsExposureByRole(t *testing.T) {
 	if member["db_driver"] == nil {
 		t.Errorf("authenticated settings should include db_driver, got %v", member)
 	}
+	if _, found := member["scim_enabled"]; found {
+		t.Errorf("settings still advertise retired SCIM: %v", member)
+	}
 	if _, found := member["extra_settings"]; found {
 		t.Errorf("non-admin settings leaked extra_settings: %v", member)
 	}

@@ -58,16 +58,6 @@ type DevicePairing struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
-// Group represents a SCIM/RBAC user group.
-type Group struct {
-	ID          string    `json:"id"`
-	DisplayName string    `json:"display_name"`
-	ExternalID  string    `json:"external_id,omitempty"`
-	Members     []string  `json:"members,omitempty"` // User IDs
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-}
-
 // AuditRecord records actor (UserID), target (Resource), scope and outcome.
 type AuditRecord struct {
 	Scope          string    `json:"scope"`
