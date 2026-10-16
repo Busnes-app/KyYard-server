@@ -1577,7 +1577,7 @@ func TestLongStopsCannotTakeEveryCommandSlot(t *testing.T) {
 			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
 			return b
 		}
-		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), agentNonce(r), r.Host)))
 		_, _, _ = c.Read(ctx)
 		// A long heartbeat: one session must outlive the held restarts on a loaded machine.
 		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 30}))
@@ -1604,7 +1604,7 @@ func TestLongStopsCannotTakeEveryCommandSlot(t *testing.T) {
 		}
 	}))
 	defer stub.Close()
-	id := &client.Identity{EndpointID: "ep_long", PrivateKey: priv, InstanceFingerprint: strings.Repeat("a", 64), Server: stub.URL, RotatedAt: time.Now()}
+	id := &client.Identity{EndpointID: "ep_long", PrivateKey: priv, InstanceFingerprint: fakeInstanceFingerprint, Server: stub.URL, RotatedAt: time.Now()}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	snapshot := func(context.Context) (*protocol.Snapshot, error) {
