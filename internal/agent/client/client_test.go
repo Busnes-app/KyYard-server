@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/coder/websocket"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -269,7 +270,7 @@ func TestAgentReconnectsWhenTheControlPlaneGoesSilent(t *testing.T) {
 			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
 			return b
 		}
-		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, nonce, r.Host)))
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, nonce, agentNonce(r), r.Host)))
 		_, _, _ = c.Read(ctx)
 		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
 		<-ctx.Done()
@@ -305,7 +306,7 @@ func TestAgentRefusesAServerThatDoesNotProveItsIdentity(t *testing.T) {
 			return protocol.Challenge{Nonce: nonce, InstanceFingerprint: fakeInstanceFingerprint, Versions: []int{protocol.Version}}
 		}, client.ErrServerUnproven.Error()},
 		"other key": {func(nonce []byte, host string) protocol.Challenge {
-			ch := protocol.SignChallenge(other, nonce, host)
+			ch := protocol.SignChallenge(other, nonce, nil, host)
 			ch.InstanceFingerprint = fakeInstanceFingerprint
 			return ch
 		}, "identity proof failed"},
@@ -351,6 +352,68 @@ func TestAgentRefusesAServerThatDoesNotProveItsIdentity(t *testing.T) {
 				t.Fatalf("log does not say why: %q", logs.String())
 			}
 		})
+	}
+}
+
+// A party with a trusted certificate but not the instance key replays a challenge recorded from
+// an earlier handshake for the same host: the agent must not sign or run anything for it.
+func TestAgentRefusesAReplayedServerProof(t *testing.T) {
+	recorded := make(chan []byte, 1)
+	var dials atomic.Int32
+	answered := make(chan bool, 8)
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		ctx := r.Context()
+		if dials.Add(1) == 1 {
+			// The genuine handshake the impostor recorded.
+			raw, _ := json.Marshal(protocol.SignChallenge(fakeInstance, make([]byte, 32), agentNonce(r), r.Host))
+			frame, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeChallenge, Payload: raw})
+			recorded <- frame
+			_ = c.Write(ctx, websocket.MessageText, frame)
+			_, _, _ = c.Read(ctx)
+			return
+		}
+		_ = c.Write(ctx, websocket.MessageText, <-recorded)
+		_, _, err = c.Read(ctx)
+		answered <- err == nil
+		if err == nil {
+			raw, _ := json.Marshal(protocol.Hello{State: "active", HeartbeatSeconds: 1})
+			hello, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeHello, Payload: raw})
+			_ = c.Write(ctx, websocket.MessageText, hello)
+			<-ctx.Done()
+		}
+	}))
+	defer stub.Close()
+	_, priv, _ := ed25519.GenerateKey(nil)
+	id := &client.Identity{EndpointID: "ep_replayed", PrivateKey: priv, InstanceFingerprint: fakeInstanceFingerprint, Server: stub.URL}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var ran atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(ctx, id, client.Options{HTTPClient: stub.Client(), Log: log.New(io.Discard, "", 0),
+			OnState: func(string) { ran.Store(true) },
+			Snapshot: func(context.Context) (*protocol.Snapshot, error) {
+				ran.Store(true)
+				return nil, errors.New("no runtime")
+			}})
+	}()
+	select {
+	case auth := <-answered:
+		if auth {
+			t.Error("the agent signed an auth frame for a replayed server proof")
+		}
+	case <-ctx.Done():
+		t.Fatal("the agent never redialed")
+	}
+	cancel()
+	<-done
+	if ran.Load() {
+		t.Error("the agent ran a runtime callback for a replayed server proof")
 	}
 }
 
@@ -763,7 +826,7 @@ func TestHeartbeatsContinueWhileTheRuntimeHangs(t *testing.T) {
 			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
 			return b
 		}
-		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), r.Host)))
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), agentNonce(r), r.Host)))
 		_, _, _ = c.Read(ctx)
 		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
 		for {
@@ -826,7 +889,7 @@ func TestHeartbeatsContinueWhileMetricsAreSlow(t *testing.T) {
 			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
 			return b
 		}
-		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), r.Host)))
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), agentNonce(r), r.Host)))
 		_, _, _ = c.Read(ctx)
 		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
 		for {
@@ -1140,7 +1203,7 @@ func TestAFaultyServerDoesNotConsumeKeyMaterial(t *testing.T) {
 		}
 		nonce := make([]byte, 32)
 		_, _ = rand.Read(nonce)
-		raw, _ := json.Marshal(protocol.SignChallenge(serverInstance, nonce, r.Host))
+		raw, _ := json.Marshal(protocol.SignChallenge(serverInstance, nonce, agentNonce(r), r.Host))
 		frame, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeChallenge, Payload: raw})
 		if err := c.Write(r.Context(), websocket.MessageText, frame); err != nil {
 			return
@@ -1264,7 +1327,7 @@ func TestAnExhaustedWalkReturnsToTheIdentityKey(t *testing.T) {
 		}
 		nonce := make([]byte, 32)
 		_, _ = rand.Read(nonce)
-		payload, _ := json.Marshal(protocol.SignChallenge(serverInstance, nonce, r.Host))
+		payload, _ := json.Marshal(protocol.SignChallenge(serverInstance, nonce, agentNonce(r), r.Host))
 		frame, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: protocol.TypeChallenge, Payload: payload})
 		if err := c.Write(r.Context(), websocket.MessageText, frame); err != nil {
 			return
@@ -1343,7 +1406,7 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
 			return b
 		}
-		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), r.Host)))
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), agentNonce(r), r.Host)))
 		_, _, _ = c.Read(ctx)
 		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
 		// More pulls than the image reserve holds, so the surplus must be refused rather than
@@ -1638,7 +1701,7 @@ func TestTheInFlightLimitAndLedgerSurviveAReconnect(t *testing.T) {
 				Deadline: time.Now().UTC().Add(5 * time.Minute),
 			})
 		}
-		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), r.Host)))
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.SignChallenge(fakeInstance, make([]byte, 32), agentNonce(r), r.Host)))
 		_, _, _ = c.Read(ctx)
 		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 1}))
 		if sessions.Add(1) == 1 {
@@ -1770,4 +1833,10 @@ func TestTheInFlightLimitAndLedgerSurviveAReconnect(t *testing.T) {
 		}
 	}
 	close(sendMore)
+}
+
+// agentNonce is the nonce the agent sent on this dial, which a stub's proof must cover.
+func agentNonce(r *http.Request) []byte {
+	n, _ := protocol.AgentNonce(r.URL.Query())
+	return n
 }

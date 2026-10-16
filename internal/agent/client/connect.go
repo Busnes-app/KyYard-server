@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"crypto/ed25519"
+	cryptorand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -249,8 +251,16 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	ctx, endSession := context.WithCancel(ctx)
 	defer endSession()
 	u, _ := url.Parse(target)
+	// A fresh nonce per dial, which the server's proof must cover: a proof recorded from an
+	// earlier handshake does not.
+	agentNonce := make([]byte, 32)
+	if _, err := cryptorand.Read(agentNonce); err != nil {
+		return err
+	}
+	dialURL := *u
+	dialURL.RawQuery = url.Values{protocol.AgentNonceParam: {base64.RawURLEncoding.EncodeToString(agentNonce)}}.Encode()
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	conn, _, err := websocket.Dial(dctx, target, &websocket.DialOptions{HTTPClient: opts.HTTPClient})
+	conn, _, err := websocket.Dial(dctx, dialURL.String(), &websocket.DialOptions{HTTPClient: opts.HTTPClient})
 	cancel()
 	if err != nil {
 		return err
@@ -279,7 +289,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	if len(ch.Signature) == 0 {
 		return ErrServerUnproven
 	}
-	if !ch.Proven(u.Host, id.InstanceFingerprint) {
+	if !ch.Proven(agentNonce, u.Host, id.InstanceFingerprint) {
 		return errors.New("the server's identity proof failed; refusing to authenticate")
 	}
 	sig := ed25519.Sign(id.signingKey(), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))

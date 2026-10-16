@@ -14,7 +14,7 @@ const (
 	ContextAuth   = "kyyard-agent-auth-v1"
 	ContextRotate = "kyyard-agent-rotate-v1"
 	// ContextServer is signed by the control plane's instance key, never by an agent key.
-	ContextServer = "kyyard-server-challenge-v1"
+	ContextServer = "kyyard-server-challenge-v2"
 	TokenSize     = 32
 )
 

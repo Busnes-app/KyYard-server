@@ -155,7 +155,7 @@ func TestConfigurationRoutedThroughTheSession(t *testing.T) {
 				return err
 			}
 			defer conn.CloseNow()
-			if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host)); err != nil {
+			if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), agentNonce(r), r.Host)); err != nil {
 				return err
 			}
 			if _, err = read(ctx, conn); err != nil {

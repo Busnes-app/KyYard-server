@@ -191,6 +191,11 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 		s.writeError(w, http.StatusTooManyRequests, "Too many connection attempts")
 		return
 	}
+	agentNonce, err := protocol.AgentNonce(r.URL.Query())
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "Bad agent nonce")
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
 		return
@@ -205,7 +210,7 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 		_ = conn.CloseNow()
 		return
 	}
-	identity, closeReason := s.agentHandshake(ctx, conn, r, nonce)
+	identity, closeReason := s.agentHandshake(ctx, conn, r, nonce, agentNonce)
 	if identity == nil {
 		conn.Close(websocket.StatusPolicyViolation, closeReason)
 		return
@@ -255,13 +260,14 @@ admitted:
 	s.serveAgent(ctx, c, identity.Endpoint.State == "pending")
 }
 
-func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *http.Request, nonce []byte) (*store.AgentIdentity, string) {
+func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *http.Request, nonce, agentNonce []byte) (*store.AgentIdentity, string) {
 	hctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
-	// Signed for the host the agent dialed, as the agent's auth is: a proxy must keep Host.
-	ch := protocol.Challenge{Nonce: nonce, Versions: []int{protocol.Version}}
-	if len(s.config.Security.InstanceKey) == ed25519.SeedSize {
-		ch = protocol.SignChallenge(ed25519.NewKeyFromSeed(s.config.Security.InstanceKey), nonce, r.Host)
+	// Signed for the host the agent dialed, as the agent's auth is: a proxy must keep Host. An
+	// agent older than the proof sends no nonce and ignores the proof, so it gets none.
+	ch := protocol.Challenge{Nonce: nonce, InstanceFingerprint: s.instanceFingerprint(), Versions: []int{protocol.Version}}
+	if len(s.config.Security.InstanceKey) == ed25519.SeedSize && agentNonce != nil {
+		ch = protocol.SignChallenge(ed25519.NewKeyFromSeed(s.config.Security.InstanceKey), nonce, agentNonce, r.Host)
 	}
 	if err := s.writeFrame(hctx, conn, envelope(protocol.TypeChallenge, ch)); err != nil {
 		return nil, protocol.CloseProtocol

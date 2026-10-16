@@ -334,7 +334,7 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 			return
 		}
 		checked <- func() error {
-			if err := write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host)); err != nil {
+			if err := write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), agentNonce(r), r.Host)); err != nil {
 				return err
 			}
 			if _, err := read(ctx, conn); err != nil {
@@ -989,7 +989,7 @@ func TestReplayedResultsDoNotReadTheRuntime(t *testing.T) {
 			return
 		}
 		defer conn.CloseNow()
-		_ = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host))
+		_ = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), agentNonce(r), r.Host))
 		_, _ = read(ctx, conn)
 		_ = write(ctx, conn, protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 5})
 		replayed := 0

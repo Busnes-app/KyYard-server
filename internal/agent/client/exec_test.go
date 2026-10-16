@@ -321,7 +321,7 @@ func testExecSocketRemainsResponsive(t *testing.T, state string) {
 			return
 		}
 		defer conn.CloseNow()
-		if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host)); err != nil {
+		if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), agentNonce(r), r.Host)); err != nil {
 			checked <- err
 			return
 		}
@@ -488,7 +488,7 @@ func TestExecSocketWithoutRuntimeRemainsResponsive(t *testing.T) {
 			return
 		}
 		defer conn.CloseNow()
-		if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), r.Host)); err != nil {
+		if err = write(ctx, conn, protocol.TypeChallenge, protocol.SignChallenge(testInstance, make([]byte, 32), agentNonce(r), r.Host)); err != nil {
 			checked <- err
 			return
 		}
@@ -581,4 +581,10 @@ func TestExecStartRefusalIsTheCloseReason(t *testing.T) {
 		waitExecBudget(t, s.budget, 0)
 		cancel()
 	}
+}
+
+// agentNonce is the nonce the agent sent on this dial, which a stub's proof must cover.
+func agentNonce(r *http.Request) []byte {
+	n, _ := protocol.AgentNonce(r.URL.Query())
+	return n
 }

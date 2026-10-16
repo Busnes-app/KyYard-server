@@ -104,7 +104,9 @@ func writeEnvelope(t *testing.T, ctx context.Context, c *websocket.Conn, typ str
 func connect(t *testing.T, ctx context.Context, base string, ag enrolledAgent, priv ed25519.PrivateKey, version int) (*agentSocket, string) {
 	t.Helper()
 	u, _ := url.Parse(base)
-	c, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect", nil)
+	agentNonce := make([]byte, 32)
+	_, _ = rand.Read(agentNonce)
+	c, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect?agent_nonce="+base64.RawURLEncoding.EncodeToString(agentNonce), nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -112,7 +114,7 @@ func connect(t *testing.T, ctx context.Context, base string, ag enrolledAgent, p
 	ch := readEnvelope(t, ctx, c)
 	var challenge protocol.Challenge
 	_ = json.Unmarshal(ch.Payload, &challenge)
-	if ch.Type != protocol.TypeChallenge || challenge.InstanceFingerprint != ag.inst || !challenge.Proven(u.Host, ag.inst) {
+	if ch.Type != protocol.TypeChallenge || challenge.InstanceFingerprint != ag.inst || !challenge.Proven(agentNonce, u.Host, ag.inst) {
 		t.Fatalf("challenge: %+v", ch)
 	}
 	sig := ed25519.Sign(priv, protocol.AuthPreimage(ag.id, challenge.Nonce, u.Host, version))
@@ -295,6 +297,47 @@ func TestAgentShutdownClosesSockets(t *testing.T) {
 		t.Fatalf("shutdown did not close the socket: %v", err)
 	}
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "offline" })
+}
+
+// An agent older than the proof sends no nonce: it still authenticates, against an unsigned
+// challenge that names the instance. A malformed nonce is refused before the upgrade.
+func TestAgentConnectNonce(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	admin := loginAs(t, s, st, "envadmin", "user")
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "usr_envadmin", Role: store.RoleEnvironmentAdmin, Status: "active"})
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	ag := enrollAgent(t, s, st, admin, "host-old")
+	u, _ := url.Parse(httpSrv.URL)
+	base := "ws://" + u.Host + "/api/agent/v1/connect"
+	for _, bad := range []string{"?agent_nonce=", "?agent_nonce=" + base64.RawURLEncoding.EncodeToString(make([]byte, 31)), "?agent_nonce=" + base64.URLEncoding.EncodeToString(make([]byte, 32)), "?agent_nonce=a&agent_nonce=b"} {
+		if c, res, err := websocket.Dial(ctx, base+bad, nil); err == nil || res == nil || res.StatusCode != http.StatusBadRequest {
+			if c != nil {
+				c.CloseNow()
+			}
+			t.Fatalf("%s was not refused: %v", bad, err)
+		}
+	}
+	c, _, err := websocket.Dial(ctx, base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	var ch protocol.Challenge
+	_ = json.Unmarshal(readEnvelope(t, ctx, c).Payload, &ch)
+	if ch.InstanceFingerprint != ag.inst || ch.Signature != nil || ch.InstanceKey != nil {
+		t.Fatalf("old agent challenge: %+v", ch)
+	}
+	sig := ed25519.Sign(ag.priv, protocol.AuthPreimage(ag.id, ch.Nonce, u.Host, protocol.Version))
+	writeEnvelope(t, ctx, c, protocol.TypeAuth, protocol.Auth{EndpointID: ag.id, Fingerprint: ag.fp, Version: protocol.Version, Signature: sig})
+	if e := readEnvelope(t, ctx, c); e.Type != protocol.TypeHello {
+		t.Fatalf("old agent was not admitted: %+v", e)
+	}
 }
 
 func waitFor(t *testing.T, cond func() bool) {
