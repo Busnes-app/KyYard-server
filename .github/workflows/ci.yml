@@ -92,7 +92,8 @@ jobs:
       - run: go build ./...
 
       - name: Tests with race detector and coverage
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        # internal/api alone runs close to go test's 10-minute default under -race.
+        run: go test -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./...
 
       - name: Real Docker runtime regressions
         env:
@@ -144,7 +145,7 @@ jobs:
       - name: Tests against PostgreSQL
         env:
           KY_TEST_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:5432/ci_test?sslmode=disable
-        run: go test -race -count=1 ./...
+        run: go test -race -timeout 20m -count=1 ./...
 
   web:
     name: Frontend typecheck & build
