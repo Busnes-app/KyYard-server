@@ -58,3 +58,13 @@ updates:
       default-days: 3
     commit-message:
       prefix: "chore(deps)"
+
+  # docker-compose.postgres.yml pins PostgreSQL by digest; this moves the pin.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: "chore(deps)"

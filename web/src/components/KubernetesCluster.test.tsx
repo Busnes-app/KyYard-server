@@ -92,7 +92,7 @@ it('renders a dotted workload name as plain text with no controls', () => {
 });
 
 it('reloads the inventory when a cluster toolbar command settles', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => new Response(JSON.stringify(
     init?.method === 'POST' ? { id: 'k1', action: 'workload.restart', outcome: '' } : { id: 'k1', action: 'workload.restart', outcome: 'succeeded' }),
     { status: init?.method === 'POST' ? 202 : 200, headers: { 'Content-Type': 'application/json' } })));

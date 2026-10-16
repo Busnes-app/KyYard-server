@@ -30,3 +30,7 @@ kyyard-agent
 
 # git worktrees for PR branches
 .worktrees/
+
+# Local agent tooling
+.playwright-mcp/
+.superpowers/

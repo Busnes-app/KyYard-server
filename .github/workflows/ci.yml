@@ -65,9 +65,15 @@ jobs:
           (grep -ohE 'docs/[A-Za-z0-9._/-]+\.md' README.md || true) | sort -u | xargs -r -I{} test -f {}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
-          check-latest: true
+          go-version-file: go.mod
           cache: true
+
+      # The image builder and this job must compile with the same Go.
+      - name: Dockerfile Go matches the go.mod toolchain
+        run: |
+          want="$(go mod edit -json | jq -r .Toolchain)"
+          grep -qE "^FROM golang:${want#go}-alpine@sha256:" Dockerfile || { echo "Dockerfile must build FROM golang:${want#go}-alpine@<digest>"; exit 1; }
+          [ "$(go env GOVERSION)" = "$want" ] || { echo "CI runs $(go env GOVERSION), go.mod says $want"; exit 1; }
 
       - name: gofmt
         run: |
@@ -86,7 +92,8 @@ jobs:
       - run: go build ./...
 
       - name: Tests with race detector and coverage
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        # internal/api alone runs close to go test's 10-minute default under -race.
+        run: go test -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./...
 
       - name: Real Docker runtime regressions
         env:
@@ -131,15 +138,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
-          check-latest: true
+          go-version-file: go.mod
           cache: true
 
       # Same suite, real Postgres: each test gets its own schema (internal/testdb).
       - name: Tests against PostgreSQL
         env:
           KY_TEST_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:5432/ci_test?sslmode=disable
-        run: go test -race -count=1 ./...
+        run: go test -race -timeout 20m -count=1 ./...
 
   web:
     name: Frontend typecheck & build
@@ -164,8 +170,13 @@ jobs:
         working-directory: web
 
       # web/dist is embedded into the Go binary, so a stale commit ships a stale UI.
+      # status, not diff: an uncommitted new asset is untracked and diff ignores it.
       - name: Committed web/dist matches source
-        run: git diff --exit-code -- web/dist
+        run: |
+          changed="$(git status --porcelain -- web/dist web/tsconfig.tsbuildinfo)"
+          if [ -n "$changed" ]; then
+            echo "Rebuild and commit web/dist and web/tsconfig.tsbuildinfo:"; echo "$changed"; exit 1
+          fi
 
       - name: npm audit
         run: npm audit --audit-level=high
@@ -178,11 +189,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
-          check-latest: true
+          go-version-file: go.mod
           cache: true
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   smoke:
     name: End-to-end smoke test
@@ -191,8 +201,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
-          check-latest: true
+          go-version-file: go.mod
           cache: true
 
       - run: shellcheck scripts/*.sh
@@ -231,6 +240,8 @@ jobs:
           curl -sf -o /dev/null --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:18080/
           curl -sf http://127.0.0.1:18080/health/ready | grep -q '"status":"ok"'
           docker exec ky_ci /app/kyyard-server healthcheck
+          # The entrypoint drops root: the server (PID 1) runs as kyyard.
+          [ "$(docker exec ky_ci stat -c %u /proc/1)" = 10001 ]
           curl -sf -o /dev/null http://127.0.0.1:18080/api/settings
           curl -sf -X POST -H 'Content-Type: application/json' \
             -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \

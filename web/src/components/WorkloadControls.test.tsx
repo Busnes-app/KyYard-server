@@ -97,7 +97,7 @@ it.each([
 });
 
 it('reports a settled command with fixed text and never the raw detail', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
   const sent = posts();
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST'
     ? (sent.push({}), json({ id: 'k1', action: 'workload.restart', outcome: '' }, 202))
@@ -191,7 +191,7 @@ it('words a delete refused to keep a StatefulSet\'s volume claims', () => {
 });
 
 it('frees the controls after a failed poll', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST'
     ? json({ id: 'k1', action: 'workload.restart', outcome: '' }, 202)
     : json({}, 500)));

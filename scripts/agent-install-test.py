@@ -111,6 +111,8 @@ try:
         return inv if server_id in {c["id"] for c in inv["snapshot"]["containers"]} else None
 
     first_local = wait_for(local_inventory, "automatic local container inventory without enrollment")
+    # Reached through the socket's group, not as root.
+    assert docker("exec", server, "stat", "-c", "%u", "/proc/1") == "10001", "server is not running as kyyard"
     assert len(api(org + "/endpoints")) == 1
     assert api(local_ep)["state"] == "active"
     docker("restart", server)

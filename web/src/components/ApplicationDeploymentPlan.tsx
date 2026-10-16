@@ -442,8 +442,8 @@ function PlanView({ base, instanceID, latestRevision, instance, onChanged }: Pro
       </> : <p>No plan for this instance.</p>)}
       {!mismatched && current && current.state === 'planned' && !isExpired(current) && <form className="dr-stack" onSubmit={e => { e.preventDefault(); void apply(); }}>
         {current.plan.namespace
-          ? <p>Applying updates the Deployments, Services, ConfigMaps and Secrets of {current.plan.project} in namespace {current.plan.namespace} to revision {current.revision} and waits for each rollout. Nothing rolls back on failure; a failed run leaves the objects as applied.</p>
-          : <p>Applying replaces the mapped containers on {current.endpoint_id} with revision {current.revision} of {current.plan.project}. Nothing rolls back on failure; a failed run leaves the previous container renamed on the host.</p>}
+          ? <p>Applying updates the Deployments, Services, ConfigMaps and Secrets of {current.plan.project} in namespace {current.plan.namespace} to revision {current.revision} and waits for each rollout. A rollout that fails is rolled back to the previous template.</p>
+          : <p>Applying replaces the mapped containers on {current.endpoint_id} with revision {current.revision} of {current.plan.project}. A container that fails to start is rolled back to the previous one.</p>}
         <label>Confirm apply project<input value={applyConfirm} onChange={e => setApplyConfirm(e.target.value)} disabled={applyBusy || applyBlocked} autoComplete="off" /></label>
         <button disabled={applyBusy || applyBlocked || applyConfirm !== current.plan.project}>Apply deployment</button>
         {applyError && <p role="alert">{applyError}</p>}

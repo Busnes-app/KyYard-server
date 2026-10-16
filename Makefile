@@ -53,4 +53,4 @@ docker-build:
 	@docker build -t kyyard:local .
 
 clean:
-	@rm -rf kyyard-server web/dist web/node_modules data/ backups/ coverage.out
+	@rm -rf kyyard-server kyyard-agent web/dist web/node_modules data/ backups/ coverage.out

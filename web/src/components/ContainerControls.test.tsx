@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { ContainerControls, ContainerLogs } from './ContainerControls';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { ContainerControls, ContainerLogs, useCommand, type Command } from './ContainerControls';
 import type { Container } from '../tenant';
 const id = 'a'.repeat(64);
 const container: Container = { id, name: 'web', image: 'nginx:1', image_id: 'sha256:123', state: 'running', status: 'Up', ports: [], networks: [], labels: {}, created_at: '' };
@@ -68,4 +68,30 @@ it('bounds the browser log display and aborts its request on unmount', async () 
   await waitFor(() => expect(view.container.querySelector('pre')?.textContent?.length).toBe(262144));
   expect(screen.getByRole('status').textContent).toContain('last 256 KiB');
   view.unmount();
+});
+
+it('polls one read at a time and settles a command once', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    let answer: (response: Response) => void = () => {};
+    const fetcher = vi.fn(() => new Promise<Response>((resolve) => { answer = resolve; }));
+    vi.stubGlobal('fetch', fetcher);
+    const onSettled = vi.fn();
+    const sent: Command = { id: 'cmd', action: 'container.stop', outcome: '' };
+    const hook = renderHook(({ s }) => useCommand('/api/e', s, onSettled), { initialProps: { s: sent } });
+    act(() => { vi.advanceTimersByTime(1500); });
+    expect(fetcher).toHaveBeenCalledOnce();
+    // A slow read is never overlapped by the next tick.
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(fetcher).toHaveBeenCalledOnce();
+    await act(async () => { answer(new Response(JSON.stringify({ ...sent, outcome: 'succeeded' }))); });
+    expect(onSettled).toHaveBeenCalledOnce();
+    // The caller handing back the same command unsettled polls again but does not settle twice.
+    hook.rerender({ s: { ...sent } });
+    act(() => { vi.advanceTimersByTime(1500); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await act(async () => { answer(new Response(JSON.stringify({ ...sent, outcome: 'succeeded' }))); });
+    expect(hook.result.current.command?.outcome).toBe('succeeded');
+    expect(onSettled).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
 });
