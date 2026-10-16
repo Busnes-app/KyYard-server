@@ -1030,7 +1030,23 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// Rows from before it read unknown until the endpoint's next report.
 	{Version: 42, Name: "inventory_cluster_health", SQLite: inventoryClusterHealth, Postgres: inventoryClusterHealth},
 	{Version: 43, Name: "drop_scim_groups", SQLite: dropSCIMGroups, Postgres: dropSCIMGroups},
+	{Version: 44, Name: "suite_operations", SQLite: suiteOperations, Postgres: strings.ReplaceAll(suiteOperations, "DATETIME", "TIMESTAMPTZ")},
 }
+
+// One row per operation KyYard asked the suite runner for, refused ones included. The actor has
+// no foreign key, like audit rows: deleting an account keeps the history.
+const suiteOperations = `CREATE TABLE suite_operations (
+ id TEXT PRIMARY KEY CHECK(length(id)=36),
+ actor_id TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('install','uninstall','unmanage','upgrade')),
+ apps TEXT NOT NULL CHECK(length(apps)<=4096),
+ target TEXT NOT NULL DEFAULT '' CHECK(length(target)<=64),
+ state TEXT NOT NULL CHECK(state IN ('running','succeeded','failed','unknown')),
+ started_at DATETIME NOT NULL,
+ finished_at DATETIME,
+ snapshot TEXT NOT NULL DEFAULT '' CHECK(length(snapshot)<=2097152),
+ error_code TEXT NOT NULL DEFAULT '' CHECK(length(error_code)<=64)
+);`
 
 // The retired global SCIM groups never conferred tenant access and nothing reads them; they
 // are identity data with no purpose left.
