@@ -92,7 +92,7 @@ Default section order:
 - Existing local accounts connect SSO explicitly by proving the current KyYard password, the original session and the provider identity. Preserve the account ID, local credentials and tenant permissions; never link automatically by username or email.
 - Use Docker's existing default `bridge` network; create no dedicated KyYard network.
 - Product requirement: support an operator-selected static Kubernetes Service ClusterIP for each deployed Ky service, stable across application updates and restarts. Nginx or cloudflared runs in the same cluster and uses these internal backend IPs for proxied HTTPS access. This requirement does not change the default KyYard server installation network.
-- Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically revoke sessions, MFA challenges and device pairings. Untouched existing accounts are not retroactively flagged.
+- Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically clear MFA (TOTP and recovery codes) and revoke sessions, MFA challenges and device pairings. Untouched existing accounts are not retroactively flagged.
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 

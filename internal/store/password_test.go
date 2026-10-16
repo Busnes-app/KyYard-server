@@ -67,7 +67,8 @@ func TestPasswordReplacementIsAtomicAndSingleUse(t *testing.T) {
 func TestAdminPasswordResetRevokesGrants(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	u := &store.User{ID: "reset", Username: "reset", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local", MustChangePassword: false}
+	u := &store.User{ID: "reset", Username: "reset", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local", MustChangePassword: false,
+		TOTPSecretEnc: "enc", TOTPEnabled: true, RecoveryCodesHash: `["h"]`}
 	if err := st.Users().CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +96,9 @@ func TestAdminPasswordResetRevokesGrants(t *testing.T) {
 	}
 	if !updated.MustChangePassword || updated.PasswordHash != "reset-hash" || updated.Status != "active" || updated.Role != "admin" {
 		t.Fatalf("unexpected reset state: %+v", updated)
+	}
+	if updated.TOTPEnabled || updated.TOTPSecretEnc != "" || updated.RecoveryCodesHash != "" {
+		t.Fatalf("the reset left MFA in place: %+v", updated)
 	}
 	if _, err := st.Devices().GetPairingBySecret(ctx, "pair"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("pairing survived", err)

@@ -94,8 +94,9 @@ Local password accounts manage their own sign-in in **Settings → Security**:
   browser stays signed in.
 
 Accounts provisioned by an SSO provider have no local password and manage these at the provider.
-Keep the recovery codes: no operator path clears MFA yet, and `init-admin` resets only the
-password, so an authenticator lost with every recovery code spent locks the account out.
+Keep the recovery codes. An authenticator lost with every recovery code spent needs the host
+operator: `init-admin` for that username sets a new password and turns MFA off, and the
+account enrols again after signing in.
 
 ## Transport and advanced deployment
 
@@ -199,8 +200,8 @@ organization in the header, then manage environments, members and audit history 
 ### Organizations and accounts
 
 The first platform administrator is the bootstrap `admin` from first start, or one made with
-`kyyard-server init-admin [-username name]` (which also resets an existing account's
-password). It reads the password from stdin, never argv: `docker compose exec -T kyyard
+`kyyard-server init-admin [-username name]` (which also resets an existing local account's
+password, clears its MFA and makes it a platform administrator). It reads the password from stdin, never argv: `docker compose exec -T kyyard
 /app/kyyard-server init-admin < password-file`, or type it at the hidden prompt. Everything
 after that is in the UI: **Settings → Administration**, shown to platform administrators only.
 

@@ -14,7 +14,7 @@
 | Read Only | organization | read everything non-secret |
 | Pulse reader (service token) | organization | read-only: organization, environments, endpoints, inventory, samples, container logs without follow, audit feed; no mutation, no exec, no secrets |
 
-The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing account's password; neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
+The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing local account's password and clears its MFA; neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
 
 Per-environment grants (`role_bindings`) are not introduced; the handoff allows them only if fixed organization roles prove insufficient.
 

@@ -23,7 +23,8 @@ func TestIdentityUpdateKeepsConcurrentCredentialWrites(t *testing.T) {
 	if err := st.Users().ResetAdminPassword(ctx, "u", "new"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Users().UpdateRecoveryCodes(ctx, "u", "codes-1", "codes-2"); err != nil {
+	// The reset cleared MFA, so the new codes replace none.
+	if err := st.Users().UpdateRecoveryCodes(ctx, "u", "", "codes-2"); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Users().SpendTOTPCounter(ctx, "u", 7); err != nil {
