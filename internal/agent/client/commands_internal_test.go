@@ -112,8 +112,8 @@ func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
 		results <- protocol.Result{ID: fmt.Sprintf("earlier_%d", i)}
 	}
 	ctx, endSession := context.WithCancel(context.Background())
-	release, ok := running.take(protocol.ActionImagePull)
-	if !ok {
+	release, admitLong, ok := running.take(protocol.ActionImagePull)
+	if !ok || !admitLong() {
 		t.Fatal("a fresh budget had no room")
 	}
 	done := make(chan struct{})
@@ -128,8 +128,8 @@ func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the worker is still waiting to deliver a result nobody is reading")
 	}
-	if len(running.all) != 0 || len(running.images) != 0 {
-		t.Fatalf("%d general and %d image slots were never returned", len(running.all), len(running.images))
+	if len(running.all) != 0 || len(running.images) != 0 || len(running.long) != 0 {
+		t.Fatalf("%d general, %d image and %d long slots were never returned", len(running.all), len(running.images), len(running.long))
 	}
 }
 
@@ -139,19 +139,19 @@ func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
 func TestImageActionsCannotTakeEveryCommandSlot(t *testing.T) {
 	running := newBudget()
 	for i := 0; i < maxInFlightImageCommands; i++ {
-		if _, ok := running.take(protocol.ActionImagePull); !ok {
+		if _, _, ok := running.take(protocol.ActionImagePull); !ok {
 			t.Fatalf("pull %d was refused inside the image reserve", i)
 		}
 	}
-	if _, ok := running.take(protocol.ActionImageRemove); ok {
+	if _, _, ok := running.take(protocol.ActionImageRemove); ok {
 		t.Fatal("an image action was admitted past the image reserve")
 	}
 	for i := 0; i < maxInFlightCommands-maxInFlightImageCommands; i++ {
-		if _, ok := running.take(protocol.ActionStop); !ok {
+		if _, _, ok := running.take(protocol.ActionStop); !ok {
 			t.Fatalf("container action %d was refused while the general budget had room", i)
 		}
 	}
-	if _, ok := running.take(protocol.ActionStop); ok {
+	if _, _, ok := running.take(protocol.ActionStop); ok {
 		t.Fatal("a container action was admitted past the general limit")
 	}
 }

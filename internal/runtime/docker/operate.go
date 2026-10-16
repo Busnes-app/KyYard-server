@@ -102,6 +102,10 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	budget := cmp.Or(c.operateMargin, operationBudget)
 	if cmd.Action != protocol.ActionStart {
 		budget += time.Duration(grace) * time.Second
+		// Past Docker's default the wait can hold the agent's command slot for up to an hour.
+		if grace > stopGrace && !protocol.AdmitLongWait(parent) {
+			return protocol.OutcomeDenied, "this agent is already waiting out as many long stops as it will"
+		}
 	}
 	ctx, cancel = context.WithTimeout(parent, budget)
 	defer cancel()

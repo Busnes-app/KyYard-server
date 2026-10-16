@@ -25,32 +25,40 @@ const maxInFlightCommands = 4
 // prevent, and moving it from the heartbeat path to the command path would not be fixing it.
 const maxInFlightImageCommands = maxInFlightCommands / 2
 
+// maxInFlightLongWaits is the share a stop or restart waiting out a long grace may hold: up to
+// an hour each, so a few restarts of containers that ignore SIGTERM would otherwise refuse every
+// other command for that long. The runtime asks for it once it has read the grace.
+const maxInFlightLongWaits = maxInFlightCommands / 2
+
 // budget is what one agent runs at once. It belongs to the agent rather than to a session: a
 // command outlives the socket it arrived on, so a per-session budget would grant a fresh set
 // with every redial.
 type budget struct {
 	all    chan struct{}
 	images chan struct{}
+	long   chan struct{}
 }
 
 func newBudget() *budget {
 	return &budget{
 		all:    make(chan struct{}, maxInFlightCommands),
 		images: make(chan struct{}, maxInFlightImageCommands),
+		long:   make(chan struct{}, maxInFlightLongWaits),
 	}
 }
 
 // take reserves capacity for one command. An image action needs both its own reserve and a
 // general slot, so container actions always have capacity left. The caller runs release when
 // the command is done with; not ok means the agent is full and the command must be refused
-// rather than queued.
-func (b *budget) take(action string) (release func(), ok bool) {
+// rather than queued. admitLong, called from the command's own goroutine, takes a long-wait
+// slot that release returns.
+func (b *budget) take(action string) (release func(), admitLong func() bool, ok bool) {
 	image := protocol.IsImageAction(action)
 	if image {
 		select {
 		case b.images <- struct{}{}:
 		default:
-			return nil, false
+			return nil, nil, false
 		}
 	}
 	select {
@@ -59,14 +67,28 @@ func (b *budget) take(action string) (release func(), ok bool) {
 		if image {
 			<-b.images
 		}
-		return nil, false
+		return nil, nil, false
+	}
+	long := false
+	admitLong = func() bool {
+		if !long {
+			select {
+			case b.long <- struct{}{}:
+				long = true
+			default:
+			}
+		}
+		return long
 	}
 	return func() {
 		<-b.all
 		if image {
 			<-b.images
 		}
-	}, true
+		if long {
+			<-b.long
+		}
+	}, admitLong, true
 }
 
 // Command dedupe limits from docs/agent-protocol.md.
