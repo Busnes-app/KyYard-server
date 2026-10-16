@@ -22,6 +22,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
+	"github.com/Busnes-app/kyyard-server/internal/suite"
 	"github.com/Busnes-app/kyyard-server/web"
 )
 
@@ -86,6 +87,8 @@ type Server struct {
 	serviceReads serviceReadCounter
 	// health serves the suite health contract at /healthz.
 	health *logging.Logger
+	// suite is the suite runner client; nil when KY_SUITE_RUNNER_SOCKET is unset.
+	suite *suite.Client
 }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
@@ -197,6 +200,10 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		// Each check or update plan may hold a registry connection per service for up to
 		// store.ImageCheckDeadline.
 		registrySlots: make(chan struct{}, registrySlotsTotal),
+	}
+
+	if cfg.Suite.RunnerSocket != "" {
+		s.suite = suite.New(cfg.Suite.RunnerSocket)
 	}
 
 	s.routes()
@@ -536,6 +543,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.handleAdminListUsers))
 	s.mux.HandleFunc("POST /api/admin/users", s.requireAdmin(s.handleAdminCreateUser))
 
+	// Suite runner (KyQuickStart hand-off): platform administrators only.
+	s.mux.HandleFunc("GET /api/suite/status", s.requirePlatform(permissions.SuiteRead, s.handleSuiteStatus))
+	s.mux.HandleFunc("GET /api/suite/catalog", s.requirePlatform(permissions.SuiteRead, s.handleSuiteCatalog))
+	s.mux.HandleFunc("GET /api/suite/plan", s.requirePlatform(permissions.SuiteRead, s.handleSuitePlan))
+	s.mux.HandleFunc("POST /api/suite/operations", s.requirePlatform(permissions.SuiteManage, s.handleSuiteStart))
+	s.mux.HandleFunc("GET /api/suite/operations/{id}", s.requirePlatform(permissions.SuiteRead, s.handleSuiteOperation))
+
 	s.mux.HandleFunc("GET /api/settings/sso", s.requireAdmin(s.handleProviders))
 	s.mux.HandleFunc("POST /api/settings/sso", s.requireAdmin(s.handleSaveProvider))
 	s.mux.HandleFunc("PUT /api/settings/sso/{provider}", s.requireAdmin(s.handleUpdateProvider))
@@ -550,6 +564,11 @@ func (s *Server) routes() {
 
 // requireAdmin rejects requests without a valid session, or with a non-admin one.
 func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
+	return s.requirePlatform(permissions.PlatformAdmin, h)
+}
+
+// requirePlatform rejects requests without a valid session, or whose platform role lacks action.
+func (s *Server) requirePlatform(action permissions.Action, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, _, err := s.sessions.AuthenticateRequest(r)
 		if err != nil {
@@ -560,7 +579,7 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 			}
 			return
 		}
-		if !permissions.PlatformAllows(user.Role, permissions.PlatformAdmin) {
+		if !permissions.PlatformAllows(user.Role, action) {
 			s.writeError(w, http.StatusForbidden, "Administrator role required")
 			return
 		}
