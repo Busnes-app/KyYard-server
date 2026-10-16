@@ -17,46 +17,39 @@ import (
 // agent's memory or the host's disk with concurrent pulls.
 const maxInFlightCommands = 4
 
-// maxInFlightImageCommands is the share of that limit image actions may hold. A pull is
-// bounded by a remote registry rather than by the daemon, so without a reserve of its own a
-// handful of them -- four ordinary large images, or one caller with only image.pull -- would
+// maxInFlightSlowCommands is the share of that limit slow work may hold together: image
+// actions, bounded by a remote registry rather than the daemon, and stops or restarts waiting
+// out a long grace (up to an hour each). Without one shared reserve, pulls and long waits would
 // occupy every slot and make an administrator's emergency stop come back denied for minutes.
 // The endpoint you cannot manage during an incident is the outcome all of this exists to
 // prevent, and moving it from the heartbeat path to the command path would not be fixing it.
-const maxInFlightImageCommands = maxInFlightCommands / 2
-
-// maxInFlightLongWaits is the share a stop or restart waiting out a long grace may hold: up to
-// an hour each, so a few restarts of containers that ignore SIGTERM would otherwise refuse every
-// other command for that long. The runtime asks for it once it has read the grace.
-const maxInFlightLongWaits = maxInFlightCommands / 2
+const maxInFlightSlowCommands = maxInFlightCommands / 2
 
 // budget is what one agent runs at once. It belongs to the agent rather than to a session: a
 // command outlives the socket it arrived on, so a per-session budget would grant a fresh set
 // with every redial.
 type budget struct {
-	all    chan struct{}
-	images chan struct{}
-	long   chan struct{}
+	all  chan struct{}
+	slow chan struct{}
 }
 
 func newBudget() *budget {
 	return &budget{
-		all:    make(chan struct{}, maxInFlightCommands),
-		images: make(chan struct{}, maxInFlightImageCommands),
-		long:   make(chan struct{}, maxInFlightLongWaits),
+		all:  make(chan struct{}, maxInFlightCommands),
+		slow: make(chan struct{}, maxInFlightSlowCommands),
 	}
 }
 
-// take reserves capacity for one command. An image action needs both its own reserve and a
-// general slot, so container actions always have capacity left. The caller runs release when
-// the command is done with; not ok means the agent is full and the command must be refused
-// rather than queued. admitLong, called from the command's own goroutine, takes a long-wait
-// slot that release returns.
+// take reserves capacity for one command. An image action needs both a slow slot and a general
+// slot, so container actions always have capacity left. The caller runs release when the command
+// is done with; not ok means the agent is full and the command must be refused rather than
+// queued. admitLong, called from the command's own goroutine, takes a slow slot for a long wait
+// (an image action already holds one) that release returns.
 func (b *budget) take(action string) (release func(), admitLong func() bool, ok bool) {
 	image := protocol.IsImageAction(action)
 	if image {
 		select {
-		case b.images <- struct{}{}:
+		case b.slow <- struct{}{}:
 		default:
 			return nil, nil, false
 		}
@@ -65,15 +58,15 @@ func (b *budget) take(action string) (release func(), admitLong func() bool, ok 
 	case b.all <- struct{}{}:
 	default:
 		if image {
-			<-b.images
+			<-b.slow
 		}
 		return nil, nil, false
 	}
-	long := false
+	long := image
 	admitLong = func() bool {
 		if !long {
 			select {
-			case b.long <- struct{}{}:
+			case b.slow <- struct{}{}:
 				long = true
 			default:
 			}
@@ -82,11 +75,8 @@ func (b *budget) take(action string) (release func(), admitLong func() bool, ok 
 	}
 	return func() {
 		<-b.all
-		if image {
-			<-b.images
-		}
 		if long {
-			<-b.long
+			<-b.slow
 		}
 	}, admitLong, true
 }

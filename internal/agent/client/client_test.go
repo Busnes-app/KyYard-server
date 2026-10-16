@@ -1245,7 +1245,7 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 		})
 	}()
 
-	// maxInFlightImageCommands, which this package cannot see from outside.
+	// maxInFlightSlowCommands, which this package cannot see from outside.
 	const imageReserve = 2
 
 	// While the blocked commands sit in Operate, the loop still answers the heartbeat, refuses
