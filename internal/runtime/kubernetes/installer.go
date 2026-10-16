@@ -11,8 +11,9 @@ import (
 
 const installerOwnerLabel = "ky.managed-by"
 
-// maxControllerHops bounds the owner walk: pod → ReplicaSet → Deployment, pod → Job → CronJob.
-const maxControllerHops = 2
+// maxControllerHops bounds the owner walk at a common operator chain, pod → ReplicaSet →
+// Deployment → custom resource; a deeper chain is refused.
+const maxControllerHops = 3
 
 func installerManaged(labels map[string]string) bool {
 	return labels[installerOwnerLabel] == "kyquickstart"
@@ -39,7 +40,7 @@ func (h *handle) installerManaged() bool {
 
 // installerOwned reports whether o, or a controller up its chain of controller references, is
 // installer-managed. It fails closed: an owner that cannot be read, is gone, has another UID, is
-// a kind not followed here or lies past maxControllerHops counts as installer-owned.
+// a kind the API server does not map or lies past maxControllerHops counts as installer-owned.
 func (c *Client) installerOwned(ctx context.Context, o metav1.Object) bool {
 	for hop := 0; ; hop++ {
 		if installerManagedObject(o) {
@@ -60,7 +61,8 @@ func (c *Client) installerOwned(ctx context.Context, o metav1.Object) bool {
 	}
 }
 
-// controller reads the object a controller reference in namespace ns names.
+// controller reads the object a controller reference in namespace ns names: built-in workloads
+// typed, so installerManagedObject sees pod-template labels, any other kind as metadata only.
 func (c *Client) controller(ctx context.Context, ns string, ref *metav1.OwnerReference) (metav1.Object, error) {
 	gv, err := schema.ParseGroupVersion(ref.APIVersion)
 	if err != nil {
@@ -81,7 +83,14 @@ func (c *Client) controller(ctx context.Context, ns string, ref *metav1.OwnerRef
 	case "batch/CronJob":
 		return object(batch.CronJobs(ns).Get(ctx, ref.Name, get))
 	}
-	return nil, errors.New("controller kind not followed")
+	if c.md == nil {
+		return nil, errors.New("controller kind not followed")
+	}
+	m, err := c.mapper.RESTMappingWithContext(ctx, schema.GroupKind{Group: gv.Group, Kind: ref.Kind}, gv.Version)
+	if err != nil {
+		return nil, err
+	}
+	return object(c.md.Resource(m.Resource).Namespace(ns).Get(ctx, ref.Name, get))
 }
 
 func object[T metav1.Object](o T, err error) (metav1.Object, error) {

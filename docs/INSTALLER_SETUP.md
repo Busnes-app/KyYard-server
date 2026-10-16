@@ -40,9 +40,10 @@ as described in `docs/RESTORE.md`; the extraction never writes arbitrary absolut
 Docker and Kubernetes runtime adapters refuse mutations and terminal exec against
 `ky.managed-by=kyquickstart` workloads. Read-only inspection remains available.
 On Kubernetes, pod exec and pod delete also follow the pod's UID-verified controller chain
-(ReplicaSet → Deployment, Job → CronJob, StatefulSet, DaemonSet) and refuse when any link
-carries the label or cannot be verified. That reads ReplicaSets, Jobs and CronJobs, so the
-agent's per-namespace Role grants `get` on them; reapply the regenerated manifest after upgrading.
+(of any kind, up to three controllers) and refuse when any link carries the label or cannot be
+verified. That reads ReplicaSets, Jobs and CronJobs, so the agent's per-namespace Role grants
+`get` on them; reapply the regenerated manifest after upgrading. It grants no `get` on custom
+resources, so pods an operator's custom resource controls stay refused.
 
 This interface is under qualification. Remaining
 gates include restored-process verification, explicit installer tenant

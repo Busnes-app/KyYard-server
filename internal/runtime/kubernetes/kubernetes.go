@@ -21,10 +21,14 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/version"
+	"k8s.io/client-go/discovery/cached/memory"
 	k8s "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 )
 
 const (
@@ -47,7 +51,10 @@ type Client struct {
 	openLog func(ctx context.Context, namespace, pod string, opts *corev1.PodLogOptions) (io.ReadCloser, error)
 	// executor builds a pod exec stream; nil (NewFromClientset) makes exec unavailable.
 	executor func(namespace, pod string, opts *corev1.PodExecOptions) (streamer, error)
-	log      *log.Logger
+	// md and mapper read a controller of any kind; nil (NewFromClientset) refuses past built-ins.
+	md     metadata.Interface
+	mapper apimeta.RESTMapperWithContext
+	log    *log.Logger
 }
 
 // New reads the cluster cfg names.
@@ -56,8 +63,13 @@ func New(cfg *rest.Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	md, err := metadata.NewForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	c := NewFromClientset(cs)
 	c.executor = spdyExecutor(cfg, cs)
+	c.md, c.mapper = md, restmapper.NewDeferredDiscoveryRESTMapperWithContext(memory.NewMemCacheClientWithContext(cs.Discovery()))
 	return c, nil
 }
 

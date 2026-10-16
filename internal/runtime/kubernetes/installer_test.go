@@ -11,10 +11,12 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	metafake "k8s.io/client-go/metadata/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -62,13 +64,25 @@ func controlledBy(apiVersion, kind, name string, uid types.UID) []metav1.OwnerRe
 
 // A running pod without the label, whose controller chain carries it only on a controller's
 // metadata, is installer-owned: exec and pod delete are refused before the executor or any
-// delete, with every other check passing. An owner that is unreadable, gone, of another UID or
-// of an unknown kind refuses too; an unlabelled chain is allowed.
+// delete, with every other check passing. A controller of any kind is read, a custom resource as
+// metadata only. An owner that is unreadable, gone, of another UID, of a kind the API server does
+// not map or past maxControllerHops refuses too; an unlabelled chain is allowed.
 func TestInstallerOwnershipFollowsPodControllers(t *testing.T) {
 	managed := map[string]string{installerOwnerLabel: "kyquickstart"}
 	deployment := func(labels map[string]string) runtime.Object {
 		return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", UID: "dep-uid", Labels: labels}}
 	}
+	// An operator's Deployment, controlled by the custom resource db.
+	operated := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", UID: "dep-uid",
+		OwnerReferences: controlledBy("example.com/v1", "Database", "db", "db-uid")}}
+	database := func(labels map[string]string, owners []metav1.OwnerReference) runtime.Object {
+		return &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "example.com/v1", Kind: "Database"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "db", UID: "db-uid", Labels: labels, OwnerReferences: owners}}
+	}
+	toDatabase := controlledBy("example.com/v1", "Database", "db", "db-uid")
+	databaseKind := schema.GroupVersionKind{Group: "example.com", Version: "v1", Kind: "Database"}
+	mapper := apimeta.NewDefaultRESTMapper(nil)
+	mapper.Add(databaseKind, apimeta.RESTScopeNamespace)
 	replicaSet := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web-7c9d", UID: "rs-uid",
 		OwnerReferences: controlledBy("apps/v1", "Deployment", "web", "dep-uid")}}
 	toReplicaSet := controlledBy("apps/v1", "ReplicaSet", "web-7c9d", "rs-uid")
@@ -76,7 +90,8 @@ func TestInstallerOwnershipFollowsPodControllers(t *testing.T) {
 		name    string
 		owners  []metav1.OwnerReference
 		objects []runtime.Object
-		forbid  string // a resource whose get the API server refuses
+		crs     []runtime.Object // custom resources, read through the metadata client
+		forbid  string           // a resource whose get the API server refuses
 		allowed bool
 	}{
 		{name: "deployment labelled through its replicaset", owners: toReplicaSet, objects: []runtime.Object{replicaSet, deployment(managed)}},
@@ -88,17 +103,35 @@ func TestInstallerOwnershipFollowsPodControllers(t *testing.T) {
 		{name: "owner gone", owners: toReplicaSet, objects: []runtime.Object{deployment(nil)}},
 		{name: "owner replaced under its name", owners: controlledBy("apps/v1", "ReplicaSet", "web-7c9d", "old-uid"), objects: []runtime.Object{replicaSet, deployment(nil)}},
 		{name: "owner unreadable", owners: toReplicaSet, objects: []runtime.Object{replicaSet, deployment(nil)}, forbid: "replicasets"},
-		{name: "owner of an unknown kind", owners: controlledBy("example.com/v1", "Database", "db", "db-uid")},
+		{name: "deployment template labelled through its replicaset", owners: toReplicaSet, objects: []runtime.Object{replicaSet,
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", UID: "dep-uid"},
+				Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: managed}}}}}},
+		{name: "custom resource labelled", owners: toDatabase, crs: []runtime.Object{database(managed, nil)}},
+		{name: "custom resource unreadable", owners: toDatabase, crs: []runtime.Object{database(nil, nil)}, forbid: "databases"},
+		{name: "custom resource gone", owners: toDatabase},
+		{name: "custom resource replaced under its name", owners: controlledBy("example.com/v1", "Database", "db", "old-uid"), crs: []runtime.Object{database(nil, nil)}},
+		{name: "owner of an unmapped kind", owners: controlledBy("example.com/v1", "Cache", "db", "db-uid")},
+		{name: "custom resource past the hop bound", owners: toReplicaSet, objects: []runtime.Object{replicaSet, operated},
+			crs: []runtime.Object{database(nil, controlledBy("example.com/v1", "Database", "parent", "parent-uid"))}},
 		{name: "unlabelled chain", owners: toReplicaSet, objects: []runtime.Object{replicaSet, deployment(nil)}, allowed: true},
+		{name: "unlabelled custom resource", owners: toDatabase, crs: []runtime.Object{database(nil, nil)}, allowed: true},
+		{name: "unlabelled custom resource at the hop bound", owners: toReplicaSet, objects: []runtime.Object{replicaSet, operated},
+			crs: []runtime.Object{database(nil, nil)}, allowed: true},
 		{name: "no controller", allowed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := execPod(func(p *corev1.Pod) { p.OwnerReferences = tc.owners })
 			c, cs := workloadCluster(t, false, true, append([]runtime.Object{pod}, tc.objects...)...)
+			scheme := metafake.NewTestScheme()
+			scheme.AddKnownTypeWithName(databaseKind, &metav1.PartialObjectMetadata{})
+			md := metafake.NewSimpleMetadataClient(scheme, tc.crs...)
+			c.md, c.mapper = md, mapper
 			if tc.forbid != "" {
-				cs.PrependReactor("get", tc.forbid, func(k8stesting.Action) (bool, runtime.Object, error) {
+				forbid := func(k8stesting.Action) (bool, runtime.Object, error) {
 					return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: tc.forbid}, "", nil)
-				})
+				}
+				cs.PrependReactor("get", tc.forbid, forbid)
+				md.PrependReactor("get", tc.forbid, forbid)
 			}
 			executed := false
 			c.executor = func(string, string, *corev1.PodExecOptions) (streamer, error) {
