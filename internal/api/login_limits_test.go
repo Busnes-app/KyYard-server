@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +82,63 @@ func TestLoginBacksOffPerUsername(t *testing.T) {
 		if code, _ := login(t, srv, peer(10), "alice", "WrongPassword123!"); code != http.StatusUnauthorized {
 			t.Fatalf("failure %d after a success answered %d, want 401: success did not reset", i, code)
 		}
+	}
+}
+
+// Strangers guessing at an account must not delay its owner: a browser that has signed in
+// as the username backs off on its own. A forged cookie, or one signed for another
+// username, shares the stranger's delay.
+func TestLoginDeviceCookieEscapesAStrangersBackoff(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	loginUser(t, st, "alice", "active")
+	loginUser(t, st, "bob", "active")
+	device := func(username string) *http.Cookie {
+		body, _ := json.Marshal(map[string]string{"username": username, "password": loginTestPassword})
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.10:4000"
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		for _, c := range w.Result().Cookies() {
+			if c.Name == "ky_login_device" {
+				if !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/api/auth/login" {
+					t.Fatalf("device cookie attributes: %+v", c)
+				}
+				return c
+			}
+		}
+		t.Fatalf("%s's sign-in set no device cookie (%d)", username, w.Code)
+		return nil
+	}
+	alices, bobs := device("alice"), device("bob")
+	withCookie := func(c *http.Cookie, username string) int {
+		body, _ := json.Marshal(map[string]string{"username": username, "password": loginTestPassword})
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.10:4000"
+		req.AddCookie(c)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 1; i <= 5; i++ {
+		login(t, srv, "203.0.113."+strconv.Itoa(i)+":4000", "alice", "WrongPassword123!")
+	}
+	if code, _ := login(t, srv, "192.0.2.10:4000", "alice", loginTestPassword); code != http.StatusTooManyRequests {
+		t.Fatalf("no cookie answered %d, want the strangers' 429", code)
+	}
+	forged := &http.Cookie{Name: "ky_login_device", Value: strings.Repeat("a", 32) + "." + strings.Repeat("b", 64)}
+	for name, c := range map[string]*http.Cookie{"forged": forged, "bob's": bobs} {
+		if code := withCookie(c, "alice"); code != http.StatusTooManyRequests {
+			t.Fatalf("a %s cookie answered %d, want 429", name, code)
+		}
+	}
+	if code := withCookie(alices, "ALICE"); code != http.StatusOK {
+		t.Fatalf("alice's own browser answered %d during the strangers' backoff, want 200", code)
+	}
+	if code, _ := login(t, srv, "203.0.113.9:4000", "alice", loginTestPassword); code != http.StatusTooManyRequests {
+		t.Fatalf("the owner's success lifted the strangers' backoff (%d)", code)
 	}
 }
 

@@ -46,7 +46,7 @@ type Server struct {
 	attemptsMu  sync.Mutex
 	attempts    map[string]attemptWindow
 	// accounts holds windows keyed on a known account, apart from attempts, so flooding
-	// client keys cannot evict them. loginBackoff is keyed on the typed username; both are
+	// client keys cannot evict them. loginBackoff is keyed on the typed username (and device); both are
 	// guarded by attemptsMu.
 	accounts     map[string]attemptWindow
 	loginBackoff map[string]loginBackoff
@@ -246,12 +246,15 @@ func makeRoom(m map[string]attemptWindow, now time.Time) {
 }
 
 // Login backoff per typed username: loginFreeFailures failures, then a delay doubling from a
-// minute to loginMaxDelay. A delay, never a lock, so guessing at an admin cannot shut them
-// out for longer than that. An entry quiet for loginForget after its delay is dropped.
+// minute to loginMaxDelay. A delay, never a lock. A browser that has signed in as the
+// username carries a device cookie and backs off on its own, so strangers guessing at an
+// account do not delay its owner. An entry quiet for loginForget after its delay is dropped.
 const (
 	loginFreeFailures = 5
 	loginMaxDelay     = 15 * time.Minute
 	loginForget       = time.Hour
+	loginDeviceCookie = "ky_login_device"
+	loginDeviceMaxAge = 90 * 24 * time.Hour
 )
 
 type loginBackoff struct {
@@ -259,11 +262,47 @@ type loginBackoff struct {
 	until    time.Time
 }
 
-// beginLogin admits one password check for username, or refuses while it is backing off. The
+// loginKey is the backoff key for username: the username alone, or with the device id when
+// the request carries a valid device cookie for it. A digest: the username is caller-supplied
+// and unbounded.
+func (s *Server) loginKey(r *http.Request, username string) string {
+	name := strings.ToLower(username)
+	if id := s.loginDevice(r, name); id != "" {
+		return crypto.SHA256Hex([]byte(name + "\x00" + id))
+	}
+	return crypto.SHA256Hex([]byte(name))
+}
+
+// loginDevice returns the id of a device cookie signed for name, or "".
+func (s *Server) loginDevice(r *http.Request, name string) string {
+	c, err := r.Cookie(loginDeviceCookie)
+	if err != nil {
+		return ""
+	}
+	id, mac, ok := strings.Cut(c.Value, ".")
+	if !ok || id == "" || !crypto.VerifyHMACSHA256([]byte(loginDeviceMessage(id, name)), s.config.Security.SessionSecret, mac) {
+		return ""
+	}
+	return id
+}
+
+func loginDeviceMessage(id, name string) string { return "login-device\x00" + id + "\x00" + name }
+
+// setLoginDevice gives the browser a device cookie for username unless it already holds one.
+func (s *Server) setLoginDevice(w http.ResponseWriter, r *http.Request, username string) {
+	name := strings.ToLower(username)
+	if s.loginDevice(r, name) != "" {
+		return
+	}
+	id := crypto.RandomHex(16)
+	mac := crypto.ComputeHMACSHA256([]byte(loginDeviceMessage(id, name)), s.config.Security.SessionSecret)
+	http.SetCookie(w, &http.Cookie{Name: loginDeviceCookie, Value: id + "." + mac, Path: "/api/auth/login", MaxAge: int(loginDeviceMaxAge / time.Second), HttpOnly: true, Secure: s.config.Security.CookieSecure, SameSite: http.SameSiteStrictMode})
+}
+
+// beginLogin admits one password check for key, or refuses while it is backing off. The
 // attempt counts as a failure until loginSucceeded clears it, so parallel guesses cannot all
-// pass one open slot. Keyed on a digest: the username is caller-supplied and unbounded.
-func (s *Server) beginLogin(username string) bool {
-	key := crypto.SHA256Hex([]byte(strings.ToLower(username)))
+// pass one open slot.
+func (s *Server) beginLogin(key string) bool {
 	now := time.Now()
 	s.attemptsMu.Lock()
 	defer s.attemptsMu.Unlock()
@@ -286,10 +325,10 @@ func (s *Server) beginLogin(username string) bool {
 	return true
 }
 
-func (s *Server) loginSucceeded(username string) {
+func (s *Server) loginSucceeded(key string) {
 	s.attemptsMu.Lock()
 	defer s.attemptsMu.Unlock()
-	delete(s.loginBackoff, crypto.SHA256Hex([]byte(strings.ToLower(username))))
+	delete(s.loginBackoff, key)
 }
 
 // makeLoginRoom drops forgotten entries, then one that is not backing off if any, so a

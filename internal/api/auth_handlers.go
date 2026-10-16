@@ -70,7 +70,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Per typed username, existing or not, so a refusal reveals nothing about the account.
-	if !s.beginLogin(req.Username) {
+	backoffKey := s.loginKey(r, req.Username)
+	if !s.beginLogin(backoffKey) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many login attempts")
 		return
 	}
@@ -99,7 +100,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
-	s.loginSucceeded(req.Username)
+	s.loginSucceeded(backoffKey)
+	s.setLoginDevice(w, r, req.Username)
 
 	// Check if MFA is required
 	if user.TOTPEnabled {

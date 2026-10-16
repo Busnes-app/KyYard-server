@@ -75,8 +75,10 @@ revokes existing sessions, MFA transactions and device pairings atomically. Exis
 are not retroactively flagged, since the server cannot infer whether they still use a bootstrap password.
 
 Five failed sign-ins for one username, from anywhere, delay the next attempt by one minute,
-doubling to at most 15; a successful sign-in or a restart clears it. Unknown and disabled
-accounts answer exactly like a wrong password.
+doubling to at most 15; a successful sign-in or a restart clears it. A browser that has
+signed in as that username before keeps a device cookie and backs off on its own, so someone
+guessing at your account does not delay you there. Unknown and disabled accounts answer
+exactly like a wrong password.
 
 ## Transport and advanced deployment
 
