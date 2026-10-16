@@ -377,6 +377,14 @@ func TestImageCommandsAreScopedAndValidated(t *testing.T) {
 	if w := tenantRequest(s, operator, "POST", path, `{"action":"image.pull","reference":"10.0.0.5:5000/app:1"}`, true); w.Code != 422 {
 		t.Fatalf("a pull from a private address: %d %s", w.Code, w.Body.String())
 	}
+	// A digest needs no Head, but its host passes the same guard.
+	if w := tenantRequest(s, operator, "POST", path, `{"action":"image.pull","reference":"10.0.0.5:5000/app@sha256:`+strings.Repeat("3", 64)+`"}`, true); w.Code != 422 {
+		t.Fatalf("a digest-pinned pull from a private address: %d %s", w.Code, w.Body.String())
+	}
+	var recorded []store.Command
+	if w := tenantRequest(s, operator, "GET", path, "", true); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &recorded) != nil || len(recorded) != 0 {
+		t.Fatalf("a refused pull recorded a command: %d %s", w.Code, w.Body.String())
+	}
 	resolver.err = nil
 
 	// An operator may pull.
@@ -486,6 +494,11 @@ func TestAProtocolCloseMarksTheEndpointOfflineAndAbandonsCommands(t *testing.T) 
 type pullResolver struct {
 	calls atomic.Int32
 	err   error
+}
+
+func (r *pullResolver) CheckHost(context.Context, registry.Reference, bool) error {
+	r.calls.Add(1)
+	return r.err
 }
 
 func (r *pullResolver) Head(context.Context, registry.Reference, *registry.Credential, bool) (string, error) {

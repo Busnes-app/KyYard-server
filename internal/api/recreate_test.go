@@ -481,6 +481,8 @@ func TestDirectCommandsRefuseANamespaceAttachment(t *testing.T) {
 
 type countingResolver struct{ calls atomic.Int32 }
 
+func (r *countingResolver) CheckHost(context.Context, registry.Reference, bool) error { return nil }
+
 func (r *countingResolver) Head(context.Context, registry.Reference, *registry.Credential, bool) (string, error) {
 	r.calls.Add(1)
 	return "sha256:" + strings.Repeat("f", 64), nil
@@ -510,6 +512,8 @@ func TestRefusedRunSpendsNoRegistryCall(t *testing.T) {
 }
 
 type fixedResolver struct{ digest string }
+
+func (fixedResolver) CheckHost(context.Context, registry.Reference, bool) error { return nil }
 
 func (r fixedResolver) Head(context.Context, registry.Reference, *registry.Credential, bool) (string, error) {
 	return r.digest, nil

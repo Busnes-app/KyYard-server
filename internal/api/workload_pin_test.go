@@ -172,6 +172,8 @@ func (f *workloadFleet) settleLast(t *testing.T) {
 
 type blockingResolver struct{ calls atomic.Int32 }
 
+func (r *blockingResolver) CheckHost(context.Context, registry.Reference, bool) error { return nil }
+
 func (r *blockingResolver) Head(ctx context.Context, _ registry.Reference, _ *registry.Credential, _ bool) (string, error) {
 	r.calls.Add(1)
 	<-ctx.Done()

@@ -139,6 +139,17 @@ func (c *Client) Head(ctx context.Context, ref Reference, cred *Credential) (Res
 	return c.manifest(ctx, http.MethodHead, ref, cred)
 }
 
+// CheckHost applies Head's destination guard to ref's registry host with no registry request:
+// what a digest reference, which needs no Head, still owes.
+func (c *Client) CheckHost(ctx context.Context, ref Reference) error {
+	host := ref.Host
+	if host == DockerHub {
+		host = dockerHubAPI
+	}
+	_, err := c.lookup(ctx, (&url.URL{Host: host}).Hostname())
+	return err
+}
+
 // manifest reports the caller's context error whenever it is done and the call failed: a
 // registry answering as the deadline passes must not turn a cancellation into ErrUnavailable.
 func (c *Client) manifest(ctx context.Context, method string, ref Reference, cred *Credential) (Resolved, error) {

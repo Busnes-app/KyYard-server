@@ -396,14 +396,17 @@ func (t *tenancyStore) ResolveDirectImage(ctx context.Context, a TenantAccess, e
 	if err != nil {
 		return nil, nil, err
 	}
+	// A digest needs no Head, but its host passes the same destination guard.
 	digest := ref.Digest
+	rctx, cancel := context.WithTimeout(ctx, ImageCheckDeadline)
 	if digest == "" {
-		rctx, cancel := context.WithTimeout(ctx, ImageCheckDeadline)
 		digest, err = resolver.Head(rctx, ref, cred, allowPrivate)
-		cancel()
-		if err != nil || !validSHA256(digest) {
-			return nil, nil, invalidSpec("image_unresolved")
-		}
+	} else {
+		err = resolver.CheckHost(rctx, ref, allowPrivate)
+	}
+	cancel()
+	if err != nil || !validSHA256(digest) {
+		return nil, nil, invalidSpec("image_unresolved")
 	}
 	pull := &protocol.ImagePull{Reference: ref.Host + "/" + ref.Repository + "@" + digest, Digest: digest}
 	if ref.Digest == "" {

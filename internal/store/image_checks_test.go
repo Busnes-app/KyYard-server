@@ -126,6 +126,8 @@ type fakeResolver struct {
 	during func()               // when set, runs inside Head
 }
 
+func (f *fakeResolver) CheckHost(context.Context, registry.Reference, bool) error { return nil }
+
 func (f *fakeResolver) Head(ctx context.Context, ref registry.Reference, cred *registry.Credential, allowPrivate bool) (string, error) {
 	f.mu.Lock()
 	var copied *registry.Credential
