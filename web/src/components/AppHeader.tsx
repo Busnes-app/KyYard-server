@@ -20,7 +20,7 @@ export function AppHeader({ appName, route, user, onLogout }: AppHeaderProps) {
     <Link to="/" className="ky-brand"><img src="/app-icon.png" width={28} height={28} alt="" /><span>{appName || 'KyYard'}</span></Link>
     <nav aria-label="Primary" className="ky-nav">
       {navItems.map(({ name, to, label, icon: Icon }) => {
-        const active = route.name === name || (name === 'endpoints' && ['endpoint', 'environment', 'organization'].includes(route.name)) || (name === 'settings' && ['backup', 'members', 'audit'].includes(route.name));
+        const active = route.name === name || (name === 'endpoints' && ['endpoint', 'environment', 'organization'].includes(route.name)) || (name === 'settings' && ['backup', 'suite', 'members', 'audit'].includes(route.name));
         return <Link key={name} to={to} current={active} className={active ? 'ky-nav-item ky-nav-link active' : 'ky-nav-item ky-nav-link'}><Icon size={18} /><span>{label}</span></Link>;
       })}
     </nav>
