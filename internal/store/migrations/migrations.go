@@ -1024,7 +1024,42 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// the container it made, so that container's Activity lists it.
 	{Version: 38, Name: "endpoint_command_result", SQLite: commandResult, Postgres: commandResult},
 	{Version: 39, Name: "sso_identities", SQLite: ssoIdentities, Postgres: ssoIdentities},
+	{Version: 40, Name: "pairing_secret_hash", SQLite: pairingSecretHashSQLite, Postgres: strings.ReplaceAll(pairingSecretHashSQLite, "DATETIME", "TIMESTAMPTZ")},
+	{Version: 41, Name: "directory_events", SQLite: directoryEvents, Postgres: directoryEvents},
 }
+
+// A signed directory event applies once (its ID is kept while its timestamp is acceptable) and
+// never after a newer one for the same subject (one watermark per subject, kept for good).
+const directoryEvents = `CREATE TABLE directory_events (
+ provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+ event_id TEXT NOT NULL CHECK(length(event_id) BETWEEN 1 AND 128),
+ event_at BIGINT NOT NULL,
+ PRIMARY KEY(provider, event_id)
+);
+CREATE INDEX idx_directory_events_at ON directory_events(event_at);
+CREATE TABLE directory_subjects (
+ provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+ subject TEXT NOT NULL CHECK(length(subject) BETWEEN 1 AND 255),
+ event_at BIGINT NOT NULL,
+ PRIMARY KEY(provider, subject)
+);`
+
+// Like every other bearer secret, a pairing secret is stored only as its SHA-256. Pending
+// pairings live 90 seconds, so dropping them on upgrade loses nothing.
+const pairingSecretHashSQLite = `
+DROP TABLE IF EXISTS device_pairings;
+CREATE TABLE device_pairings (
+    secret_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    push_token TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX idx_pairings_expires ON device_pairings(expires_at);
+`
 
 // Existing external accounts keep their identity; explicit links are additive to local accounts.
 const ssoIdentities = `CREATE TABLE user_sso_identities (

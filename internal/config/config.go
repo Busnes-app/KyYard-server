@@ -314,7 +314,7 @@ func LoadFromEnv() (*Config, error) {
 			GenericOIDCSecret:   getEnv("KY_OIDC_SECRET", ""),
 			SAMLEntityID:        getEnv("KY_SAML_ENTITY_ID", ""),
 			SAMLMetadataURL:     getEnv("KY_SAML_METADATA_URL", ""),
-			AutoProvision:       getEnvBool("KY_SSO_AUTO_PROVISION", true),
+			AutoProvision:       getEnvBool("KY_SSO_AUTO_PROVISION", false),
 		},
 		SCIM: SCIMConfig{}, // Retained type for legacy adapters; no runtime SCIM service.
 		Backup: BackupConfig{

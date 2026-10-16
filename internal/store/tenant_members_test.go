@@ -122,3 +122,23 @@ func TestListMemberOrganizationsIsOwnActiveOnly(t *testing.T) {
 		t.Fatalf("stranger got organizations: %+v", orgs)
 	}
 }
+
+func TestAddingAnUnseenUserLooksLikeAnUnknownOne(t *testing.T) {
+	ctx := context.Background()
+	st, platform := setupTenantAccess(t)
+	ts := st.Tenancy()
+	tenantUser(t, st, "orgadmin", "user", "local", "active")
+	mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "orgadmin", Role: store.RoleOrganizationAdmin, Status: "active"}))
+	a := store.TenantAccess{ActorID: "orgadmin", OrganizationID: "a"}
+	tenantUser(t, st, "stranger", "user", "local", "active")
+	stranger := ts.PutMembership(ctx, a, "stranger", store.RoleReadOnly, "active")
+	ghost := ts.PutMembership(ctx, a, "ghost", store.RoleReadOnly, "active")
+	if !errors.Is(stranger, store.ErrNotFound) || stranger.Error() != ghost.Error() {
+		t.Fatalf("a user sharing no organization was distinguishable: %v / %v", stranger, ghost)
+	}
+	// The fixture actor is a platform administrator, who may add any user.
+	mustTenant(t, ts.PutMembership(ctx, platform, "stranger", store.RoleReadOnly, "active"))
+	if m, err := ts.GetMembership(ctx, "a", "stranger"); err != nil || m.Role != store.RoleReadOnly {
+		t.Fatalf("platform administrator could not add: %v %+v", err, m)
+	}
+}

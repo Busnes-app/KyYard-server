@@ -56,7 +56,7 @@ func TestExternalIdentityNeverGrantsTenantAccess(t *testing.T) {
 	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: secret}, st)
 	sync := func(event string) {
 		t.Helper()
-		body, _ := json.Marshal(sso.KySignOnSyncPayload{Event: event, ID: "ext-1", Username: "sso_admin", Role: "admin", Status: "active", Timestamp: time.Now().Unix()})
+		body, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: crypto.RandomHex(8), Event: event, ID: "ext-1", Username: "sso_admin", Role: "admin", Status: "active", Timestamp: time.Now().Unix()})
 		mustTenant(t, client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, secret)))
 	}
 	sync("user.created")
@@ -189,8 +189,7 @@ func TestExternalDeactivationCanLockOutAnOrganization(t *testing.T) {
 	mustTenant(t, json.Unmarshal(w.Body.Bytes(), &sole))
 	mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "b", UserID: sole.ID, Role: store.RoleOrganizationAdmin, Status: "active"}))
 	tenantUser(t, st, "colleague", "user", "local", "active")
-	soleAccess := store.TenantAccess{ActorID: sole.ID, OrganizationID: "b"}
-	mustTenant(t, ts.PutMembership(ctx, soleAccess, "colleague", store.RoleReadOnly, "active"))
+	mustTenant(t, ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "b", UserID: "colleague", Role: store.RoleReadOnly, Status: "active"}))
 
 	scimCall("PATCH", "/scim/v2/Users/"+sole.ID, map[string]any{"schemas": []string{scim.SchemaPatchOp}, "Operations": []map[string]any{{"op": "replace", "path": "active", "value": false}}})
 

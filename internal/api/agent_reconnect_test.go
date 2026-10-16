@@ -92,7 +92,7 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 	// A reader attached to the incumbent. The successor knows nothing of this stream, so
 	// nothing will ever arrive on it again: displacing the socket must end it rather than
 	// leave the reader waiting, holding its place on the endpoint, for an hour.
-	orphan, refusal := s.logs.open(e.ID, "admin")
+	orphan, refusal := s.logs.open(e.ID, "admin", "org")
 	if refusal != "" {
 		t.Fatalf("opening a stream: %s", refusal)
 	}
@@ -134,7 +134,7 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 	}
 	// A reader that arrives after the successor is admitted belongs to the live session and
 	// survives the loser's unwind.
-	fresh, refusal := s.logs.open(e.ID, "another-reader")
+	fresh, refusal := s.logs.open(e.ID, "another-reader", "org")
 	if refusal != "" {
 		t.Fatalf("opening a stream on the successor: %s", refusal)
 	}

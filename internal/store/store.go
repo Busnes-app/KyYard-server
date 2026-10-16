@@ -18,6 +18,7 @@ var (
 	ErrNotFound         = errors.New("record not found")
 	ErrAlreadyExists    = errors.New("record already exists")
 	ErrLastAdmin        = errors.New("organization needs one active administrator")
+	ErrStaleEvent       = errors.New("directory event already applied or older than the last one")
 	// ErrEndpointOffline says the endpoint is not connected, so there is nowhere to send a
 	// command. It is distinct from a bad request: the caller asked for something reasonable
 	// that cannot happen right now.
@@ -119,6 +120,8 @@ type UserStore interface {
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
 	LinkSSO(ctx context.Context, userID, sessionHash, passwordHash, provider, subject, ip string) error
+	// UpdateUser writes every column from u, credentials included: a trusted full-row write for
+	// fixtures. The identity provider writes through ApplyDirectoryEvent instead.
 	UpdateUser(ctx context.Context, u *User) error
 	ResetAdminPassword(ctx context.Context, userID, newHash string) error
 	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
@@ -126,9 +129,38 @@ type UserStore interface {
 	// SpendTOTPCounter records counter as used. It returns ErrAlreadyExists when counter is
 	// not greater than the stored one, which is how a replayed code inside the skew window fails.
 	SpendTOTPCounter(ctx context.Context, userID string, counter int64) error
+	// DeleteUser is a local deletion: it refuses with ErrLastAdmin to leave an organization the
+	// user administers without an active administrator, the guard membership writes keep.
 	DeleteUser(ctx context.Context, id string) error
+	// ApplyDirectoryEvent claims ev and runs apply in one transaction: the replay marker, the
+	// subject's watermark and apply's writes commit together or not at all, so a failed or
+	// cancelled event leaves nothing behind and the provider's retry applies. It returns
+	// ErrStaleEvent for an event ID already applied, or one older than the last applied event
+	// for the same subject. Events are only acceptable within DirectoryEventWindow of now.
+	// apply must not use the Store itself: it would wait on this transaction.
+	ApplyDirectoryEvent(ctx context.Context, ev DirectoryEvent, apply func(DirectoryTx) error) error
 	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)
+}
+
+// DirectoryEvent identifies one signed identity provider event.
+type DirectoryEvent struct {
+	Provider, ID, Subject string
+	At                    time.Time
+}
+
+// DirectoryTx is the identity provider's reads and writes inside one event's transaction.
+// Its writes always apply; an organization they leave without an active administrator gets
+// an organization.last_admin_lost audit row.
+type DirectoryTx interface {
+	GetUserBySSO(provider, subject string) (*User, error)
+	GetUserByUsername(username string) (*User, error)
+	CreateUser(u *User) error
+	// UpdateUserIdentity writes only username, email, display name, role and status, leaving
+	// credential and MFA columns to their own compare-and-swap writers.
+	UpdateUserIdentity(u *User) error
+	DeleteUser(id string) error
+	DeleteUserSessions(userID string) error
 }
 
 // SessionStore defines repository operations for active login sessions.

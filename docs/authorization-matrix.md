@@ -33,7 +33,7 @@ Columns: OA organization admin, EA environment admin, Op operator, Dev developer
 
 ### Account identity linking (*implemented*)
 
-Any active local account may explicitly connect a configured provider to itself through Settings → Sign-in. `POST /api/sso/{provider}/link` requires its current password and CSRF, then PKCE/nonce/browser-bound provider verification. The callback requires the original session; the store rechecks that session, the verified password hash, active local ownership and completed bootstrap replacement inside the identity/audit transaction. `auth.sso.link` records the local actor and provider in platform scope, without credentials or provider subject. Linking grants no role or membership and preserves the local password/recovery path. Provider identities have one account owner; username/email similarity is never authority. Directory synchronization cannot manage a local account through an additive sign-in link.
+Any active local account may explicitly connect a configured provider to itself through Settings → Sign-in. `POST /api/sso/{provider}/link` requires its current password and CSRF, then PKCE/nonce/browser-bound provider verification. The callback requires the original session; the store rechecks that session, the verified password hash, active local ownership and completed bootstrap replacement inside the identity/audit transaction. `auth.sso.link` records the local actor and provider in platform scope, without credentials or provider subject. Linking grants no role or membership and preserves the local password/recovery path. Provider identities have one account owner; username/email similarity is never authority. Directory synchronization cannot manage a local account through an additive sign-in link. Each signed directory event applies once and in order: its replay marker, the subject's watermark, the account change and session revocation commit in one transaction or not at all.
 
 ### Organization and membership (*implemented*)
 
@@ -44,7 +44,9 @@ Any active local account may explicitly connect a configured provider to itself 
 | `organization.audit.read` | ✓ | – | – | – | – | no | success |
 | `organization.settings.manage` (*planned*, first typed setting) | ✓ | – | – | – | – | no | success |
 
-Last-administrator protection: membership writes serialize per organization and refuse to leave zero active administrators (*implemented*). Only lasting memberships count; platform-granted ones do not (*proposed*, lands with `platform.tenant.assume`). External deactivation bypasses this and is repaired by `platform.tenant.assume` (*proposed*).
+Adding a member: an organization administrator adds only a user who already shares one of their organizations; a platform administrator who is also the organization administrator may add any user. Any other user ID gets the same 404 as an unknown one (*implemented*). A membership change ends the target's streams in that organization only.
+
+Last-administrator protection: membership writes serialize per organization and refuse to leave zero active administrators (*implemented*). Only lasting memberships count; platform-granted ones do not (*proposed*, lands with `platform.tenant.assume`). External (identity provider) deactivation and deletion bypass this so a removed person always loses access; each organization left without an active administrator gets an `organization.last_admin_lost` audit row (*implemented*) and is repaired by `platform.tenant.assume` (*proposed*). Local account deletion keeps the guard (*implemented*).
 
 ### Environments (*implemented*)
 
