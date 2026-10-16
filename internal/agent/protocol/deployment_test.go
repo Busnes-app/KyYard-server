@@ -481,7 +481,7 @@ func TestDeploymentStepCodeDetails(t *testing.T) {
 			t.Errorf("code %q detail %q: %v", tc.code, tc.detail, err)
 		}
 	}
-	if len(stepCodes) != 45 || len(resultCodes) != 8 {
+	if len(stepCodes) != 46 || len(resultCodes) != 8 {
 		t.Fatalf("closed sets: %d step codes, %d result codes", len(stepCodes), len(resultCodes))
 	}
 }
