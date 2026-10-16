@@ -17,7 +17,7 @@ mkdir -p "$data"
 # must belong to whichever user the server runs as.
 own() {
 	for dir in "$data" "${KY_BACKUP_DIR:-}"; do
-		[ -n "$dir" ] && [ -d "$dir" ] || continue
+		if [ -z "$dir" ] || [ ! -d "$dir" ]; then continue; fi
 		find "$dir" ! -user "$1" -exec chown -h "$1:$1" {} + || true
 	done
 }
