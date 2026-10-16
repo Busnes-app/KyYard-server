@@ -28,6 +28,9 @@ function removalPreview(value: unknown, id: string): string {
   return `Image ID: ${id}\nTags: ${tags.join(', ') || '(untagged)'}\nInventory received: ${new Date(inv.received_at).toLocaleString()}\nNo dependent containers in this report. Docker checks dependencies again.\n\nRemove this image from this host, including its tags. Docker may refuse images with multiple tags. No force removal; containers and volumes are not removed.\nType the full image ID to confirm:`;
 }
 
+// The registry rules answer every refused pull as image_unresolved, whatever the cause.
+const UNRESOLVED = "This host's registry rules refused the image: no registry entry for its host while anonymous pulls are off, a private address, or a reference the registry does not resolve. Add the registry or allow anonymous pulls in Members → Registries.";
+
 type Props = { base: string; active: boolean; scope: string; onActivity: () => void } & ({ kind: 'pull' } | { kind: 'remove'; imageID: string });
 export function ImageControls(props: Props) {
   const { base, active, scope, onActivity } = props;
@@ -79,7 +82,10 @@ export function ImageControls(props: Props) {
       if (abort.signal.aborted) return;
       if (!r.ok) {
         // A server failure can happen after intent was recorded; never silently retry a write.
+        const refused: unknown = r.status === 422 ? await r.json().catch(() => null) : null;
+        if (abort.signal.aborted) return;
         if (r.status >= 500) { setUncertain(true); setMessage('Server failed while submitting. Check recent activity before trying again.'); }
+        else if (refused && typeof refused === 'object' && 'blockers' in refused && Array.isArray(refused.blockers) && refused.blockers.includes('image_unresolved')) setMessage(UNRESOLVED);
         else setMessage(r.status === 403 ? 'You do not have permission for this action.' : r.status === 409 ? 'Endpoint or image changed. Check recent activity and refresh inventory.' : r.status === 404 ? 'Image or endpoint is unavailable. Refresh inventory.' : `Image action refused (${r.status}). Check the reference and refresh inventory.`);
         onActivity(); return;
       }

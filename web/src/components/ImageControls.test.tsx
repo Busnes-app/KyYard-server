@@ -56,6 +56,15 @@ it('requires an explicit pull tag and leaves an uncertain submission blocked wit
  fireEvent.click(screen.getByRole('button', { name: 'Pull image' })); expect(fetcher).toHaveBeenCalledTimes(1);
  expect(screen.getByRole('button', { name: 'Pull image' }).hasAttribute('disabled')).toBe(true);
 });
+it('names the registry rules when a pull is refused as unresolved', async () => {
+ const fetcher = vi.fn(async () => json({ code: 'invalid_spec', blockers: ['image_unresolved'] }, 422));
+ vi.stubGlobal('fetch', fetcher); vi.spyOn(window, 'confirm').mockReturnValue(true);
+ render(<ImageControls {...props} kind="pull" />);
+ fireEvent.change(screen.getByLabelText('Image reference'), { target: { value: 'nginx:1.28' } });
+ fireEvent.click(screen.getByRole('button', { name: 'Pull image' }));
+ expect(await screen.findByText(/allow anonymous pulls in Members → Registries/)).toBeTruthy();
+ expect(fetcher).toHaveBeenCalledTimes(1);
+});
 it('polls the recorded command, displays its failure and does not resubmit', async () => {
  const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => json({ id: 'cmd', action: 'image.pull', outcome: init?.method === 'POST' ? '' : 'failed', detail: 'registry unavailable' }, init?.method === 'POST' ? 202 : 200));
  vi.stubGlobal('fetch', fetcher); vi.spyOn(window, 'confirm').mockReturnValue(true);
