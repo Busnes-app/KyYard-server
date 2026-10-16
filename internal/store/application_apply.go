@@ -185,6 +185,17 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 	if err := rows.Err(); err != nil {
 		return protocol.DeploymentRequest{}, err
 	}
+	// The volumes keepsHostBind judges come from the endpoint's current inventory.
+	var raw string
+	var snapshot protocol.Snapshot
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), d.EndpointID).Scan(&raw); errors.Is(err, sql.ErrNoRows) {
+		return protocol.DeploymentRequest{}, ErrAdoptionChanged
+	} else if err != nil {
+		return protocol.DeploymentRequest{}, err
+	}
+	if json.Unmarshal([]byte(raw), &snapshot) != nil {
+		return protocol.DeploymentRequest{}, ErrAdoptionChanged
+	}
 	req := protocol.DeploymentRequest{Deployment: d.ID, RequestID: d.CorrelationID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}, Volumes: d.Plan.Volumes}
 	hosts := map[string]bool{}
 	for i, ps := range d.Plan.Services {
@@ -198,7 +209,7 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 		if ps.PullDigest != "" {
 			next = ""
 		}
-		if keepsHostBind(ps.Mounts, ps.Replaces.ImageID, next) {
+		if keepsHostBind(ps.Mounts, ps.Replaces.ImageID, next, snapshot) {
 			allowed, err := t.hostBindAllowed(ctx, tx, a)
 			if err != nil {
 				return protocol.DeploymentRequest{}, err

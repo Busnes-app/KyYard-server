@@ -52,7 +52,7 @@ func fakeEngine(t *testing.T, containers int) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/networks"):
 			_, _ = w.Write([]byte(`[{"Id":"n1","Name":"shop_default","Driver":"bridge","Scope":"local"}]`))
 		case strings.HasSuffix(r.URL.Path, "/volumes"):
-			_, _ = w.Write([]byte(`{"Volumes":[{"Name":"shop_data","Driver":"local","Mountpoint":"/var/lib/docker/volumes/shop_data/_data","CreatedAt":"2026-09-01T00:00:00Z"}]}`))
+			_, _ = w.Write([]byte(`{"Volumes":[{"Name":"shop_data","Driver":"local","Mountpoint":"/var/lib/docker/volumes/shop_data/_data","CreatedAt":"2026-09-01T00:00:00Z"},{"Name":"rootfs","Driver":"local","Options":{"device":"/","o":"bind","type":"none"}}]}`))
 		case strings.HasPrefix(r.URL.Path, "/v1.41/containers/") && strings.HasSuffix(r.URL.Path, "/json"):
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.41/containers/"), "/json")
 			if id == "c000b" { // the second container vanished between list and inspect
@@ -80,7 +80,7 @@ func TestSnapshotMapsAndBoundsEngineData(t *testing.T) {
 	if len(snap.Containers) != 3 || snap.Containers[0].Name != "weba" || snap.Containers[0].Ports[0].Host != 8080 || snap.Containers[0].ComposeProject != "shop" || snap.Containers[0].Networks[0] != "shop_default" {
 		t.Fatalf("containers: %+v", snap.Containers)
 	}
-	if len(snap.Images) != 1 || snap.Images[0].Digests == nil || len(snap.Networks) != 1 || len(snap.Volumes) != 1 || snap.Volumes[0].CreatedAt.IsZero() {
+	if len(snap.Images) != 1 || snap.Images[0].Digests == nil || len(snap.Networks) != 1 || len(snap.Volumes) != 2 || snap.Volumes[1].CreatedAt.IsZero() || !snap.Volumes[1].Plain || snap.Volumes[0].Plain {
 		t.Fatalf("resources: %+v %+v %+v", snap.Images, snap.Networks, snap.Volumes)
 	}
 	if snap.Truncated != nil {
