@@ -19,7 +19,7 @@ import (
 )
 
 // appVersion is what the capsule manifest records for this build.
-const appVersion = "0.4.0"
+const appVersion = "0.4.2"
 
 // errRecoveryKeyMismatch answers a swapped recovery.pub: the pin in the database and the key
 // on disk disagree, so refuse rather than seal a capsule nobody's custodians can open.
