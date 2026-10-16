@@ -245,8 +245,8 @@ inside KyYard. After signing in and replacing the initial password, open **Conta
 **Local Docker** appears in the initial organization's **Local** environment automatically.
 No separate agent container, enrollment token, shell command or fingerprint approval is needed.
 Container actions retain the same organization permissions and audit trail as remote hosts,
-except that a terminal, configuration edit or removal on this host also needs a platform
-administrator. KyYard never opens, edits, stops or removes its own container through it.
+except that a terminal, configuration edit or removal on this host, an application removal
+included, also needs a platform administrator. KyYard never opens, edits, stops or removes its own container through it.
 The socket grants host-level Docker authority to KyYard.
 
 **Existing installations:** update both the image and Compose file, then recreate KyYard using

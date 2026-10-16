@@ -106,16 +106,25 @@ func (t *tenancyStore) openPodExec(ctx context.Context, tx *sql.Tx, a TenantAcce
 // also needs a platform administrator.
 func (t *tenancyStore) CheckEndpointAccess(ctx context.Context, a TenantAccess, action permissions.Action, endpointID string) error {
 	return t.readTenant(ctx, a, action, func(tx *sql.Tx) error {
-		if err := t.endpointInScope(ctx, tx, a, endpointID); err != nil || endpointID != LocalDockerEndpointID || !localProtected[action] {
+		if err := t.endpointInScope(ctx, tx, a, endpointID); err != nil {
 			return err
 		}
-		var role, status string
-		err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT role,status FROM users WHERE id=?`), a.ActorID).Scan(&role, &status)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && (status != "active" || !permissions.PlatformAllows(role, permissions.PlatformAdmin)) {
-			return ErrForbidden
-		}
-		return err
+		return t.localDockerGuard(ctx, tx, a, action, endpointID)
 	})
+}
+
+// localDockerGuard is ErrForbidden for a localProtected action on LocalDockerEndpointID unless
+// a's actor is an active platform administrator. Application removal runs it too.
+func (t *tenancyStore) localDockerGuard(ctx context.Context, tx *sql.Tx, a TenantAccess, action permissions.Action, endpointID string) error {
+	if endpointID != LocalDockerEndpointID || !localProtected[action] {
+		return nil
+	}
+	var role, status string
+	err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT role,status FROM users WHERE id=?`), a.ActorID).Scan(&role, &status)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && (status != "active" || !permissions.PlatformAllows(role, permissions.PlatformAdmin)) {
+		return ErrForbidden
+	}
+	return err
 }
 
 // localProtected reach into the server's own container (its keys, database and Docker socket)

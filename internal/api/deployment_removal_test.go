@@ -2,12 +2,17 @@ package api_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -200,4 +205,92 @@ func TestRemovalOverTheAgentSocket(t *testing.T) {
 	}
 	request(admin, "DELETE", base+"/"+app.ID, `{"expected_revision":1}`, 204)
 	sock.conn.CloseNow()
+}
+
+// The built-in Local Docker endpoint's host runs KyYard itself, so removing an application there
+// destroys containers only a platform administrator may: an organization administrator is
+// refused 403 with no row and no frame.
+func TestRemovalOnLocalDockerNeedsPlatformAdmin(t *testing.T) {
+	s, st, _ := setupTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ts := st.Tenancy()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	_, err := ts.InitializeLocalDocker(ctx, pub)
+	must(err)
+	ep, err := ts.ReadEndpointRaw(ctx, store.LocalDockerEndpointID)
+	must(err)
+	orgAdmin := loginAs(t, s, st, "orgadmin", "user")
+	platform := loginAs(t, s, st, "platform", "admin")
+	for _, id := range []string{"usr_orgadmin", "usr_platform"} {
+		must(ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: store.InitialOrganizationID, UserID: id, Role: store.RoleOrganizationAdmin, Status: "active"}))
+	}
+	httpSrv := httptest.NewServer(s)
+	defer httpSrv.Close()
+	// The challenge names the server's instance fingerprint.
+	u, _ := url.Parse(httpSrv.URL)
+	probe, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect", nil)
+	must(err)
+	var challenge protocol.Challenge
+	_ = json.Unmarshal(readEnvelope(t, ctx, probe).Payload, &challenge)
+	probe.CloseNow()
+	sock, reason := connect(t, ctx, httpSrv.URL, enrolledAgent{id: store.LocalDockerEndpointID, priv: priv, inst: challenge.InstanceFingerprint}, priv, protocol.Version)
+	if sock == nil {
+		t.Fatalf("connect refused: %s", reason)
+	}
+	defer sock.conn.CloseNow()
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeHello, protocol.Hello{Capabilities: []string{protocol.CapabilityDeploymentApply, protocol.CapabilityDeploymentRemove}})
+	containerID, image := strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64)
+	created := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	writeEnvelope(t, ctx, sock.conn, protocol.TypeInventory, protocol.Snapshot{
+		Generation: uint64(time.Now().Unix()), Engine: protocol.Engine{Version: "1"},
+		Containers: []protocol.Container{{ID: containerID, Name: "shop-web", ImageID: image, State: "running", ComposeProject: "shop", CreatedAt: created, Ports: []protocol.Port{}, Labels: map[string]string{}, Networks: []string{}}},
+		Images:     []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
+	})
+	sync := func() {
+		t.Helper()
+		writeEnvelope(t, ctx, sock.conn, protocol.TypeHeartbeat, nil)
+		if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeHeartbeat {
+			t.Fatalf("expected a heartbeat, got %s", f.Type)
+		}
+	}
+	sync()
+	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ep.ID); return e != nil && e.State == "active" })
+	request := func(cookie *http.Cookie, method, path, body string, status int) string {
+		t.Helper()
+		w := tenantRequest(s, cookie, method, path, body, true)
+		if w.Code != status {
+			t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+	base := "/api/organizations/" + store.InitialOrganizationID + "/environments/" + ep.EnvironmentID + "/applications"
+	var app store.Application
+	must(json.Unmarshal([]byte(request(orgAdmin, "POST", base, `{"name":"shop","compose":"services: {web: {image: nginx:1}}"}`, 201)), &app))
+	adoption := base + "/" + app.ID + "/adoption"
+	var preview store.AdoptionPreview
+	must(json.Unmarshal([]byte(request(orgAdmin, "GET", adoption+"?endpoint="+ep.ID+"&project=shop", "", 200)), &preview))
+	adoptionBody, _ := json.Marshal(store.AdoptionRequest{EndpointID: ep.ID, Project: "shop", Digest: preview.Digest, Confirm: "shop"})
+	var instance store.ApplicationInstance
+	must(json.Unmarshal([]byte(request(orgAdmin, "POST", adoption, string(adoptionBody), 201)), &instance))
+	removal := base + "/" + app.ID + "/removal"
+	body := `{"instance_id":"` + instance.ID + `","confirm":"shop"}`
+	request(orgAdmin, "POST", removal, body, 403)
+	// Nothing was sent: the next frame is the heartbeat's reply.
+	sync()
+	var rows []store.Deployment
+	must(json.Unmarshal([]byte(request(orgAdmin, "GET", base+"/"+app.ID+"/deployments", "", 200)), &rows))
+	if len(rows) != 0 {
+		t.Fatalf("a refused removal recorded a row: %+v", rows)
+	}
+	request(platform, "POST", removal, body, 202)
+	if f := readEnvelope(t, ctx, sock.conn); f.Type != protocol.TypeDeploymentRemove {
+		t.Fatalf("expected the removal, got %s", f.Type)
+	}
 }

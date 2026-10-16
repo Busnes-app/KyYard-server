@@ -813,6 +813,10 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		if (runtime == protocol.RuntimeKubernetes) != (namespace != "") {
 			return ErrRuntimeUnsupported
 		}
+		// Removal destroys containers: on Local Docker that is container.destroy's rule.
+		if err := t.localDockerGuard(ctx, tx, a, permissions.ContainerDestroy, endpoint); err != nil {
+			return err
+		}
 		if r.Confirm != project {
 			return ErrInvalid
 		}
