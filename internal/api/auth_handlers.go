@@ -45,7 +45,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	if !s.allowAttempt("login:"+s.requestIP(r), 20, time.Minute) {
+	if !s.allowAttempt("login:"+s.limitIP(r), 20, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many login attempts")
 		return
 	}
@@ -64,32 +64,44 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Verify PoW CAPTCHA if enabled
 	if s.config.Captcha.Provider == "pow" {
-		if req.CaptchaToken == "" || !auth.VerifyPoWSolution(req.CaptchaToken, s.config.Security.SessionSecret) {
+		if req.CaptchaToken == "" || !s.pow.Verify(req.CaptchaToken, s.config.Security.SessionSecret) {
 			s.writeError(w, http.StatusForbidden, "Security check failed. Please complete the CAPTCHA puzzle.")
 			return
 		}
 	}
+	// Per typed username, existing or not, so a refusal reveals nothing about the account.
+	backoffKey := s.loginKey(r, req.Username)
+	if !s.beginLogin(backoffKey) {
+		s.writeError(w, http.StatusTooManyRequests, "Too many login attempts")
+		return
+	}
 
+	// Unknown, disabled and wrong-password logins cost one Argon2 verification and answer
+	// alike, so neither timing nor status enumerates accounts.
 	user, err := s.store.Users().GetUserByUsername(r.Context(), req.Username)
+	if errors.Is(err, store.ErrNotFound) {
+		password.DummyVerify()
+		s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
+		return
+	}
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
-			return
-		}
 		s.writeError(w, http.StatusInternalServerError, "Authentication error")
 		return
 	}
-
-	if user.Status != "active" {
-		s.writeError(w, http.StatusForbidden, "Account is disabled or inactive")
-		return
-	}
-
 	ok, err := password.Verify(req.Password, user.PasswordHash)
 	if err != nil || !ok {
 		s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
+	if user.Status != "active" {
+		_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
+			UserID: user.ID, Action: "auth.login", Resource: "session", Result: "denied", Details: "account " + user.Status, IPAddress: s.requestIP(r),
+		})
+		s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
+		return
+	}
+	s.loginSucceeded(backoffKey)
+	s.setLoginDevice(w, r, req.Username)
 
 	// Check if MFA is required
 	if user.TOTPEnabled {
@@ -139,7 +151,7 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 	// Key on the client alone. Nothing caller-supplied may reach the key: a token in the key
 	// lets one client mint unbounded slots and starve every other window. Same shape as the
 	// login limit above, so a client occupies one MFA slot no matter how it spends it.
-	if !s.allowAttempt("mfa:"+s.requestIP(r), 20, time.Minute) {
+	if !s.allowAttempt("mfa:"+s.limitIP(r), 20, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts")
 		return
 	}
@@ -151,7 +163,7 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Per-account, so a botnet spread across many IPs cannot outrun the per-IP window. Each
 	// guess already costs a fresh password login, since the challenge is consumed either way.
-	if !s.allowAttempt("mfa-user:"+userID, 5, 5*time.Minute) {
+	if !s.allowAccountAttempt("mfa-user:"+userID, 5, 5*time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts for this account")
 		return
 	}
@@ -213,7 +225,7 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 	// Key on the client alone. Nothing caller-supplied may reach the key: a token in the key
 	// lets one client mint unbounded slots and starve every other window. Same shape as the
 	// login limit above, so a client occupies one MFA slot no matter how it spends it.
-	if !s.allowAttempt("mfa:"+s.requestIP(r), 20, time.Minute) {
+	if !s.allowAttempt("mfa:"+s.limitIP(r), 20, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts")
 		return
 	}
@@ -225,7 +237,7 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 	}
 	// Per-account, so a botnet spread across many IPs cannot outrun the per-IP window. Each
 	// guess already costs a fresh password login, since the challenge is consumed either way.
-	if !s.allowAttempt("mfa-user:"+userID, 5, 5*time.Minute) {
+	if !s.allowAccountAttempt("mfa-user:"+userID, 5, 5*time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts for this account")
 		return
 	}

@@ -24,7 +24,8 @@ docker compose logs kyyard
 ```
 
 Open **http://localhost:9273** on the Docker host. Sign in as `admin` with the temporary
-password printed in the logs and replace it. **Containers** shows **Local Docker** automatically; no enrollment command or fingerprint approval is needed for this host. The HTTP port is published on loopback only.
+password from `docker compose exec kyyard cat /data/initial-admin-password` and replace it;
+the file is deleted when you do. **Containers** shows **Local Docker** automatically; no enrollment command or fingerprint approval is needed for this host. The HTTP port is published on loopback only.
 `docker compose ps` reports health; `docker compose exec kyyard /app/kyyard-server healthcheck`
 checks readiness. Restarting preserves accounts, sessions and keys. Do not use `down -v`
 unless you intend to delete the data volume.
@@ -72,6 +73,12 @@ of at least 12 characters, then sign in again. Until replacement, the session ca
 its identity, change the password or sign out; privileged APIs remain blocked. Replacement
 revokes existing sessions, MFA transactions and device pairings atomically. Existing accounts
 are not retroactively flagged, since the server cannot infer whether they still use a bootstrap password.
+
+Five failed sign-ins for one username, from anywhere, delay the next attempt by one minute,
+doubling to at most 15; a successful sign-in or a restart clears it. A browser that has
+signed in as that username before keeps a device cookie and backs off on its own, so someone
+guessing at your account does not delay you there. Unknown and disabled accounts answer
+exactly like a wrong password.
 
 ## Transport and advanced deployment
 
@@ -175,7 +182,9 @@ organization in the header, then manage environments, members and audit history 
 ### Organizations and accounts
 
 The first platform administrator is the bootstrap `admin` from first start, or one made with
-`kyyard-server init-admin` (which also resets an existing account's password). Everything
+`kyyard-server init-admin [-username name]` (which also resets an existing account's
+password). It reads the password from stdin, never argv: `docker compose exec -T kyyard
+/app/kyyard-server init-admin < password-file`, or type it at the hidden prompt. Everything
 after that is in the UI: **Settings → Administration**, shown to platform administrators only.
 
 - **Create user** makes a local account with platform role User or Platform administrator. The
@@ -620,8 +629,11 @@ changing it invalidates pending proof-of-work challenges, not database sessions.
 `instance.key` is the persistent Ed25519 seed of the control-plane identity: agents pin its
 fingerprint at enrollment, so replacing it disconnects every agent. It has no environment override. Never run a restored copy alongside the original instance.
 
-The bootstrap password is printed only after the administrator is saved and only when it
-was generated. An ordinary restart preserves both the account and active sessions.
+A generated bootstrap password is written to `initial-admin-password` in the data directory
+(owner-only, 0600) and never logged; the log names the file once the administrator is saved.
+The file is deleted when `admin` replaces the password. A supplied `KY_ADMIN_PASSWORD` must meet
+the 12-character policy or startup refuses. An ordinary restart preserves both the account and
+active sessions.
 
 ## Disaster recovery
 

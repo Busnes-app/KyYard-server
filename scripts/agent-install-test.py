@@ -98,7 +98,7 @@ try:
     proxy_ip = docker("inspect", "--format", '{{(index .NetworkSettings.Networks "bridge").IPAddress}}', proxy_name)
     base = "https://127.0.0.1:" + docker("port", proxy_name, "443/tcp").rsplit(":", 1)[1]
     server_id = start_server()
-    password = re.search(r"Username: admin \| Password: (\S+)", docker("logs", server)).group(1)
+    password = docker("exec", server, "cat", "/data/initial-admin-password").strip()
     api("/api/auth/login", {"username": "admin", "password": password})
     replacement = "InstallTestNewPassword123!"
     api("/api/auth/change-password", {"current_password": password, "new_password": replacement})

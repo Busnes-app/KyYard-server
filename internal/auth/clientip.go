@@ -46,6 +46,18 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 	return peer
 }
 
+// RateKey groups a ClientIP result for rate limiting: an IPv6 address counts as its /64,
+// since one host is routinely handed a whole /64 and could otherwise rotate through 2^64
+// fresh limiter windows. IPv4 and unparsable values pass through.
+func RateKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || !addr.Is6() {
+		return ip
+	}
+	p, _ := addr.WithZone("").Prefix(64)
+	return p.String()
+}
+
 // TrustedPeer applies the same transport-peer rule as ClientIP when interpreting
 // the forwarded scheme for the installer's public network self-check.
 func TrustedPeer(r *http.Request, trusted []netip.Prefix) bool {

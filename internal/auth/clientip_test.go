@@ -150,3 +150,18 @@ func TestParseTrustedProxiesRejectsGarbage(t *testing.T) {
 		t.Errorf("parsed %v, want [192.0.2.1/32 10.0.0.0/8 10.0.0.1/32]", got)
 	}
 }
+
+// One host on a /64 can pick any address in it; each must not buy a fresh limiter window.
+func TestRateKeyGroupsIPv6ByPrefix(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"2001:db8:1:2:aaaa::1", "2001:db8:1:2::/64"},
+		{"2001:db8:1:2:ffff:ffff:ffff:ffff", "2001:db8:1:2::/64"},
+		{"fe80::1%eth0", "fe80::/64"},
+		{"198.51.100.7", "198.51.100.7"},
+		{"not-an-ip", "not-an-ip"},
+	} {
+		if got := auth.RateKey(tc.in); got != tc.want {
+			t.Errorf("RateKey(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

@@ -3,11 +3,15 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -27,7 +31,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusConflict, "No local password replacement is required")
 		return
 	}
-	if !s.allowAttempt("password-change:"+s.requestIP(r), 10, time.Minute) || !s.allowAttempt("password-change-user:"+user.ID, 5, time.Minute) {
+	if !s.allowAttempt("password-change:"+s.limitIP(r), 10, time.Minute) || !s.allowAccountAttempt("password-change-user:"+user.ID, 5, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many password change attempts")
 		return
 	}
@@ -68,6 +72,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeError(w, http.StatusInternalServerError, "Failed to change password")
 		return
+	}
+	// The generated bootstrap password is spent once the bootstrap admin replaces it.
+	if user.Username == "admin" {
+		path := filepath.Join(s.config.Database.DataDir, config.InitialAdminPasswordFile)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("[SECURITY] could not remove %s: %v", path, err)
+		}
 	}
 	_ = s.sessions.RevokeSession(r.Context(), w, r)
 	s.writeJSON(w, http.StatusOK, map[string]bool{"password_changed": true, "login_required": true})

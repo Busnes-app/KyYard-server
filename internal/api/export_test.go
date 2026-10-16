@@ -2,10 +2,14 @@ package api
 
 import (
 	"context"
+	"maps"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -24,11 +28,34 @@ const AttemptsCapForTest = attemptsCap
 func AttemptKeysForTest(s *Server) []string {
 	s.attemptsMu.Lock()
 	defer s.attemptsMu.Unlock()
-	keys := make([]string, 0, len(s.attempts))
+	keys := make([]string, 0, len(s.attempts)+len(s.accounts))
 	for k := range s.attempts {
 		keys = append(keys, k)
 	}
+	for k := range s.accounts {
+		keys = append(keys, k)
+	}
 	return keys
+}
+
+// AccountKeysForTest returns only the account-keyed windows. Test-only.
+func AccountKeysForTest(s *Server) []string {
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	return slices.Collect(maps.Keys(s.accounts))
+}
+
+// LoginDelayForTest reports username's backoff delay from now, and ends it early while
+// keeping its failure count, so a test can watch the delay grow without waiting. Test-only.
+func LoginDelayForTest(s *Server, username string) time.Duration {
+	key := crypto.SHA256Hex([]byte(strings.ToLower(username)))
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	e := s.loginBackoff[key]
+	delay := time.Until(e.until)
+	e.until = time.Now().Add(-time.Second)
+	s.loginBackoff[key] = e
+	return delay
 }
 
 // AllowAttemptForTest drives the limiter directly so a test can fill it without paying for
@@ -103,4 +130,11 @@ func ResetAttemptsForTest(s *Server) {
 	s.attemptsMu.Lock()
 	defer s.attemptsMu.Unlock()
 	clear(s.attempts)
+	clear(s.accounts)
+	clear(s.loginBackoff)
+}
+
+// AllowAccountAttemptForTest drives the account-keyed limiter directly. Test-only.
+func AllowAccountAttemptForTest(s *Server, key string, limit int, window time.Duration) bool {
+	return s.allowAccountAttempt(key, limit, window)
 }

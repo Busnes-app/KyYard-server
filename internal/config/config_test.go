@@ -32,11 +32,28 @@ func TestConfigLoadDefaults(t *testing.T) {
 	if cfg.Database.Driver != "sqlite" {
 		t.Errorf("expected default driver sqlite, got %s", cfg.Database.Driver)
 	}
-	if cfg.Captcha.Provider != "pow" {
-		t.Errorf("expected default captcha provider pow, got %s", cfg.Captcha.Provider)
+	if cfg.Captcha.Provider != "pow" || cfg.Captcha.DifficultyPoW != config.DefaultPoWDifficulty {
+		t.Errorf("expected default captcha pow at %d, got %s at %d", config.DefaultPoWDifficulty, cfg.Captcha.Provider, cfg.Captcha.DifficultyPoW)
 	}
 	if cfg.Backup.Dir != "" {
 		t.Errorf("expected empty default backup dir (sealed local copies off), got %q", cfg.Backup.Dir)
+	}
+}
+
+// Only "pow" is verified, so any other provider name would start a server with no challenge.
+func TestCaptchaSettingsRefuseWhatIsNotEnforced(t *testing.T) {
+	for _, tc := range []struct{ name, value, want string }{
+		{"KY_CAPTCHA_PROVIDER", "turnstile", `"turnstile" is not supported`},
+		{"KY_CAPTCHA_PROVIDER", "hcaptcha", `"hcaptcha" is not supported`},
+		{"KY_CAPTCHA_POW_DIFFICULTY", "4", "must be at least 10000"},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("KY_DATA_DIR", t.TempDir())
+			t.Setenv(tc.name, tc.value)
+			if _, err := config.LoadFromEnv(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -47,7 +64,7 @@ func TestConfigLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("KY_DB_DRIVER", "postgres")
 	t.Setenv("KY_DB_DSN", "postgres://user:pass@localhost:5432/testdb")
 	t.Setenv("KY_APP_NAME", "CustomKyYard")
-	t.Setenv("KY_CAPTCHA_PROVIDER", "turnstile")
+	t.Setenv("KY_CAPTCHA_PROVIDER", "none")
 
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
@@ -69,8 +86,8 @@ func TestConfigLoadFromEnvOverrides(t *testing.T) {
 	if cfg.Server.AppName != "CustomKyYard" {
 		t.Errorf("expected custom app name, got %s", cfg.Server.AppName)
 	}
-	if cfg.Captcha.Provider != "turnstile" {
-		t.Errorf("expected captcha provider turnstile, got %s", cfg.Captcha.Provider)
+	if cfg.Captcha.Provider != "none" {
+		t.Errorf("expected captcha provider none, got %s", cfg.Captcha.Provider)
 	}
 }
 

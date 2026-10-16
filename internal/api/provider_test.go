@@ -246,7 +246,7 @@ func TestSSOAdmissionRemainsAvailableWhenAttemptMapIsFull(t *testing.T) {
 	for i := 0; i < 300; i++ {
 		r := httptest.NewRequest("GET", "/api/sso/idp_capacity/login", nil)
 		r.RemoteAddr = "192.0.2.1:12345"
-		r.Header.Set("X-Forwarded-For", fmt.Sprintf("2001:db8::%x", i+1))
+		r.Header.Set("X-Forwarded-For", fmt.Sprintf("2001:db8:%x::1", i+1)) // one /64 per client
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, r)
 		if w.Code != http.StatusFound {

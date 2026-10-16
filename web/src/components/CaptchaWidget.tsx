@@ -30,17 +30,15 @@ export const CaptchaWidget: React.FC<CaptchaProps> = ({ onToken }) => {
 
         const enc = new TextEncoder();
         const max = chal.maxnumber;
+        // Compare raw bytes: hex-encoding every candidate triples the solve time.
+        const want = Uint8Array.from(chal.challenge.match(/../g) ?? [], (h) => parseInt(h, 16));
         let solved = false;
 
         for (let i = 1; i <= max; i++) {
           if (cancelled) return;
-          const target = `${chal.salt}${i}`;
-          const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(target));
-          const hashHex = Array.from(new Uint8Array(hashBuf))
-            .map((b) => b.toString(16).padStart(2, '0'))
-            .join('');
+          const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(`${chal.salt}${i}`)));
 
-          if (hashHex === chal.challenge) {
+          if (hash.length === want.length && hash.every((b, j) => b === want[j])) {
             const sol = {
               algorithm: chal.algorithm,
               salt: chal.salt,

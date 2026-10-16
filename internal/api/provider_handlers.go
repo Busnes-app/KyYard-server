@@ -227,7 +227,7 @@ func (s *Server) handleLinkProvider(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, 403, "Linking requires a local account")
 		return
 	}
-	if !s.allowAttempt("sso-link:"+user.ID, 5, time.Minute) {
+	if !s.allowAccountAttempt("sso-link:"+user.ID, 5, time.Minute) {
 		s.writeError(w, 429, "Too many linking attempts")
 		return
 	}
@@ -256,7 +256,7 @@ func (s *Server) startProviderLogin(w http.ResponseWriter, r *http.Request, link
 		s.writeError(w, 403, "Managed identities require explicit installer assignment")
 		return
 	}
-	if !s.allowAttempt("sso:"+s.requestIP(r), 10, time.Minute) {
+	if !s.allowAttempt("sso:"+s.limitIP(r), 10, time.Minute) {
 		s.writeError(w, 429, "Too many sign-in attempts")
 		return
 	}

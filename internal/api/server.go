@@ -18,6 +18,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -44,6 +45,12 @@ type Server struct {
 	mux         *http.ServeMux
 	attemptsMu  sync.Mutex
 	attempts    map[string]attemptWindow
+	// accounts holds windows keyed on a known account, apart from attempts, so flooding
+	// client keys cannot evict them. loginBackoff is keyed on the typed username (and device); both are
+	// guarded by attemptsMu.
+	accounts     map[string]attemptWindow
+	loginBackoff map[string]loginBackoff
+	pow          auth.PoWVerifier
 	// claimGlobal is the service-claim bound across every address. It lives outside attempts
 	// so makeRoom cannot evict it; guarded by attemptsMu.
 	claimGlobal attemptWindow
@@ -175,16 +182,18 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 	}
 
 	s := &Server{
-		config:   cfg,
-		store:    st,
-		sessions: sessions,
-		kysignon: kysignon,
-		saml:     saml,
-		recovery: recovery,
-		mux:      http.NewServeMux(),
-		logs:     newLogRegistry(),
-		attempts: make(map[string]attemptWindow),
-		health:   healthLog,
+		config:       cfg,
+		store:        st,
+		sessions:     sessions,
+		kysignon:     kysignon,
+		saml:         saml,
+		recovery:     recovery,
+		mux:          http.NewServeMux(),
+		logs:         newLogRegistry(),
+		attempts:     make(map[string]attemptWindow),
+		accounts:     make(map[string]attemptWindow),
+		loginBackoff: make(map[string]loginBackoff),
+		health:       healthLog,
 		// Each check or update plan may hold a registry connection per service for up to
 		// store.ImageCheckDeadline.
 		registrySlots: make(chan struct{}, registrySlotsTotal),
@@ -195,14 +204,25 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 }
 
 func (s *Server) allowAttempt(key string, limit int, window time.Duration) bool {
-	now := time.Now()
 	s.attemptsMu.Lock()
 	defer s.attemptsMu.Unlock()
-	if _, known := s.attempts[key]; !known && len(s.attempts) >= attemptsCap {
-		s.makeRoom(now)
+	return allowIn(s.attempts, key, limit, window)
+}
+
+// allowAccountAttempt is allowAttempt for keys naming an existing account.
+func (s *Server) allowAccountAttempt(key string, limit int, window time.Duration) bool {
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	return allowIn(s.accounts, key, limit, window)
+}
+
+func allowIn(m map[string]attemptWindow, key string, limit int, window time.Duration) bool {
+	now := time.Now()
+	if _, known := m[key]; !known && len(m) >= attemptsCap {
+		makeRoom(m, now)
 	}
-	entry := bumpWindow(s.attempts[key], now, window)
-	s.attempts[key] = entry
+	entry := bumpWindow(m[key], now, window)
+	m[key] = entry
 	return entry.count <= limit
 }
 
@@ -210,19 +230,126 @@ func (s *Server) allowAttempt(key string, limit int, window time.Duration) bool 
 // full it drops one live entry chosen at random, never the one nearest expiry. Caller holds
 // attemptsMu. The scan is O(attemptsCap) and only runs for a new key while the map is full;
 // 10 000 entries is microseconds.
-func (s *Server) makeRoom(now time.Time) {
-	for candidate, w := range s.attempts {
+func makeRoom(m map[string]attemptWindow, now time.Time) {
+	for candidate, w := range m {
 		if now.After(w.reset) {
-			delete(s.attempts, candidate)
+			delete(m, candidate)
 		}
 	}
-	if len(s.attempts) >= attemptsCap {
+	if len(m) >= attemptsCap {
 		// Go randomises map iteration, so the first entry is an unbiased victim.
-		for candidate := range s.attempts {
-			delete(s.attempts, candidate)
+		for candidate := range m {
+			delete(m, candidate)
 			break
 		}
 	}
+}
+
+// Login backoff per typed username: loginFreeFailures failures, then a delay doubling from a
+// minute to loginMaxDelay. A delay, never a lock. A browser that has signed in as the
+// username carries a device cookie and backs off on its own, so strangers guessing at an
+// account do not delay its owner. An entry quiet for loginForget after its delay is dropped.
+const (
+	loginFreeFailures = 5
+	loginMaxDelay     = 15 * time.Minute
+	loginForget       = time.Hour
+	loginDeviceCookie = "ky_login_device"
+	loginDeviceMaxAge = 90 * 24 * time.Hour
+)
+
+type loginBackoff struct {
+	failures int
+	until    time.Time
+}
+
+// loginKey is the backoff key for username: the username alone, or with the device id when
+// the request carries a valid device cookie for it. A digest: the username is caller-supplied
+// and unbounded.
+func (s *Server) loginKey(r *http.Request, username string) string {
+	name := strings.ToLower(username)
+	if id := s.loginDevice(r, name); id != "" {
+		return crypto.SHA256Hex([]byte(name + "\x00" + id))
+	}
+	return crypto.SHA256Hex([]byte(name))
+}
+
+// loginDevice returns the id of a device cookie signed for name, or "".
+func (s *Server) loginDevice(r *http.Request, name string) string {
+	c, err := r.Cookie(loginDeviceCookie)
+	if err != nil {
+		return ""
+	}
+	id, mac, ok := strings.Cut(c.Value, ".")
+	if !ok || id == "" || !crypto.VerifyHMACSHA256([]byte(loginDeviceMessage(id, name)), s.config.Security.SessionSecret, mac) {
+		return ""
+	}
+	return id
+}
+
+func loginDeviceMessage(id, name string) string { return "login-device\x00" + id + "\x00" + name }
+
+// setLoginDevice gives the browser a device cookie for username unless it already holds one.
+func (s *Server) setLoginDevice(w http.ResponseWriter, r *http.Request, username string) {
+	name := strings.ToLower(username)
+	if s.loginDevice(r, name) != "" {
+		return
+	}
+	id := crypto.RandomHex(16)
+	mac := crypto.ComputeHMACSHA256([]byte(loginDeviceMessage(id, name)), s.config.Security.SessionSecret)
+	http.SetCookie(w, &http.Cookie{Name: loginDeviceCookie, Value: id + "." + mac, Path: "/api/auth/login", MaxAge: int(loginDeviceMaxAge / time.Second), HttpOnly: true, Secure: s.config.Security.CookieSecure, SameSite: http.SameSiteStrictMode})
+}
+
+// beginLogin admits one password check for key, or refuses while it is backing off. The
+// attempt counts as a failure until loginSucceeded clears it, so parallel guesses cannot all
+// pass one open slot.
+func (s *Server) beginLogin(key string) bool {
+	now := time.Now()
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	e, known := s.loginBackoff[key]
+	if now.Before(e.until) {
+		return false
+	}
+	if now.After(e.until.Add(loginForget)) {
+		e = loginBackoff{}
+	}
+	if !known && len(s.loginBackoff) >= attemptsCap {
+		s.makeLoginRoom(now)
+	}
+	e.failures++
+	e.until = now
+	if e.failures >= loginFreeFailures {
+		e.until = now.Add(min(time.Minute<<min(e.failures-loginFreeFailures, 4), loginMaxDelay))
+	}
+	s.loginBackoff[key] = e
+	return true
+}
+
+func (s *Server) loginSucceeded(key string) {
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	delete(s.loginBackoff, key)
+}
+
+// makeLoginRoom drops forgotten entries, then one that is not backing off if any, so a
+// flood of one-off usernames does not reset a delay being served. Caller holds attemptsMu.
+func (s *Server) makeLoginRoom(now time.Time) {
+	for k, e := range s.loginBackoff {
+		if now.After(e.until.Add(loginForget)) {
+			delete(s.loginBackoff, k)
+		}
+	}
+	if len(s.loginBackoff) < attemptsCap {
+		return
+	}
+	victim := ""
+	for k, e := range s.loginBackoff {
+		victim = k
+		if !now.Before(e.until) {
+			break
+		}
+	}
+	delete(s.loginBackoff, victim)
 }
 
 // allowGlobalClaim bumps the claim window shared by every caller.
@@ -246,6 +373,11 @@ func bumpWindow(entry attemptWindow, now time.Time, window time.Duration) attemp
 // keying on a caller-supplied header would make every limit here bypassable.
 func (s *Server) requestIP(r *http.Request) string {
 	return auth.ClientIP(r, s.config.Security.TrustedProxies)
+}
+
+// limitIP is requestIP grouped for limiter keys: an IPv6 client counts as its /64.
+func (s *Server) limitIP(r *http.Request) string {
+	return auth.RateKey(s.requestIP(r))
 }
 
 func (s *Server) routes() {

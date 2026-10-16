@@ -77,9 +77,11 @@ contains "backup-drill checks database integrity" "$DRILL_OUT" "integrity_check 
 contains "backup-drill passes on a complete payload" "$DRILL_OUT" "Status:   PASSED"
 
 check "init-admin rejects short password" \
-  "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin -password short >/dev/null 2>&1 && echo 0 || echo 1)" "1"
-check "init-admin creates admin" \
-  "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin -password "$ADMIN_PASS" >/dev/null 2>&1 && echo 0 || echo 1)" "0"
+  "$(printf 'short\n' | KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin >/dev/null 2>&1 && echo 0 || echo 1)" "1"
+contains "init-admin refuses a password in argv" \
+  "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin -password "$ADMIN_PASS" 2>&1 </dev/null || :)" "pipe it on stdin"
+check "init-admin creates admin from stdin" \
+  "$(printf '%s\n' "$ADMIN_PASS" | KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin >/dev/null 2>&1 && echo 0 || echo 1)" "0"
 
 echo "==> HTTP with default PoW captcha"
 ADMIN_PASS=""
@@ -87,9 +89,12 @@ start_server pow
 contains "liveness" "$(curl -sf "$BASE/health/live")" '"status":"ok"'
 contains "readiness" "$(curl -sf "$BASE/health/ready")" '"status":"ok"'
 if KY_HOST=127.0.0.1 KY_PORT="$PORT" "$BIN" healthcheck; then pass "binary readiness probe"; else fail "binary readiness probe"; fi
-ADMIN_PASS="$(sed -n 's/.*Username: admin | Password: //p' "$WORK/server.log")"
-check "fresh production boot prints one generated credential" "$(grep -c 'Initial bootstrap:' "$WORK/server.log")" "1"
+INITIAL_PASS_FILE="$WORK/data/initial-admin-password"
+ADMIN_PASS="$(cat "$INITIAL_PASS_FILE")"
+check "fresh boot logs one bootstrap notice naming the file" "$(grep -c "Initial bootstrap:.*$INITIAL_PASS_FILE" "$WORK/server.log")" "1"
 check "generated bootstrap password is present" "$(test -n "$ADMIN_PASS" && echo yes || echo no)" "yes"
+check "bootstrap password file is owner-only" "$(stat -c %a "$INITIAL_PASS_FILE")" "600"
+check "bootstrap password never reaches the log" "$(grep -cF "$ADMIN_PASS" "$WORK/server.log" || true)" "0"
 KEYS_BEFORE="$(sha256sum "$WORK/data/encryption.key" "$WORK/data/session.key" "$WORK/data/instance.key")"
 check "GET / serves the PWA" "$(status "$BASE/")" "200"
 contains "index.html has react root" "$(curl -s "$BASE/")" 'id="root"'
@@ -146,6 +151,7 @@ check "password replacement requires CSRF" "$(status -b "$WORK/cookies" -X POST 
 check "bootstrap password replacement succeeds" \
   "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
     -d '{"current_password":"'"$ADMIN_PASS"'","new_password":"ReplacementSmokePass456!"}' "$BASE/api/auth/change-password")" "200"
+check "replacement removes the bootstrap password file" "$(test -e "$INITIAL_PASS_FILE" && echo present || echo gone)" "gone"
 contains "bootstrap session was revoked" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":false'
 check "old bootstrap password stops working" \
   "$(status -H 'Content-Type: application/json' -d '{"username":"admin","password":"'"$ADMIN_PASS"'"}' "$BASE/api/auth/login")" "401"
@@ -154,7 +160,7 @@ LOGIN_BODY="$(curl -s -c "$WORK/cookies" -H 'Content-Type: application/json' \
 contains "replacement password signs in" "$LOGIN_BODY" '"authenticated":true'
 contains "replacement clears the restriction" "$LOGIN_BODY" '"must_change_password":false'
 check "init-admin resets the existing admin" \
-  "$(KY_DATA_DIR="$WORK/data" KY_DB_DRIVER=sqlite "$BIN" init-admin -password 'OperatorResetPass789!' >/dev/null 2>&1 && echo 0 || echo 1)" "0"
+  "$(printf '%s\n' 'OperatorResetPass789!' | KY_DATA_DIR="$WORK/data" KY_DB_DRIVER=sqlite "$BIN" init-admin >/dev/null 2>&1 && echo 0 || echo 1)" "0"
 check "operator reset revokes the previous session" "$(status -b "$WORK/cookies" "$BASE/api/backup/status")" "401"
 LOGIN_BODY="$(curl -s -c "$WORK/cookies" -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"OperatorResetPass789!"}' "$BASE/api/auth/login")"
