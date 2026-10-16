@@ -375,3 +375,63 @@ func TestKySignOnWebhookNeverUsesAnInvalidUsername(t *testing.T) {
 		t.Fatal("a valid name was replaced")
 	}
 }
+
+// cancelAfterClaim cancels processing the moment a directory event is claimed, as a dropped
+// webhook connection does.
+type cancelAfterClaim struct {
+	store.Store
+	cancel context.CancelFunc
+}
+
+func (s cancelAfterClaim) Users() store.UserStore { return cancelUsers{s.Store.Users(), s.cancel} }
+
+type cancelUsers struct {
+	store.UserStore
+	cancel context.CancelFunc
+}
+
+func (u cancelUsers) ApplyDirectoryEvent(ctx context.Context, ev store.DirectoryEvent, apply func(store.DirectoryTx) error) error {
+	return u.UserStore.ApplyDirectoryEvent(ctx, ev, func(tx store.DirectoryTx) error {
+		u.cancel()
+		return apply(tx)
+	})
+}
+
+// An interrupted deactivation leaves nothing behind, so the provider's retry still removes access.
+func TestKySignOnWebhookRetryAppliesAnInterruptedDeactivation(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, testdb.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.SSOConfig{KySignOnHMACSecret: "webhook-secret-999"}
+	now := time.Now().Unix()
+	body, sig := signedEvent(t, sso.KySignOnSyncPayload{Event: "user.created", EventID: "evt-create", ID: "ext-bob", Username: "bob", Status: "active", Timestamp: now - 1})
+	if err := sso.NewKySignOnClient(cfg, st).HandleSyncWebhook(ctx, body, sig); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := st.Users().GetUserBySSO(ctx, "kysignon", "ext-bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: "bob-session", UserID: bob.ID, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}, bob.PasswordHash); err != nil {
+		t.Fatal(err)
+	}
+
+	body, sig = signedEvent(t, sso.KySignOnSyncPayload{Event: "user.deactivated", EventID: "evt-fire", ID: "ext-bob", Timestamp: now})
+	cut, cancel := context.WithCancel(ctx)
+	interrupted := sso.NewKySignOnClient(cfg, cancelAfterClaim{st, cancel}).HandleSyncWebhook(cut, body, sig)
+	if err := sso.NewKySignOnClient(cfg, st).HandleSyncWebhook(ctx, body, sig); err != nil {
+		t.Fatalf("retry refused: %v", err)
+	}
+	if u, err := st.Users().GetUserByID(ctx, bob.ID); err != nil || u.Status != "inactive" {
+		t.Fatalf("still active after retry: %+v %v", u, err)
+	}
+	if _, err := st.Sessions().GetSession(ctx, "bob-session"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("session survived: %v", err)
+	}
+	if interrupted == nil {
+		t.Fatal("an interrupted event reported success")
+	}
+}

@@ -107,6 +107,18 @@ type userStore struct {
 }
 
 func (u *userStore) CreateUser(ctx context.Context, user *User) error {
+	tx, err := u.store.beginTx(ctx, false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := u.createUser(ctx, tx, user); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (u *userStore) createUser(ctx context.Context, tx *sql.Tx, user *User) error {
 	if user.SSOProvider == InstallerProvider {
 		return ErrInstallerOwned
 	}
@@ -135,12 +147,7 @@ INSERT INTO users (
 		lastLogin = sql.NullTime{Time: *user.LastLoginAt, Valid: true}
 	}
 
-	tx, err := u.store.beginTx(ctx, false)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, q,
+	_, err := tx.ExecContext(ctx, q,
 		user.ID, user.Username, user.Email, user.DisplayName, user.PasswordHash,
 		user.Role, user.Status, user.SSOProvider, user.SSOSubject,
 		user.TOTPSecretEnc, user.TOTPEnabled, user.RecoveryCodesHash,
@@ -153,10 +160,7 @@ INSERT INTO users (
 		}
 		return err
 	}
-	if err := u.registerSSOIdentity(ctx, tx, user); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return u.registerSSOIdentity(ctx, tx, user)
 }
 
 func (u *userStore) scanUser(row interface{ Scan(...any) error }) (*User, error) {
@@ -194,6 +198,10 @@ FROM users WHERE id = ?
 }
 
 func (u *userStore) GetUserByUsername(ctx context.Context, username string) (*User, error) {
+	return u.getUserByUsername(ctx, u.store.db, username)
+}
+
+func (u *userStore) getUserByUsername(ctx context.Context, db dbtx, username string) (*User, error) {
 	q := u.store.rebind(`
 SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
@@ -201,7 +209,7 @@ SELECT id, username, email, display_name, password_hash, role, status,
        totp_last_counter, created_at, updated_at, last_login_at
 FROM users WHERE LOWER(username) = LOWER(?)
 `)
-	return u.scanUser(u.store.db.QueryRowContext(ctx, q, username))
+	return u.scanUser(db.QueryRowContext(ctx, q, username))
 }
 
 func (u *userStore) GetUserByEmail(ctx context.Context, email string) (*User, error) {
@@ -216,6 +224,10 @@ FROM users WHERE LOWER(email) = LOWER(?)
 }
 
 func (u *userStore) GetUserBySSO(ctx context.Context, provider, subject string) (*User, error) {
+	return u.getUserBySSO(ctx, u.store.db, provider, subject)
+}
+
+func (u *userStore) getUserBySSO(ctx context.Context, db dbtx, provider, subject string) (*User, error) {
 	q := u.store.rebind(`
 SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
@@ -223,7 +235,7 @@ SELECT id, username, email, display_name, password_hash, role, status,
        totp_last_counter, created_at, updated_at, last_login_at
 FROM users WHERE id = (SELECT user_id FROM user_sso_identities WHERE provider = ? AND subject = ?)
 `)
-	return u.scanUser(u.store.db.QueryRowContext(ctx, q, provider, subject))
+	return u.scanUser(db.QueryRowContext(ctx, q, provider, subject))
 }
 
 func (u *userStore) UpdateUser(ctx context.Context, user *User) error {
@@ -324,10 +336,79 @@ func (u *userStore) SpendTOTPCounter(ctx context.Context, userID string, counter
 	return nil
 }
 
-func (u *userStore) UpdateUserIdentity(ctx context.Context, user *User) error {
+func (u *userStore) DeleteUser(ctx context.Context, id string) error {
+	tx, err := u.store.beginTx(ctx, false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := u.adminQuorum(ctx, tx, id, false, u.deleteRow(ctx, id)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (u *userStore) deleteRow(ctx context.Context, id string) func(*sql.Tx) (sql.Result, error) {
+	return func(tx *sql.Tx) (sql.Result, error) {
+		return tx.ExecContext(ctx, u.store.rebind("DELETE FROM users WHERE id = ? AND NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)"), id, "installer.user."+id)
+	}
+}
+
+// DirectoryEventWindow is how far a directory event's timestamp may be from now.
+const DirectoryEventWindow = 5 * time.Minute
+
+func (u *userStore) ApplyDirectoryEvent(ctx context.Context, ev DirectoryEvent, apply func(DirectoryTx) error) error {
+	tx, err := u.store.beginTx(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// An event older than the window is refused by its timestamp, so its ID need not be kept.
+	if _, err := tx.ExecContext(ctx, u.store.rebind("DELETE FROM directory_events WHERE event_at < ?"), time.Now().Add(-DirectoryEventWindow).Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, u.store.rebind("INSERT INTO directory_events (provider, event_id, event_at) VALUES (?, ?, ?)"), ev.Provider, ev.ID, ev.At.Unix()); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key") {
+			return ErrStaleEvent
+		}
+		return err
+	}
+	// Events within one second keep arrival order; the ID check above refuses an exact replay.
+	res, err := tx.ExecContext(ctx, u.store.rebind(`INSERT INTO directory_subjects (provider, subject, event_at) VALUES (?, ?, ?)
+ON CONFLICT (provider, subject) DO UPDATE SET event_at = excluded.event_at WHERE directory_subjects.event_at <= excluded.event_at`), ev.Provider, ev.Subject, ev.At.Unix())
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrStaleEvent
+	}
+	if err := apply(directoryTx{u, ctx, tx}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// directoryTx binds the identity provider's reads and writes to one event's transaction.
+type directoryTx struct {
+	u   *userStore
+	ctx context.Context
+	tx  *sql.Tx
+}
+
+func (d directoryTx) GetUserBySSO(provider, subject string) (*User, error) {
+	return d.u.getUserBySSO(d.ctx, d.tx, provider, subject)
+}
+
+func (d directoryTx) GetUserByUsername(username string) (*User, error) {
+	return d.u.getUserByUsername(d.ctx, d.tx, username)
+}
+
+func (d directoryTx) CreateUser(user *User) error { return d.u.createUser(d.ctx, d.tx, user) }
+
+func (d directoryTx) UpdateUserIdentity(user *User) error {
 	user.UpdatedAt = time.Now().UTC()
-	return u.withAdminQuorum(ctx, user.ID, true, func(tx *sql.Tx) (sql.Result, error) {
-		res, err := tx.ExecContext(ctx, u.store.rebind(`
+	return d.u.adminQuorum(d.ctx, d.tx, user.ID, true, func(tx *sql.Tx) (sql.Result, error) {
+		res, err := tx.ExecContext(d.ctx, d.u.store.rebind(`
 UPDATE users SET username = ?, email = ?, display_name = ?, role = ?, status = ?, updated_at = ?
 WHERE id = ? AND (
     NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)
@@ -341,68 +422,22 @@ WHERE id = ? AND (
 	})
 }
 
-func (u *userStore) DeleteUser(ctx context.Context, id string) error {
-	return u.deleteUser(ctx, id, false)
+func (d directoryTx) DeleteUser(id string) error {
+	return d.u.adminQuorum(d.ctx, d.tx, id, true, d.u.deleteRow(d.ctx, id))
 }
 
-func (u *userStore) DeleteDirectoryUser(ctx context.Context, id string) error {
-	return u.deleteUser(ctx, id, true)
-}
-
-func (u *userStore) deleteUser(ctx context.Context, id string, external bool) error {
-	return u.withAdminQuorum(ctx, id, external, func(tx *sql.Tx) (sql.Result, error) {
-		return tx.ExecContext(ctx, u.store.rebind("DELETE FROM users WHERE id = ? AND NOT EXISTS (SELECT 1 FROM server_settings WHERE key = ?)"), id, "installer.user."+id)
-	})
-}
-
-// DirectoryEventWindow is how far a directory event's timestamp may be from now.
-const DirectoryEventWindow = 5 * time.Minute
-
-func (u *userStore) ClaimDirectoryEvent(ctx context.Context, provider, eventID, subject string, at time.Time) error {
-	tx, err := u.store.beginTx(ctx, false)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	// An event older than the window is refused by its timestamp, so its ID need not be kept.
-	if _, err := tx.ExecContext(ctx, u.store.rebind("DELETE FROM directory_events WHERE event_at < ?"), time.Now().Add(-DirectoryEventWindow).Unix()); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, u.store.rebind("INSERT INTO directory_events (provider, event_id, event_at) VALUES (?, ?, ?)"), provider, eventID, at.Unix()); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key") {
-			return ErrStaleEvent
-		}
-		return err
-	}
-	// Events within one second keep arrival order; the ID check above refuses an exact replay.
-	res, err := tx.ExecContext(ctx, u.store.rebind(`INSERT INTO directory_subjects (provider, subject, event_at) VALUES (?, ?, ?)
-ON CONFLICT (provider, subject) DO UPDATE SET event_at = excluded.event_at WHERE directory_subjects.event_at <= excluded.event_at`), provider, subject, at.Unix())
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrStaleEvent
-	}
-	return tx.Commit()
-}
-
-func (u *userStore) ReleaseDirectoryEvent(ctx context.Context, provider, eventID string) error {
-	_, err := u.store.db.ExecContext(ctx, u.store.rebind("DELETE FROM directory_events WHERE provider = ? AND event_id = ?"), provider, eventID)
+func (d directoryTx) DeleteUserSessions(userID string) error {
+	_, err := d.tx.ExecContext(d.ctx, d.u.store.rebind("DELETE FROM sessions WHERE user_id = ?"), userID)
 	return err
 }
 
-// withAdminQuorum runs write on one user row, then checks each organization the active user
+// adminQuorum runs write on one user row, then checks each organization the active user
 // administered still has an active administrator. A local change is refused with ErrLastAdmin;
 // an external (identity provider) one always applies, because a removed person must lose access,
 // and records organization.last_admin_lost there instead. It locks the user row, then those
 // organizations in ID order, as membership writes do. A write touching no row is
-// ErrInstallerOwned or ErrNotFound.
-func (u *userStore) withAdminQuorum(ctx context.Context, userID string, external bool, write func(*sql.Tx) (sql.Result, error)) error {
-	tx, err := u.store.beginTx(ctx, external)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+// ErrInstallerOwned or ErrNotFound. An external write's tx must hold the audit lock.
+func (u *userStore) adminQuorum(ctx context.Context, tx *sql.Tx, userID string, external bool, write func(*sql.Tx) (sql.Result, error)) error {
 	if _, err := tx.ExecContext(ctx, u.store.rebind("UPDATE users SET id = id WHERE id = ?"), userID); err != nil {
 		return err
 	}
@@ -452,7 +487,7 @@ func (u *userStore) withAdminQuorum(ctx context.Context, userID string, external
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (u *userStore) ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error) {

@@ -49,13 +49,11 @@ func (k *KySignOnClient) ExchangeCode(ctx context.Context, code, verifier, redir
 	return claims, nil
 }
 
-// refuse audits a directory user refused for a taken username and returns ErrUsernameTaken.
-func (k *KySignOnClient) refuse(ctx context.Context, username string) error {
-	if err := k.store.Audit().LogAudit(ctx, &store.AuditRecord{Action: "auth.sso.refused", Result: "denied", Resource: "kysignon", Details: "username=" + protocol.CleanText(username, 64)}); err != nil {
-		log.Printf("[SSO] audit auth.sso.refused not recorded: %v", err)
-	}
-	return fmt.Errorf("%w: %s", ErrUsernameTaken, username)
-}
+// refusal is a directory user refused for a taken username.
+type refusal struct{ username string }
+
+func (r refusal) Error() string { return ErrUsernameTaken.Error() + ": " + r.username }
+func (r refusal) Unwrap() error { return ErrUsernameTaken }
 
 // KySignOnSyncPayload defines the schema received during automatic directory replication webhooks.
 type KySignOnSyncPayload struct {
@@ -92,25 +90,25 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 	if payload.EventID == "" || len(payload.EventID) > 128 || payload.ID == "" || len(payload.ID) > 255 {
 		return errors.New("webhook event_id or id is missing or too long")
 	}
-	if err := k.store.Users().ClaimDirectoryEvent(ctx, "kysignon", payload.EventID, payload.ID, at); err != nil {
-		return err
-	}
-	err := k.apply(ctx, payload)
-	if err != nil {
-		// A failed event is not applied, so the provider's retry must be.
-		if releaseErr := k.store.Users().ReleaseDirectoryEvent(ctx, "kysignon", payload.EventID); releaseErr != nil {
-			log.Printf("[SSO] directory event not released: %v", releaseErr)
+	ev := store.DirectoryEvent{Provider: "kysignon", ID: payload.EventID, Subject: payload.ID, At: at}
+	err := k.store.Users().ApplyDirectoryEvent(ctx, ev, func(tx store.DirectoryTx) error { return apply(tx, payload) })
+	// Audited once the event's transaction is over: a refused event is rolled back, so the
+	// provider's retry is judged afresh.
+	var r refusal
+	if errors.As(err, &r) {
+		if err := k.store.Audit().LogAudit(ctx, &store.AuditRecord{Action: "auth.sso.refused", Result: "denied", Resource: "kysignon", Details: "username=" + protocol.CleanText(r.username, 64)}); err != nil {
+			log.Printf("[SSO] audit auth.sso.refused not recorded: %v", err)
 		}
 	}
 	return err
 }
 
-func (k *KySignOnClient) apply(ctx context.Context, payload KySignOnSyncPayload) error {
+func apply(tx store.DirectoryTx, payload KySignOnSyncPayload) error {
 	switch payload.Event {
 	case "user.created", "user.updated":
-		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)
+		existing, err := tx.GetUserBySSO("kysignon", payload.ID)
 		if err == nil && existing.SSOProvider != "kysignon" {
-			return k.refuse(ctx, existing.Username)
+			return refusal{existing.Username}
 		}
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
@@ -135,20 +133,20 @@ func (k *KySignOnClient) apply(ctx context.Context, payload KySignOnSyncPayload)
 			existing.DisplayName = payload.DisplayName
 			existing.Role = role
 			existing.Status = status
-			if err := k.store.Users().UpdateUserIdentity(ctx, existing); errors.Is(err, store.ErrAlreadyExists) {
-				return k.refuse(ctx, existing.Username)
+			if err := tx.UpdateUserIdentity(existing); errors.Is(err, store.ErrAlreadyExists) {
+				return refusal{existing.Username}
 			} else if err != nil {
 				return err
 			}
 			if privilegesChanged {
-				return k.store.Sessions().DeleteUserSessions(ctx, existing.ID)
+				return tx.DeleteUserSessions(existing.ID)
 			}
 			return nil
 		}
 
 		username := LocalUsername("kysignon", payload.ID, payload.Username)
-		if _, err := k.store.Users().GetUserByUsername(ctx, username); err == nil {
-			return k.refuse(ctx, username)
+		if _, err := tx.GetUserByUsername(username); err == nil {
+			return refusal{username}
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
@@ -162,35 +160,39 @@ func (k *KySignOnClient) apply(ctx context.Context, payload KySignOnSyncPayload)
 			SSOProvider: "kysignon",
 			SSOSubject:  payload.ID,
 		}
-		err = k.store.Users().CreateUser(ctx, newUser)
+		err = tx.CreateUser(newUser)
 		if errors.Is(err, store.ErrAlreadyExists) {
-			return k.refuse(ctx, username)
+			return refusal{username}
 		}
 		return err
 
 	case "user.deactivated":
-		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)
+		existing, err := tx.GetUserBySSO("kysignon", payload.ID)
 		if err == nil && existing.SSOProvider != "kysignon" {
-			return k.refuse(ctx, existing.Username)
+			return refusal{existing.Username}
 		}
-		if err != nil {
-			return nil // User might not exist locally
-		}
-		existing.Status = "inactive"
-		if err := k.store.Users().UpdateUserIdentity(ctx, existing); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		} else if err != nil {
 			return err
 		}
-		return k.store.Sessions().DeleteUserSessions(ctx, existing.ID)
+		existing.Status = "inactive"
+		if err := tx.UpdateUserIdentity(existing); err != nil {
+			return err
+		}
+		return tx.DeleteUserSessions(existing.ID)
 
 	case "user.deleted":
-		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)
+		existing, err := tx.GetUserBySSO("kysignon", payload.ID)
 		if err == nil && existing.SSOProvider != "kysignon" {
-			return k.refuse(ctx, existing.Username)
+			return refusal{existing.Username}
 		}
-		if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil
+		} else if err != nil {
+			return err
 		}
-		return k.store.Users().DeleteDirectoryUser(ctx, existing.ID)
+		return tx.DeleteUser(existing.ID)
 	}
 
 	return nil

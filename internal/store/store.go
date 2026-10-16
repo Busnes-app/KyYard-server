@@ -121,13 +121,8 @@ type UserStore interface {
 	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
 	LinkSSO(ctx context.Context, userID, sessionHash, passwordHash, provider, subject, ip string) error
 	// UpdateUser writes every column from u, credentials included: a trusted full-row write for
-	// fixtures. A read-modify-write path uses UpdateUserIdentity instead.
+	// fixtures. The identity provider writes through ApplyDirectoryEvent instead.
 	UpdateUser(ctx context.Context, u *User) error
-	// UpdateUserIdentity is the identity provider's write: only username, email, display name,
-	// role and status, leaving credential and MFA columns to their own compare-and-swap writers.
-	// It always applies; an organization it leaves without an active administrator gets an
-	// organization.last_admin_lost audit row.
-	UpdateUserIdentity(ctx context.Context, u *User) error
 	ResetAdminPassword(ctx context.Context, userID, newHash string) error
 	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
 	UpdateRecoveryCodes(ctx context.Context, userID, oldHashes, newHashes string) error
@@ -137,17 +132,35 @@ type UserStore interface {
 	// DeleteUser is a local deletion: it refuses with ErrLastAdmin to leave an organization the
 	// user administers without an active administrator, the guard membership writes keep.
 	DeleteUser(ctx context.Context, id string) error
-	// DeleteDirectoryUser is the identity provider's deletion: it always applies, auditing like
-	// UpdateUserIdentity.
-	DeleteDirectoryUser(ctx context.Context, id string) error
-	// ClaimDirectoryEvent records a signed directory event before it is applied. It returns
-	// ErrStaleEvent for an event ID already claimed, or one older than the last claimed event
+	// ApplyDirectoryEvent claims ev and runs apply in one transaction: the replay marker, the
+	// subject's watermark and apply's writes commit together or not at all, so a failed or
+	// cancelled event leaves nothing behind and the provider's retry applies. It returns
+	// ErrStaleEvent for an event ID already applied, or one older than the last applied event
 	// for the same subject. Events are only acceptable within DirectoryEventWindow of now.
-	ClaimDirectoryEvent(ctx context.Context, provider, eventID, subject string, at time.Time) error
-	// ReleaseDirectoryEvent forgets a claimed event whose application failed, so a retry applies.
-	ReleaseDirectoryEvent(ctx context.Context, provider, eventID string) error
+	// apply must not use the Store itself: it would wait on this transaction.
+	ApplyDirectoryEvent(ctx context.Context, ev DirectoryEvent, apply func(DirectoryTx) error) error
 	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)
+}
+
+// DirectoryEvent identifies one signed identity provider event.
+type DirectoryEvent struct {
+	Provider, ID, Subject string
+	At                    time.Time
+}
+
+// DirectoryTx is the identity provider's reads and writes inside one event's transaction.
+// Its writes always apply; an organization they leave without an active administrator gets
+// an organization.last_admin_lost audit row.
+type DirectoryTx interface {
+	GetUserBySSO(provider, subject string) (*User, error)
+	GetUserByUsername(username string) (*User, error)
+	CreateUser(u *User) error
+	// UpdateUserIdentity writes only username, email, display name, role and status, leaving
+	// credential and MFA columns to their own compare-and-swap writers.
+	UpdateUserIdentity(u *User) error
+	DeleteUser(id string) error
+	DeleteUserSessions(userID string) error
 }
 
 // SessionStore defines repository operations for active login sessions.

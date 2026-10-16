@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
@@ -29,7 +30,7 @@ func TestIdentityUpdateKeepsConcurrentCredentialWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale.Email = "u@example.com"
-	if err := st.Users().UpdateUserIdentity(ctx, stale); err != nil {
+	if err := directory(ctx, st, "e1", "u", func(tx store.DirectoryTx) error { return tx.UpdateUserIdentity(stale) }); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.Users().GetUserByID(ctx, "u")
@@ -60,7 +61,7 @@ func TestOnlyLocalAccountChangesKeepAnOrganizationAdministrator(t *testing.T) {
 	sole, err := st.Users().GetUserByID(ctx, "sole")
 	mustTenant(t, err)
 	sole.Status = "inactive"
-	mustTenant(t, st.Users().UpdateUserIdentity(ctx, sole))
+	mustTenant(t, directory(ctx, st, "e1", "sole", func(tx store.DirectoryTx) error { return tx.UpdateUserIdentity(sole) }))
 	if got, err := st.Users().GetUserByID(ctx, "sole"); err != nil || got.Status != "inactive" {
 		t.Fatalf("deactivation not applied: %v %+v", err, got)
 	}
@@ -69,15 +70,20 @@ func TestOnlyLocalAccountChangesKeepAnOrganizationAdministrator(t *testing.T) {
 		t.Fatalf("admin loss audit: %+v", lost)
 	}
 	// Removing an administrator who no longer counts records nothing more.
-	mustTenant(t, st.Users().DeleteDirectoryUser(ctx, "sole"))
+	mustTenant(t, directory(ctx, st, "e2", "sole", func(tx store.DirectoryTx) error { return tx.DeleteUser("sole") }))
 	if lost := lastAdminLost(t, st); len(lost) != 1 {
 		t.Fatalf("audited a loss that already happened: %+v", lost)
 	}
-	if err := st.Users().DeleteDirectoryUser(ctx, "ghost"); !errors.Is(err, store.ErrNotFound) {
+	if err := directory(ctx, st, "e3", "ghost", func(tx store.DirectoryTx) error { return tx.DeleteUser("ghost") }); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown user: %v", err)
 	}
 	// A local deletion of a non-administrator is unaffected.
 	mustTenant(t, st.Users().DeleteUser(ctx, "member"))
+}
+
+// directory applies fn as one identity provider event.
+func directory(ctx context.Context, st store.Store, id, subject string, fn func(store.DirectoryTx) error) error {
+	return st.Users().ApplyDirectoryEvent(ctx, store.DirectoryEvent{Provider: "test", ID: id, Subject: subject, At: time.Now()}, fn)
 }
 
 func lastAdminLost(t *testing.T, st store.Store) []*store.AuditRecord {
