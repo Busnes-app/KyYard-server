@@ -27,6 +27,8 @@ type SQLStore struct {
 	groups   *groupStore
 	audit    *auditStore
 	settings *settingsStore
+
+	allowPrivileged atomic.Bool // KY_CONTAINER_ALLOW_PRIVILEGED for application deploys
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
@@ -1088,6 +1090,8 @@ func (s *SQLStore) Budget() int64 { return s.budget }
 func (s *SQLStore) Pressure() Pressure { return Pressure(s.pressure.Load()) }
 
 func (s *SQLStore) SetPressure(p Pressure) { s.pressure.Store(int32(p)) }
+
+func (s *SQLStore) SetAllowPrivileged(on bool) { s.allowPrivileged.Store(on) }
 
 // SampleCeiling is the stored-rows-per-endpoint limit this store enforces.
 func (s *SQLStore) SampleCeiling() int { return s.ceiling }

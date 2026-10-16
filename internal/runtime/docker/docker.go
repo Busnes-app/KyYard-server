@@ -41,6 +41,8 @@ type Client struct {
 	// startWatch, startPoll, stopWait, restoreBudget, restartReserve and operateMargin (both
 	// operationBudget) override the package's for tests; zero is the default.
 	startWatch, startPoll, stopWait, restoreBudget, restartReserve, operateMargin time.Duration
+
+	self string // Protect's container
 }
 
 // callBudget bounds a call whose caller set no deadline of its own.
@@ -266,10 +268,11 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 
 	var volumes struct {
 		Volumes []struct {
-			Name       string `json:"Name"`
-			Driver     string `json:"Driver"`
-			Mountpoint string `json:"Mountpoint"`
-			CreatedAt  string `json:"CreatedAt"`
+			Name       string            `json:"Name"`
+			Driver     string            `json:"Driver"`
+			Mountpoint string            `json:"Mountpoint"`
+			CreatedAt  string            `json:"CreatedAt"`
+			Options    map[string]string `json:"Options"`
 		} `json:"Volumes"`
 	}
 	if err := c.get(ctx, "/volumes", &volumes); err != nil {
@@ -277,7 +280,7 @@ func (c *Client) Snapshot(ctx context.Context) (*protocol.Snapshot, error) {
 	}
 	for _, v := range volumes.Volumes {
 		created, _ := time.Parse(time.RFC3339, v.CreatedAt)
-		snap.Volumes = append(snap.Volumes, protocol.Volume{Name: bound(v.Name, 255), Driver: v.Driver, Mountpoint: bound(v.Mountpoint, 512), CreatedAt: created.UTC()})
+		snap.Volumes = append(snap.Volumes, protocol.Volume{Name: bound(v.Name, 255), Driver: v.Driver, Mountpoint: bound(v.Mountpoint, 512), CreatedAt: created.UTC(), Plain: !dockerVolume{Driver: v.Driver, Options: v.Options}.hostBacked()})
 	}
 	sort.Slice(snap.Volumes, func(i, j int) bool { return snap.Volumes[i].Name < snap.Volumes[j].Name })
 	if len(snap.Volumes) > protocol.MaxVolumes {

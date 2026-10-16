@@ -8,10 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/registry"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -356,8 +359,36 @@ func TestImageCommandsAreScopedAndValidated(t *testing.T) {
 	waitFor(t, func() bool { e, _ := ts.ReadEndpointRaw(ctx, ag.id); return e != nil && e.State == "active" })
 	path := "/api/organizations/a/endpoints/" + ag.id + "/commands"
 
+	// A pull follows the registry rules: no row and anonymous pulls off is refused before any
+	// registry call, and so is a host the guarded resolver will not reach.
+	resolver := &pullResolver{}
+	api.SetDigestResolverForTest(s, resolver)
+	pull := `{"action":"image.pull","reference":"ghcr.io/busnes-app/kyyard:1.2.3"}`
+	if w := tenantRequest(s, operator, "POST", path, pull, true); w.Code != 422 || resolver.calls.Load() != 0 {
+		t.Fatalf("a pull with anonymous pulls off: %d %s, %d calls", w.Code, w.Body.String(), resolver.calls.Load())
+	}
+	if w := tenantRequest(s, operator, "POST", path, `{"action":"image.pull","container":"ghcr.io/busnes-app/kyyard:1.2.3"}`, true); w.Code != 422 {
+		t.Fatalf("a pull named as a container skipped the registry rules: %d %s", w.Code, w.Body.String())
+	}
+	if w := tenantRequest(s, admin, "PUT", "/api/organizations/a/registry-policy", `{"anonymous_pull_enabled":true}`, true); w.Code != 204 {
+		t.Fatalf("anonymous pulls: %d", w.Code)
+	}
+	resolver.err = registry.ErrPrivateDestination
+	if w := tenantRequest(s, operator, "POST", path, `{"action":"image.pull","reference":"10.0.0.5:5000/app:1"}`, true); w.Code != 422 {
+		t.Fatalf("a pull from a private address: %d %s", w.Code, w.Body.String())
+	}
+	// A digest needs no Head, but its host passes the same guard.
+	if w := tenantRequest(s, operator, "POST", path, `{"action":"image.pull","reference":"10.0.0.5:5000/app@sha256:`+strings.Repeat("3", 64)+`"}`, true); w.Code != 422 {
+		t.Fatalf("a digest-pinned pull from a private address: %d %s", w.Code, w.Body.String())
+	}
+	var recorded []store.Command
+	if w := tenantRequest(s, operator, "GET", path, "", true); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &recorded) != nil || len(recorded) != 0 {
+		t.Fatalf("a refused pull recorded a command: %d %s", w.Code, w.Body.String())
+	}
+	resolver.err = nil
+
 	// An operator may pull.
-	w := tenantRequest(s, operator, "POST", path, `{"action":"image.pull","reference":"ghcr.io/busnes-app/kyyard:1.2.3"}`, true)
+	w := tenantRequest(s, operator, "POST", path, pull, true)
 	if w.Code != 202 {
 		t.Fatalf("an operator could not pull: %d %s", w.Code, w.Body.String())
 	}
@@ -457,4 +488,23 @@ func TestAProtocolCloseMarksTheEndpointOfflineAndAbandonsCommands(t *testing.T) 
 		got, err := ts.ReadCommand(ctx, a, ag.id, cmd.ID)
 		return e != nil && e.State == "offline" && err == nil && got.Outcome == protocol.OutcomeUnknown
 	})
+}
+
+// pullResolver answers every registry check with err, else a fixed digest, and counts calls.
+type pullResolver struct {
+	calls atomic.Int32
+	err   error
+}
+
+func (r *pullResolver) CheckHost(context.Context, registry.Reference, bool) error {
+	r.calls.Add(1)
+	return r.err
+}
+
+func (r *pullResolver) Head(context.Context, registry.Reference, *registry.Credential, bool) (string, error) {
+	r.calls.Add(1)
+	if r.err != nil {
+		return "", r.err
+	}
+	return "sha256:" + strings.Repeat("2", 64), nil
 }

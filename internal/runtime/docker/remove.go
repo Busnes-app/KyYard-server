@@ -34,6 +34,9 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 	id := url.PathEscape(t.Target.ContainerID)
 	gone := false
 	r.step(t.Service, protocol.StepPrecondition, func() (string, string, string) {
+		if r.c.isSelf(t.Target.ContainerID) {
+			return deny(ErrSelfProtected.Error())
+		}
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var in struct {

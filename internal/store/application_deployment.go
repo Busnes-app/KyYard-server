@@ -246,7 +246,8 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 		return out, nil
 	}
 	var work []imageCheckWork
-	var pulled []int // plan service index per work item
+	var pulled []int            // plan service index per work item
+	var pinned []imageCheckWork // revision digests: no Head, but the same destination guard
 	var state string
 	var capabilities map[string]bool
 	var services []BlockedService
@@ -303,13 +304,18 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 			case err != nil:
 				return err
 			}
-			if ref.Digest != "" {
-				pinPull(&d.Plan.Services[i], ref, ref.Digest)
-				continue
-			}
 			w := imageCheckWork{Ref: ref}
 			if reg != nil {
 				w.Cred, w.AllowPrivate = cred, reg.AllowPrivate && privateAllowed
+			}
+			if ref.Digest != "" {
+				pinPull(&d.Plan.Services[i], ref, ref.Digest)
+				// A cluster pin repeats a prior plan's checked pull; the revision's own digest is new.
+				if len(pins) == 0 {
+					w.Cred = nil
+					pinned = append(pinned, w)
+				}
+				continue
 			}
 			work = append(work, w)
 			pulled = append(pulled, i)
@@ -327,6 +333,14 @@ func (t *tenancyStore) PlanDeployment(ctx context.Context, a TenantAccess, app s
 	}
 	resolveImageChecks(ctx, resolver, work)
 	blockers := []string{}
+	for _, w := range pinned {
+		hctx, cancel := context.WithTimeout(ctx, ImageCheckDeadline)
+		err := resolver.CheckHost(hctx, w.Ref, w.AllowPrivate)
+		cancel()
+		if err != nil {
+			blockers = append(blockers, "registry_"+registryErrorDetail(err))
+		}
+	}
 	for n, w := range work {
 		switch {
 		case w.Row.Verdict == "registry_error":

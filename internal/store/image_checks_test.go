@@ -119,11 +119,20 @@ type fakeReply struct {
 }
 
 type fakeResolver struct {
-	mu     sync.Mutex
-	calls  []fakeCall
-	reply  map[string]fakeReply // keyed by host/repository:tag
-	block  chan struct{}        // when non-nil, Head waits on it or ctx
-	during func()               // when set, runs inside Head
+	mu      sync.Mutex
+	calls   []fakeCall
+	reply   map[string]fakeReply // keyed by host/repository:tag
+	block   chan struct{}        // when non-nil, Head waits on it or ctx
+	during  func()               // when set, runs inside Head
+	hosts   []fakeCall           // CheckHost calls
+	hostErr error                // CheckHost's answer
+}
+
+func (f *fakeResolver) CheckHost(_ context.Context, ref registry.Reference, allowPrivate bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hosts = append(f.hosts, fakeCall{Ref: ref, AllowPrivate: allowPrivate})
+	return f.hostErr
 }
 
 func (f *fakeResolver) Head(ctx context.Context, ref registry.Reference, cred *registry.Credential, allowPrivate bool) (string, error) {

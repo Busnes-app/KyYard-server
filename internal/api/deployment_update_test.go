@@ -314,6 +314,8 @@ func TestPlanUpdateThroughTheRegistry(t *testing.T) {
 // routeDigests sends a Head to the resolver named by its repository, "" for any other.
 type routeDigests map[string]store.DigestResolver
 
+func (routeDigests) CheckHost(context.Context, registry.Reference, bool) error { return nil }
+
 func (r routeDigests) Head(ctx context.Context, ref registry.Reference, cred *registry.Credential, allowPrivate bool) (string, error) {
 	if next, ok := r[ref.Repository]; ok {
 		return next.Head(ctx, ref, cred, allowPrivate)

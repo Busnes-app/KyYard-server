@@ -406,6 +406,32 @@ func TestResolveRefusesPrivateDestination(t *testing.T) {
 	}
 }
 
+// CheckHost judges the host a digest reference names as Head would, port aside,
+// with no request: an IP literal needs no DNS either.
+func TestCheckHostGuardsADigestReference(t *testing.T) {
+	digest := "@sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		ref          string
+		allowPrivate bool
+		refused      bool
+	}{
+		{"10.0.0.5:5000/app" + digest, false, true},
+		{"10.0.0.5:5000/app" + digest, true, false},
+		{"127.0.0.1:5000/app" + digest, true, true},
+		{"169.254.169.254/app" + digest, true, true},
+		{"8.8.8.8:5000/app" + digest, false, false},
+	} {
+		ref, err := ParseReference(tc.ref)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.ref, err)
+		}
+		err = New(Options{AllowPrivate: tc.allowPrivate}).CheckHost(context.Background(), ref)
+		if errors.Is(err, ErrPrivateDestination) != tc.refused || (!tc.refused && err != nil) {
+			t.Errorf("%s allowPrivate=%v: %v", tc.ref, tc.allowPrivate, err)
+		}
+	}
+}
+
 // A credential reaches only the configured host and the realm that host advertised; a
 // redirect from either never carries it anywhere.
 func TestCredentialNeverLeavesTheConfiguredHosts(t *testing.T) {

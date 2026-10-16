@@ -118,6 +118,10 @@ func (registryResolver) Head(ctx context.Context, ref registry.Reference, cred *
 	return r.Digest, nil
 }
 
+func (registryResolver) CheckHost(ctx context.Context, ref registry.Reference, allowPrivate bool) error {
+	return registry.New(registry.Options{AllowPrivate: allowPrivate}).CheckHost(ctx, ref)
+}
+
 func (s *Server) handleImageChecks(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	out, err := s.store.Tenancy().ReadImageChecks(r.Context(), a, r.PathValue("application"))
 	if err != nil {

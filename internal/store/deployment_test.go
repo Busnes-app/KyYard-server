@@ -423,6 +423,29 @@ func isBlocked(err error, blocker string) bool {
 	return errors.As(err, &blocked) && slices.Contains(blocked.Blockers, blocker)
 }
 
+// A digest reference needs no Head, but its host passes the same destination guard, so a
+// revision cannot pin an image on a private address the organization may not reach.
+func TestPlanDeploymentChecksADigestReferencesHost(t *testing.T) {
+	pinned := "ghcr.io/org/web@" + digestOf("f")
+	st, a, app, _, _ := pullFixture(t, []ApplicationService{{Name: "web", Image: pinned}}, map[string][]string{"web": {pinned}})
+	ts := st.Tenancy()
+	for _, private := range []bool{false, true} {
+		f := &fakeResolver{hostErr: registry.ErrPrivateDestination}
+		_, err := ts.PlanDeployment(context.Background(), a, app.ID, pullPlanRequest(t, ts, a, app, "web"), f, imageCheckKey, private)
+		if !isBlocked(err, "registry_private_destination") || len(f.called()) != 0 || len(f.hosts) != 1 || f.hosts[0].Ref.Digest != digestOf("f") || f.hosts[0].AllowPrivate != private {
+			t.Fatalf("private=%t: %v heads=%+v hosts=%+v", private, err, f.called(), f.hosts)
+		}
+		if n := deploymentRows(t, st, app.ID); n != 0 {
+			t.Fatalf("rows written: %d", n)
+		}
+	}
+	f := &fakeResolver{}
+	d, err := ts.PlanDeployment(context.Background(), a, app.ID, pullPlanRequest(t, ts, a, app, "web"), f, imageCheckKey, false)
+	if err != nil || d.Plan.Services[0].PullDigest != digestOf("f") || len(f.hosts) != 1 {
+		t.Fatalf("allowed host: %v %+v %+v", err, d, f.hosts)
+	}
+}
+
 func TestPlanDeploymentRegistryErrorsBlock(t *testing.T) {
 	st, a, app, _, _ := pullFixture(t, []ApplicationService{{Name: "web", Image: "ghcr.io/org/web:1.2"}}, map[string][]string{"web": {"ghcr.io/org/web@" + digestOf("a")}})
 	ctx := context.Background()

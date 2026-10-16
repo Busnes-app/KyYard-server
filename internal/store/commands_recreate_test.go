@@ -302,12 +302,14 @@ func TestDirectBlockersBindRule(t *testing.T) {
 
 // I8: each host-level setting is refused without the opt-in and accepted with it.
 func TestDirectBlockersHostLevel(t *testing.T) {
-	bind := func(src string) func(*protocol.DeploymentService) {
+	bindMode := func(src string, readOnly bool) func(*protocol.DeploymentService) {
 		return func(s *protocol.DeploymentService) {
-			s.Mounts = []protocol.Mount{{Kind: protocol.MountBind, Source: src, Target: "/mnt"}}
+			s.Mounts = []protocol.Mount{{Kind: protocol.MountBind, Source: src, Target: "/mnt", ReadOnly: readOnly}}
 			s.Explicit.AcknowledgedBinds = []string{src}
 		}
 	}
+	bind := func(src string) func(*protocol.DeploymentService) { return bindMode(src, false) }
+	ro := func(src string) func(*protocol.DeploymentService) { return bindMode(src, true) }
 	for name, c := range map[string]struct {
 		set      func(*protocol.DeploymentService)
 		hostWide bool
@@ -343,7 +345,21 @@ func TestDirectBlockersHostLevel(t *testing.T) {
 		}, false},
 		"bind root":                    {bind("/"), true},
 		"bind /etc":                    {bind("/etc"), true},
-		"bind /etc/localtime":          {bind("/etc/localtime"), false},
+		"bind /etc/localtime":          {bind("/etc/localtime"), true},
+		"bind /etc/localtime ro":       {ro("/etc/localtime"), false},
+		"bind /etc/timezone ro":        {ro("/etc/timezone"), false},
+		"bind /etc/ssl/certs ro":       {ro("/etc/ssl/certs"), false},
+		"bind /etc/ssl/certs/ca ro":    {ro("/etc/ssl/certs/ca-certificates.crt"), false},
+		"bind /etc/ssl/certs rw":       {bind("/etc/ssl/certs"), true},
+		"bind /etc/ssl ro":             {ro("/etc/ssl"), true},
+		"bind /etc/ro":                 {ro("/etc"), true},
+		"bind /etc/cron.d":             {bind("/etc/cron.d"), true},
+		"bind /etc/sudoers.d ro":       {ro("/etc/sudoers.d"), true},
+		"bind /etc/systemd/system":     {bind("/etc/systemd/system"), true},
+		"bind /etc/localtimex ro":      {ro("/etc/localtimex"), true},
+		"bind /home/me/.ssh":           {bind("/home/me/.ssh"), true},
+		"bind /home/me/.ssh/keys ro":   {ro("/home/me/.ssh/authorized_keys"), true},
+		"bind /srv/.sshd":              {bind("/srv/.sshd"), false},
 		"bind /var":                    {bind("/var"), true},
 		"bind /var/run":                {bind("/var/run"), true},
 		"bind /run/docker.sock":        {bind("/run/docker.sock"), true},

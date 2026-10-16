@@ -185,12 +185,38 @@ func (t *tenancyStore) buildDeploymentFrame(ctx context.Context, tx *sql.Tx, a T
 	if err := rows.Err(); err != nil {
 		return protocol.DeploymentRequest{}, err
 	}
+	// The volumes keepsHostBind judges come from the endpoint's current inventory.
+	var raw string
+	var snapshot protocol.Snapshot
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT snapshot FROM endpoint_inventory WHERE endpoint_id=?`), d.EndpointID).Scan(&raw); errors.Is(err, sql.ErrNoRows) {
+		return protocol.DeploymentRequest{}, ErrAdoptionChanged
+	} else if err != nil {
+		return protocol.DeploymentRequest{}, err
+	}
+	if json.Unmarshal([]byte(raw), &snapshot) != nil {
+		return protocol.DeploymentRequest{}, ErrAdoptionChanged
+	}
 	req := protocol.DeploymentRequest{Deployment: d.ID, RequestID: d.CorrelationID, Endpoint: d.EndpointID, Project: d.Plan.Project, Revision: d.Revision, IssuedAt: now, Deadline: now.Add(DeploymentApplyDeadline), Services: []protocol.DeploymentService{}, Volumes: d.Plan.Volumes}
 	hosts := map[string]bool{}
 	for i, ps := range d.Plan.Services {
 		name, ok := names[ps.ContainerID]
 		if !ok || spec.Services[i].Name != ps.Name {
 			return protocol.DeploymentRequest{}, ErrAdoptionChanged
+		}
+		// Rechecked here, at plan and at apply: the pull is decided after the preflight, and
+		// the role or opt-in may have changed since.
+		next := ps.ImageID
+		if ps.PullDigest != "" {
+			next = ""
+		}
+		if keepsHostBind(ps.Mounts, ps.Replaces.ImageID, next, snapshot) {
+			allowed, err := t.hostBindAllowed(ctx, tx, a)
+			if err != nil {
+				return protocol.DeploymentRequest{}, err
+			}
+			if !allowed {
+				return protocol.DeploymentRequest{}, blocked([]string{"host_bind_kept"})
+			}
 		}
 		svc := protocol.DeploymentService{Name: ps.Name, ContainerName: name, ImageID: ps.ImageID, Replaces: ps.Replaces, Restart: ps.Restart, Ports: []protocol.Port{}, Env: serviceEnv(spec.Services[i], values), Mounts: append([]protocol.Mount{}, ps.Mounts...)}
 		if ps.PullDigest != "" {
@@ -786,6 +812,10 @@ func (t *tenancyStore) RemoveApplication(ctx context.Context, a TenantAccess, ap
 		}
 		if (runtime == protocol.RuntimeKubernetes) != (namespace != "") {
 			return ErrRuntimeUnsupported
+		}
+		// Removal destroys containers: on Local Docker that is container.destroy's rule.
+		if err := t.localDockerGuard(ctx, tx, a, permissions.ContainerDestroy, endpoint); err != nil {
+			return err
 		}
 		if r.Confirm != project {
 			return ErrInvalid

@@ -227,6 +227,9 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 	if err := target.Validate(); err != nil {
 		return nil, err
 	}
+	if c.isSelf(target.ContainerID) {
+		return nil, ErrSelfProtected
+	}
 	ctx, cancel := context.WithTimeout(parent, callBudget)
 	defer cancel()
 	daemon, err := c.daemonInfo(ctx)

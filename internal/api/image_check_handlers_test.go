@@ -39,6 +39,8 @@ func (f *fakeDigests) calls() int {
 	return f.heads
 }
 
+func (f *fakeDigests) CheckHost(context.Context, registry.Reference, bool) error { return nil }
+
 func (f *fakeDigests) Head(ctx context.Context, _ registry.Reference, cred *registry.Credential, _ bool) (string, error) {
 	f.mu.Lock()
 	f.heads++

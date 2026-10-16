@@ -1451,7 +1451,7 @@ func TestDeployExplicitRunBindNeedsAcknowledgement(t *testing.T) {
 	}
 }
 
-// 4: an explicit frame mounts any existing volume as it is and creates a missing one without
+// 4: an explicit frame mounts an existing plain volume as it is and creates a missing one without
 // labels; a non-explicit frame still refuses another project's volume.
 func TestDeployExplicitVolumes(t *testing.T) {
 	foreign := map[string]any{"Name": "shop_data", "Driver": "local", "Labels": map[string]string{"com.docker.compose.project": "shop"}, "Options": nil}
@@ -1478,6 +1478,53 @@ func TestDeployExplicitVolumes(t *testing.T) {
 	f.volumes = map[string]any{"other_data": map[string]any{"Name": "other_data", "Driver": "local", "Labels": map[string]string{"com.docker.compose.project": "other"}, "Options": nil}}
 	if res = f.client().Deploy(context.Background(), plain, func() {}); res.Steps[1].Code != "volume_not_owned" {
 		t.Fatalf("non-explicit: %s", explicitSteps(res))
+	}
+}
+
+// An explicit frame mounts a volume another driver or device options may back with a host
+// path only where the old container already mounts it the same way.
+func TestDeployExplicitRefusesHostBackedVolumes(t *testing.T) {
+	device := map[string]any{"Name": "rootfs", "Driver": "local", "Options": map[string]string{"type": "none", "o": "bind", "device": "/"}}
+	driver := map[string]any{"Name": "rootfs", "Driver": "nfs", "Options": nil}
+	held := func(target string, rw bool) []any {
+		return []any{map[string]any{"Type": "volume", "Name": "rootfs", "Source": "/var/lib/docker/volumes/rootfs/_data", "Destination": target, "RW": rw}}
+	}
+	for name, c := range map[string]struct {
+		volume map[string]any
+		old    []any
+		run    bool
+		code   string // "" succeeds
+	}{
+		"run with device options": {device, nil, true, "volume_not_owned"},
+		"run with another driver": {driver, nil, true, "volume_not_owned"},
+		"recreate adding it":      {device, []any{}, false, "volume_not_owned"},
+		"recreate keeping it":     {device, held("/a", true), false, ""},
+		"recreate keeping driver": {driver, held("/a", true), false, ""},
+		"recreate moving it":      {device, held("/b", true), false, "volume_mount_missing"},
+		"recreate making it rw":   {device, held("/a", false), false, "volume_mount_missing"},
+	} {
+		f := newFakeDeployEngine(t)
+		f.volumes = map[string]any{"rootfs": c.volume}
+		s := explicitService()
+		if c.run {
+			s.Replaces, s.ContainerName = protocol.InspectionTarget{}, "adhoc"
+		} else {
+			f.oldContainer["Mounts"] = c.old
+		}
+		s.Mounts = append(s.Mounts, protocol.Mount{Kind: protocol.MountVolume, Source: "rootfs", Target: "/a"})
+		req := explicitRequest(s)
+		req.Volumes = []string{"rootfs"}
+		res := f.client().Deploy(context.Background(), req, func() {})
+		ok := c.code == ""
+		denied := slices.ContainsFunc(res.Steps, func(st protocol.DeploymentStep) bool {
+			return st.Step == protocol.StepVolume && st.Outcome == protocol.OutcomeDenied && st.Code == c.code
+		})
+		if denied == ok || (ok && res.Outcome != protocol.OutcomeSucceeded) {
+			t.Errorf("%s: %s", name, explicitSteps(res))
+		}
+		if _, created := f.call("POST", "/containers/create"); created != ok {
+			t.Errorf("%s: create called %v", name, created)
+		}
 	}
 }
 

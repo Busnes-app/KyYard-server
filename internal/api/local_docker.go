@@ -68,6 +68,8 @@ func (s *Server) RunLocalDocker(ctx context.Context) error {
 	}
 	id := &client.Identity{EndpointID: store.LocalDockerEndpointID, PrivateKey: key, InstanceFingerprint: s.instanceFingerprint(), Server: "http://" + listener.Addr().String(), Generation: generation}
 	engine := docker.New(socket)
+	// The agent runs in KyYard's own container: never exec into, edit, stop or remove it.
+	engine.Protect(docker.OwnContainerID())
 	// Only the command ledger needs disk persistence. Generation resumes from SQL;
 	// client.SaveIdentity must not persist the derived private key or ephemeral URL.
 	return client.Run(ctx, id, client.Options{Version: "builtin", CommandDir: dir, Snapshot: engine.Snapshot, Metrics: engine.Stats, Operate: engine.Operate, Logs: engine.Logs, Inspect: engine.InspectContainer, Configure: engine.ReadConfiguration, Deploy: engine.Deploy, Remove: engine.Remove, Exec: func(ctx context.Context, spec protocol.ExecSpec) (client.ExecSession, error) {

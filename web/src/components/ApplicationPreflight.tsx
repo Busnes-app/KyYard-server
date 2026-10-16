@@ -4,7 +4,7 @@ import { useTenantResource } from '../tenant';
 import { StateNotice } from './StateNotice';
 import { usePagination } from './Pagination';
 
-type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'mounts_unreported' | 'mount_unsupported' | 'volume_missing'
+type Blocker = 'mapping_requires_review' | 'unassigned_adopted_containers' | 'image_inventory_incomplete' | 'service_unmapped' | 'explicit_image_reference_required' | 'image_not_reported' | 'image_reference_ambiguous' | 'image_identity_invalid' | 'reported_port_overlap' | 'desired_port_overlap' | 'replacement_identity_invalid' | 'revision_services_differ' | 'bind_mount_new' | 'host_bind_kept' | 'mounts_unreported' | 'mount_unsupported' | 'volume_missing'
   | 'clock_skew' | 'inspection_unavailable' | 'replacement_identity_changed' | 'configuration_unsupported' | 'frame_too_large' | 'too_many_registry_hosts' | 'frame_invalid' | 'agent_deploy_unsupported' | 'agent_pull_unsupported' | 'agent_inspect_unsupported' | 'kubernetes_unsupported' | 'k8s_namespace' | 'agent_claims_unsupported' | 'storage_class_unknown' | 'agent_service_ips_unsupported' | 'service_ip_in_use' | 'service_ip_immutable';
 export const messages: Record<Blocker, string> = {
   agent_service_ips_unsupported: 'Upgrade the cluster agent before deploying static internal IPs.',
@@ -24,6 +24,7 @@ export const messages: Record<Blocker, string> = {
   replacement_identity_invalid: 'A mapped container\'s recorded identity is incomplete. Release and adopt the project again before planning.',
   revision_services_differ: "The chosen revision's services differ from the mapped ones. Map against the latest definition or choose another revision.",
   bind_mount_new: 'This revision adds a host path the running container does not have; KyYard never introduces bind mounts. Mount it by hand first, or drop it from the definition.',
+  host_bind_kept: 'This container keeps a host-level mount or network (such as the Docker socket or a system path) while its image changes. Only an organization administrator, with KY_CONTAINER_ALLOW_PRIVILEGED set, may deploy it.',
   mounts_unreported: "The agent has not reported this container's mounts, or reported only part of them. Upgrade the host agent to this release, then check again.",
   mount_unsupported: 'This container has mounts KyYard cannot recreate (anonymous volumes or unsupported mount types). Recreate it by hand with named volumes first.',
   volume_missing: 'An external volume this revision names does not exist on the host. Create it there first.',

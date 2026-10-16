@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 )
 
 func TestLocalDockerBootstrapScopeRestartAndRevocation(t *testing.T) {
@@ -63,5 +65,37 @@ func TestLocalDockerBootstrapScopeRestartAndRevocation(t *testing.T) {
 	}
 	if _, err := st.Tenancy().InitializeLocalDocker(ctx, pub); !errors.Is(err, ErrForbidden) {
 		t.Fatal("deleted authority recreated", err)
+	}
+}
+
+// On the built-in endpoint, exec, configuration and removal need a platform administrator too:
+// the host runs KyYard itself. Other actions and other endpoints keep the tenant rule.
+func TestLocalDockerProtectedActionsNeedPlatformAdmin(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	pub, _, _ := ed25519.GenerateKey(nil)
+	if _, err := ts.InitializeLocalDocker(ctx, pub); err != nil {
+		t.Fatal(err)
+	}
+	a.EnvironmentID = ""
+	platform := policyMember(t, st, a, "platform", RoleOrganizationAdmin)
+	if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE users SET role='admin' WHERE id=?`), "platform"); err != nil {
+		t.Fatal(err)
+	}
+	remote := activeEndpointWith(t, ts, TenantAccess{ActorID: a.ActorID, OrganizationID: a.OrganizationID, EnvironmentID: "environment"}, nil, nil)
+	for _, action := range []permissions.Action{permissions.ContainerExec, permissions.ContainerConfigure, permissions.ContainerDestroy} {
+		if err := ts.CheckEndpointAccess(ctx, a, action, LocalDockerEndpointID); !errors.Is(err, ErrForbidden) {
+			t.Errorf("organization admin %s on local: %v", action, err)
+		}
+		if err := ts.CheckEndpointAccess(ctx, platform, action, LocalDockerEndpointID); err != nil {
+			t.Errorf("platform admin %s on local: %v", action, err)
+		}
+		if err := ts.CheckEndpointAccess(ctx, a, action, remote); err != nil {
+			t.Errorf("organization admin %s on another endpoint: %v", action, err)
+		}
+	}
+	if err := ts.CheckEndpointAccess(ctx, a, permissions.ContainerOperate, LocalDockerEndpointID); err != nil {
+		t.Errorf("organization admin operate on local: %v", err)
 	}
 }

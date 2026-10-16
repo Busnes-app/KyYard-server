@@ -19,6 +19,8 @@ import (
 // internal/registry; tests use a fake. Head must return once ctx ends: the check waits for it.
 type DigestResolver interface {
 	Head(ctx context.Context, ref registry.Reference, cred *registry.Credential, allowPrivate bool) (string, error)
+	// CheckHost refuses ref's host where Head would, without a registry request.
+	CheckHost(ctx context.Context, ref registry.Reference, allowPrivate bool) error
 }
 
 // ImageCheckDeadline bounds every registry call of one check; the API sizes its write deadline

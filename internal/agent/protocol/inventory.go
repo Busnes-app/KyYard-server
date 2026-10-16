@@ -281,6 +281,9 @@ type Volume struct {
 	Driver     string    `json:"driver"`
 	Mountpoint string    `json:"mountpoint"`
 	CreatedAt  time.Time `json:"created_at"`
+	// Plain is a local volume without driver options, so no host path backs it; false from an
+	// agent too old to say.
+	Plain bool `json:"plain,omitempty"`
 }
 
 // CleanText makes agent-supplied text safe to show next to other text: control characters,

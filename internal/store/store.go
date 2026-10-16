@@ -73,6 +73,9 @@ type Store interface {
 	SampleCeiling() int
 	Ping(ctx context.Context) error
 	Close() error
+	// SetAllowPrivileged is KY_CONTAINER_ALLOW_PRIVILEGED for the application deploy path, set
+	// at startup: off, a deploy never carries a host-level bind onto another image.
+	SetAllowPrivileged(bool)
 
 	// Usage reports the bytes the database occupies and Budget the ceiling it is measured
 	// against, zero when the check is disabled. Pressure says what that means for telemetry;
