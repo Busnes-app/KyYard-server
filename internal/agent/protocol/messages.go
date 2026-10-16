@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"strconv"
@@ -226,3 +227,18 @@ type Result struct {
 
 // MaxResultDetailBytes bounds the text an agent may attach to a result.
 const MaxResultDetailBytes = 4 << 10
+
+type longWaitKey struct{}
+
+// WithLongWait carries the agent's admission for a wait that would hold a command slot far past
+// the usual budget, which only the runtime can recognise once it has read the target.
+func WithLongWait(ctx context.Context, admit func() bool) context.Context {
+	return context.WithValue(ctx, longWaitKey{}, admit)
+}
+
+// AdmitLongWait asks for room for one; false means refuse the action rather than wait. Without
+// an admission in ctx the wait is admitted.
+func AdmitLongWait(ctx context.Context) bool {
+	admit, ok := ctx.Value(longWaitKey{}).(func() bool)
+	return !ok || admit()
+}

@@ -132,7 +132,8 @@ cancelled (the run was cancelled, agent shutdown under the detached-context cont
 runtime answered; the Engine may or may not have acted); a status received after
 cancellation is `failed`. Nothing is rolled back: after a failed create the renamed old container
 still runs; after a failed stop or start it stays renamed (running or stopped) beside the created
-container; the result's steps say which. Overall `Outcome` is
+container; the result's steps say which. (Superseded 2026-10-14: every recreate is now undone
+or rolled back as an explicit one is, and its start watched; see `internal/runtime/AGENTS.md`.) Overall `Outcome` is
 `succeeded` only when every step succeeded; otherwise it is the outcome of the step that ended
 the run, with `Detail` naming the service and step.
 

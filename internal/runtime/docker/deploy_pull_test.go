@@ -20,6 +20,7 @@ func pulledService(reference string) protocol.DeploymentService {
 
 func TestDeployPullsThePinnedDigest(t *testing.T) {
 	f := newFakeDeployEngine(t)
+	f.newStates = []string{healthy}
 	req := request(pulledService("ghcr.io/org/app"))
 	// "a?" puts a '/' in the standard alphabet; the daemon decodes URL-safe and would drop it.
 	req.Registries = map[string]protocol.RegistryAuth{"ghcr.io": {Username: "u", Secret: "a?"}}
@@ -29,7 +30,7 @@ func TestDeployPullsThePinnedDigest(t *testing.T) {
 	}
 	inspect := "GET /images/" + url.PathEscape("ghcr.io/org/app@"+pullDigest) + "/json"
 	// The tag moves only after the digest is verified, and before any container is touched.
-	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "POST /images/create", inspect, "POST /images/" + newImage + "/tag", "GET /containers/" + oldID + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
+	want := []string{"GET /info", "GET /containers/" + oldID + "/json", "GET /images/" + oldImage + "/json", "POST /images/create", inspect, "POST /images/" + newImage + "/tag", "GET /containers/" + oldID + "/json", "POST /containers/" + oldID + "/rename", "POST /containers/create", "POST /containers/" + oldID + "/stop", "POST /containers/" + newID + "/start", "GET /containers/" + newID + "/json", "GET /containers/" + newID + "/json", "DELETE /containers/" + oldID}
 	if got := f.steps(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("call order:\n got %v\nwant %v", got, want)
 	}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/coder/websocket"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/api"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busnes-app/kyyard-server/internal/testdb"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -1243,7 +1245,7 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 		})
 	}()
 
-	// maxInFlightImageCommands, which this package cannot see from outside.
+	// maxInFlightSlowCommands, which this package cannot see from outside.
 	const imageReserve = 2
 
 	// While the blocked commands sit in Operate, the loop still answers the heartbeat, refuses
@@ -1295,6 +1297,162 @@ func TestCommandsDoNotStallTheSession(t *testing.T) {
 		case <-done:
 			t.Fatalf("only %d of %d commands reported after they finished", settled, imageReserve+1)
 		}
+	}
+}
+
+// A stop or restart waits out the container's own grace, up to an hour, holding its command
+// slot all the while. Restarts of containers that ignore SIGTERM must not hold every slot: past
+// the long-wait reserve they are refused, and an administrator's stop of another container
+// still runs.
+func TestLongStopsCannotTakeEveryCommandSlot(t *testing.T) {
+	sockDir, err := os.MkdirTemp("", "ky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sockDir)
+	ln, err := net.Listen("unix", filepath.Join(sockDir, "e.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := make(chan struct{})
+	held := make(chan string, 8)
+	engine := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(r.URL.Path, "/") // /v1.41/containers/<id>/<verb>
+		if len(parts) != 5 {
+			http.NotFound(w, r)
+			return
+		}
+		name, verb := parts[3], parts[4]
+		switch {
+		case r.Method == http.MethodGet && verb == "json":
+			grace := "null"
+			if strings.HasPrefix(name, "slow") {
+				grace = "3600"
+			}
+			fmt.Fprintf(w, `{"Config":{"StopTimeout":%s},"Image":"sha256:1","State":{"Status":"running"}}`, grace)
+		case r.Method == http.MethodPost && verb == "restart":
+			held <- name
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && verb == "stop":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	engine.Listener = ln
+	engine.Start()
+	defer engine.Close()
+	defer close(hold)
+
+	_, priv, _ := ed25519.GenerateKey(nil)
+	send := make(chan protocol.Command, 8)
+	results := make(chan protocol.Result, 16)
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		frame := func(typ string, payload any) []byte {
+			raw, _ := json.Marshal(payload)
+			b, _ := json.Marshal(protocol.Envelope{V: protocol.Version, Type: typ, Payload: raw})
+			return b
+		}
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeChallenge, protocol.Challenge{Nonce: make([]byte, 32), InstanceFingerprint: strings.Repeat("a", 64), Versions: []int{1}}))
+		_, _, _ = c.Read(ctx)
+		// A long heartbeat: one session must outlive the held restarts on a loaded machine.
+		_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHello, protocol.Hello{State: "active", HeartbeatSeconds: 30}))
+		go func() {
+			for cmd := range send {
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeCommand, cmd))
+			}
+		}()
+		for {
+			_, raw, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var e protocol.Envelope
+			_ = json.Unmarshal(raw, &e)
+			switch e.Type {
+			case protocol.TypeHeartbeat:
+				_ = c.Write(ctx, websocket.MessageText, frame(protocol.TypeHeartbeat, nil))
+			case protocol.TypeResult:
+				var res protocol.Result
+				_ = json.Unmarshal(e.Payload, &res)
+				results <- res
+			}
+		}
+	}))
+	defer stub.Close()
+	id := &client.Identity{EndpointID: "ep_long", PrivateKey: priv, InstanceFingerprint: strings.Repeat("a", 64), Server: stub.URL, RotatedAt: time.Now()}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	snapshot := func(context.Context) (*protocol.Snapshot, error) {
+		return &protocol.Snapshot{Containers: []protocol.Container{}, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}}, nil
+	}
+	// Not t.TempDir: a command outlives Run by design and records itself in the ledger when the
+	// held engine lets go, after the test.
+	dir, err := os.MkdirTemp("", "ky-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		_ = client.Run(ctx, id, client.Options{
+			HTTPClient: stub.Client(), Snapshot: snapshot, InventoryEvery: time.Hour,
+			IdentityDir: dir, Operate: docker.New(ln.Addr().String()).Operate,
+		})
+	}()
+	defer func() { cancel(); <-ran }()
+	command := func(id, action, container string) protocol.Command {
+		return protocol.Command{ID: id, Endpoint: "ep_long", Action: action, Container: container, Deadline: time.Now().UTC().Add(time.Minute)}
+	}
+	answer := func() protocol.Result {
+		select {
+		case res := <-results:
+			return res
+		case <-time.After(15 * time.Second):
+			t.Fatal("no answer while long restarts were held")
+		}
+		return protocol.Result{}
+	}
+
+	// maxInFlightCommands and its long-wait share, which this package cannot see from outside.
+	const slots, longReserve = 4, 2
+	for i := 0; i < slots; i++ {
+		send <- command(fmt.Sprintf("restart_%d", i), protocol.ActionRestart, fmt.Sprintf("slow%d", i))
+	}
+	for i := 0; i < slots-longReserve; i++ {
+		if res := answer(); res.Outcome != protocol.OutcomeDenied {
+			t.Fatalf("a restart past the long-wait reserve was not refused: %+v", res)
+		}
+	}
+	for i := 0; i < longReserve; i++ {
+		select {
+		case <-held:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the reserve's restarts never reached the engine")
+		}
+	}
+	send <- command("stop_0", protocol.ActionStop, "quick")
+	if res := answer(); res.ID != "stop_0" || res.Outcome != protocol.OutcomeSucceeded {
+		t.Fatalf("long restarts kept a stop of another container from running: %+v", res)
+	}
+	send <- command("restart_late", protocol.ActionRestart, "slow9")
+	if res := answer(); res.ID != "restart_late" || res.Outcome != protocol.OutcomeDenied {
+		t.Fatalf("a long restart past the reserve was not refused: %+v", res)
+	}
+	select {
+	case name := <-held:
+		t.Fatalf("%s was queued for the engine rather than refused", name)
+	default:
 	}
 }
 

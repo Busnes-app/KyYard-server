@@ -28,6 +28,10 @@ in the results table.
 - A container edit keeps the environment, labels and command the old image gave the container:
   the read cannot tell them from the operator's, so after an image change they are pinned to
   the old image's values.
+- A static MAC address on a network other than the container's primary one is not kept by a
+  container edit: the Engine reports only the address in use there, which it also fills in for
+  an assigned one, so the read cannot tell them apart. The primary network's requested MAC is
+  kept.
 - Recreating the KyYard server container, or a host agent's own container, through KyYard is
   unsupported: the stop step stops the agent running the recreate.
 - A recreate of a running container waits five seconds for the new one to keep running

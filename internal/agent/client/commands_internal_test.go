@@ -112,8 +112,8 @@ func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
 		results <- protocol.Result{ID: fmt.Sprintf("earlier_%d", i)}
 	}
 	ctx, endSession := context.WithCancel(context.Background())
-	release, ok := running.take(protocol.ActionImagePull)
-	if !ok {
+	release, admitLong, ok := running.take(protocol.ActionImagePull)
+	if !ok || !admitLong() {
 		t.Fatal("a fresh budget had no room")
 	}
 	done := make(chan struct{})
@@ -128,30 +128,59 @@ func TestASlotIsReturnedWhenTheSessionEndsBeforeTheResult(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the worker is still waiting to deliver a result nobody is reading")
 	}
-	if len(running.all) != 0 || len(running.images) != 0 {
-		t.Fatalf("%d general and %d image slots were never returned", len(running.all), len(running.images))
+	if len(running.all) != 0 || len(running.slow) != 0 {
+		t.Fatalf("%d general and %d slow slots were never returned", len(running.all), len(running.slow))
 	}
 }
 
-// Image actions draw from a reserve of their own as well as a general slot, so a pull -- which
+// Image actions draw from the slow reserve as well as a general slot, so a pull -- which
 // waits on a remote registry -- can never occupy the whole set and leave an operator unable to
 // stop a container during an incident.
 func TestImageActionsCannotTakeEveryCommandSlot(t *testing.T) {
 	running := newBudget()
-	for i := 0; i < maxInFlightImageCommands; i++ {
-		if _, ok := running.take(protocol.ActionImagePull); !ok {
+	for i := 0; i < maxInFlightSlowCommands; i++ {
+		if _, _, ok := running.take(protocol.ActionImagePull); !ok {
 			t.Fatalf("pull %d was refused inside the image reserve", i)
 		}
 	}
-	if _, ok := running.take(protocol.ActionImageRemove); ok {
-		t.Fatal("an image action was admitted past the image reserve")
+	if _, _, ok := running.take(protocol.ActionImageRemove); ok {
+		t.Fatal("an image action was admitted past the slow reserve")
 	}
-	for i := 0; i < maxInFlightCommands-maxInFlightImageCommands; i++ {
-		if _, ok := running.take(protocol.ActionStop); !ok {
+	for i := 0; i < maxInFlightCommands-maxInFlightSlowCommands; i++ {
+		if _, _, ok := running.take(protocol.ActionStop); !ok {
 			t.Fatalf("container action %d was refused while the general budget had room", i)
 		}
 	}
-	if _, ok := running.take(protocol.ActionStop); ok {
+	if _, _, ok := running.take(protocol.ActionStop); ok {
 		t.Fatal("a container action was admitted past the general limit")
+	}
+}
+
+// Pulls and long stop waits share one slow reserve: an operator holding both permissions cannot
+// mix them to fill every slot and leave an administrator's ordinary stop refused.
+func TestMixedLongCommandsPreserveStopCapacity(t *testing.T) {
+	running := newBudget()
+	if _, _, ok := running.take(protocol.ActionImagePull); !ok {
+		t.Fatal("a pull was refused by a fresh budget")
+	}
+	_, admitLong, ok := running.take(protocol.ActionRestart)
+	if !ok || !admitLong() {
+		t.Fatal("a long restart was refused inside the slow reserve")
+	}
+	release, admitLong, ok := running.take(protocol.ActionRestart)
+	if !ok {
+		t.Fatal("a restart was refused before it knew its grace")
+	}
+	if admitLong() {
+		t.Fatal("a long restart was admitted past the reserve a pull already shares")
+	}
+	release() // refused, as the runtime does
+	if _, _, ok := running.take(protocol.ActionImagePull); ok {
+		t.Fatal("a pull was admitted past the shared slow reserve")
+	}
+	for i := 0; i < maxInFlightCommands-maxInFlightSlowCommands; i++ {
+		if _, _, ok := running.take(protocol.ActionStop); !ok {
+			t.Fatalf("ordinary stop %d was refused behind slow work", i)
+		}
 	}
 }

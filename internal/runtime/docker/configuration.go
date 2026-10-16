@@ -99,6 +99,8 @@ var (
 		"dns":         {"DnsOptions", "DnsSearch"},
 		"auto_remove": {"AutoRemove"},
 	})
+	// An endpoint's MacAddress is the address in use, which the daemon assigns when none was asked
+	// for; a requested one is reported only for the primary network, as Config.MacAddress.
 	endpointKeys = keyCodes(map[string][]string{
 		"":      {"Aliases", "IPAMConfig", "NetworkID", "EndpointID", "Gateway", "IPAddress", "IPPrefixLen", "IPv6Gateway", "GlobalIPv6Address", "GlobalIPv6PrefixLen", "MacAddress", "DNSNames"},
 		"links": {"Links"},

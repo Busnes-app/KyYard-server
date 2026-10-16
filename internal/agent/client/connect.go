@@ -501,7 +501,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				// waiting for one sends no heartbeats, so the endpoint is marked offline and
 				// stops accepting the commands an operator needs during an incident. The
 				// agent's liveness must not depend on how long a runtime call takes.
-				release, taken := running.take(cmd.Action)
+				release, admitLong, taken := running.take(cmd.Action)
 				if !taken {
 					// Refused rather than queued: an answer now beats an answer later, and a
 					// queue lets one caller spend the agent's memory.
@@ -513,7 +513,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				}
 				go func(cmd protocol.Command) {
 					defer release()
-					deliver(ctx, results, handleCommand(ctx, cmd, id, commands, opts))
+					deliver(ctx, results, handleCommand(protocol.WithLongWait(ctx, admitLong), cmd, id, commands, opts))
 				}(cmd)
 			case protocol.TypeInspectionOpen, protocol.TypeInspectionCancel:
 				if err := inspections.handle(f, hello.State == "active" || hello.State == "approved" || hello.State == "offline"); err != nil {

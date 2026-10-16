@@ -122,7 +122,9 @@ func TestDeployRealDocker(t *testing.T) {
 	pulledRef := "docker.io/library/alpine@" + pullDigest
 	if pullDigest != "" {
 		workerName := project + "-worker-1"
-		workerID, err := docker("run", "-d", "--pull", "never", "--name", workerName, "--network", network,
+		// Created, not started: the pulled alpine's default shell exits at once, which a start
+		// watch rolls back only when the old container was running.
+		workerID, err := docker("create", "--pull", "never", "--name", workerName, "--network", network,
 			"--label", "com.docker.compose.project="+project, "--label", "com.docker.compose.service=worker", fixtureImage)
 		if err != nil {
 			t.Fatalf("worker fixture: %v: %s", err, workerID)
