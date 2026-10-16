@@ -785,6 +785,10 @@ The first start chowns the data volume or `./data` to 10001 by itself. Host jobs
 `./data` or `KY_BACKUP_DIR` as root keep working; jobs running as another non-root user need
 access as uid 10001. Run `apply-setup` and other in-container commands with `--user kyyard`.
 
+This release deletes the retired SCIM group tables (`groups`, `group_members`) on first start.
+Nothing has read them since SCIM was retired; back up the database first if you want to keep
+that data.
+
 Upgrade the server first, then every agent container (remote, or a legacy same-host one); the
 built-in local connection upgrades with the server. The server must know about mounts before an
 agent recreates containers that have them: an older server sends no mount list and cannot show

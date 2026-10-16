@@ -1029,7 +1029,13 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// Node health derived once per accepted snapshot, so an endpoint list decodes no snapshot.
 	// Rows from before it read unknown until the endpoint's next report.
 	{Version: 42, Name: "inventory_cluster_health", SQLite: inventoryClusterHealth, Postgres: inventoryClusterHealth},
+	{Version: 43, Name: "drop_scim_groups", SQLite: dropSCIMGroups, Postgres: dropSCIMGroups},
 }
+
+// The retired global SCIM groups never conferred tenant access and nothing reads them; they
+// are identity data with no purpose left.
+const dropSCIMGroups = `DROP TABLE IF EXISTS group_members;
+DROP TABLE IF EXISTS groups;`
 
 // A signed directory event applies once (its ID is kept while its timestamp is acceptable) and
 // never after a newer one for the same subject (one watermark per subject, kept for good).
