@@ -152,7 +152,7 @@ func (s *Server) handleSuiteStart(w http.ResponseWriter, r *http.Request) {
 	apps := append([]string{}, req.Apps...)
 	op := &store.SuiteOperation{ID: id, ActorID: user.ID, Kind: req.Kind, Apps: apps, Target: req.Target, State: "running", StartedAt: time.Now().UTC()}
 	if err := s.store.Suite().CreateSuiteOperation(ctx, op); err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to record the suite operation")
+		refuse(http.StatusInternalServerError, "failure", "record_failed", "Failed to record the suite operation")
 		return
 	}
 	err = s.suite.Start(ctx, suite.Request{ID: id, Kind: req.Kind, Apps: apps, Target: req.Target, AcknowledgeNoBackup: req.AcknowledgeNoBackup, Actor: user.ID})
