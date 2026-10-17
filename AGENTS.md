@@ -149,6 +149,7 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 - [internal/registry/AGENTS.md](internal/registry/AGENTS.md): Image reference parsing and the guarded registry client that resolves manifest digests.
 - [internal/migration/AGENTS.md](internal/migration/AGENTS.md): The pure Docker-to-Kubernetes migration analyzer: report format, finding, checklist and assumption vocabularies.
 - [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
+- [internal/suite/AGENTS.md](internal/suite/AGENTS.md): Client for suite runner protocol v1 over the runner's Unix socket.
 - [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
 - [web/AGENTS.md](web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
 
