@@ -236,7 +236,7 @@ func TestSuiteStartRefusals(t *testing.T) {
 		{"wrong password", false, wrong("password", "not-the-password"), 401, "password_incorrect"},
 		{"no target", false, wrong("target", ""), 400, "invalid_request"},
 		{"two apps", false, map[string]any{"kind": "uninstall", "apps": []string{"a", "b"}, "confirm": "a", "password": accountPassword}, 400, "invalid_request"},
-		{"acknowledgement off upgrade", false, wrong("acknowledge_no_backup", true), 400, "invalid_request"},
+		{"acknowledgement off upgrade and install", false, map[string]any{"kind": "uninstall", "apps": []string{"hello"}, "confirm": "hello", "acknowledge_no_backup": true, "password": accountPassword}, 400, "invalid_request"},
 		{"unknown field", false, wrong("force", true), 400, "invalid_request"},
 		{"missing TOTP", true, install("hello"), 401, "code_invalid"},
 		{"wrong TOTP", true, wrong("code", "abcdef"), 401, "code_invalid"},

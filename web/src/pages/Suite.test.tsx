@@ -79,13 +79,14 @@ it('requires the typed app name, then posts the install with password, code and 
   fireEvent.change(screen.getByLabelText('Target'), { target: { value: 'k3s' } });
   fireEvent.change(screen.getByLabelText('Current password'), { target: { value: 'pw-123' } });
   fireEvent.change(screen.getByLabelText('Authentication code'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByLabelText(/No backup acknowledgement/));
   fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: 'hell' } });
   expect(dialogSubmit.disabled).toBe(true);
   fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: 'hello' } });
   expect(dialogSubmit.disabled).toBe(false);
   fireEvent.click(dialogSubmit);
   await waitFor(() => expect(posts).toHaveLength(1));
-  expect(posts[0]).toEqual({ body: { kind: 'install', apps: ['hello'], confirm: 'hello', password: 'pw-123', code: '123456', target: 'k3s' }, csrf: 'csrf-test' });
+  expect(posts[0]).toEqual({ body: { kind: 'install', apps: ['hello'], confirm: 'hello', password: 'pw-123', code: '123456', target: 'k3s', acknowledge_no_backup: true }, csrf: 'csrf-test' });
   expect(await screen.findByText('Operation')).toBeTruthy();
 });
 
