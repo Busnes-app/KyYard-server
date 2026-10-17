@@ -177,7 +177,7 @@ function ActionDialog({ action, totp, targets, onClose, onStarted }: { action: A
     const body: Record<string, unknown> = { kind: action.kind, apps: action.app ? [action.app] : [], confirm, password: String(data.get('password') ?? '') };
     if (totp) body.code = String(data.get('code') ?? '');
     if (action.kind === 'install') body.target = target;
-    if (action.kind === 'upgrade') body.acknowledge_no_backup = ack;
+    if (action.kind === 'upgrade' || action.kind === 'install') body.acknowledge_no_backup = ack;
     // The password and code never outlive the request.
     for (const name of ['password', 'code']) { const input = form.elements.namedItem(name); if (input instanceof HTMLInputElement) input.value = ''; }
     setBusy(true); setError('');
@@ -193,7 +193,7 @@ function ActionDialog({ action, totp, targets, onClose, onStarted }: { action: A
       <h2 id="suite-dialog-title">{title}</h2>
       <p>{descriptions[action.kind](action.app)}</p>
       {action.kind === 'install' && <label>Target<select value={target} onChange={(e) => setTarget(e.target.value)} disabled={busy} required>{targets.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.kind})</option>)}</select></label>}
-      {action.kind === 'upgrade' && <label><input type="checkbox" style={{ width: 'auto' }} checked={ack} onChange={(e) => setAck(e.target.checked)} disabled={busy} /> No backup acknowledgement: I accept upgrading without a verified backup. Upgrades that migrate data are refused without a verified pre-upgrade backup; this does not override that.</label>}
+      {(action.kind === 'upgrade' || action.kind === 'install') && <label><input type="checkbox" style={{ width: 'auto' }} checked={ack} onChange={(e) => setAck(e.target.checked)} disabled={busy} /> No backup acknowledgement: I accept upgrading without a verified backup{action.kind === 'install' ? ' if an older version of this app is still on the target' : ''}. Upgrades that migrate data are refused without a verified pre-upgrade backup; this does not override that.</label>}
       <label>Type <bdi>{expected}</bdi> to confirm<input value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={busy} autoComplete="off" /></label>
       <label>Current password<input name="password" type="password" autoComplete="current-password" required maxLength={1024} disabled={busy} /></label>
       {totp && <label>Authentication code<input name="code" inputMode="numeric" autoComplete="one-time-code" required maxLength={64} disabled={busy} /></label>}

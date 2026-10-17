@@ -191,7 +191,7 @@ func validSuiteRequest(req suiteStartRequest) bool {
 	default:
 		return false
 	}
-	if len(req.Apps) > 1 || (len(req.Apps) == 0 && req.Kind != "upgrade") || (req.AcknowledgeNoBackup && req.Kind != "upgrade") {
+	if len(req.Apps) > 1 || (len(req.Apps) == 0 && req.Kind != "upgrade") || (req.AcknowledgeNoBackup && req.Kind != "upgrade" && req.Kind != "install") {
 		return false
 	}
 	for _, app := range req.Apps {
