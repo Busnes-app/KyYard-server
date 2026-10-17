@@ -59,14 +59,14 @@ function SuiteManager({ status, reload, totp }: { status: SuiteStatus; reload: (
         <table className="ky-table ky-responsive-table">
           <thead><tr><th>Name</th><th>Version</th><th>Newest</th><th>Target</th><th>Health</th><th>Last result</th><th><span className="sr-only">Actions</span></th></tr></thead>
           <tbody>{installed.map((a) => <tr key={a.name}>
-            <td data-label="Name">{a.name}</td>
+            <td data-label="Name" style={{ whiteSpace: 'nowrap' }}>{a.name}</td>
             <td data-label="Version">{a.version}</td>
             <td data-label="Newest">{newest.get(a.name) ?? '—'}</td>
             <td data-label="Target">{a.target}</td>
             <td data-label="Health">{a.state !== 'installed' && <><Badge value={a.state} />{' '}</>}{a.health ? <span className={`badge ${a.health.ok ? 'badge-success' : 'badge-danger'}`} title={`Checked ${when(a.health.checked)}`}>{a.health.ok ? 'healthy' : 'unhealthy'}</span> : 'not checked'}</td>
             <td data-label="Last result">{a.last_result ? <><code>{a.last_result.step}</code> <Badge value={a.last_result.status} /> {when(a.last_result.time)}</> : '—'}</td>
-            <td data-label="Actions">
-              {(['upgrade', 'uninstall', 'unmanage'] as const).map((kind) => <button key={kind} className={kind === 'uninstall' ? 'btn-danger' : 'btn-secondary'} disabled={busy} onClick={() => setAction({ kind, app: a.name })} aria-label={`${kind[0].toUpperCase() + kind.slice(1)} ${a.name}`}>{kind[0].toUpperCase() + kind.slice(1)}</button>)}
+            <td data-label="Actions"><span className="ky-container-actions">
+              {(['upgrade', 'uninstall', 'unmanage'] as const).map((kind) => <button key={kind} className={kind === 'uninstall' ? 'btn-danger' : 'btn-secondary'} disabled={busy} onClick={() => setAction({ kind, app: a.name })} aria-label={`${kind[0].toUpperCase() + kind.slice(1)} ${a.name}`}>{kind[0].toUpperCase() + kind.slice(1)}</button>)}</span>
             </td>
           </tr>)}</tbody>
         </table>
@@ -84,7 +84,7 @@ function SuiteManager({ status, reload, totp }: { status: SuiteStatus; reload: (
         <table className="ky-table ky-responsive-table">
           <thead><tr><th>Name</th><th>Description</th><th>Version</th><th>Category</th><th>Depends on</th><th><span className="sr-only">Actions</span></th></tr></thead>
           <tbody>{available.map((a) => <tr key={a.name}>
-            <td data-label="Name">{a.name}</td>
+            <td data-label="Name" style={{ whiteSpace: 'nowrap' }}>{a.name}</td>
             <td data-label="Description">{a.description}</td>
             <td data-label="Version">{a.version}</td>
             <td data-label="Category">{a.category}</td>
