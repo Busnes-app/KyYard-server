@@ -63,6 +63,10 @@ const (
 	// service tokens. A token reads the whole organization, so only its administrator
 	// hands one out.
 	ServiceTokensManage Action = "organization.service_tokens.manage"
+	// SuiteRead reads the suite runner's status, catalog, plan and operations.
+	SuiteRead Action = "suite.read"
+	// SuiteManage installs, uninstalls, unmanages and upgrades suite apps through the runner.
+	SuiteManage Action = "suite.manage"
 )
 
 // RolePulseReader is the fixed role of a service token: kyPulse reads inventory, samples,
@@ -70,7 +74,7 @@ const (
 const RolePulseReader = "pulse_reader"
 
 func PlatformAllows(role string, action Action) bool {
-	return role == "admin" && action == PlatformAdmin
+	return role == "admin" && (action == PlatformAdmin || action == SuiteRead || action == SuiteManage)
 }
 
 func Allows(role string, action Action) bool {

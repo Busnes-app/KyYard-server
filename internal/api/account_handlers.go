@@ -72,6 +72,25 @@ func (s *Server) spendTOTP(ctx context.Context, userID, secretEnc, code string) 
 	return ok && s.store.Users().SpendTOTPCounter(ctx, userID, counter) == nil
 }
 
+// stepUp proves the signed-in caller again: the current password, then a TOTP code when MFA
+// is enrolled, on the per-account MFA budget login also spends. It returns 0 or the refusal's
+// status, code and message.
+func (s *Server) stepUp(ctx context.Context, user *store.User, candidate, code string) (int, string, string) {
+	if ok, err := password.Verify(candidate, user.PasswordHash); err != nil || !ok {
+		return http.StatusUnauthorized, "password_incorrect", "Current password is incorrect"
+	}
+	if !user.TOTPEnabled {
+		return 0, "", ""
+	}
+	if !s.allowAccountAttempt("mfa-user:"+user.ID, 5, 5*time.Minute) {
+		return http.StatusTooManyRequests, "too_many_attempts", "Too many attempts; wait a few minutes"
+	}
+	if !s.spendTOTP(ctx, user.ID, user.TOTPSecretEnc, code) {
+		return http.StatusUnauthorized, "code_invalid", "Invalid or already used code"
+	}
+	return 0, "", ""
+}
+
 func (s *Server) writeMFAStoreError(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrNotFound) {
 		s.writeError(w, http.StatusConflict, "Account changed; reload and try again")
@@ -202,18 +221,9 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Choose a different password")
 		return
 	}
-	if !s.checkPassword(w, user, req.Password) {
+	if status, _, msg := s.stepUp(r.Context(), user, req.Password, req.Code); status != 0 {
+		s.writeError(w, status, msg)
 		return
-	}
-	if user.TOTPEnabled {
-		if !s.allowAccountAttempt("mfa-user:"+user.ID, 5, 5*time.Minute) {
-			s.writeError(w, http.StatusTooManyRequests, "Too many attempts; wait a few minutes")
-			return
-		}
-		if !s.spendTOTP(r.Context(), user.ID, user.TOTPSecretEnc, req.Code) {
-			s.writeError(w, http.StatusUnauthorized, "Invalid or already used code")
-			return
-		}
 	}
 	hash, err := password.Hash(req.NewPassword)
 	if err != nil {

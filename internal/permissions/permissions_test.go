@@ -3,7 +3,7 @@ package permissions
 import "testing"
 
 func TestFixedRoleMatrix(t *testing.T) {
-	actions := []Action{OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, ContainerConfigure, PlatformAdmin, "unknown"}
+	actions := []Action{OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, ContainerConfigure, PlatformAdmin, SuiteRead, SuiteManage, "unknown"}
 	for _, tc := range []struct {
 		role    string
 		allowed []Action
@@ -25,7 +25,8 @@ func TestFixedRoleMatrix(t *testing.T) {
 			if got := Allows(tc.role, a); got != want {
 				t.Errorf("%s %s: %v, want %v", tc.role, a, got, want)
 			}
-			if got := PlatformAllows(tc.role, a); got != (tc.role == "admin" && a == PlatformAdmin) {
+			platform := a == PlatformAdmin || a == SuiteRead || a == SuiteManage
+			if got := PlatformAllows(tc.role, a); got != (tc.role == "admin" && platform) {
 				t.Errorf("platform permission leaked to %s %s", tc.role, a)
 			}
 		}

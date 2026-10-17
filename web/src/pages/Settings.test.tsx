@@ -15,3 +15,11 @@ it('keeps administration separate from the theme picker and loads providers only
  await screen.findByText('Add sign-in provider');
  expect(fetcher).toHaveBeenCalledTimes(2);
 });
+it('links the suite page for platform administrators only', () => {
+ render(<Settings settings={null} role="user" />);
+ expect(screen.queryByRole('button', { name: 'Suite' })).toBeNull();
+ cleanup();
+ render(<Settings settings={null} role="admin" />);
+ fireEvent.click(screen.getByRole('button', { name: 'Suite' }));
+ expect(screen.getByRole('link', { name: 'Open suite' }).getAttribute('href')).toBe('/suite');
+});

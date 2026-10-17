@@ -209,6 +209,25 @@ func TestAgentImageMustBeDigestPinned(t *testing.T) {
 	}
 }
 
+// Suite management is off without a socket; a path that could bind outside its checked
+// directory refuses startup.
+func TestSuiteRunnerSocket(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	if cfg, err := config.LoadFromEnv(); err != nil || cfg.Suite.RunnerSocket != "" {
+		t.Fatalf("unset: %v", err)
+	}
+	for _, bad := range []string{"run/runner.sock", "/run/a/../runner.sock"} {
+		t.Setenv("KY_SUITE_RUNNER_SOCKET", bad)
+		if _, err := config.LoadFromEnv(); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	t.Setenv("KY_SUITE_RUNNER_SOCKET", "/run/kyquickstart/runner.sock")
+	if cfg, err := config.LoadFromEnv(); err != nil || cfg.Suite.RunnerSocket != "/run/kyquickstart/runner.sock" {
+		t.Fatalf("absolute path: %v", err)
+	}
+}
+
 // A control that is silently off is worse than one that refuses to start: zero is the only
 // documented way to disable the budget, so every other unusable value must be refused.
 func TestDiskBudgetRejectsNonsense(t *testing.T) {

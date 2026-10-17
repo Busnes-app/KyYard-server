@@ -4,6 +4,7 @@ import { containerPath, matchRoute, runPath, workloadPath, workloadRunPath } fro
 it('maps paths to routes and rejects unsafe segments', () => {
   expect(matchRoute('/')).toEqual({ name: 'dashboard' });
   expect(matchRoute('/backup')).toEqual({ name: 'backup' });
+  expect(matchRoute('/suite')).toEqual({ name: 'suite' });
   expect(matchRoute('/organizations/org_initial')).toEqual({ name: 'organization', org: 'org_initial' });
   expect(matchRoute('/organizations/org_initial/members')).toEqual({ name: 'members', org: 'org_initial' });
   expect(matchRoute('/organizations/org_initial/audit')).toEqual({ name: 'audit', org: 'org_initial' });

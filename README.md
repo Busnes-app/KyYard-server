@@ -228,6 +228,23 @@ token here stops it immediately, but that is only one side: unpair it in kyPulse
 each product's own admin makes their own half of the change. `GET /healthz` reports the suite
 health contract (`ky.health/1`) for external monitors, unrelated to a kyPulse pairing.
 
+### Suite management
+
+After KyQuickStart installs the suite, `kyquickstart handoff --kyyard-target <target>` moves its
+plan into a suite runner beside KyYard and sets `KY_SUITE_RUNNER_SOCKET`. KyYard then manages the
+suite apps through that runner on **Settings → Suite** (`/suite`), shown to platform
+administrators only: installed apps (Upgrade, Uninstall, Unmanage), Upgrade suite, catalog apps
+to Install on a target, the plan's owner and revision, and the running operation's steps. KyYard
+holds no target credentials and runs no shell on targets; the runner does the work.
+
+Every action asks for the app's name typed out (`suite` for an upgrade of every app), the
+current password and, with MFA enrolled, a code; federated accounts without a local password
+cannot act. Failed attempts spend the same per-account budget as a password change. An upgrade
+needs the explicit no-backup acknowledgement, and the runner refuses any upgrade that migrates
+data until a verified backup exists. Each request is in platform audit as `suite.operation`
+(kind, apps, target, outcome; never the password or code). Without a runner socket the page
+says so and offers nothing.
+
 ### Tenant API
 
 Use `/api/organizations/{organization}` (`org_initial` for the default organization):
@@ -735,6 +752,7 @@ refused deposit does not remove the local copy.
 | `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on an RFC1918 or CGNAT address behind your own TLS proxy. Loopback, link-local and other reserved ranges stay refused; HTTPS stays required. Logged at startup and on the pairing audit row. |
 | `KY_REGISTRY_ALLOW_PRIVATE` | `false` | Let organization administrators mark a registry `allow_private`, admitting RFC1918 and CGNAT registry addresses. Off, the server refuses the flag, so a tenant cannot aim the server at your network. Loopback and link-local stay refused. Logged at startup. |
 | `KY_CONTAINER_ALLOW_PRIVILEGED` | `false` | Let a container edit or run set host-level settings: privileged, devices, security options other than `no-new-privileges`, capabilities beyond Docker's defaults, the host's or another container's network (as the mode or an attachment), or a bind of a system path: `/`, `/etc`, `/run`, `/var/run`, `/var/spool`, `/var/lib`, `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/proc`, `/sys`, `/dev`, `/boot` or `/root`, a parent of one, or anything beneath one other than `/`, except a read-only bind of `/etc/localtime`, `/etc/timezone` or `/etc/ssl/certs` (or beneath it); and any path with a `.ssh` segment. Off blocks these as a guard against mistakes and the obvious escalations. It is not a boundary against an organization administrator holding `container.configure`, who can still acknowledge a bind of any other host path; each acknowledged bind is audited per path. On makes that administrator root on every Docker host. Logged at startup. |
+| `KY_SUITE_RUNNER_SOCKET` | empty (off) | The suite runner's Unix socket, set by KyQuickStart's hand-off. Absolute and canonical, or startup is refused; its directory must be private to KyYard's user and is rechecked on every connection. See [Suite management](#suite-management). |
 | `KY_DNS` | unset | Only in `docker-compose.lan-dns.yml`: the container's resolver, for names that exist only on your LAN. |
 
 Reach a KyRecovery that only your LAN's DNS knows:

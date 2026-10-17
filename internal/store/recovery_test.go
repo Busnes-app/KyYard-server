@@ -48,7 +48,7 @@ func verifiedPlan(r store.PlanRequest, containers []store.AdoptedContainer) stor
 	return r
 }
 
-// The control-plane state the spec lists (registries, applications with revisions and values, instances with resources and mappings, image checks, deployments, endpoints with keys and capabilities, enrollment tokens, commands and revoked identities) survives a snapshot restore with its secrets
+// The control-plane state the spec lists (registries, applications with revisions and values, instances with resources and mappings, image checks, deployments, endpoints with keys and capabilities, enrollment tokens, commands, revoked identities and suite operations) survives a snapshot restore with its secrets
 // usable under the key from the capsule, and startup reconcile settles only what it owns.
 func TestRestoreCarriesControlPlaneState(t *testing.T) {
 	ctx := context.Background()
@@ -166,6 +166,13 @@ func TestRestoreCarriesControlPlaneState(t *testing.T) {
 	queued, err := ts.CreateCommand(ctx, a, host.ID, protocol.ActionRestart, "blog-web", "", protocol.Expectation{})
 	mustTenant(t, err)
 
+	// A settled suite operation with the runner's snapshot.
+	finished := now.Truncate(time.Second)
+	suiteOp := &store.SuiteOperation{ID: "5a1e5b8e-4b7a-4c55-9a37-2f1c4f0e8b11", ActorID: "actor", Kind: "install", Apps: []string{"hello"}, Target: "nas", State: "running", StartedAt: finished}
+	mustTenant(t, st.Suite().CreateSuiteOperation(ctx, suiteOp))
+	suiteOp.State, suiteOp.FinishedAt, suiteOp.Snapshot = "succeeded", &finished, json.RawMessage(`{"id":"5a1e5b8e-4b7a-4c55-9a37-2f1c4f0e8b11"}`)
+	mustTenant(t, st.Suite().UpdateSuiteOperation(ctx, suiteOp))
+
 	payload, err := backup.Collect(ctx, cfg, "test")
 	mustTenant(t, err)
 	path, restoredKey := restoreThroughCapsule(t, payload)
@@ -280,6 +287,12 @@ func TestRestoreCarriesControlPlaneState(t *testing.T) {
 	mustTenant(t, err)
 	if n != 0 || len(reconciled()) != 1 {
 		t.Fatalf("second reconcile changed state: %d settled", n)
+	}
+
+	op, err := restored.Suite().ReadSuiteOperation(ctx, suiteOp.ID)
+	mustTenant(t, err)
+	if op.State != "succeeded" || op.ActorID != "actor" || !slices.Equal(op.Apps, []string{"hello"}) || op.Target != "nas" || op.FinishedAt == nil || !op.FinishedAt.Equal(finished) || string(op.Snapshot) != string(suiteOp.Snapshot) {
+		t.Fatalf("restore lost the suite operation: %+v", op)
 	}
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)

@@ -67,6 +67,7 @@ type Store interface {
 	Devices() DeviceStore
 	Audit() AuditStore
 	Settings() SettingsStore
+	Suite() SuiteStore
 
 	Driver() string
 	// SampleCeiling is the stored metric rows allowed per endpoint.

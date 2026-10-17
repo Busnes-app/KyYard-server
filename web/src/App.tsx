@@ -4,6 +4,7 @@ import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
 import { Backup } from './pages/Backup';
+import { Suite } from './pages/Suite';
 import { Settings } from './pages/Settings';
 import { Organization } from './pages/Organization';
 import { Members } from './pages/Members';
@@ -114,6 +115,7 @@ const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, s
     case 'dashboard': return <Dashboard />;
     case 'endpoints': return <Dashboard mode="endpoints" />;
     case 'backup': return <Backup />;
+    case 'suite': return <Suite totp={user?.totp_enabled === true} />;
     case 'settings': return <Settings settings={settings} role={user?.role} />;
     case 'organization': return <Organization org={route.org} />;
     case 'members': return <Members org={route.org} />;
