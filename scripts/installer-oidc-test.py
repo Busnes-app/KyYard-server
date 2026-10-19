@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='kyq-yard-oidc-disposable-') as scratch:
             assert b64(hashlib.sha256(form['code_verifier'][0].encode()).digest())==state['challenge']
             assert form['redirect_uri'][0]=='https://yard.example/api/sso/kyidentity/callback'
             assert self.headers['Authorization']=='Basic '+base64.b64encode(b'yard:disposable-fixture-private-secret').decode()
-            body={'iss':state['issuer'],'aud':'yard','sub':state['sub'],'nonce':state['nonce'],'preferred_username':'untrusted-display-name','role':'admin','app_roles':state['roles'],'iat':int(time.time()),'exp':int(time.time())+60}
+            body={'iss':state['issuer'],'aud':'yard','sub':state['sub'],'nonce':state['nonce'],'preferred_username':'untrusted-display-name','role':'admin','roles':state['roles'],'iat':int(time.time()),'exp':int(time.time())+60}
             text=b64(json.dumps({'alg':'RS256','kid':'fixture','typ':'JWT'}).encode())+'.'+b64(json.dumps(body).encode())
             sig=subprocess.check_output(['openssl','dgst','-sha256','-sign',str(key)],input=text.encode())
             self.send({'access_token':'fixture-access','token_type':'Bearer','id_token':text+'.'+b64(sig)})
