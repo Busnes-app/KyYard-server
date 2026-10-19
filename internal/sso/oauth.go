@@ -94,13 +94,14 @@ func (f *oauthFlow) exchange(ctx context.Context, code, verifier, redirectURI, e
 }
 
 func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
+	// roles is KyIdentity's per-app role claim, a string array; any other non-null type rejects the token.
 	var raw struct {
 		Sub               string   `json:"sub"`
 		Email             string   `json:"email"`
 		Name              string   `json:"name"`
 		PreferredUsername string   `json:"preferred_username"`
 		Role              string   `json:"role"`
-		AppRoles          []string `json:"app_roles"`
+		AppRoles          []string `json:"roles"`
 	}
 	if err := idToken.Claims(&raw); err != nil || raw.Sub == "" {
 		return nil, ErrInvalidIDToken
