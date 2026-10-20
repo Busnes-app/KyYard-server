@@ -1,0 +1,17 @@
+# Containerized NPM on the KyPost-owned network. Requires Compose >= 2.24.
+# Merge after the base file and optional PostgreSQL overlay.
+services:
+  kyyard:
+    network_mode: !reset null
+    ports: !reset []
+    environment:
+      KY_APP_URL: "${KY_APP_URL:?Set the public HTTPS origin}"
+      KY_TRUSTED_PROXIES: "${KY_PROXY_IP:?Set the fixed NPM IP address}"
+    networks:
+      default:
+      suite:
+        aliases: [kyyard]
+networks:
+  suite:
+    name: ${KYPOST_NETWORK:-kypost-net}
+    external: true

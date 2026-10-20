@@ -41,7 +41,13 @@ func setupTestServer(t *testing.T) (*api.Server, store.Store, *config.Config) {
 // mutates a shared limit while sockets are live.
 func setupTestServerWith(t *testing.T, tune func(*config.Config)) (*api.Server, store.Store, *config.Config) {
 	t.Helper()
-	t.Setenv("KY_DATA_DIR", t.TempDir())
+	// Keep Unix socket paths within sun_path even with a long disk-backed TMPDIR.
+	dir, err := os.MkdirTemp("", "yard-api-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("KY_DATA_DIR", dir)
 	cfg, _ := config.LoadFromEnv()
 	db := testdb.Config(t)
 	db.DataDir = cfg.Database.DataDir // testdb only picks the backend; keep the temp data dir
@@ -125,7 +131,7 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 		User          *store.User `json:"user"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &meResp)
-	if !meResp.Authenticated || meResp.User.Username != "alice" {
+	if !meResp.Authenticated || meResp.User == nil || meResp.User.Username != "alice" || meResp.User.Role != "admin" {
 		t.Errorf("unexpected me response: %+v", meResp)
 	}
 
