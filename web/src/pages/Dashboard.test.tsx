@@ -6,7 +6,7 @@ afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const hosts = [
   { id: 'old', name: 'Local Docker', runtime: 'docker', state: 'offline', facts: {} },
   { id: 'cluster', name: 'K80 & K81', runtime: 'kubernetes', state: 'active', facts: {} },
-  { id: 'docker', name: 'docker.urlxl.us', runtime: 'docker', state: 'active', facts: {} },
+  { id: 'docker', name: 'docker.example.com', runtime: 'docker', state: 'active', facts: {} },
 ];
 function fleet(role = 'organization_admin', received = new Date().toISOString(), denied = false) {
   const fetcher = vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', role }]) : url.includes('/inventory') ? denied ? new Response('{}', { status: 403 }) : json({ received_at: received, snapshot: { engine: { cpus: 16, memory_bytes: 16 * 2 ** 30 }, containers: [{ state: 'running' }, { state: 'exited' }], kubernetes: { nodes: [{ ready: true }, { ready: false }], pods: [{}, {}, {}], workloads: [{ ready: 1, desired: 1 }, { ready: 0, desired: 1 }] } } }) : json(hosts));
@@ -21,7 +21,7 @@ it('lands on native endpoint summaries and direct run links, without stale local
   expect(fetcher.mock.calls.some(([url]) => url.includes('/old/inventory'))).toBe(false);
   expect(screen.queryByRole('table')).toBeNull();
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'K80' } });
-  expect(screen.queryByRole('link', { name: 'docker.urlxl.us' })).toBeNull();
+  expect(screen.queryByRole('link', { name: 'docker.example.com' })).toBeNull();
   expect(screen.getByRole('link', { name: 'K80 & K81' })).toBeTruthy();
 });
 it('hides run actions from an operator', async () => {
@@ -62,5 +62,5 @@ it('shows scope and role-aware navigation, and clears a search without losing en
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'no such host' } });
   expect(screen.getByText(/No endpoints match/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
-  expect(screen.getByRole('link', { name: 'docker.urlxl.us' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'docker.example.com' })).toBeTruthy();
 });
