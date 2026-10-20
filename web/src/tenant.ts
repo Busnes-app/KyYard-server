@@ -49,6 +49,14 @@ export interface ServicePairing { id: string; code: string; expires_at: string; 
 // so only its administrator hands one out.
 export const canManageServiceTokens = (role: string | undefined) => role === 'organization_admin';
 
+// AI agent (MCP) tokens. The secret appears only in the creation response.
+export type AgentScope = 'mcp:read' | 'mcp:operate';
+export interface AgentToken { id: string; organization_id: string; name: string; created_by: string; created_at: string; last_used_at?: string; last_ip?: string; scope: AgentScope; revoke_after: string }
+export interface AgentTokenIssue { token: string; agent_token: AgentToken; disclosure: string }
+// Mirrors permissions.Allows(role, AgentTokensManage): an operator-scope token acts unattended,
+// so only the organization administrator hands one out.
+export const canManageAgentTokens = (role: string | undefined) => role === 'organization_admin';
+
 export interface Registry { id: string; host: string; name: string; username: string; has_credential: boolean; allow_private: boolean }
 // private_registries_enabled is the operator's KY_REGISTRY_ALLOW_PRIVATE, read-only here.
 export interface RegistryPolicy { anonymous_pull_enabled: boolean; private_registries_enabled: boolean }
