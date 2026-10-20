@@ -633,3 +633,21 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-image-update { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin-top:.5rem; }
 
 .badge-warning { color:var(--accent); background:var(--accent-soft); border:1px solid var(--accent); }
+
+/* Fleet context and endpoint summaries remain scoped to existing permissions. */
+.ky-fleet-page > p { max-width: 70ch; color: var(--ink); }
+.ky-fleet-scope { display: flex; gap: 32px; flex-wrap: wrap; padding: 20px 0; border-block: 1px solid var(--line); }
+.ky-fleet-scope > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ky-fleet-scope .text-muted { font-size: 12px; }
+.ky-fleet-scope strong { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.ky-fleet-scope select { width: 100%; min-width: 12rem; }
+.ky-scope-label { font-size: 12px; }
+.ky-fleet-toolbar { justify-content: space-between; margin-block: 24px 12px; }
+.ky-fleet-toolbar input { flex: 1; max-width: 30rem; min-height: 42px; }
+.ky-fleet-totals { font-size: 13px; margin-bottom: 20px; font-variant-numeric: tabular-nums; }
+.ky-fleet-endpoint { margin-bottom: 16px; padding: 24px; }
+.ky-fleet-endpoint .panel-header { margin-bottom: 6px; gap: 16px; }
+.ky-fleet-endpoint h2 { font-size: 18px; overflow-wrap: anywhere; }
+.ky-fleet-endpoint .ky-endpoint-summary { margin-block: 20px; border-block: 1px solid var(--line); padding-block: 16px; }
+.ky-fleet-endpoint .ky-toolbar { margin-top: 20px; margin-bottom: 0; }
+@media (max-width: 600px) { .ky-fleet-scope { gap: 20px; } .ky-fleet-endpoint { padding: 18px; } .ky-fleet-toolbar input { max-width: none; width: 100%; flex-basis: 100%; } }
