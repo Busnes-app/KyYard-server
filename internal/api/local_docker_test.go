@@ -88,7 +88,7 @@ func testLocalDocker(t *testing.T, failAt int32, state bool, before func(*api.Se
 	if before != nil {
 		before(s)
 	}
-	socket := filepath.Join(t.TempDir(), "docker.sock")
+	socket := filepath.Join(cfg.Database.DataDir, "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)

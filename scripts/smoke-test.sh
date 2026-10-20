@@ -309,7 +309,7 @@ print(d)' "$1"; }
       python3 -c 'import json,sys
 print(json.dumps({"name":"ky-smoke-run","image":{"reference":sys.argv[1]},"image_id":sys.argv[2],"command":["sleep","60"],"entrypoint":[],
 "env":[{"name":"SMOKE_KEY","value":sys.argv[3]}],"labels":{"kyyard.smoke":"1"},"restart":"no","ports":[],"mounts":[],"network_mode":"bridge",
-"networks":[{"name":"bridge"}],"cap_add":[],"cap_drop":[],"security_opt":[],"extra_hosts":[],"dns":[],"devices":[],"unsupported":[]}))' \
+"networks":[{"name":"bridge"}],"resources":{"nano_cpus":500000000,"memory_bytes":67108864,"memory_swap_bytes":67108864,"pids_limit":32},"cap_add":[],"cap_drop":[],"security_opt":[],"extra_hosts":[],"dns":[],"devices":[],"unsupported":[]}))' \
         "$SMOKE_IMAGE" "$SMOKE_IMAGE_ID" "$1"
     }
     RUN_CMD="$(api POST /containers "{\"spec\":$(smoke_spec one),\"acknowledge_binds\":[],\"confirm\":\"ky-smoke-run\"}")"
@@ -325,6 +325,7 @@ print(json.dumps({"name":"ky-smoke-run","image":{"reference":sys.argv[1]},"image
       contains "configuration names the container" "$CFG" '"name":"ky-smoke-run"'
       contains "configuration carries the env it was given" "$CFG" '"name":"SMOKE_KEY","value":"one"'
       contains "configuration carries the cleanup label" "$CFG" '"kyyard.smoke":"1"'
+      contains "configuration carries the fixture memory limit" "$CFG" '"memory_bytes":67108864'
       RECREATE="$(printf '%s' "$CFG" | python3 -c '
 import json, sys
 c = json.load(sys.stdin)
