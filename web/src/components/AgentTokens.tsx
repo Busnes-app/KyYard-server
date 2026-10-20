@@ -4,6 +4,7 @@ import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
 
 const scopeText: Record<AgentScope, string> = { 'mcp:read': 'Read only', 'mcp:operate': 'Operator' };
+const scopeGrants: Record<AgentScope, string> = { 'mcp:read': 'it can read endpoints, containers, logs, resource usage and pending updates, and change nothing', 'mcp:operate': 'it can also restart containers and workloads and apply pending image updates' };
 const operatorWarning = 'The agent can restart containers and workloads and apply pending image updates. Anyone who can message the agent can try to make it do so, and so can text a container prints into its log.';
 
 // The copy-ready agent configuration reads the token from the environment, so it is never
@@ -27,7 +28,7 @@ export function AgentTokens({ org }: { org: string }) {
   const [busy, setBusy] = useState(false);
 
   const create = async () => {
-    if (scope === 'mcp:operate' && !window.confirm(`Create an operator token? ${operatorWarning}`)) return;
+    if (scope === 'mcp:operate' && !window.confirm(`Create a token for "${name.trim()}" with Operator access? ${operatorWarning}`)) return;
     setBusy(true);
     setMessage('');
     try {
@@ -42,7 +43,7 @@ export function AgentTokens({ org }: { org: string }) {
   };
   const change = async (t: AgentToken, next: AgentScope) => {
     if (next === t.scope) return;
-    if (next === 'mcp:operate' && !window.confirm(`Give "${t.name}" operator access? ${operatorWarning}`)) return;
+    if (next === 'mcp:operate' && !window.confirm(`Change "${t.name}" from ${scopeText[t.scope]} to Operator access? ${operatorWarning}`)) return;
     setBusy(true);
     const err = await tenantWrite(`${base}/${encodeURIComponent(t.id)}`, 'PATCH', { scope: next });
     setBusy(false);
@@ -73,11 +74,12 @@ export function AgentTokens({ org }: { org: string }) {
           <label><input type="radio" name="agent-scope" checked={scope === 'mcp:operate'} onChange={() => setScope('mcp:operate')} disabled={busy} /> Operator: restart and apply updates</label>
           {scope === 'mcp:operate' && <p className="dr-alert dr-alert-warn" role="note">{operatorWarning}</p>}
         </fieldset>
+        {name.trim() !== '' && <p role="status" aria-label="Token to be created">Creates a token for "{name.trim()}" with {scopeText[scope]} access: {scopeGrants[scope]}.</p>}
         <button disabled={busy || name.trim() === ''}>Create agent token</button>
       </form>
       {issued && (
         <div className="dr-alert dr-alert-warn" role="region" aria-label="New agent token">
-          <p>Token for "{issued.agent_token.name}" ({scopeText[issued.agent_token.scope]}). {issued.disclosure}</p>
+          <p>Token for "{issued.agent_token.name}" with {scopeText[issued.agent_token.scope]} access: {scopeGrants[issued.agent_token.scope]}. {issued.disclosure}</p>
           <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{issued.token}</pre>
           <p>Set it as <code>KYYARD_TOKEN</code> in the agent's environment, then add the server.</p>
           <p>OpenClaw:</p>

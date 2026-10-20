@@ -49,6 +49,26 @@ describe('AgentTokens', () => {
     expect(sent(fetchMock, 'POST').length + sent(fetchMock, 'PATCH').length).toBe(0);
   });
 
+  // Requirement 4 (Joplin GHSA-9728-v7ww-mxjv): no generic "an app wants access" prompt. Every
+  // step that issues or raises a token names the agent and the access level it grants.
+  it('names the agent and the access level on every issuing or raising step', async () => {
+    stub([[/^POST \/api\/organizations\/org_a\/agent-tokens$/, { token: 'kyy_mcp_' + 'b'.repeat(64), agent_token: { ...token, name: 'ops-bot', scope: 'mcp:operate' }, disclosure: 'Shown once.' }, 201]]);
+    const confirm = vi.fn((_message?: string) => true);
+    vi.stubGlobal('confirm', confirm);
+    render(<AgentTokens org="org_a" />);
+    await screen.findByText('homelab');
+    fireEvent.change(screen.getByLabelText('Agent name'), { target: { value: 'ops-bot' } });
+    expect(screen.getByLabelText('Token to be created').textContent).toBe('Creates a token for "ops-bot" with Read only access: it can read endpoints, containers, logs, resource usage and pending updates, and change nothing.');
+    fireEvent.click(screen.getByLabelText(/Operator: restart and apply updates/));
+    expect(screen.getByLabelText('Token to be created').textContent).toMatch(/^Creates a token for "ops-bot" with Operator access: it can also restart/);
+    fireEvent.click(screen.getByRole('button', { name: 'Create agent token' }));
+    expect(confirm.mock.calls[0][0]).toMatch(/^Create a token for "ops-bot" with Operator access\?/);
+    expect((await screen.findByRole('region', { name: 'New agent token' })).textContent).toMatch(/Token for "ops-bot" with Operator access: it can also restart/);
+    fireEvent.change(screen.getByLabelText('Access for homelab'), { target: { value: 'mcp:operate' } });
+    expect(confirm.mock.calls[1][0]).toMatch(/^Change "homelab" from Read only to Operator access\?/);
+    for (const [message] of confirm.mock.calls) expect(message).not.toMatch(/an app|wants access|an application/i);
+  });
+
   it('changes access and revokes after confirmation', async () => {
     const fetchMock = stub([[/^PATCH \/api\/organizations\/org_a\/agent-tokens\/agt_1$/, null, 204], [/^DELETE \/api\/organizations\/org_a\/agent-tokens\/agt_1$/, null, 204]]);
     vi.stubGlobal('confirm', vi.fn(() => true));

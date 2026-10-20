@@ -45,7 +45,7 @@ export function ServiceTokens({ org }: { org: string }) {
       <p>A service token lets kyPulse read this organization: endpoints, inventory, samples, container logs and the audit feed. It can change nothing. Unpair in kyPulse as well when you revoke one here; each side keeps its own step.</p>
       {pairing && (
         <div className="dr-alert dr-alert-warn" role="region" aria-label="Pairing code">
-          <p>Enter this code in kyPulse before {new Date(pairing.expires_at).toLocaleTimeString()}:</p>
+          <p>This code grants kyPulse read-only access to this organization (endpoints, inventory, samples, container logs and the audit feed). Enter it in kyPulse before {new Date(pairing.expires_at).toLocaleTimeString()}:</p>
           <pre className="font-mono" style={{ fontSize: 24, letterSpacing: 4 }}>{pairing.code}</pre>
           <p>{pairing.disclosure}</p>
           <button className="btn-secondary" onClick={dismiss}>Dismiss</button>
