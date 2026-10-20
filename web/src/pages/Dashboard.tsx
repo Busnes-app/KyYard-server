@@ -3,7 +3,7 @@ import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { useNow } from '../components/containerFacts';
 import { endpointPath, orgPath, runPath, workloadRunPath } from '../router';
-import { canConfigure, useTenantResource, type MemberOrganization, type Endpoint, type Inventory } from '../tenant';
+import { canConfigure, canEnroll, useTenantResource, type MemberOrganization, type Endpoint, type Inventory } from '../tenant';
 
 export function Dashboard({ mode = 'home' }: { mode?: 'home' | 'endpoints' }) {
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
@@ -11,17 +11,20 @@ export function Dashboard({ mode = 'home' }: { mode?: 'home' | 'endpoints' }) {
   const orgs = organizations.data ?? [];
   const org = orgs.find((o) => o.id === selected) ?? orgs[0];
   return <div className="ky-page ky-fleet-page">
-    <div className="ky-page-heading"><h1>{mode === 'home' ? 'Home' : 'Endpoints'}</h1>{org && <Link className="btn btn-secondary" to={orgPath(org.id)}>Environments & add endpoint</Link>}</div>
+    <div className="ky-page-heading"><h1>{mode === 'home' ? 'Home' : 'Endpoints'}</h1>{org && <Link className="btn btn-secondary" to={orgPath(org.id)}>{canEnroll(org.role) ? 'Environments & add endpoint' : 'View environments'}</Link>}</div>
     <p>{mode === 'home' ? 'Your Docker hosts and Kubernetes clusters. Choose where to run or manage an application.' : 'Connect Docker hosts and Kubernetes clusters, review enrollment, and inspect their resources.'}</p>
     <StateNotice state={organizations.state} onRetry={organizations.reload} />
     {organizations.state === 'ready' && !org && <EmptyNotice>No host access yet. Ask an administrator to add your account.</EmptyNotice>}
     {org && <>
-      {orgs.length > 1 && <div className="ky-toolbar"><label htmlFor="fleet-org">Access scope</label><select id="fleet-org" value={org.id} onChange={(e) => setSelected(e.target.value)} style={{ width: 'auto' }}>{orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>}
-      <Fleet key={`${org.id}-${mode}`} org={org.id} mode={mode} configure={canConfigure(org.role)} />
+      <div className="ky-fleet-scope">
+        <div><span className="text-muted">Organization</span>{orgs.length > 1 ? <><label className="ky-scope-label" htmlFor="fleet-org">Access scope</label><select id="fleet-org" value={org.id} onChange={(e) => setSelected(e.target.value)}>{orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select></> : <strong>{org.name}</strong>}</div>
+        <div><span className="text-muted">Your organization role</span><strong>{org.role?.replaceAll('_', ' ')}</strong></div>
+      </div>
+      <Fleet key={`${org.id}-${mode}`} org={org.id} mode={mode} configure={canConfigure(org.role)} enroll={canEnroll(org.role)} />
     </>}
   </div>;
 }
-function Fleet({ org, mode, configure }: { org: string; mode: 'home' | 'endpoints'; configure: boolean }) {
+function Fleet({ org, mode, configure, enroll }: { org: string; mode: 'home' | 'endpoints'; configure: boolean; enroll: boolean }) {
   const [offset, setOffset] = useState(0);
   const [search, setSearch] = useState('');
   const endpoints = useTenantResource<Endpoint[]>(`/api/organizations/${encodeURIComponent(org)}/endpoints?offset=${offset}&limit=20`);
@@ -31,16 +34,18 @@ function Fleet({ org, mode, configure }: { org: string; mode: 'home' | 'endpoint
     return () => window.clearInterval(timer);
   }, [endpoints.state === 'denied', endpoints.reload]);
   const hosts = [...(endpoints.data ?? [])].sort((a, b) => Number(b.state === 'active') - Number(a.state === 'active') || a.name.localeCompare(b.name));
+  const matches = hosts.filter((e) => `${e.name} ${e.runtime} ${e.facts.hostname ?? ''}`.toLowerCase().includes(search.toLowerCase()));
   return <>
-    <div className="ky-toolbar">
+    <div className="ky-toolbar ky-fleet-toolbar">
       {mode === 'home' && <input type="search" aria-label="Find endpoints on this page" placeholder="Search hosts or clusters…" value={search} onChange={(e) => setSearch(e.target.value)} />}
 
       <button className="btn-secondary" onClick={endpoints.reload}>Refresh endpoints</button>
     </div>
     <StateNotice state={endpoints.state} onRetry={endpoints.reload} />
-    {endpoints.state === 'ready' && endpoints.data?.length === 0 && <EmptyNotice>No endpoints connected here yet. Add a Docker host or Kubernetes cluster. <Link to={orgPath(org)}>Add an endpoint.</Link></EmptyNotice>}
+    {endpoints.state === 'ready' && endpoints.data?.length === 0 && <EmptyNotice>No endpoints connected here yet. {enroll ? <>Add a Docker host or Kubernetes cluster. <Link to={orgPath(org)}>Add an endpoint.</Link></> : 'Ask an organization or environment administrator to connect a host or cluster.'}</EmptyNotice>}
     {mode === 'home' && endpoints.state === 'ready' && <p className="ky-fleet-totals">This page: <strong>{hosts.length} endpoints</strong> · {hosts.filter((e) => e.state === 'active').length} connected · {hosts.filter((e) => e.runtime === 'docker').length} Docker · {hosts.filter((e) => e.runtime === 'kubernetes').length} Kubernetes</p>}
-    {endpoints.state === 'ready' && (hosts.filter((e) => `${e.name} ${e.runtime} ${e.facts.hostname ?? ''}`.toLowerCase().includes(search.toLowerCase()))).map((e) => <section className="panel" key={e.id}>
+    {endpoints.state === 'ready' && hosts.length > 0 && matches.length === 0 && <EmptyNotice>No endpoints match this search on this page. <button className="btn-secondary" onClick={() => setSearch('')}>Clear search</button></EmptyNotice>}
+    {endpoints.state === 'ready' && matches.map((e) => <section className="panel ky-fleet-endpoint" key={e.id}>
       <div className="panel-header"><h2><Link to={endpointPath(org, e.id)}>{e.name}</Link></h2><span className={`badge ${e.state === 'active' ? 'badge-success' : 'badge-secondary'}`}>{e.state}</span></div>
       <p>{e.runtime === 'kubernetes' ? 'Kubernetes cluster' : 'Docker host'}{e.facts.hostname ? ` · ${e.facts.hostname}` : ''}</p>
       {mode === 'home' && (e.state === 'active' ? <EndpointSummary org={org} endpoint={e} configure={configure} /> : <p>Disconnected. Open the endpoint to inspect its historical inventory.</p>)}

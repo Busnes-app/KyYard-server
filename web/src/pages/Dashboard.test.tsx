@@ -53,3 +53,14 @@ it('keeps endpoint discovery bounded at 20 per page', async () => {
   await screen.findByText('No endpoints on this page');
   expect(fetcher.mock.calls.some(([url]) => url.endsWith('offset=20&limit=20'))).toBe(true);
 });
+
+it('shows scope and role-aware navigation, and clears a search without losing endpoints', async () => {
+  fleet('operator'); render(<Dashboard />);
+  await screen.findByText('16.0 GiB');
+  expect(screen.getByText('Your organization role')).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'View environments' })).toBeTruthy();
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'no such host' } });
+  expect(screen.getByText(/No endpoints match/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+  expect(screen.getByRole('link', { name: 'docker.urlxl.us' })).toBeTruthy();
+});
