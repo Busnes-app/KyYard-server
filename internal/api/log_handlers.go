@@ -499,6 +499,12 @@ func (s *Server) stillAuthenticated(r *http.Request, a store.TenantAccess) bool 
 	if !ok {
 		return false
 	}
-	tok, err := s.store.Tenancy().LookupServiceToken(r.Context(), token)
+	var tok *store.ServiceToken
+	var err error
+	if token = strings.TrimSpace(token); strings.HasPrefix(token, store.AgentTokenPrefix) {
+		tok, err = s.store.Tenancy().LookupAgentToken(r.Context(), token, time.Now())
+	} else {
+		tok, err = s.store.Tenancy().LookupServiceToken(r.Context(), token)
+	}
 	return err == nil && tok.ID == a.ServiceTokenID
 }

@@ -138,3 +138,14 @@ func ResetAttemptsForTest(s *Server) {
 func AllowAccountAttemptForTest(s *Server, key string, limit int, window time.Duration) bool {
 	return s.allowAccountAttempt(key, limit, window)
 }
+
+// AppVersionForTest is the version the agent skill's frontmatter must carry.
+const AppVersionForTest = appVersion
+
+// MCPToolMessagesForTest are the tool errors the agent skill's error table must name.
+var MCPToolMessagesForTest = []string{msgReadOnly, msgNotAnUpdate, msgDropsMounts, msgTooManyOperations}
+
+// UpdateRefusalForTest is apply_update's verdict on plan d, for plans a fixture cannot reach.
+func UpdateRefusalForTest(ctx context.Context, s *Server, a store.TenantAccess, d *store.Deployment) (string, error) {
+	return mcpTools{s: s}.updateRefusal(ctx, a, d)
+}

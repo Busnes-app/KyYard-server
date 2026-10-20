@@ -432,6 +432,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/organizations/{organization}/audit", s.tenantRoute(s.handleTenantAudit))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/environments/{environment}/audit", s.tenantRoute(s.handleTenantAudit))
 	s.mux.HandleFunc("POST /api/service-tokens/claim", s.handleClaimServiceToken)
+	s.mux.HandleFunc("GET /api/organizations/{organization}/agent-tokens", s.tenantRoute(s.handleAgentTokens))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/agent-tokens", s.tenantRoute(s.handleCreateAgentToken))
+	s.mux.HandleFunc("PATCH /api/organizations/{organization}/agent-tokens/{token}", s.tenantRoute(s.handleSetAgentTokenScope))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/agent-tokens/{token}", s.tenantRoute(s.handleRevokeAgentToken))
+	// MCP for AI agents (mcp.go): agent tokens only, never a browser; the skill is public.
+	s.mux.Handle("/mcp", s.newMCPHandler())
+	s.mux.HandleFunc("GET /agent/skills/kyyard/SKILL.md", s.handleAgentSkill)
 	s.mux.HandleFunc("POST /api/organizations/{organization}/service-tokens/pairings", s.tenantRoute(s.handleCreateServicePairing))
 	s.mux.HandleFunc("GET /api/organizations/{organization}/service-tokens", s.tenantRoute(s.handleServiceTokens))
 	s.mux.HandleFunc("DELETE /api/organizations/{organization}/service-tokens/{token}", s.tenantRoute(s.handleRevokeServiceToken))
@@ -608,6 +615,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 	if s.config.Security.CookieSecure {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
+
+	// /mcp answers agents, not browsers: no CORS headers, no OPTIONS short-circuit and no
+	// cookie path. withMCPAuth refuses any request carrying an Origin.
+	if r.URL.Path == "/mcp" {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
+		s.mux.ServeHTTP(w, r)
+		return
 	}
 
 	origin := r.Header.Get("Origin")
