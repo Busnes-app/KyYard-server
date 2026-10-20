@@ -146,6 +146,38 @@ KyYard container bind to `127.0.0.1`: Docker port forwarding targets its bridge 
 `docker-compose.proxy-network.yml` remains a no-op compatibility overlay for existing
 `COMPOSE_FILE` chains; `KY_PROXY_NETWORK` is no longer used.
 
+A proxy container on its own user-defined network (Nginx Proxy Manager, Caddy, Traefik)
+cannot reach `127.0.0.1:9273`: inside it, that is the proxy itself. If it cannot move to the
+host network, give KyYard and the proxy a dedicated network where the proxy has a fixed address:
+
+```bash
+docker network create --subnet 172.30.0.0/24 kyyard-proxy
+docker network connect --ip 172.30.0.2 kyyard-proxy <proxy-container>
+```
+
+Save this override as your own file, for example `docker-compose.proxy-container.yml`, and
+append `:docker-compose.proxy.yml:docker-compose.proxy-container.yml` to `COMPOSE_FILE`.
+`!reset` (Docker Compose 2.24 or later) removes the base file's `network_mode` and host
+publish; Compose refuses `networks` beside `network_mode`.
+
+```yaml
+services:
+  kyyard:
+    network_mode: !reset null
+    ports: !reset []
+    networks: [kyyard-proxy]
+networks:
+  kyyard-proxy:
+    external: true
+```
+
+Set `KY_TRUSTED_PROXIES=172.30.0.2/32` and point the proxy at `http://kyyard:9273` with
+WebSocket support. Check the merge with `docker compose config`. The costs: every container on
+that network reaches the plaintext backend, so keep only the proxy and KyYard on it; the host
+loses `127.0.0.1:9273` (and the SSH forward above); a recreated proxy loses a `docker network
+connect`, so declare the network and `ipv4_address` in the proxy's own compose file; and the
+PostgreSQL overlay's database stays on the default bridge, out of KyYard's reach.
+
 Optional overlays are appended to the existing `COMPOSE_FILE` chain, preserving the build,
 bind and DNS overlays already in use:
 
@@ -686,7 +718,8 @@ fingerprint at enrollment, so replacing it disconnects every agent. It has no en
 A generated bootstrap password is written to `initial-admin-password` in the data directory
 (owner-only, 0600) and never logged; the log names the file once the administrator is saved.
 The file is deleted when `admin` replaces the password. A supplied `KY_ADMIN_PASSWORD` must meet
-the 12-character policy or startup refuses. An ordinary restart preserves both the account and
+the 12-character policy or startup refuses. The packaged compose files do not forward it;
+setting it in `.env` alone does nothing (see `.env.example`). An ordinary restart preserves both the account and
 active sessions.
 
 ## Disaster recovery
