@@ -74,6 +74,13 @@ makes at most ten restarts and applies a minute.
 
 Rules the server enforces:
 
+- No browser can mint or use a token (the lesson of Joplin's GHSA-9728-v7ww-mxjv). `/mcp` sends
+  no CORS headers and refuses any request with an `Origin`, and no KyYard route ever sends
+  `Access-Control-Allow-Origin: *`. Creating, re-scoping and revoking a token need the
+  administrator's signed-in session and CSRF token from KyYard's own origin, so a forged
+  cross-site form or fetch is refused. Every screen that issues or raises a token names the
+  agent and the access level it grants.
+
 - `/mcp` accepts only `Authorization: Bearer kyy_mcp_…`. A request with an `Origin` header is
   refused (browsers never reach it), a session cookie or a kyPulse token is 401, and ten failed
   attempts from one address in 15 minutes answer 429. An agent token at `/api` is 401.
