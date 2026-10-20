@@ -1,5 +1,7 @@
 # KyYard interface polish
 
+> Evidence scope: this document records the revision, environment and capture conditions below. Screenshots and generated fixtures demonstrate appearance; they do not qualify live email delivery, push delivery, recovery custody or every product feature. Test counts describe that recorded run, not the current suite.
+
 KyYard now has clearer fleet scope and organization-role context, with permission-aware empty states. This implements the approved visual direction against the existing product; no mockup data or replacement application shell is shipped.
 
 ## Preserved

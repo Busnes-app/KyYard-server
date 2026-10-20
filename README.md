@@ -1,8 +1,10 @@
 # kyyard-server
 
+**Start here:** [Standalone installation](INSTALL.md). Local accounts and MFA work without KyIdentity. The default Docker installation connects the local Docker host and grants KyYard host-level authority through the mounted Docker socket. Remote hosts and Kubernetes clusters need separate enrollment; suite management needs a KyQuickStart runner handoff.
+
 The simple control plane for your container fleet.
 
-This first slice establishes the KyYard scaffold: Go backend, embedded React PWA,
+KyYard provides a Go backend, embedded React PWA,
 SQLite/PostgreSQL, local authentication with self-service TOTP MFA and recovery codes, configurable OAuth 2/OIDC (including KyIdentity) and KyRecovery.
 The standard installation automatically shows the local Docker host, with container inventory, lifecycle controls, image operations and logs. [Connect additional hosts](#show-containers-after-installation) when needed. Remaining milestones are tracked in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
 SAML metadata is inherited; SAML login is not yet implemented.
