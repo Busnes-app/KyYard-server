@@ -384,6 +384,19 @@ TOKEN_ID="$(echo "$TOKENS" | sed -n 's/.*"id":"\(svc_[0-9a-f]*\)".*/\1/p' | head
 check "admin revokes the token" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X DELETE "$BASE/api/organizations/org_initial/service-tokens/$TOKEN_ID")" "204"
 check "revoked bearer is 401" "$(status -H "Authorization: Bearer $TOKEN" "$BASE/api/organizations/org_initial")" "401"
 contains "healthz serves ky.health/1" "$(curl -s "$BASE/healthz")" '"schema":"ky.health/1"'
+echo "==> AI agent tokens (MCP)"
+mcp() { curl -s -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "$@" "$BASE/mcp"; }
+AGENT="$(curl -s -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"name":"smoke","scope":"mcp:read"}' -X POST "$BASE/api/organizations/org_initial/agent-tokens")"
+AGENT_TOKEN="$(echo "$AGENT" | sed -n 's/.*"token":"\(kyy_mcp_[0-9a-f]\{64\}\)".*/\1/p')"
+AGENT_ID="$(echo "$AGENT" | sed -n 's/.*"id":"\(agt_[0-9a-f]*\)".*/\1/p' | head -1)"
+contains "agent token is shown once at creation" "$AGENT_TOKEN" "kyy_mcp_"
+check "mcp without a token is 401" "$(status -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/mcp")" "401"
+contains "agent lists the MCP tools" "$(mcp -H "Authorization: Bearer $AGENT_TOKEN")" '"restart_container"'
+check "mcp refuses a browser origin" "$(status -X POST -H "Authorization: Bearer $AGENT_TOKEN" -H "Origin: $BASE" -H 'Content-Type: application/json' -d '{}' "$BASE/mcp")" "403"
+check "agent token does not reach /api" "$(status -H "Authorization: Bearer $AGENT_TOKEN" "$BASE/api/organizations/org_initial")" "401"
+contains "agent skill is served" "$(curl -s "$BASE/agent/skills/kyyard/SKILL.md")" "name: kyyard"
+check "admin revokes the agent token" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X DELETE "$BASE/api/organizations/org_initial/agent-tokens/$AGENT_ID")" "204"
+check "revoked agent token is 401" "$(status -X POST -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' -d '{}' "$BASE/mcp")" "401"
 check "logout succeeds" "$(status -b "$WORK/cookies" -c "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/auth/logout")" "200"
 contains "session dead after logout" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":false' 
 stop_server

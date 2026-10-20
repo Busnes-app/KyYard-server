@@ -3,9 +3,10 @@ import { Users } from 'lucide-react';
 import { Link } from '../components/Link';
 import { Registries } from '../components/Registries';
 import { ServiceTokens } from '../components/ServiceTokens';
+import { AgentTokens } from '../components/AgentTokens';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { orgPath } from '../router';
-import { canManageServiceTokens, tenantRoles, tenantWrite, useTenantResource, type Member, type MemberOrganization } from '../tenant';
+import { canManageAgentTokens, canManageServiceTokens, tenantRoles, tenantWrite, useTenantResource, type Member, type MemberOrganization } from '../tenant';
 
 export const Members: React.FC<{ org: string }> = ({ org }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/members`;
@@ -79,6 +80,7 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
         {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
       </section>
       {canManageServiceTokens(callerRole) && <ServiceTokens org={org} />}
+      {canManageAgentTokens(callerRole) && <AgentTokens org={org} />}
       <Registries org={org} />
     </div>
   );

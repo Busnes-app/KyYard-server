@@ -25,6 +25,8 @@ describe('ServiceTokens', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pair kyPulse' }));
     expect(await screen.findByText('123456')).toBeTruthy();
     expect(screen.getByText(/Shown once/)).toBeTruthy();
+    // The code's panel names who receives it and what it grants.
+    expect(screen.getByRole('region', { name: 'Pairing code' }).textContent).toMatch(/grants kyPulse read-only access to this organization/);
   });
 
   it('revokes after confirmation and names the kyPulse side', async () => {

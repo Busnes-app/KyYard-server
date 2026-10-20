@@ -13,6 +13,8 @@
 | Developer | organization | deploy applications and read logs; no host-level or destructive actions, no exec |
 | Read Only | organization | read everything non-secret |
 | Pulse reader (service token) | organization | read-only: organization, environments, endpoints, inventory, samples, container logs without follow, audit feed; no mutation, no exec, no secrets |
+| Agent reader (`mcp:read` agent token) | organization | read-only over MCP: organization, environments, endpoints, inventory, samples, applications and their update checks and plans, bounded container and pod logs; no audit feed, no mutation, no exec, no secrets |
+| Agent operator (`mcp:operate` agent token) | organization | the agent reader's reads plus `container.operate` and `application.deploy`, which the MCP tools use only to restart a container or workload and to apply an image-update plan someone else made; no stop, delete, exec, configuration, volumes or secrets |
 
 The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing local account's password and clears its MFA; neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
 
@@ -82,6 +84,14 @@ Agent-side actions (`agent.enroll`, `agent.connect`, `agent.inventory`, `agent.e
 | `organization.service_tokens.manage` | ✓ | – | – | – | – | the six-digit pairing code, once; the token only in the claim response | success/denied, target = pairing or token id |
 
 A service token authenticates as `service:<id>` with the fixed role `pulse_reader`; its successful reads are not audited (one `service_token.reads` row per token per hour instead), its denials and every claim and revocation are. A refused claim names no organization, so it writes a platform-scope denied row without the code.
+
+### AI agent tokens (*implemented*)
+
+| Action | OA | EA | Op | Dev | RO | Secret | Audit |
+|---|---|---|---|---|---|---|---|
+| `organization.agent_tokens.manage` | ✓ | – | – | – | – | the token, once, in the create response | success/denied, target = token id, details = scope or `from=… to=…` |
+
+An agent token is a service token whose `scope` is `mcp:read` or `mcp:operate`; kyPulse tokens are `pulse`. It authenticates only at `/mcp` (never `/api`, and a kyPulse token never at `/mcp`) as `service:<id>`, and `run` reads its role from the scope inside every transaction (`agent_reader`, `agent_operator`). The MCP tools are narrower than the role: no tool stops, removes, scales, executes, configures or plans, and `apply_update` takes only a live plan that pulls a new image at the instance's running revision and drops no mount. Operations write the store's own success rows plus an `mcp.<tool>` row; every log read writes `mcp.logs_read`; other reads join the hourly `service_token.reads` summary; refusals write `denied`. A token unused for 90 days is refused and revoked at lookup (`agent_token.expired`), and an hourly sweep revokes the rest.
 
 ### Containers, images, networks, volumes (M4–M5)
 

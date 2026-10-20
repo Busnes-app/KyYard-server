@@ -1031,7 +1031,12 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	{Version: 42, Name: "inventory_cluster_health", SQLite: inventoryClusterHealth, Postgres: inventoryClusterHealth},
 	{Version: 43, Name: "drop_scim_groups", SQLite: dropSCIMGroups, Postgres: dropSCIMGroups},
 	{Version: 44, Name: "suite_operations", SQLite: suiteOperations, Postgres: strings.ReplaceAll(suiteOperations, "DATETIME", "TIMESTAMPTZ")},
+	// AI agent (MCP) tokens share the service principal machinery; the scope keeps the two
+	// credentials apart. Existing rows are kyPulse's.
+	{Version: 45, Name: "agent_token_scope", SQLite: agentTokenScope, Postgres: agentTokenScope},
 }
+
+const agentTokenScope = `ALTER TABLE service_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'pulse' CHECK(scope IN ('pulse','mcp:read','mcp:operate'));`
 
 // One row per operation KyYard asked the suite runner for, refused ones included. The actor has
 // no foreign key, like audit rows: deleting an account keeps the history.

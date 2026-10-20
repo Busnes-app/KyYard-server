@@ -24,12 +24,36 @@ The default local URL is `http://localhost:9273`; follow the installation guide 
 - Manage local Docker and enroll additional Docker hosts or Kubernetes endpoints.
 - Use organizations, roles, local MFA or optional KyIdentity sign-in.
 - Back up KyYard state separately from the applications it manages.
+- Let an AI agent inspect the homelab, and optionally restart containers and apply updates, over MCP.
+
+## Connect an AI agent
+
+AI agents such as OpenClaw and Hermes Agent reach an organization over MCP at
+`https://<your host>/mcp`. On the organization's **Members** page, under **AI agents (MCP)**,
+an organization administrator names the agent and picks an access level:
+
+- **Read only** (the default): the agent lists hosts, clusters, applications and containers,
+  their state, health and resource use, recent logs (500 lines at most) and pending updates.
+- **Operator**: it can also restart a container or Kubernetes workload and apply an image-update
+  plan someone made in KyYard.
+
+No agent can stop, delete, run commands in or reconfigure anything, touch volumes or read
+secrets. The page shows the token once, with config for both agents that reads it from
+`KYYARD_TOKEN`, and the command to install the KyYard skill (served at
+`/agent/skills/kyyard/SKILL.md`), which teaches the agent the tools and when to ask you first.
+You can change an agent's access there later. An agent token unused for 90 days is revoked; an
+agent token never works as a kyPulse service token, nor the reverse. Every operation, log read and
+refusal is in the audit history. Details: [Integrations](docs/INTEGRATIONS.md#connect-an-ai-agent).
+
+Container logs are written by the software you run, and an agent may treat them as instructions.
+Give an agent operator access only if you trust everyone who can message it and every workload
+whose logs it reads.
 
 ## Documentation
 
 - [Running](docs/RUNNING.md) — Start KyYard, First sign-in, Account security, Transport and advanced deployment, and related procedures. <a id="start-kyyard"></a><a id="first-sign-in"></a><a id="account-security"></a><a id="transport-and-advanced-deployment"></a><a id="server-settings"></a>
 - [Tenants](docs/TENANTS.md) — Initial organization, Organizations and accounts, Tenant API. <a id="initial-organization"></a><a id="organizations-and-accounts"></a><a id="tenant-api"></a>
-- [Integrations](docs/INTEGRATIONS.md) — Pair kyPulse, Suite management. <a id="pair-kypulse"></a><a id="suite-management"></a>
+- [Integrations](docs/INTEGRATIONS.md) — Pair kyPulse, Connect an AI agent, Suite management. <a id="pair-kypulse"></a><a id="suite-management"></a>
 - [Containers](docs/CONTAINERS.md) — Show containers after installation, Container user, Static internal IPs for proxy backends, Compose projects, and related procedures. <a id="show-containers-after-installation"></a><a id="container-user"></a><a id="static-internal-ips-for-proxy-backends"></a><a id="compose-projects"></a><a id="container-terminals"></a><a id="edit-or-run-a-container"></a><a id="import-a-compose-draft"></a><a id="update-policies"></a><a id="fleet-image-runs-and-yaml"></a>
 - [Agents and Kubernetes](docs/AGENTS-AND-KUBERNETES.md) — Agent, Kubernetes endpoints, Migrating a Docker application to a cluster. <a id="agent"></a><a id="kubernetes-endpoints"></a><a id="migrating-a-docker-application-to-a-cluster"></a>
 - [Recovery](docs/RECOVERY.md) — Persistent keys, Disaster recovery, Two ways to get a key, Why TLS matters here, and related procedures. <a id="persistent-keys"></a><a id="disaster-recovery"></a><a id="two-ways-to-get-a-key"></a><a id="why-tls-matters-here"></a><a id="one-run-every-destination"></a><a id="environment"></a><a id="restoring"></a>

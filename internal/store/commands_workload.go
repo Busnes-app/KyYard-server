@@ -77,7 +77,7 @@ func (t *tenancyStore) createWorkloadCommand(ctx context.Context, a TenantAccess
 		a.CorrelationID = uuid.NewString()
 	}
 	now := time.Now().UTC()
-	cmd := &Command{ID: uuid.NewString(), EndpointID: endpointID, ActorID: a.ActorID, RequestID: a.CorrelationID, Action: action, Reference: ref.String(), Expects: expects, Deadline: now.Add(CommandDeadline), CreatedAt: now}
+	cmd := &Command{ID: uuid.NewString(), EndpointID: endpointID, ActorID: a.Principal(), RequestID: a.CorrelationID, Action: action, Reference: ref.String(), Expects: expects, Deadline: now.Add(CommandDeadline), CreatedAt: now}
 	target, details := endpointID+"/"+cmd.Reference, ""
 	if expects.Replicas != nil {
 		details = fmt.Sprintf("replicas=%d", *expects.Replicas)

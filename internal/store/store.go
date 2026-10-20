@@ -314,6 +314,15 @@ type TenancyStore interface {
 	DenyService(ctx context.Context, access TenantAccess, action permissions.Action, detail string) error
 	// RecordServiceTokenReads writes the hourly summary row for one token.
 	RecordServiceTokenReads(ctx context.Context, organizationID, tokenID string, reads int) error
+	// AI agent (MCP) tokens: service principals with an mcp scope (agent_tokens.go).
+	CreateAgentToken(ctx context.Context, access TenantAccess, name, scope string) (*AgentTokenIssue, error)
+	ListAgentTokens(ctx context.Context, access TenantAccess) ([]ServiceToken, error)
+	SetAgentTokenScope(ctx context.Context, access TenantAccess, id, scope string) error
+	RevokeAgentToken(ctx context.Context, access TenantAccess, id string) error
+	LookupAgentToken(ctx context.Context, token string, now time.Time) (*ServiceToken, error)
+	AuthenticateAgentToken(ctx context.Context, token, ip string, now time.Time) (*ServiceToken, error)
+	ExpireIdleAgentTokens(ctx context.Context, now time.Time, id string) ([]ServiceToken, error)
+	RecordAgentAction(ctx context.Context, access TenantAccess, action, resource, details string) error
 	ListRegistries(ctx context.Context, access TenantAccess) ([]Registry, error)
 	PutRegistry(ctx context.Context, access TenantAccess, in RegistryInput, key []byte, privateAllowed bool) (*Registry, error)
 	DeleteRegistry(ctx context.Context, access TenantAccess, id string) error

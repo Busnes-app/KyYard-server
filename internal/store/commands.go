@@ -133,7 +133,7 @@ func (t *tenancyStore) CreateCommand(ctx context.Context, a TenantAccess, endpoi
 	cmd := &Command{
 		ID:         uuid.NewString(),
 		EndpointID: endpointID,
-		ActorID:    a.ActorID,
+		ActorID:    a.Principal(),
 		Action:     action,
 		Expects:    expects,
 		Deadline:   now.Add(CommandDeadline),

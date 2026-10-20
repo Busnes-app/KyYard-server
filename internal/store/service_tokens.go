@@ -155,7 +155,8 @@ func (t *tenancyStore) LookupServiceToken(ctx context.Context, token string) (*S
 	}
 	var tok ServiceToken
 	var lastUsed, revoked sql.NullTime
-	err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip,revoked_at FROM service_tokens WHERE token_hash=?`), crypto.SHA256Hex(raw)).Scan(&tok.ID, &tok.OrganizationID, &tok.Name, &tok.CreatedBy, &tok.CreatedAt, &lastUsed, &tok.LastIP, &revoked)
+	// An agent token never authenticates here: it is not hex, and its row is not pulse.
+	err = t.store.db.QueryRowContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip,revoked_at,scope FROM service_tokens WHERE token_hash=? AND scope=?`), crypto.SHA256Hex(raw), ScopePulse).Scan(&tok.ID, &tok.OrganizationID, &tok.Name, &tok.CreatedBy, &tok.CreatedAt, &lastUsed, &tok.LastIP, &revoked, &tok.Scope)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && revoked.Valid) {
 		return nil, ErrForbidden
 	}
@@ -188,7 +189,7 @@ func (t *tenancyStore) AuthenticateServiceToken(ctx context.Context, token, ip s
 func (t *tenancyStore) ListServiceTokens(ctx context.Context, a TenantAccess) ([]ServiceToken, error) {
 	out := []ServiceToken{}
 	err := t.readTenant(ctx, a, permissions.ServiceTokensManage, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip,revoked_at FROM service_tokens WHERE organization_id=? ORDER BY created_at DESC LIMIT 200`), a.OrganizationID)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip,revoked_at,scope FROM service_tokens WHERE organization_id=? AND scope=? ORDER BY created_at DESC LIMIT 200`), a.OrganizationID, ScopePulse)
 		if err != nil {
 			return err
 		}
@@ -196,7 +197,7 @@ func (t *tenancyStore) ListServiceTokens(ctx context.Context, a TenantAccess) ([
 		for rows.Next() {
 			var tok ServiceToken
 			var lastUsed, revoked sql.NullTime
-			if err := rows.Scan(&tok.ID, &tok.OrganizationID, &tok.Name, &tok.CreatedBy, &tok.CreatedAt, &lastUsed, &tok.LastIP, &revoked); err != nil {
+			if err := rows.Scan(&tok.ID, &tok.OrganizationID, &tok.Name, &tok.CreatedBy, &tok.CreatedAt, &lastUsed, &tok.LastIP, &revoked, &tok.Scope); err != nil {
 				return err
 			}
 			if lastUsed.Valid {
@@ -218,7 +219,7 @@ func (t *tenancyStore) ListServiceTokens(ctx context.Context, a TenantAccess) ([
 func (t *tenancyStore) RevokeServiceToken(ctx context.Context, a TenantAccess, id string) error {
 	now := time.Now().UTC()
 	return t.withTenantTarget(ctx, a, permissions.ServiceTokensManage, id, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE service_tokens SET revoked_at=?, revoked_by=? WHERE id=? AND organization_id=? AND revoked_at IS NULL`), now, a.ActorID, id, a.OrganizationID)
+		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE service_tokens SET revoked_at=?, revoked_by=? WHERE id=? AND organization_id=? AND scope=? AND revoked_at IS NULL`), now, a.ActorID, id, a.OrganizationID, ScopePulse)
 		if err != nil {
 			return err
 		}

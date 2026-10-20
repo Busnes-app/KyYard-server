@@ -92,6 +92,7 @@ Default section order:
 - Existing local accounts connect SSO explicitly by proving the current KyYard password, the original session and the provider identity. Preserve the account ID, local credentials and tenant permissions; never link automatically by username or email.
 - The default one-container SQLite installation uses Docker's existing `bridge`; optional database and container-proxy profiles follow their documented network contracts.
 - Product requirement: support an operator-selected static Kubernetes Service ClusterIP for each deployed Ky service, stable across application updates and restarts. Nginx or cloudflared runs in the same cluster and uses these internal backend IPs for proxied HTTPS access. This requirement does not change the default KyYard server installation network.
+- AI agents reach KyYard over MCP at `/mcp` the way the rest of the Ky suite does (KyCalendar's design is the reference): per-agent tokens, separate from other credentials, managed by the organization administrator, Read only by default and Operator (restart, apply a pending update) by explicit choice, revoked after 90 days unused. Nothing destructive in v1 (no delete, stop, exec, volume or compose changes); every agent operation is audited; workload logs are labelled untrusted in tool output.
 - Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically clear MFA (TOTP and recovery codes) and revoke sessions, MFA challenges and device pairings. Untouched existing accounts are not retroactively flagged.
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
@@ -154,6 +155,7 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 - [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
 - [internal/suite/AGENTS.md](internal/suite/AGENTS.md): Client for suite runner protocol v1 over the runner's Unix socket.
 - [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
+- [internal/agentskill/AGENTS.md](internal/agentskill/AGENTS.md): The embedded SKILL.md that teaches AI agents KyYard's MCP tools.
 - [web/AGENTS.md](web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
 
 `cmd/server` `runServer` starts in this order: open the store (migrations; a schema newer than the binary is refused), bootstrap the admin, `startStore` (`Tenancy().Initialize`, then `Tenancy().ReconcileAfterStart`), and only then `api.NewServer`, the local-agent, backup and prune loops and the listener. A `startStore` failure is fatal like a failed migration. `TestStartStoreSettlesInFlightCommands` proves `startStore` settles an in-flight command; that `runServer` calls it before the listener is not tested, so keep the order.

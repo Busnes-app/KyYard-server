@@ -184,10 +184,12 @@ type dbtx interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// serviceRole is the fixed role of a live, unrevoked token of a.OrganizationID.
+// serviceRole is the fixed role of a live, unrevoked token of a.OrganizationID, read from its
+// scope inside the transaction: an agent token narrowed to read-only mid-request is refused here.
 func (t *tenancyStore) serviceRole(ctx context.Context, q dbtx, a TenantAccess) (string, error) {
 	var revoked sql.NullTime
-	err := q.QueryRowContext(ctx, t.store.rebind(`SELECT revoked_at FROM service_tokens WHERE id=? AND organization_id=?`), a.ServiceTokenID, a.OrganizationID).Scan(&revoked)
+	var scope string
+	err := q.QueryRowContext(ctx, t.store.rebind(`SELECT revoked_at,scope FROM service_tokens WHERE id=? AND organization_id=?`), a.ServiceTokenID, a.OrganizationID).Scan(&revoked, &scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", errNoPrincipal
 	}
@@ -197,7 +199,15 @@ func (t *tenancyStore) serviceRole(ctx context.Context, q dbtx, a TenantAccess) 
 	if revoked.Valid {
 		return "", ErrForbidden
 	}
-	return permissions.RolePulseReader, nil
+	switch scope {
+	case ScopePulse:
+		return permissions.RolePulseReader, nil
+	case ScopeMCPRead:
+		return permissions.RoleAgentReader, nil
+	case ScopeMCPOperate:
+		return permissions.RoleAgentOperator, nil
+	}
+	return "", ErrForbidden
 }
 
 func (t *tenancyStore) ReadOrganization(ctx context.Context, a TenantAccess) (*Organization, error) {

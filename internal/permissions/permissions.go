@@ -63,6 +63,10 @@ const (
 	// service tokens. A token reads the whole organization, so only its administrator
 	// hands one out.
 	ServiceTokensManage Action = "organization.service_tokens.manage"
+	// AgentTokensManage creates, lists, re-scopes and revokes the organization's AI agent (MCP)
+	// tokens. An operator-scope token restarts containers and applies updates unattended, so
+	// only the organization administrator hands one out.
+	AgentTokensManage Action = "organization.agent_tokens.manage"
 	// SuiteRead reads the suite runner's status, catalog, plan and operations.
 	SuiteRead Action = "suite.read"
 	// SuiteManage installs, uninstalls, unmanages and upgrades suite apps through the runner.
@@ -73,6 +77,15 @@ const (
 // logs and the audit feed of one organization and can change nothing.
 const RolePulseReader = "pulse_reader"
 
+// RoleAgentReader is the fixed role of an mcp:read agent token: it reads the organization's
+// endpoints, inventory, samples, logs and pending updates, and changes nothing.
+const RoleAgentReader = "agent_reader"
+
+// RoleAgentOperator is the fixed role of an mcp:operate agent token: the reader's actions plus
+// reversible lifecycle operations and applying a deployment plan someone else made. Nothing that
+// destroys, executes, reconfigures or reveals a secret.
+const RoleAgentOperator = "agent_operator"
+
 func PlatformAllows(role string, action Action) bool {
 	return role == "admin" && (action == PlatformAdmin || action == SuiteRead || action == SuiteManage)
 }
@@ -81,7 +94,7 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, ContainerConfigure, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage, ServiceTokensManage:
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, ContainerConfigure, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage, ServiceTokensManage, AgentTokensManage:
 			return true
 		}
 	case "environment_admin":
@@ -106,6 +119,16 @@ func Allows(role string, action Action) bool {
 	case RolePulseReader:
 		switch action {
 		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, AuditRead:
+			return true
+		}
+	case RoleAgentReader:
+		switch action {
+		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, ApplicationRead:
+			return true
+		}
+	case RoleAgentOperator:
+		switch action {
+		case OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, ApplicationRead, ContainerOperate, ApplicationDeploy:
 			return true
 		}
 	case "read_only":

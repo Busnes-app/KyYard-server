@@ -1,6 +1,9 @@
 package permissions
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestFixedRoleMatrix(t *testing.T) {
 	actions := []Action{OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, ContainerConfigure, PlatformAdmin, SuiteRead, SuiteManage, "unknown"}
@@ -148,5 +151,29 @@ func TestPulseReaderIsReadOnly(t *testing.T) {
 	}
 	if !Allows("organization_admin", ServiceTokensManage) || Allows("environment_admin", ServiceTokensManage) || Allows("operator", ServiceTokensManage) {
 		t.Fatal("service tokens are managed by organization administrators only")
+	}
+}
+
+// An agent token's role is its whole ceiling: every action not listed here is refused, so a new
+// action never reaches an AI agent by default.
+func TestAgentRolesHoldExactlyTheirActions(t *testing.T) {
+	all := []Action{ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, PlatformAdmin, OrganizationRead, MembersManage,
+		EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy,
+		ImagePull, ImageDestroy, ContainerLogs, ContainerExec, ContainerConfigure, ApplicationDeploy, RegistryRead, RegistryManage, ApplicationPolicy, ApplicationMigrate,
+		ServiceTokensManage, AgentTokensManage, SuiteRead, SuiteManage}
+	reader := []Action{OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, ApplicationRead}
+	want := map[string][]Action{
+		RoleAgentReader:   reader,
+		RoleAgentOperator: append(append([]Action{}, reader...), ContainerOperate, ApplicationDeploy),
+	}
+	for role, held := range want {
+		for _, a := range all {
+			if got := Allows(role, a); got != slices.Contains(held, a) {
+				t.Errorf("Allows(%s, %s) = %t", role, a, got)
+			}
+		}
+	}
+	if !Allows("organization_admin", AgentTokensManage) || Allows("environment_admin", AgentTokensManage) || Allows("operator", AgentTokensManage) || Allows(RolePulseReader, AgentTokensManage) {
+		t.Fatal("agent tokens are managed by organization administrators only")
 	}
 }
