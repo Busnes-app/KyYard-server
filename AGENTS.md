@@ -185,8 +185,13 @@ in the shipped deployment instead of assuming a supervisor grace period;
 `TestComposeGracePeriodCoversTheShutdownBudget` keeps the three in step. Past the deadline the
 work is abandoned with a log line rather than killed silently.
 
-The KyRecovery wire contract is `kyrecovery-server/zero_code_pairing_handoff_spec.md` (v2.0.0, sealed-capsule deposit); the product half is `ky-primitives/recoveryclient`, wired through `internal/backup` and `internal/api` so every server built on this base inherits it. Operator documents: `README.md` (disaster recovery, every `KY_BACKUP_*` variable, the LAN DNS override), `docs/RESTORE.md` (the restore runbook, proven against a scratch 2-of-3 kit) and `docs/ACCEPTANCE.md` (the plan's section 7 acceptance script as a runbook against the current UI; its Known gaps list must track UI changes) and `docs/acceptance-runs/<date>.md` (one record per run: results table, per-step notes, defects; the 2026-09-26 run was an agent-driven mechanics run, not the human gate).
+The KyRecovery wire contract is `kyrecovery-server/zero_code_pairing_handoff_spec.md` (v2.0.0, sealed-capsule deposit); the product half is `ky-primitives/recoveryclient`, wired through `internal/backup` and `internal/api` so every server built on this base inherits it. Operator documents: `docs/RECOVERY.md` (disaster recovery and every `KY_BACKUP_*` variable) and `docs/RUNNING.md` (deployment and the LAN DNS override), `docs/RESTORE.md` (the restore runbook, proven against a scratch 2-of-3 kit) and `docs/ACCEPTANCE.md` (the plan's section 7 acceptance script as a runbook against the current UI; its Known gaps list must track UI changes) and `docs/acceptance-runs/<date>.md` (one record per run: results table, per-step notes, defects; the 2026-09-26 run was an agent-driven mechanics run, not the human gate).
 
 ## Operator documentation
 
 `INSTALL.md` is the root-owned standalone entry point. When installation prerequisites, bootstrap, persistence or verification change, update it together with `README.md` and the linked operator guides.
+
+
+## README and topic guides
+
+Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/RUNNING.md`, `docs/TENANTS.md`, `docs/INTEGRATIONS.md`, `docs/CONTAINERS.md`, `docs/AGENTS-AND-KUBERNETES.md`, `docs/RECOVERY.md`, `docs/UPDATES.md`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
