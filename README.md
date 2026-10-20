@@ -16,7 +16,7 @@ Container data lives under `/data`, including local capsules under `/data/backup
 KyYard generates persistent secrets without manual configuration. Compose runs one
 container with SQLite and a named `kyyard-data` volume; SSO is optional and configured in Settings.
 
-The default local URL is `http://localhost:8080`; follow the installation guide before exposing the service.
+The default local URL is `http://localhost:9273`; follow the installation guide before exposing the service.
 
 ## What it can do
 
