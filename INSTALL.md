@@ -54,7 +54,7 @@ For remote HTTPS access, append `docker-compose.proxy.yml` to the `COMPOSE_FILE`
 `.env`, set `KY_APP_URL=https://yard.example.com` and the exact `KY_TRUSTED_PROXIES`.
 `.env` configures Compose; extra runtime settings such as `KY_ADMIN_PASSWORD` and SSO go
 in a separate mode-0600 `.env.server`. Compose’s explicit environment settings take
-precedence. See the [transport and deployment guide](README.md#transport-and-advanced-deployment).
+precedence. See the [transport and deployment guide](docs/RUNNING.md#transport-and-advanced-deployment).
 
 The named `kyyard-data` volume at `/data` keeps accounts, keys and capsules. Existing bind
 mount installations must retain `docker-compose.bind.yml`; do not start an empty named
