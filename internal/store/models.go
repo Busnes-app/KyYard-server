@@ -224,6 +224,9 @@ type ServiceToken struct {
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	LastIP         string     `json:"last_ip,omitempty"`
 	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
+	// Scope is pulse for a kyPulse token, or an agent token's access level (ScopeMCPRead,
+	// ScopeMCPOperate). A token authenticates only where its scope belongs.
+	Scope string `json:"scope"`
 }
 
 // ServicePairing is a six-digit code shown once to an organization administrator.

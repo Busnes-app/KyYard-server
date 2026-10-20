@@ -22,6 +22,7 @@ Owns the permission matrix; store owns live membership checks and transactional 
 - Every membership role holds `registry.read` (rows carry no secret); only organization administrators hold `registry.manage` (registries, credentials, anonymous-pull opt-in). `registry.read` never unlocks a credential: `store.ResolveRegistryAccess` runs under the using operation's action (`image.pull` or `application.deploy`) and refuses every other action.
 - Membership status and user status are database facts, not part of this pure mapping.
 - `organization.service_tokens.manage` (mint a pairing code, list, revoke) is organization-administrator-only. `pulse_reader` is the fixed role of a service token: `organization.read`, `environment.read`, `endpoint.read`, `container.logs` and `organization.audit.read`, nothing else; it is never assignable to a user.
+- `organization.agent_tokens.manage` (create, list, re-scope, revoke AI agent tokens) is organization-administrator-only. `agent_reader` (scope `mcp:read`) holds exactly `organization.read`, `environment.read`, `endpoint.read`, `container.logs` and `application.read`; `agent_operator` (scope `mcp:operate`) adds exactly `container.operate` and `application.deploy`. Neither holds the audit feed, exec, configure, destroy, image pull or any manage action; `TestAgentRolesHoldExactlyTheirActions` pins both against every action.
 
 ## Work Guidance
 

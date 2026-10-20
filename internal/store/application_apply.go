@@ -122,7 +122,7 @@ func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app,
 			return ErrInvalid
 		}
 		// An open migration's destination records the migration on every apply, as a policy run does.
-		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=?,policy_run_id=?,migration_id=(SELECT m.id FROM application_migrations m WHERE m.organization_id=? AND m.environment_id=? AND m.destination_application_id=? AND m.`+openMigration+`) WHERE id=? AND state='planned'`), a.ActorID, now, frame.Deadline, run, a.OrganizationID, a.EnvironmentID, d.ApplicationID, d.ID)
+		res, err := tx.ExecContext(ctx, t.store.rebind(`UPDATE deployments SET state='applying',applied_by=?,applied_at=?,deadline=?,policy_run_id=?,migration_id=(SELECT m.id FROM application_migrations m WHERE m.organization_id=? AND m.environment_id=? AND m.destination_application_id=? AND m.`+openMigration+`) WHERE id=? AND state='planned'`), a.Principal(), now, frame.Deadline, run, a.OrganizationID, a.EnvironmentID, d.ApplicationID, d.ID)
 		if err != nil {
 			return err
 		}
@@ -136,7 +136,7 @@ func (t *tenancyStore) applyDeployment(ctx context.Context, a TenantAccess, app,
 		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COALESCE(migration_id,'') FROM deployments WHERE organization_id=? AND environment_id=? AND id=?`), a.OrganizationID, a.EnvironmentID, d.ID).Scan(&d.MigrationID); err != nil {
 			return err
 		}
-		d.State, d.AppliedBy, d.AppliedAt, d.Deadline = "applying", a.ActorID, &now, &frame.Deadline
+		d.State, d.AppliedBy, d.AppliedAt, d.Deadline = "applying", a.Principal(), &now, &frame.Deadline
 		out, req = d, &frame
 		return nil
 	})
