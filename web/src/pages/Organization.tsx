@@ -3,12 +3,14 @@ import { Building2, Users, ScrollText } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { envPath, orgPath } from '../router';
-import { tenantWrite, useTenantResource, type Environment, type MemberOrganization } from '../tenant';
+import { canManageEnvironments, tenantWrite, useTenantResource, type Environment, type MemberOrganization } from '../tenant';
 
 export const Organization: React.FC<{ org: string }> = ({ org }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}`;
   const details = useTenantResource<MemberOrganization>(base);
   const envs = useTenantResource<Environment[]>(`${base}/environments`);
+  const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  const creator = canManageEnvironments((Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role);
   const [name, setName] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -32,19 +34,19 @@ export const Organization: React.FC<{ org: string }> = ({ org }) => {
         <Link to={orgPath(org, '/members')}><Users size={14} /> Members</Link>
         <Link to={orgPath(org, '/audit')}><ScrollText size={14} /> Audit</Link>
       </nav>
-      <StateNotice state={details.state} onRetry={() => { details.reload(); envs.reload(); }} />
+      <StateNotice state={details.state} onRetry={() => { details.reload(); envs.reload(); organizations.reload(); }} />
       {details.state === 'ready' && (
         <section className="panel" aria-labelledby="env-heading">
           <div className="panel-header"><h2 id="env-heading" style={{ fontSize: 16 }}>Environments</h2></div>
           <StateNotice state={envs.state} onRetry={envs.reload} />
           {envs.state === 'ready' && envs.data && (envs.data.length === 0
-            ? <EmptyNotice>No environments yet. Create one to start enrolling endpoints.</EmptyNotice>
+            ? <EmptyNotice>{creator ? 'No environments yet. Create one to start enrolling endpoints.' : 'No environments yet.'}</EmptyNotice>
             : <ul className="ky-list">{envs.data.map((e) => <li key={e.id}><Link to={envPath(org, e.id)}>{e.name}</Link></li>)}</ul>)}
-          <form onSubmit={create} className="ky-inline-form">
+          {creator && <form onSubmit={create} className="ky-inline-form">
             <label htmlFor="env-name">New environment</label>
             <input id="env-name" value={name} onChange={(e) => setName(e.target.value)} required maxLength={255} placeholder="Production" />
             <button type="submit" disabled={busy || !name.trim()}>Create</button>
-          </form>
+          </form>}
           {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
         </section>
       )}

@@ -5,11 +5,13 @@ import { Endpoints } from '../components/Endpoints';
 import { Link } from '../components/Link';
 import { StateNotice } from '../components/StateNotice';
 import { navigate, orgPath } from '../router';
-import { tenantWrite, useTenantResource, type Environment as Env } from '../tenant';
+import { canManageEnvironments, tenantWrite, useTenantResource, type Environment as Env, type MemberOrganization } from '../tenant';
 
 export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }) => {
   const base = `/api/organizations/${encodeURIComponent(org)}/environments/${encodeURIComponent(env)}`;
   const details = useTenantResource<Env>(base);
+  const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
+  const manager = canManageEnvironments((Array.isArray(organizations.data) ? organizations.data : []).find((o) => o.id === org)?.role);
   const [view, setView] = useState('hosts');
   const [name, setName] = useState('');
   const [message, setMessage] = useState('');
@@ -46,7 +48,7 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
             <button aria-pressed={view === 'applications'} onClick={() => setView('applications')}>Applications</button>
           </nav>
           {view === 'hosts' ? <Endpoints org={org} env={env} /> : <Applications key={`${org}/${env}`} org={org} env={env} />}
-          <details className="panel"><summary>Environment settings</summary>
+          {manager && <details className="panel"><summary>Environment settings</summary>
             <form onSubmit={rename} className="ky-inline-form">
               <label htmlFor="env-rename">Rename</label>
               <input id="env-rename" value={name} onChange={(e) => setName(e.target.value)} required maxLength={255} placeholder={details.data?.name} />
@@ -54,7 +56,7 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
               <button type="button" className="btn-danger" disabled={busy} onClick={() => void remove()}>Delete environment</button>
             </form>
             {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
-          </details>
+          </details>}
           <nav className="ky-subnav" aria-label="Administration"><Link to={orgPath(org, '/audit')}>View audit history</Link><Link to={orgPath(org, '/members')}>Manage members</Link></nav>
         </>
       )}

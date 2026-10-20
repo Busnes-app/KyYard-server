@@ -13,6 +13,9 @@ import (
 
 var envNames = regexp.MustCompile(`KY_[A-Z0-9_]+`)
 
+// A listed entry in .env.example, as opposed to a name mentioned in prose.
+var serverEntry = regexp.MustCompile(`(?m)^#   (KY_[A-Z0-9_]+)`)
+
 // The example file is the one place an operator looks for what they can set. It is worth only
 // as much as its accuracy, and accuracy is exactly what rots: a setting added to the loader
 // and not to the file is invisible, and a name left in the file after the code stopped reading
@@ -119,6 +122,48 @@ func TestSharedBridgeCredentialGuidance(t *testing.T) {
 	for _, text := range []string{"sslmode=verify-full", "cannot pin", "host-network", "gateway"} {
 		if !strings.Contains(example, text) {
 			t.Errorf("missing shared bridge guidance: %s", text)
+		}
+	}
+}
+
+// Settings in .env.server reach the server only through the optional env_file. Naming one in a
+// compose environment list would shadow an operator's own env_file with an empty value.
+func TestComposeForwardsServerSettingsFile(t *testing.T) {
+	root := filepath.Join("..", "..")
+	if !strings.Contains(read(t, filepath.Join(root, "docker-compose.yml")), "env_file:\n      - path: .env.server\n        required: false\n") {
+		t.Fatal("docker-compose.yml does not pass the optional .env.server")
+	}
+	example := read(t, filepath.Join(root, ".env.example"))
+	start := strings.Index(example, "Server settings: put these in .env.server")
+	if start < 0 {
+		t.Fatal(".env.example has no .env.server section")
+	}
+	section, _, _ := strings.Cut(example[start:], "\n\n")
+	var server []string
+	for _, m := range serverEntry.FindAllStringSubmatch(section, -1) {
+		server = append(server, m[1])
+	}
+	if len(server) < 10 {
+		t.Fatalf(".env.example .env.server section names only %d settings", len(server))
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "docker-compose") {
+			continue
+		}
+		for _, line := range strings.Split(read(t, filepath.Join(root, e.Name())), "\n") {
+			code := strings.TrimSpace(line)
+			if strings.HasPrefix(code, "#") {
+				continue
+			}
+			for _, name := range server {
+				if strings.HasPrefix(code, "- "+name+"=") || code == "- "+name || strings.HasPrefix(code, name+":") {
+					t.Errorf("%s lists %s, shadowing .env.server and operator env_files", e.Name(), name)
+				}
+			}
 		}
 	}
 }

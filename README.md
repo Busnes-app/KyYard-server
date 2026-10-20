@@ -213,6 +213,22 @@ the database with a two-second deadline and returns 503 during shutdown or datab
 They expose only `status`, never connection strings, keys or backend errors. The image
 healthcheck calls readiness using the binary, without loading keys or creating data.
 
+### Server settings
+
+Settings the compose files do not list themselves (`KY_ADMIN_PASSWORD`, `KY_OIDC_*`,
+`KY_AGENT_IMAGE` and the rest of the last section of `.env.example`) go in `.env.server`
+beside `docker-compose.yml`, never in `.env`, which only feeds the compose files. Compose
+passes that file into the container as-is when it exists. Git ignores it; it holds secrets:
+
+```bash
+(umask 077; printf 'KY_ADMIN_PASSWORD=%s\n' '<at least 12 characters>' >> .env.server)
+docker compose up -d
+```
+
+Write a literal `$` as `$$`, or single-quote the value. A setting a compose file sets itself
+(`KY_APP_URL`, `KY_HOST`, `KY_TRUSTED_PROXIES` through the proxy overlay) wins over this file,
+and an `env_file` in your own override wins over it.
+
 ## Initial organization
 
 Startup creates the default organization and assigns one active local administrator once:
@@ -718,8 +734,8 @@ fingerprint at enrollment, so replacing it disconnects every agent. It has no en
 A generated bootstrap password is written to `initial-admin-password` in the data directory
 (owner-only, 0600) and never logged; the log names the file once the administrator is saved.
 The file is deleted when `admin` replaces the password. A supplied `KY_ADMIN_PASSWORD` must meet
-the 12-character policy or startup refuses. The packaged compose files do not forward it;
-setting it in `.env` alone does nothing (see `.env.example`). An ordinary restart preserves both the account and
+the 12-character policy or startup refuses. With Compose, put it in `.env.server`, not `.env`
+(see [Server settings](#server-settings)). An ordinary restart preserves both the account and
 active sessions.
 
 ## Disaster recovery
@@ -830,6 +846,11 @@ remove it.
 result in service, and what to distrust afterwards. Drill it once a quarter with real cards.
 
 ## Upgrading
+
+`docker-compose.yml` now reads an optional `.env.server` (see [Server settings](#server-settings)),
+which needs Docker Compose 2.24 or later. Nothing changes until you create that file. A setting
+you added to `.env` hoping it reached the server still does nothing; move it to `.env.server`.
+An `env_file` in your own override keeps working and still wins.
 
 From this release the server runs as uid 10001, not root (see [Container user](#container-user)).
 The first start chowns the data volume or `./data` to 10001 by itself. Host jobs that read
