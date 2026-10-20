@@ -69,6 +69,9 @@ export const tenantRoles = ['organization_admin', 'environment_admin', 'operator
 // endpoints and regenerate a cluster's manifest.
 export const canEnroll = (role: string | undefined) => role === 'organization_admin' || role === 'environment_admin';
 
+// Mirrors permissions.Allows(role, EnvironmentCreate/Update/Delete): organization and environment admins.
+export const canManageEnvironments = (role: string | undefined) => role === 'organization_admin' || role === 'environment_admin';
+
 // parseNamespaces reads a typed namespace list: names split on commas and whitespace, empties
 // dropped. The server sorts, deduplicates and validates.
 export const parseNamespaces = (text: string) => text.split(/[\s,]+/).filter(Boolean);

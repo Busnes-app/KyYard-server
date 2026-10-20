@@ -71,6 +71,12 @@ services:
       - KY_CONTAINER_ALLOW_PRIVILEGED=${KY_CONTAINER_ALLOW_PRIVILEGED:-false}
       # Suite management stays off until KyQuickStart's hand-off sets KY_SUITE_RUNNER_SOCKET
       # and mounts the runner's socket directory.
+    # Server settings not listed above (KY_ADMIN_PASSWORD, SSO, KY_AGENT_IMAGE; see .env.example).
+    # A separate file, not .env: lines in .env that never reached the server must not start to.
+    # The environment list above wins; an operator's own env_file, merged later, wins over this.
+    env_file:
+      - path: .env.server
+        required: false
     volumes:
       - kyyard-data:/data
       # Built-in local connection: Docker socket access grants host-level authority.

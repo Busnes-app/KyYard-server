@@ -266,6 +266,23 @@ jobs:
           docker compose -f docker-compose.yml config --format json \
             | jq -e '.services.kyyard.network_mode == "bridge" and ((.networks // {}) | length == 0) and ([.services.kyyard.ports[].host_ip] == ["127.0.0.1"])' > /dev/null
 
+      # .env.server is optional, reaches the server, cannot change listed settings, and an
+      # operator's own env_file still wins over it.
+      - name: Compose forwards .env.server without overriding operator env_files
+        run: |
+          set -euo pipefail
+          env=.services.kyyard.environment
+          docker compose -f docker-compose.yml config --format json | jq -e "$env | has(\"KY_ADMIN_PASSWORD\") | not" > /dev/null
+          printf 'KY_ADMIN_PASSWORD=ci-admin-pass-123\nKY_OIDC_ISSUER=https://server.example\nKY_APP_URL=https://ignored.example\n' > .env.server
+          docker compose -f docker-compose.yml config --format json \
+            | jq -e "$env | .KY_ADMIN_PASSWORD == \"ci-admin-pass-123\" and .KY_OIDC_ISSUER == \"https://server.example\" and .KY_APP_URL == \"http://localhost:9273\"" > /dev/null
+          o=$(mktemp -d)
+          printf 'KY_OIDC_ISSUER=https://operator.example\n' > "$o/op.env"
+          printf 'services:\n  kyyard:\n    env_file: [%s/op.env]\n' "$o" > "$o/override.yml"
+          docker compose -f docker-compose.yml -f "$o/override.yml" config --format json \
+            | jq -e "$env | .KY_OIDC_ISSUER == \"https://operator.example\" and .KY_ADMIN_PASSWORD == \"ci-admin-pass-123\"" > /dev/null
+          rm -rf .env.server "$o"
+
       # Hand the exact image the checks above ran against to the publish job,
       # so what gets pushed is what was tested, never a second build.
       - if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'

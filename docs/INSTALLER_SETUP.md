@@ -22,6 +22,9 @@ Ordinary settings and user APIs cannot change the installer-owned account author
 
 Managed sign-in uses verified OIDC ID tokens, exact issuer/subject bindings and
 `kyyard.admin` for administrator assignment. Unassigned identities cannot sign in.
+There is no everyday role: everyday access comes from the everyday subject assignment, and
+other role values are ignored. The `kyyard.admin` claim must match the assignment; an
+everyday identity carrying it, or an administrator without it, has its access revoked at sign-in.
 The installer provider refuses account linking and automatic provisioning. Signed
 directory updates use `POST /api/installer/directory`, the shared `syncauth` headers,
 an explicit `active` value, `roles` values and `meta.version` such as `W/"3"`.
