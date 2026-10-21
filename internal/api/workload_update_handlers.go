@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -109,6 +110,7 @@ func (s *Server) handleWorkloadUpdateCheck(w http.ResponseWriter, r *http.Reques
 	if !s.runtimeGate(w, r, a, endpoint, kubernetesRoute) {
 		return
 	}
+	s.freshenInventory(r.Context(), a, endpoint)
 	read := func() (bool, bool, []podImage, error) {
 		inv, err := s.store.Tenancy().ReadInventory(r.Context(), a, endpoint)
 		if err != nil {
@@ -209,6 +211,37 @@ func (s *Server) handleWorkloadUpdateCheck(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.writeJSON(w, 200, out)
+}
+
+// Bounds for freshenInventory: a report younger than inventoryFreshFor is used as it is; an older
+// one is replaced if the agent answers within inventoryFreshenWait. Each endpoint is asked at
+// most inventoryFreshensPerMinute times, apart from the operator's own refresh budget.
+const (
+	inventoryFreshFor          = 15 * time.Second
+	inventoryFreshenWait       = 10 * time.Second
+	inventoryFreshensPerMinute = 6
+)
+
+// freshenInventory asks a connected agent that can refresh on demand for a new report when the
+// stored one is older than inventoryFreshFor, and waits for it within inventoryFreshenWait. The
+// workload check compares with the pods the stored report lists, and a periodic report can
+// predate a rollout made outside KyYard by a minute. Anything that stops it leaves the stored
+// report in place: the check then answers from that, as before.
+func (s *Server) freshenInventory(ctx context.Context, a store.TenantAccess, id string) {
+	before, err := s.store.Tenancy().ReadInventory(ctx, a, id)
+	if err != nil || time.Since(before.ReceivedAt) < cmp.Or(s.inventoryFreshFor, inventoryFreshFor) || !s.Connected(id) {
+		return
+	}
+	ep, err := s.store.Tenancy().ReadEndpoint(ctx, a, id)
+	if err != nil || !slices.Contains(ep.Capabilities, protocol.CapabilityInventoryRefresh) {
+		return
+	}
+	if !s.allowAttempt("inventory-freshen:"+id, inventoryFreshensPerMinute, time.Minute) || !s.agents.deliver(id, envelope(protocol.TypeInventoryRefresh, nil)) {
+		return
+	}
+	wait, cancel := context.WithTimeout(ctx, inventoryFreshenWait)
+	defer cancel()
+	_, _ = s.awaitInventory(wait, a, id, before)
 }
 
 // workloadVerdict folds container verdicts: any update wins, then any registry failure (with

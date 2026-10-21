@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Endpoints, displayName } from './Endpoints';
 import { NAMESPACE_RULE } from '../tenant';
 
@@ -44,6 +44,29 @@ it('approves with the exact fingerprint after confirmation and hides actions for
   expect(calls).toEqual(['/api/organizations/a/endpoints/ep_1/approve']);
   expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
+});
+
+it('follows an approved endpoint until its agent reports, without a manual refresh', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  let lists = 0, approved = false;
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'POST') { approved = true; return new Response(null, { status: 204 }); }
+    lists++;
+    return json([!approved ? pending : lists < 3 ? { ...pending, state: 'approved' } : { ...pending, state: 'active', runtime: 'kubernetes', cluster_health: 'healthy', facts: { node_count: '1' } }]);
+  }));
+  vi.stubGlobal('confirm', vi.fn(() => true));
+  document.cookie = 'ky_csrf=csrf-test';
+  render(<Endpoints org="a" env="env-a" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+  await screen.findByText('approved');
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  await screen.findByText('active');
+  expect(screen.getByText('healthy')).toBeTruthy();
+  expect(screen.getByText('1 node')).toBeTruthy();
+  const settled = lists;
+  await act(() => vi.advanceTimersByTimeAsync(9000));
+  expect(lists).toBe(settled);
+  vi.useRealTimers();
 });
 
 it('strips control characters from a hostile name before the approval prompt', async () => {

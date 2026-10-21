@@ -116,7 +116,7 @@ func (c *Client) InspectContainer(parent context.Context, target protocol.Inspec
 		ID                    string `json:"Id"`
 		OS                    string `json:"Os"`
 		Architecture, Variant string
-		Config                imageDefaults
+		Config                imageConfig
 	}
 	if err = c.inspectionGet(ctx, "/images/"+target.ImageID+"/json", &im); err != nil {
 		return nil, err
@@ -141,8 +141,8 @@ func (c *Client) InspectContainer(parent context.Context, target protocol.Inspec
 	if labels.Config != nil && labels.Config.Labels["com.docker.compose.project"] != "" {
 		projectNetwork = labels.Config.Labels["com.docker.compose.project"] + "_default"
 	}
-	out.Unsupported = undescribed(full, projectNetwork, daemon.DefaultRuntime)
-	if full.Config.differs(im.Config) {
+	out.Unsupported = undescribed(full, im.Config.User, projectNetwork, daemon.DefaultRuntime)
+	if full.Config.differs(im.Config.imageDefaults) {
 		out.Unsupported = append(out.Unsupported, "image_config")
 	}
 	out.ConfigurationVerified = len(out.Unsupported) == 0

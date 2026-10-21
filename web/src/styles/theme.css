@@ -384,7 +384,11 @@ input, select, textarea { min-height: 40px; min-width: 0; }
 input[type="checkbox"], input[type="radio"] { min-height: auto; width: auto; }
 label { font-size: 13px; font-weight: 500; }
 label > input, label > select { margin-top: 6px; }
-label:has(input[type="checkbox"]) { display: inline-flex; align-items: center; gap: 8px; }
+label:has(input[type="checkbox"]), label:has(input[type="radio"]) { display: inline-flex; align-items: center; gap: 8px; }
+label:has(input[type="radio"]) > input { margin-top: 0; }
+.ky-choices { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.ky-choices legend { font-size: 13px; font-weight: 600; padding: 0 6px; }
+.ky-choices .dr-alert { margin-bottom: 0; }
 .panel { border-radius: var(--radius); padding: 22px; min-width: 0; }
 .panel > p { color: var(--ink); margin: 8px 0 16px; }
 .panel-header { gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -485,7 +489,7 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 
 .ky-enrollment { display: block; }
 .ky-enrollment > * + * { margin-top: 12px; }
-.ky-enrollment pre { background: var(--bg); padding: 14px; border-radius: 8px; }
+.ky-enrollment pre { background: var(--bg); padding: 14px; border-radius: 8px; overflow-x: auto; }
 .ky-enrollment > button { margin-right: 8px; }
 .ky-state-notice { flex-wrap: wrap; }
 @media (max-width: 380px) {
@@ -610,7 +614,7 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-fleet-page > .panel > .panel-header, .ky-fleet-page > .panel > p { margin: 0; }
 .ky-fleet-page details > summary { cursor: pointer; color: var(--ink); }
 @media (min-width: 761px) {
- .ky-table td[data-label="IP"], .ky-table td[data-label="Uptime"] { white-space: nowrap; }
+ .ky-table th, .ky-table td[data-label="IP"], .ky-table td[data-label="Uptime"], .ky-table td[data-label="Kind"], .ky-table td[data-label="Phase"], .ky-table td[data-label="Ready"], .ky-table td[data-label="Restarts"], .ky-table td[data-label="State"] { white-space: nowrap; }
 }
 @media (max-width: 760px) {
  .ky-container-actions { flex-wrap: wrap; }

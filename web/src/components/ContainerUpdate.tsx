@@ -105,7 +105,8 @@ export function UpdateBadge({ label, identity, active, org, check: checkUpdate, 
     if (active) void check(false);
     return () => request.current?.abort();
   }, [active, check]);
-  const text = busy ? 'Checking…' : verdict ? VERDICTS[verdict] : 'Endpoint offline';
+  // An active row has a check about to start until its first verdict: it is never offline.
+  const text = busy || (active && !verdict) ? 'Checking…' : verdict ? VERDICTS[verdict] : 'Endpoint offline';
   return <span className="ky-image-update"><span role="status" className={`badge ${verdict === 'update_available' ? 'badge-warning' : 'badge-secondary'}`}>{text}</span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/members#registries-heading`} title="Configure this registry in Members → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${label}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && verdict !== 'managed' && <button type="button" className="btn-secondary" disabled={updateDisabled} onClick={onUpdate} title={updateTitle}>Update image</button>}</span>;
 }
 

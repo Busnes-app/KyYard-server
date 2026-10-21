@@ -284,6 +284,13 @@ func (h *healthcheck) none() bool {
 	return h == nil || len(h.Test) == 0 || (len(h.Test) == 1 && h.Test[0] == "NONE")
 }
 
+// imageConfig is what an image read decodes: the defaults and the image's USER. User is
+// compared on its own, as code user, not as part of image_config.
+type imageConfig struct {
+	imageDefaults
+	User string
+}
+
 // differs reports a Cmd, Entrypoint, Healthcheck, WorkingDir or StopSignal the container was
 // given at run time: recreation from the image would drop it (code image_config).
 func (a imageDefaults) differs(b imageDefaults) bool {
@@ -371,9 +378,10 @@ func sameConfiguration(a, b inspectedForDeploy) bool {
 // undescribed lists, as codes of protocol.UnsupportedCodes in its order, the configuration
 // recreation would drop. The definition expresses image, env, ports, restart, the project
 // network and volume and bind mounts only; log configuration and settings outside this list
-// are not compared, and image_config is the caller's, compared against the image. in must be
+// are not compared, and image_config is the caller's, compared against the image. Docker copies
+// the image's USER into the container, so user is a user other than imageUser. in must be
 // reported.
-func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) []string {
+func undescribed(in inspectedForDeploy, imageUser, projectNetwork, defaultRuntime string) []string {
 	h, n, mounts := in.HostConfig, in.NetworkSettings, *in.Mounts
 	network := projectNetwork
 	if h.NetworkMode == "default" || h.NetworkMode == "bridge" {
@@ -398,7 +406,7 @@ func undescribed(in inspectedForDeploy, projectNetwork, defaultRuntime string) [
 		{"devices", len(h.Devices) > 0},
 		{"pid_mode", h.PidMode != "" && h.PidMode != "private"},
 		{"ipc_mode", h.IpcMode != "" && h.IpcMode != "private" && h.IpcMode != "shareable"}, // daemon defaults recreation reproduces
-		{"user", in.Config.User != ""},
+		{"user", in.Config.User != imageUser},
 		{"runtime", h.Runtime != "" && h.Runtime != defaultRuntime},
 		{"resource_limits", h.Memory > 0 || h.MemorySwap > 0 || h.MemoryReservation > 0 || h.NanoCpus > 0 || h.CpuShares > 0 || h.CpuQuota > 0 || h.CpusetCpus != "" || (h.PidsLimit != nil && *h.PidsLimit != 0)},
 		{"ulimits", len(h.Ulimits) > 0},
@@ -490,7 +498,8 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		}
 		// An explicit frame carries every setting the configuration read carries, so only what
 		// that read would name is refused: the same codes, whatever the frame's sender claimed.
-		codes := undescribed(before, r.req.Project+"_default", r.defaultRuntime)
+		// The user is one of them; a definition's is compared with the image below.
+		codes := undescribed(before, before.Config.User, r.req.Project+"_default", r.defaultRuntime)
 		if r.req.Explicit {
 			set := map[string]bool{}
 			for _, c := range codes {
@@ -523,15 +532,21 @@ func (r *deployRun) prepare(ctx context.Context, s protocol.DeploymentService) p
 		}
 		ictx, icancel := context.WithTimeout(ctx, callBudget)
 		defer icancel()
-		var im struct{ Config imageDefaults }
+		var im struct{ Config imageConfig }
 		if err := r.c.get(ictx, "/images/"+url.PathEscape(s.Replaces.ImageID)+"/json", &im); err != nil {
 			if statusOf(err) == http.StatusNotFound {
 				return deny("image_missing")
 			}
 			return r.outcomeFor(ictx, err, statusOf(err))
 		}
-		if before.Config.differs(im.Config) {
-			return unsupported([]string{"image_config"})
+		if before.Config.User != im.Config.User {
+			codes = append(codes, "user")
+		}
+		if before.Config.differs(im.Config.imageDefaults) {
+			codes = append(codes, "image_config")
+		}
+		if len(codes) > 0 {
+			return unsupported(codes)
 		}
 		return succeeded()
 	})
@@ -1183,7 +1198,9 @@ type containerCreate struct {
 }
 
 // createBody is the whole configuration of the new container: the definition's subset and
-// the Compose labels discovery already groups by. Nothing is copied from the old container
+// the Compose labels discovery already groups by. Compose 5 lists only containers that carry a
+// config hash, so the hash is present and empty: `docker compose ps` and `down` still find the
+// container, and a later `up` recreates it from the Compose file. Nothing is copied from the old container
 // except the network mode the precondition already accepted: a Compose project's containers
 // run on "<project>_default", and dropping that would strand the new one off the project
 // network and its service-name DNS. The explicit create step also preserves Config.MacAddress.
@@ -1228,7 +1245,7 @@ func createBody(req protocol.DeploymentRequest, s protocol.DeploymentService, ne
 	}
 	body.Labels = map[string]string{
 		"com.docker.compose.project": req.Project, "com.docker.compose.service": s.Name, "com.docker.compose.container-number": "1", "com.docker.compose.oneoff": "False",
-		"kyyard.deployment": req.Deployment, "kyyard.revision": strconv.Itoa(req.Revision),
+		"com.docker.compose.config-hash": "", "kyyard.deployment": req.Deployment, "kyyard.revision": strconv.Itoa(req.Revision),
 	}
 	if projectNetwork := req.Project + "_default"; networkMode == projectNetwork {
 		body.HostConfig.NetworkMode = projectNetwork
