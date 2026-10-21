@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { ContainerUpdate, useContainerUpdateChecker } from './ContainerUpdate';
 import type { Container } from '../tenant';
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -72,6 +73,13 @@ it.each([
   expect(await screen.findByText(text)).toBeTruthy();
   expect(screen.queryByText('secret diagnostic')).toBeNull();
   if (status === 409) expect(screen.getByRole('link', { name: 'Configure registry access' }).getAttribute('href')).toBe('/organizations/a/members#registries-heading');
+});
+it('reads Checking…, not Endpoint offline, on an active row before its check starts', () => {
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+  // Server rendering runs no effects: this is the first render, before the check is started.
+  const html = renderToStaticMarkup(<Rows />);
+  expect(html).toContain('Checking…');
+  expect(html).not.toContain('Endpoint offline');
 });
 it('does not contact an offline endpoint', () => {
   const fetcher = vi.fn();

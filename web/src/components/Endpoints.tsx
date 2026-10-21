@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { secureFetch } from '../api';
 import { NAMESPACE_RULE, parseNamespaces, tenantWrite, useTenantResource, validNamespaces, type Endpoint, type EnrollmentToken } from '../tenant';
 import { EmptyNotice, StateNotice } from './StateNotice';
@@ -6,6 +6,8 @@ import { Link } from './Link';
 import { endpointPath } from '../router';
 
 const terminal = (s: string) => s === 'revoked' || s === 'expired';
+const FOLLOW_EVERY_MS = 3000;
+const FOLLOW_FOR_MS = 60_000;
 // healthBadge colours a cluster_health; anything else (unknown) is secondary.
 export const healthBadge: Record<string, string> = { healthy: 'badge-success', degraded: 'badge-danger' };
 
@@ -35,6 +37,16 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const namespacesValid = validNamespaces(parseNamespaces(namespaces));
+  // An approved endpoint turns active, with its cluster health, when the agent's first report
+  // arrives seconds later. Follow it for a while instead of leaving "approved" until a manual refresh.
+  const [followUntil, setFollowUntil] = useState(0);
+  const awaiting = endpoints.data?.some((e) => e.state === 'approved') ?? false;
+  const reload = endpoints.reload;
+  useEffect(() => {
+    if (!awaiting || Date.now() >= followUntil) return;
+    const timer = window.setTimeout(reload, FOLLOW_EVERY_MS);
+    return () => window.clearTimeout(timer);
+  }, [endpoints.data, awaiting, followUntil, reload]);
 
   const mint = async () => {
     setBusy(true);
@@ -91,6 +103,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
     const err = await tenantWrite(`${base}/endpoints/${encodeURIComponent(e.id)}/${action}`, 'POST', action === 'approve' ? { fingerprint: e.fingerprint } : undefined);
     setBusy(false);
     setMessage(err);
+    if (!err && action === 'approve') setFollowUntil(Date.now() + FOLLOW_FOR_MS);
     if (!err) endpoints.reload();
   };
 
@@ -145,7 +158,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
                 <tr key={e.id}>
                   <td data-label="Name"><Link to={endpointPath(org, e.id)}>{displayName(e.name)}</Link> <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span>{e.cluster_health && <> <span className={`badge ${healthBadge[e.cluster_health] ?? 'badge-secondary'}`}>{e.cluster_health}</span></>}</td>
                   <td data-label="State"><span className={`badge ${e.state === 'pending' ? 'badge-accent' : e.state === 'active' ? 'badge-success' : 'badge-danger'}`}>{e.state}</span></td>
-                  <td data-label="Host">{e.runtime === 'kubernetes' ? `${e.facts.node_count ?? '?'} nodes` : e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? e.facts.server_version ?? ''}</span></td>
+                  <td data-label="Host">{e.runtime === 'kubernetes' ? `${e.facts.node_count ?? '?'} ${e.facts.node_count === '1' ? 'node' : 'nodes'}` : e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? e.facts.server_version ?? ''}</span></td>
                   <td data-label="Fingerprint" className="font-mono" style={{ fontSize: 11 }}>
                     <span title={e.fingerprint}>{e.fingerprint ? e.fingerprint.slice(0, 16) + '…' : '—'}</span>
                     {e.pending_fingerprint && <div><span className="badge badge-accent">rotation pending</span> <span title={e.pending_fingerprint}>{e.pending_fingerprint.slice(0, 16)}…</span></div>}

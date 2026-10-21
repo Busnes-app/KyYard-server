@@ -68,7 +68,7 @@ export function AgentTokens({ org }: { org: string }) {
       <p>An agent token lets an AI agent such as OpenClaw or Hermes Agent use this organization over MCP at <code>{window.location.origin}/mcp</code>. <strong>Read only</strong> sees endpoints, containers, logs, resource usage and pending updates. <strong>Operator</strong> can also restart a container or workload and apply an update plan someone made in KyYard. No agent can stop, delete, run commands in or reconfigure anything. A token unused for 90 days is revoked; agent tokens never work as kyPulse service tokens, nor the reverse.</p>
       <form className="dr-stack" onSubmit={(e) => { e.preventDefault(); void create(); }}>
         <label>Agent name<input value={name} maxLength={64} onChange={(e) => setName(e.target.value)} disabled={busy} autoComplete="off" placeholder="homelab assistant" /></label>
-        <fieldset>
+        <fieldset className="ky-choices">
           <legend>Access</legend>
           <label><input type="radio" name="agent-scope" checked={scope === 'mcp:read'} onChange={() => setScope('mcp:read')} disabled={busy} /> Read only (recommended)</label>
           <label><input type="radio" name="agent-scope" checked={scope === 'mcp:operate'} onChange={() => setScope('mcp:operate')} disabled={busy} /> Operator: restart and apply updates</label>
@@ -78,7 +78,7 @@ export function AgentTokens({ org }: { org: string }) {
         <button disabled={busy || name.trim() === ''}>Create agent token</button>
       </form>
       {issued && (
-        <div className="dr-alert dr-alert-warn" role="region" aria-label="New agent token">
+        <div className="dr-alert dr-alert-warn ky-enrollment" role="region" aria-label="New agent token">
           <p>Token for "{issued.agent_token.name}" with {scopeText[issued.agent_token.scope]} access: {scopeGrants[issued.agent_token.scope]}. {issued.disclosure}</p>
           <pre className="font-mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{issued.token}</pre>
           <p>Set it as <code>KYYARD_TOKEN</code> in the agent's environment, then add the server.</p>
