@@ -299,6 +299,19 @@ func TestInspectionReportsWhatARecreateWouldDrop(t *testing.T) {
 	}
 }
 
+// Docker copies the image's USER into the container, so only a different user is reported.
+func TestInspectionComparesTheUserWithTheImage(t *testing.T) {
+	for _, c := range []struct{ container, image, want string }{{"nonroot", "nonroot", "[]"}, {"10001:10001", "", "[user]"}, {"0", "nonroot", "[user]"}} {
+		target, container, image := expressibleFixture()
+		container["Config"].(map[string]any)["User"] = c.container
+		image["Config"].(map[string]any)["User"] = c.image
+		out, err := fakeInspection(t, serve(container, image)).InspectContainer(context.Background(), target)
+		if err != nil || fmt.Sprint(out.Unsupported) != c.want || out.ConfigurationVerified != (c.want == "[]") {
+			t.Fatalf("container %q, image %q: %v %v", c.container, c.image, out, err)
+		}
+	}
+}
+
 // The daemon's default runtime is read once a minute per client, and a container on it is fine.
 func TestInspectionCachesTheDefaultRuntime(t *testing.T) {
 	target, container, image := expressibleFixture()

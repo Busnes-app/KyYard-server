@@ -343,8 +343,9 @@ func TestDeployReplacesOneServiceInOrder(t *testing.T) {
 	if body.Image != newImage || strings.Join(body.Env, "|") != "A=1|TOKEN=a=b\ncanary-secret" || body.HostConfig.RestartPolicy.Name != "on-failure" || body.HostConfig.RestartPolicy.MaximumRetryCount != 0 {
 		t.Fatalf("create body: %+v", body)
 	}
-	for k, v := range map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "web", "com.docker.compose.container-number": "1", "com.docker.compose.oneoff": "False", "kyyard.deployment": deploymentID, "kyyard.revision": "2"} {
-		if body.Labels[k] != v {
+	// Compose 5 does not list a container without a config hash; an empty one matches no Compose file.
+	for k, v := range map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "web", "com.docker.compose.container-number": "1", "com.docker.compose.oneoff": "False", "com.docker.compose.config-hash": "", "kyyard.deployment": deploymentID, "kyyard.revision": "2"} {
+		if got, ok := body.Labels[k]; !ok || got != v {
 			t.Fatalf("label %s = %q", k, body.Labels[k])
 		}
 	}
@@ -416,7 +417,8 @@ func TestDeployKeepsTheProjectNetwork(t *testing.T) {
 // Settings the container inherited from its image are reproduced by recreation from it.
 func TestDeployAcceptsImageInheritedSettings(t *testing.T) {
 	f := newFakeDeployEngine(t)
-	inherited := map[string]any{"Healthcheck": map[string]any{"Test": []string{"CMD", "true"}, "Interval": 30000000000}, "WorkingDir": "/srv", "StopSignal": "SIGQUIT"}
+	// Docker copies the image's USER into the container: a non-root image is not a run-time user.
+	inherited := map[string]any{"Healthcheck": map[string]any{"Test": []string{"CMD", "true"}, "Interval": 30000000000}, "WorkingDir": "/srv", "StopSignal": "SIGQUIT", "User": "nonroot"}
 	for k, v := range inherited {
 		f.oldContainer["Config"].(map[string]any)[k] = v
 		f.oldImageConfig[k] = v
@@ -530,11 +532,19 @@ func TestDeployPreconditionsRefuseBeforeTouchingAnything(t *testing.T) {
 		"pid mode":             {host("PidMode", "host"), 1, "unsupported: pid_mode"},
 		"ipc mode host":        {host("IpcMode", "host"), 1, "unsupported: ipc_mode"},
 		"ipc container":        {host("IpcMode", "container:"+oldID), 1, "unsupported: ipc_mode"},
-		"user":                 {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["User"] = "1000" }, 1, "unsupported: user"},
-		"network mode":         {host("NetworkMode", "host"), 1, "unsupported: network"},
-		"two networks":         {networks("bridge", "shop_default"), 1, "unsupported: network"},
-		"other network":        {networks("shop_default"), 1, "unsupported: network"},
-		"cmd":                  {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["Cmd"] = []string{"sleep", "300"} }, 2, "unsupported: image_config"},
+		"user":                 {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["User"] = "1000" }, 2, "unsupported: user"},
+		"user not the image's": {func(f *fakeDeployEngine) {
+			f.oldContainer["Config"].(map[string]any)["User"] = "1000"
+			f.oldImageConfig["User"] = "nonroot"
+		}, 2, "unsupported: user"},
+		"user and cmd": {func(f *fakeDeployEngine) {
+			f.oldContainer["Config"].(map[string]any)["User"] = "1000"
+			f.oldContainer["Config"].(map[string]any)["Cmd"] = []string{"sleep", "300"}
+		}, 2, "unsupported: user,image_config"},
+		"network mode":  {host("NetworkMode", "host"), 1, "unsupported: network"},
+		"two networks":  {networks("bridge", "shop_default"), 1, "unsupported: network"},
+		"other network": {networks("shop_default"), 1, "unsupported: network"},
+		"cmd":           {func(f *fakeDeployEngine) { f.oldContainer["Config"].(map[string]any)["Cmd"] = []string{"sleep", "300"} }, 2, "unsupported: image_config"},
 		"entrypoint": {func(f *fakeDeployEngine) {
 			f.oldContainer["Config"].(map[string]any)["Entrypoint"] = []string{"/bin/sh", "-c"}
 		}, 2, "unsupported: image_config"},

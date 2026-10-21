@@ -252,6 +252,7 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 	var im struct {
 		ID          string `json:"Id"`
 		RepoDigests []string
+		Config      struct{ User string }
 	}
 	if err = c.inspectionGet(ctx, "/images/"+target.ImageID+"/json", &im); err != nil {
 		return nil, err
@@ -270,7 +271,7 @@ func (c *Client) ReadConfiguration(parent context.Context, target protocol.Inspe
 	}
 	out := configurationFacts(before, im.RepoDigests)
 	codes := map[string]bool{}
-	for _, code := range undescribed(full, "", daemon.DefaultRuntime) {
+	for _, code := range undescribed(full, im.Config.User, "", daemon.DefaultRuntime) {
 		codes[code] = codes[code] || slices.Contains(protocol.ConfigurationOnlyCodes, code)
 	}
 	if !raw.uncarried(daemon.CgroupVersion, codes) {
