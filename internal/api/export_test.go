@@ -149,3 +149,7 @@ var MCPToolMessagesForTest = []string{msgReadOnly, msgNotAnUpdate, msgDropsMount
 func UpdateRefusalForTest(ctx context.Context, s *Server, a store.TenantAccess, d *store.Deployment) (string, error) {
 	return mcpTools{s: s}.updateRefusal(ctx, a, d)
 }
+
+// SetInventoryFreshForTest sets the inventory age a workload update check accepts without asking
+// the agent for a fresh report.
+func SetInventoryFreshForTest(s *Server, d time.Duration) { s.inventoryFreshFor = d }

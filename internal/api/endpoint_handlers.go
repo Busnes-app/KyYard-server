@@ -432,25 +432,36 @@ func (s *Server) handleRefreshEndpointInventory(w http.ResponseWriter, r *http.R
 		return
 	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(37 * time.Second))
+	inv, err := s.awaitInventory(ctx, a, id, before)
+	switch {
+	case ctx.Err() != nil:
+		s.writeError(w, 504, "No new inventory report arrived")
+	case err != nil:
+		s.tenantError(w, err)
+	default:
+		s.writeJSON(w, http.StatusOK, inv)
+	}
+}
+
+// awaitInventory polls until the endpoint's stored inventory is newer than before (nil: any),
+// or ctx ends.
+func (s *Server) awaitInventory(ctx context.Context, a store.TenantAccess, id string, before *store.Inventory) (*store.Inventory, error) {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			s.writeError(w, 504, "No new inventory report arrived")
-			return
+			return nil, ctx.Err()
 		case <-tick.C:
 			inv, err := s.store.Tenancy().ReadInventory(ctx, a, id)
 			if errors.Is(err, store.ErrNotFound) {
 				continue
 			}
 			if err != nil {
-				s.tenantError(w, err)
-				return
+				return nil, err
 			}
 			if before == nil || inv.Generation > before.Generation {
-				s.writeJSON(w, http.StatusOK, inv)
-				return
+				return inv, nil
 			}
 		}
 	}

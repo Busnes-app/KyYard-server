@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,40 @@ func TestWorkloadUpdateCheckPodsChanged(t *testing.T) {
 	close(gated.gate)
 	if w := <-done; w.Code != 409 || !strings.Contains(w.Body.String(), "adoption_changed") {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+}
+
+// An old report may predate a rollout made outside KyYard: the check asks the agent for a fresh
+// one and compares with that. A young report is used as it is.
+func TestWorkloadUpdateCheckRefreshesAnOldInventory(t *testing.T) {
+	f := newWorkloadFleet(t, append(slices.Clone(workloadCaps), protocol.CapabilityInventoryRefresh)...)
+	f.anonymousPulls(t)
+	remote, old := "sha256:"+strings.Repeat("b", 64), "sha256:"+strings.Repeat("a", 64)
+	api.SetDigestResolverForTest(f.s, &fakeDigests{digest: remote})
+	pod := func(id string) protocol.Pod {
+		return webPod("web-1", protocol.PodContainer{Name: "web", Image: "ghcr.io/acme/web:2", ImageID: "ghcr.io/acme/web@" + id})
+	}
+	f.report(t, pod(remote))
+	if got := f.check(t, f.webWorkload); got.Verdict != "up_to_date" {
+		t.Fatalf("young report: %+v", got)
+	}
+	f.sync(t) // no refresh frame was sent ahead of this heartbeat
+	api.SetInventoryFreshForTest(f.s, time.Nanosecond)
+	api.ResetAttemptsForTest(f.s)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- tenantRequest(f.s, f.org, "POST", f.webWorkload+"/updates/check", "", true) }()
+	if e := readEnvelope(t, f.ctx, f.conn); e.Type != protocol.TypeInventoryRefresh {
+		t.Fatalf("expected an inventory refresh, got %s", e.Type)
+	}
+	f.report(t, pod(old)) // the pods were replaced since the stored report
+	select {
+	case w := <-done:
+		var got workloadCheck
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Verdict != "update_available" {
+			t.Fatalf("stale report answered: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("check did not finish")
 	}
 }
 

@@ -74,6 +74,8 @@ type Server struct {
 	// planInspector replaces the agent round trip of one plan-time inspection; nil means the
 	// connected agent. Tests only.
 	planInspector func(context.Context, protocol.InspectionTarget) (protocol.ContainerInspection, error)
+	// inventoryFreshFor replaces the age freshenInventory accepts; zero means the default. Tests only.
+	inventoryFreshFor time.Duration
 	// registrySlots bounds update checks and update plans in flight across the server;
 	// registryHeld counts each organization's share of them, under registryMu.
 	registrySlots chan struct{}
