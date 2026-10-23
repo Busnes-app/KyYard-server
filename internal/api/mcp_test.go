@@ -18,6 +18,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
 	"github.com/Busnes-app/kyyard-server/internal/agentskill"
 	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/appversion"
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
@@ -487,7 +488,8 @@ func TestMCPApplyUpdateRefusesOtherPlans(t *testing.T) {
 }
 
 // The skill names exactly the registered tools and every error a tool returns, carries only
-// name, description and version (the app version), and is served byte for byte, publicly.
+// name, description and version (the release line in internal/appversion/VERSION), and is
+// served byte for byte, publicly.
 func TestAgentSkillNamesEveryToolAndError(t *testing.T) {
 	f := newTerminalFixture(t)
 	skill := string(agentskill.KyYard)
@@ -499,8 +501,8 @@ func TestAgentSkillNamesEveryToolAndError(t *testing.T) {
 	for _, line := range strings.Split(front, "\n") {
 		key, value, _ := strings.Cut(line, ":")
 		keys = append(keys, key)
-		if key == "version" && strings.Trim(strings.TrimSpace(value), `"`) != api.AppVersionForTest {
-			t.Errorf("skill version %s, app %s", value, api.AppVersionForTest)
+		if key == "version" && strings.Trim(strings.TrimSpace(value), `"`) != appversion.String() {
+			t.Errorf("skill version %s, app %s", value, appversion.String())
 		}
 	}
 	if !slices.Equal(keys, []string{"name", "description", "version"}) {

@@ -26,11 +26,10 @@ import (
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/client"
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
+	"github.com/Busnes-app/kyyard-server/internal/appversion"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/docker"
 	"github.com/Busnes-app/kyyard-server/internal/runtime/kubernetes"
 )
-
-var version = "dev"
 
 func main() {
 	link := flag.String("link", "", "enrollment link copied from KyYard (first start only)")
@@ -171,7 +170,7 @@ func main() {
 	if *enrollOnly {
 		return
 	}
-	opts := client.Options{HTTPClient: httpClient, Version: version, Identities: identities, Kubernetes: *kube, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, Configure: configure, Deploy: deploy, Remove: remove, ReadWorkload: readWorkload, ApplyWorkload: applyWorkload, InventoryEvery: *inventoryEvery}
+	opts := client.Options{HTTPClient: httpClient, Version: appversion.String(), Identities: identities, Kubernetes: *kube, RotateEvery: *rotate, Snapshot: snapshot, Metrics: metrics, Operate: operate, Logs: logs, Exec: exec, Inspect: inspect, Configure: configure, Deploy: deploy, Remove: remove, ReadWorkload: readWorkload, ApplyWorkload: applyWorkload, InventoryEvery: *inventoryEvery}
 	if *kube {
 		opts.CommandDir = ledgerDir(*scratch, log.Printf)
 	} else {

@@ -14,12 +14,10 @@ import (
 
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/appversion"
 	"github.com/Busnes-app/kyyard-server/internal/backup"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
-
-// appVersion is what the capsule manifest records for this build.
-const appVersion = "0.4.3"
 
 // errRecoveryKeyMismatch answers a swapped recovery.pub: the pin in the database and the key
 // on disk disagree, so refuse rather than seal a capsule nobody's custodians can open.
@@ -104,7 +102,7 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	payload, err := backup.Collect(ctx, s.config, appVersion)
+	payload, err := backup.Collect(ctx, s.config, appversion.String())
 	if errors.Is(err, backup.ErrNoDatabaseSnapshot) {
 		// An honest failed drill, not a 500: the operator needs to read why no backup exists.
 		s.writeJSON(w, http.StatusOK, &recoveryclient.DrillResult{Passed: false, ErrorMessage: err.Error(),
@@ -151,7 +149,7 @@ func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "Failed to load recovery key")
 		return
 	}
-	payload, err := backup.Collect(ctx, s.config, appVersion)
+	payload, err := backup.Collect(ctx, s.config, appversion.String())
 	if errors.Is(err, backup.ErrNoDatabaseSnapshot) {
 		s.writeError(w, http.StatusPreconditionFailed, err.Error())
 		return
@@ -283,14 +281,14 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 	actor := s.actorID(r)
 	ctx := context.WithoutCancel(r.Context())
 
-	rc, err := backup.RunConfig(s.config, appVersion)
+	rc, err := backup.RunConfig(s.config, appversion.String())
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to prepare backup configuration")
 		return
 	}
 	settings := backup.Settings(ctx, s.store.Settings())
 	res, err := recoveryclient.Run(ctx, rc, settings, func() (recoveryclient.Payload, error) {
-		return backup.Collect(ctx, s.config, appVersion)
+		return backup.Collect(ctx, s.config, appversion.String())
 	}, s.recovery)
 
 	action, outcome, details := recoveryclient.Outcome(res, err)
@@ -480,7 +478,7 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		"paired":                 false,
 		"key_pinned":             false,
 		"app_name":               s.config.Server.AppName,
-		"app_version":            appVersion,
+		"app_version":            appversion.String(),
 		"allow_private_recovery": s.config.Backup.AllowPrivateRecovery,
 		// Only the SQLite path can snapshot a database into a capsule; the screen says so.
 		"database_driver": s.config.Database.Driver,

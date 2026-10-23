@@ -139,9 +139,6 @@ func AllowAccountAttemptForTest(s *Server, key string, limit int, window time.Du
 	return s.allowAccountAttempt(key, limit, window)
 }
 
-// AppVersionForTest is the version the agent skill's frontmatter must carry.
-const AppVersionForTest = appVersion
-
 // MCPToolMessagesForTest are the tool errors the agent skill's error table must name.
 var MCPToolMessagesForTest = []string{msgReadOnly, msgNotAnUpdate, msgDropsMounts, msgTooManyOperations}
 
