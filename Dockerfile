@@ -11,10 +11,13 @@ COPY cmd/ cmd/
 COPY internal/ internal/
 COPY web/embed.go web/
 COPY web/dist/ web/dist/
-# The agent reports this to the server; release-image.yml passes the release version.
-ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o kyyard-server ./cmd/server \
- && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.version=${VERSION}" -o kyyard-agent ./cmd/agent
+# Release builds pass the tag's version (X.Y.Z or X.Y.Z.N); other builds report internal/appversion/VERSION.
+# Both binaries carry it: the server in capsule manifests and MCP, the agent in its hello frame.
+ARG VERSION=
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X github.com/Busnes-app/kyyard-server/internal/appversion.release=${VERSION}" -o kyyard-server ./cmd/server \
+ && CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X github.com/Busnes-app/kyyard-server/internal/appversion.release=${VERSION}" -o kyyard-agent ./cmd/agent
 
 # Stage 2: Minimal Production Container
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
