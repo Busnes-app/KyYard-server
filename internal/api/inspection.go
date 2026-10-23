@@ -174,6 +174,11 @@ func (s *Server) ask(ctx context.Context, agent *agentConn, actor, org string, t
 	if !s.inspectionAgentCurrent(agent) || !allowed() {
 		return nil, errInspectionForbidden
 	}
+	// Never send a grant that is already spent. A caller's budget check can race this grant's own
+	// timer for the same deadline, so judge expiry here, by the clock, right before sending.
+	if ctx.Err() != nil || !time.Now().Before(expires) {
+		return nil, errInspectionTimeout
+	}
 	// Agents accept [a-zA-Z0-9_-] only; a service principal's "service:" becomes "service-".
 	grant := protocol.InspectionOpen{Request: p.id, Endpoint: agent.endpointID, Actor: strings.Replace(actor, ":", "-", 1), Connection: agent.nonce, Expires: expires, Target: target}
 	select {

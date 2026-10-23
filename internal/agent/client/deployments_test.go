@@ -348,8 +348,9 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 			removal.Deployment = "5b4d3e2f-0a9c-4d8e-9f7a-3e4f5a6b7c8d"
 			advertised, advertisedRemove, resent, applied, removed := false, false, false, false, !withRemove
 			published := false // an inventory since the last request was sent
-			// The ledger replay is a separate goroutine's frame and may land after the apply result,
-			// so the loop waits for it too; the context deadline bounds the wait.
+			// The apply waits for the ledger replay: the replay goroutine may start late, and a
+			// result finished by then is re-sent too (without an inventory first), which the
+			// client allows. The context deadline bounds the wait.
 			for !applied || !removed || !resent {
 				f, err := read(ctx, conn)
 				if err != nil {
@@ -361,10 +362,6 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 					_ = json.Unmarshal(f.Payload, &hello)
 					advertised = slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentApply) && slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentPull)
 					advertisedRemove = slices.Contains(hello.Capabilities, protocol.CapabilityDeploymentRemove)
-					if err := write(ctx, conn, protocol.TypeDeploymentApply, req); err != nil {
-						return err
-					}
-					published = false
 				case protocol.TypeInventory:
 					published = true
 				case protocol.TypeDeploymentResult:
@@ -372,7 +369,13 @@ func sessionCarriesDeployments(t *testing.T, remove func(context.Context, protoc
 					_ = json.Unmarshal(f.Payload, &res)
 					switch {
 					case res.Deployment == saved:
+						// The ledger replay snapshots before sending, so applying only now keeps
+						// this session's live result out of the replay.
 						resent = true
+						if err := write(ctx, conn, protocol.TypeDeploymentApply, req); err != nil {
+							return err
+						}
+						published = false
 					case !published:
 						return errors.New("a live result preceded the inventory read after it")
 					case res.Deployment == req.Deployment && res.Outcome == protocol.OutcomeSucceeded:
