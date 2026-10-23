@@ -47,6 +47,14 @@ jobs:
         working-directory: consumer
         run: go mod edit -replace github.com/Busnes-app/ky-primitives=../ky-primitives
 
+      # The default branch may require newer dependencies than this go.mod pins (a
+      # dependabot bump there is enough). A real ky-primitives bump would tidy too, so
+      # tidy here; otherwise the build stops at "updates to go.mod needed" and never
+      # tests the code. The edited go.mod lives only in this job's checkout.
+      - name: Resolve dependencies the way a bump would
+        working-directory: consumer
+        run: go mod tidy
+
       - name: Build
         working-directory: consumer
         run: go build ./...
