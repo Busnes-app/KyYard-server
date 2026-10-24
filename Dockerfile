@@ -13,10 +13,12 @@ COPY web/embed.go web/
 COPY web/dist/ web/dist/
 # Release builds pass the tag's version (X.Y.Z or X.Y.Z.N); other builds report internal/appversion/VERSION.
 # Both binaries carry it: the server in capsule manifests and MCP, the agent in its hello frame.
+# -trimpath keeps the build directory out of both binaries, so the same commit, Go version and
+# VERSION give the same bytes wherever they are built (docs/VERIFYING-RELEASES.md).
 ARG VERSION=
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X github.com/Busnes-app/kyyard-server/internal/appversion.release=${VERSION}" -o kyyard-server ./cmd/server \
- && CGO_ENABLED=0 GOOS=linux go build \
+ && CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X github.com/Busnes-app/kyyard-server/internal/appversion.release=${VERSION}" -o kyyard-agent ./cmd/agent
 
 # Stage 2: Minimal Production Container
