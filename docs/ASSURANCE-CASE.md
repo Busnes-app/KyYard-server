@@ -22,7 +22,9 @@ Docker endpoint gives it the Docker socket, which is root on that host. Its secu
    never implies tenant access.
 3. **Only an approved agent speaks for an endpoint**, and a revoked one stops at once.
 4. **Host-equivalent power stays narrow.** Exec, configuration reads (environment values), recreate
-   and deploy each need their own permission, and nothing introduces a new host bind mount.
+   and deploy each need their own permission. A deploy never adds a host bind mount
+   (`bind_mount_new`); a direct container edit adds one only with a per-path acknowledgement from an
+   organization administrator, audited per path (`bind_unacknowledged`).
 5. **Secrets stay secret:** registry credentials, application secrets, keys and tokens are sealed
    or hashed at rest and never reach a response, a log line or an audit row.
 6. **The server cannot be turned against its network** through registry hosts or other
