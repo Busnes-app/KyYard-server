@@ -19,6 +19,7 @@ Owns the bounded Compose parser and transient run-YAML parser; store owns revisi
 
 ## Verification
 - `go test ./internal/applications` covers accepted conversion, deterministic output, unsupported syntax, volume syntax with each refusal's line/column/reason, and diagnostic redaction.
+- `FuzzParseCompose` (`fuzz_test.go`): a refusal is a bare `Diagnostic` with no result; an accepted import passes `store.ValidateApplicationSpec`, has services in strict name order, one value per environment reference, and parses again to the same spec and values.
 
 ## Child DOX Index
 None.

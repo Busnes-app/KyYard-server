@@ -30,7 +30,7 @@ func TestParseReference(t *testing.T) {
 }
 
 func TestParseReferenceRefusesWhatTheGrammarRefuses(t *testing.T) {
-	for _, ref := range []string{"", "nginx:", "nginx@sha256:short", "../etc", "a//b", "a/../b", "https://ghcr.io/app", "nginx:1@sha256:" + strings.Repeat("a", 64), strings.Repeat("a", 513), "sha256:" + strings.Repeat("a", 64)} {
+	for _, ref := range []string{"", "nginx:", "nginx@sha256:short", "../etc", "a//b", "a/../b", "https://ghcr.io/app", "nginx:1@sha256:" + strings.Repeat("a", 64), strings.Repeat("a", 513), "sha256:" + strings.Repeat("a", 64), "nginx:" + strings.Repeat("0", 129)} {
 		if got, err := ParseReference(ref); err == nil {
 			t.Errorf("ParseReference(%q) = %+v, want an error", ref, got)
 		}

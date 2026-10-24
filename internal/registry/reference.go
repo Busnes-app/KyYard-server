@@ -57,6 +57,10 @@ func ParseReference(ref string) (Reference, error) {
 	switch {
 	case strings.HasPrefix(pin, "sha256:"):
 		r.Digest = pin
+	// The grammar also reads "name:<digits>" as a host port with no path, which lets a tag past
+	// Docker's 128 characters through; the tag grammar's own bound applies.
+	case len(pin) > 128:
+		return Reference{}, ErrInvalidReference
 	case pin != "":
 		r.Tag = pin
 	default:

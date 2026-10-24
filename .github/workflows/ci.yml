@@ -95,6 +95,12 @@ jobs:
         # internal/api alone runs close to go test's 10-minute default under -race.
         run: go test -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./...
 
+      # Bounded fuzzing, about 15 s each. Compose inputs are large, so their minimizing is capped.
+      - run: go test -fuzz=FuzzParseReference -fuzztime=300000x ./internal/registry
+      - run: go test -fuzz=FuzzParseCompose -fuzztime=50000x -fuzzminimizetime=5s ./internal/applications
+      - run: go test -fuzz=FuzzSnapshotDecodeClamp -fuzztime=300000x ./internal/agent/protocol
+      - run: go test -fuzz=FuzzCleanText -fuzztime=300000x ./internal/agent/protocol
+
       - name: Real Docker runtime regressions
         env:
           KY_TEST_DOCKER_EXEC_IMAGE: alpine:3.24

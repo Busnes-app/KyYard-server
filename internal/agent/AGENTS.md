@@ -45,6 +45,7 @@ Owns signed-message preimages, frame types, the agent's identity file, enrollmen
 
 ## Verification
 - `go test ./internal/agent/...` (`client_test.go` runs the whole path against a real server: enroll, pending, approval notice, active through inventory, revocation stops the loop, token never persisted).
+- `protocol/fuzz_test.go`: `FuzzSnapshotDecodeClamp` runs the server's inventory path (`UnmarshalSnapshotBounded`, `Clamp`, `Shrink`) and requires the caps after `Clamp` and that the stored encoding is a fixed point of the same path; `FuzzCleanText` requires valid UTF-8 within `max`, none of the removed characters, a prefix of the uncut cleaning, and idempotence.
 - `scripts/smoke-test.sh` runs the built `kyyard-agent` against the built server.
 
 ## Child DOX Index
