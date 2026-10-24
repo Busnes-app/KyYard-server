@@ -89,6 +89,24 @@ jobs:
 
       - run: go mod verify
       - run: go vet ./...
+      # The release binaries must not depend on where they are built: build them the way the
+      # Dockerfile does (no .git in the context, -trimpath) from two directories and require
+      # identical bytes. docs/VERIFYING-RELEASES.md tells users how to repeat this.
+      - name: release binaries are repeatable
+        run: |
+          set -euo pipefail
+          ld="-s -w -X github.com/Busnes-app/kyyard-server/internal/appversion.release=0.0.0"
+          for d in "$RUNNER_TEMP/a" "$RUNNER_TEMP/elsewhere/b"; do
+            mkdir -p "$d/src"
+            git archive HEAD | tar -x -C "$d/src"
+            for p in server agent; do
+              (cd "$d/src" && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="$ld" -o "$d/kyyard-$p" ./cmd/$p)
+            done
+          done
+          for p in server agent; do
+            sha256sum "$RUNNER_TEMP/a/kyyard-$p" "$RUNNER_TEMP/elsewhere/b/kyyard-$p"
+            cmp "$RUNNER_TEMP/a/kyyard-$p" "$RUNNER_TEMP/elsewhere/b/kyyard-$p"
+          done
       - run: go build ./...
 
       - name: Tests with race detector and coverage

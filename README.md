@@ -58,3 +58,5 @@ whose logs it reads.
 - [Agents and Kubernetes](docs/AGENTS-AND-KUBERNETES.md) — Agent, Kubernetes endpoints, Migrating a Docker application to a cluster. <a id="agent"></a><a id="kubernetes-endpoints"></a><a id="migrating-a-docker-application-to-a-cluster"></a>
 - [Recovery](docs/RECOVERY.md) — Persistent keys, Disaster recovery, Two ways to get a key, Why TLS matters here, and related procedures. <a id="persistent-keys"></a><a id="disaster-recovery"></a><a id="two-ways-to-get-a-key"></a><a id="why-tls-matters-here"></a><a id="one-run-every-destination"></a><a id="environment"></a><a id="restoring"></a>
 - [Updates](docs/UPDATES.md) — Upgrading. <a id="upgrading"></a>
+- [Verifying releases](docs/VERIFYING-RELEASES.md) — Check a release image's signature and source commit, and rebuild its binaries to the same bytes.
+- [Assurance case](docs/ASSURANCE-CASE.md) — Threat model summary, trust boundaries, and why the security requirements are met.
