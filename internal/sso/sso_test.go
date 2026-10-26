@@ -18,11 +18,12 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 	"github.com/Busnes-app/kyyard-server/internal/testdb"
+	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 func TestOAuthAuthorizationURLUsesDiscoveryAndPKCE(t *testing.T) {
 	var issuer string
-	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/openid-configuration" {
 			http.NotFound(w, r)
 			return
@@ -36,7 +37,7 @@ func TestOAuthAuthorizationURLUsesDiscoveryAndPKCE(t *testing.T) {
 	issuer = idp.URL
 
 	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnIssuer: issuer, KySignOnClientID: "client"}, nil)
-	authURL, err := client.BuildAuthURL(context.Background(), "https://app.example/callback", "state", "verifier", "nonce")
+	authURL, err := client.BuildAuthURL(oidc.ClientContext(context.Background(), idp.Client()), "https://app.example/callback", "state", "verifier", "nonce")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,10 +220,10 @@ func TestDirectoryCannotManageAnExplicitlyLinkedLocalAccount(t *testing.T) {
 	if err := st.Users().LinkSSO(ctx, user.ID, "session", "hash", "kysignon", "external-id", "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
-	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "secret"}, st)
+	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: "independent-webhook-fixture-secret"}, st)
 	for _, event := range []string{"user.created", "user.updated", "user.deactivated", "user.deleted"} {
 		body, _ := json.Marshal(sso.KySignOnSyncPayload{EventID: crypto.RandomHex(8), Event: event, ID: "external-id", Username: "external-admin", Role: "user", Status: "inactive", Timestamp: time.Now().Unix()})
-		if err := client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "secret")); !errors.Is(err, sso.ErrUsernameTaken) {
+		if err := client.HandleSyncWebhook(ctx, body, crypto.ComputeHMACSHA256(body, "independent-webhook-fixture-secret")); !errors.Is(err, sso.ErrUsernameTaken) {
 			t.Fatalf("%s did not refuse: %v", event, err)
 		}
 		after, err := st.Users().GetUserByID(ctx, user.ID)

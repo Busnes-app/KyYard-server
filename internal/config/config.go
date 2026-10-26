@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/suite"
 )
 
@@ -170,6 +171,10 @@ func IsPinnedAgentImage(image string) bool { return agentImageRef.MatchString(im
 
 // LoadFromEnv initializes a Config from environment variables and defaults.
 func LoadFromEnv() (*Config, error) {
+	kysignonHMAC := getEnv("KY_KYSIGNON_HMAC_SECRET", "")
+	if kysignonHMAC != "" && len(kysignonHMAC) < crypto.MinHMACKeyBytes {
+		return nil, fmt.Errorf("KY_KYSIGNON_HMAC_SECRET must contain at least %d bytes", crypto.MinHMACKeyBytes)
+	}
 	port, portErr := strconv.Atoi(getEnv("KY_PORT", getEnv("PORT", strconv.Itoa(DefaultPort))))
 	host := getEnv("KY_HOST", "127.0.0.1")
 	appURL := getEnv("KY_APP_URL", fmt.Sprintf("http://localhost:%d", port))
@@ -324,7 +329,7 @@ func LoadFromEnv() (*Config, error) {
 			KySignOnIssuer:      getEnv("KY_KYSIGNON_ISSUER", ""),
 			KySignOnClientID:    getEnv("KY_KYSIGNON_CLIENT_ID", ""),
 			KySignOnSecret:      getEnv("KY_KYSIGNON_SECRET", ""),
-			KySignOnHMACSecret:  getEnv("KY_KYSIGNON_HMAC_SECRET", ""),
+			KySignOnHMACSecret:  kysignonHMAC,
 			GenericOIDCIssuer:   getEnv("KY_OIDC_ISSUER", ""),
 			GenericOIDCClientID: getEnv("KY_OIDC_CLIENT_ID", ""),
 			GenericOIDCSecret:   getEnv("KY_OIDC_SECRET", ""),

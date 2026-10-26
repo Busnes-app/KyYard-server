@@ -55,3 +55,5 @@ for what that is and the boundary it keeps.
 
 KyYard is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt).
 
+
+Repeat the full race suites with `GODEBUG=fips140=on` on SQLite and PostgreSQL; preserve existing fuzz, real-runtime and image gates. Run the synthetic Compose preservation check in `docs/check-strong-crypto-compose.py`. `docs/STRONG-CRYPTO.md` owns key, agent and recovery migration requirements.

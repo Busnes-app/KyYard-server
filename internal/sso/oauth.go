@@ -2,10 +2,13 @@ package sso
 
 import (
 	"context"
+	"crypto/fips140"
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -17,6 +20,7 @@ type oauthFlow struct {
 	clientSecret string
 	mu           sync.Mutex
 	provider     *oidc.Provider
+	verifier     *oidc.IDTokenVerifier
 }
 
 func newOAuthFlow(issuer, clientID, clientSecret string) *oauthFlow {
@@ -29,27 +33,43 @@ func (f *oauthFlow) getProvider(ctx context.Context) (*oidc.Provider, error) {
 	if f.provider != nil {
 		return f.provider, nil
 	}
+	if fips140.Enabled() {
+		if err := requireOIDCHTTPS(f.issuer); err != nil {
+			return nil, err
+		}
+	}
+	ctx = strongOIDCContext(ctx)
 	provider, err := oidc.NewProvider(ctx, f.issuer)
 	if err != nil {
 		return nil, err
 	}
-	// A trusted HTTPS discovery document must not downgrade credential exchange or
-	// signing-key retrieval to cleartext. HTTP issuers remain limited to explicit legacy
-	// configuration and local protocol fixtures; UI-created providers require HTTPS.
-	if strings.HasPrefix(f.issuer, "https://") {
-		var metadata struct {
-			JWKS string `json:"jwks_uri"`
-		}
-		if err := provider.Claims(&metadata); err != nil {
+	var metadata struct {
+		JWKS string `json:"jwks_uri"`
+	}
+	if err := provider.Claims(&metadata); err != nil {
+		return nil, err
+	}
+	// Preserve the existing no-downgrade rule for HTTPS issuers in every mode.
+	if fips140.Enabled() || strings.HasPrefix(f.issuer, "https://") {
+		if err := requireOIDCHTTPS(provider.Endpoint().AuthURL, provider.Endpoint().TokenURL, metadata.JWKS); err != nil {
 			return nil, err
 		}
-		for _, endpoint := range []string{provider.Endpoint().AuthURL, provider.Endpoint().TokenURL, metadata.JWKS} {
-			u, err := url.Parse(endpoint)
-			if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
-				return nil, errors.New("OIDC discovery requires HTTPS authorization, token and signing-key endpoints")
-			}
-		}
 	}
+	client := http.DefaultClient
+	if configured, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
+		client = configured
+	}
+	jwksClient := *client
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	jwksClient.Transport = strongJWKSTransport{base: transport}
+	if jwksClient.Timeout == 0 {
+		jwksClient.Timeout = 10 * time.Second
+	}
+	// Keep maintained signature/claim verification, key caching and rotation.
+	f.verifier = provider.VerifierContext(oidc.ClientContext(ctx, &jwksClient), &oidc.Config{ClientID: f.clientID})
 	f.provider = provider
 	return provider, nil
 }
@@ -74,7 +94,8 @@ func (f *oauthFlow) authCodeURL(ctx context.Context, redirectURI, state, verifie
 }
 
 func (f *oauthFlow) exchange(ctx context.Context, code, verifier, redirectURI, expectedNonce string) (*IdentityClaims, error) {
-	config, provider, err := f.config(ctx, redirectURI)
+	ctx = strongOIDCContext(ctx)
+	config, _, err := f.config(ctx, redirectURI)
 	if err != nil {
 		return nil, err
 	}
@@ -86,11 +107,41 @@ func (f *oauthFlow) exchange(ctx context.Context, code, verifier, redirectURI, e
 	if !ok || rawIDToken == "" {
 		return nil, errors.New("missing id_token in token response")
 	}
-	idToken, err := provider.Verifier(&oidc.Config{ClientID: f.clientID}).Verify(ctx, rawIDToken)
+	idToken, err := f.verifier.Verify(ctx, rawIDToken)
 	if err != nil || expectedNonce == "" || idToken.Nonce != expectedNonce {
 		return nil, ErrInvalidIDToken
 	}
 	return claimsFromIDToken(idToken)
+}
+
+func requireOIDCHTTPS(endpoints ...string) error {
+	for _, raw := range endpoints {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+			return errors.New("strong-crypto mode requires HTTPS OIDC issuer and endpoints without URL credentials")
+		}
+	}
+	return nil
+}
+
+// Keep the caller's trust roots/transport; the selected profile refuses redirects
+// for discovery, token exchange and JWKS rather than allowing an HTTP downgrade.
+func strongOIDCContext(ctx context.Context) context.Context {
+	if !fips140.Enabled() {
+		return ctx
+	}
+	client := http.DefaultClient
+	if configured, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
+		client = configured
+	}
+	copy := *client
+	copy.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return errors.New("OIDC redirects are refused in strong-crypto mode")
+	}
+	if copy.Timeout == 0 {
+		copy.Timeout = 10 * time.Second
+	}
+	return oidc.ClientContext(ctx, &copy)
 }
 
 func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {

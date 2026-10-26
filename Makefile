@@ -17,7 +17,7 @@ test:
 
 test-race:
 	@echo "==> Running test suite with race detector..."
-	@go test -race -covermode=atomic -coverprofile=coverage.out ./...
+	@go test -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out | tail -1
 
 # Runs the same suite against PostgreSQL; needs a reachable server.

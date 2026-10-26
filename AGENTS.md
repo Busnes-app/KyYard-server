@@ -214,3 +214,9 @@ The KyRecovery wire contract is `kyrecovery-server/zero_code_pairing_handoff_spe
 ## README and topic guides
 
 Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/RUNNING.md`, `docs/TENANTS.md`, `docs/INTEGRATIONS.md`, `docs/CONTAINERS.md`, `docs/AGENTS-AND-KUBERNETES.md`, `docs/RECOVERY.md`, `docs/UPDATES.md`, `docs/VERIFYING-RELEASES.md`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
+
+## Supported cryptographic configuration
+
+- `docs/STRONG-CRYPTO.md` owns server/agent key and TLS configuration, original-key/identity/custody preservation and peer migration. `docker-compose.strong-crypto.yml` adds only GODEBUG; preserve operator `.env.server`/env_files, mounts and network overlays.
+- Existing keyfile validation remains unchanged. Nonempty legacy webhook HMAC inputs require 16 literal bytes at startup/use; shared TOTP requires 16 decoded bytes, and OIDC JWKS RSA moduli require 2048 actual bits through verifier-matched parsing.
+- CI repeats complete configured SQLite/PostgreSQL race suites and compares seven complete synthetic Compose chains. Keep all existing fuzz, runtime, installer, image and release gates; local `make ci` uses the same 20-minute package timeout as CI.
