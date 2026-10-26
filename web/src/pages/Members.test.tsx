@@ -16,15 +16,11 @@ function stubAs(role: string) {
   }));
 }
 
-it('hides the service tokens panel from an operator', async () => {
-  stubAs('operator');
-  render(<Members org="a" />);
-  expect(await screen.findByText('admin')).toBeTruthy();
-  expect(screen.queryByRole('heading', { name: 'Service tokens' })).toBeNull();
-});
-
-it('shows the service tokens panel to an organization administrator', async () => {
+it('lists people and links to Access, without the integration panels', async () => {
   stubAs('organization_admin');
   render(<Members org="a" />);
-  expect(await screen.findByRole('heading', { name: 'Service tokens' })).toBeTruthy();
+  expect(await screen.findByText('admin')).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Access' }).getAttribute('href')).toBe('/organizations/a/access');
+  expect(screen.queryByRole('heading', { name: 'Service tokens' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Registries' })).toBeNull();
 });

@@ -16,8 +16,8 @@ Membership removal or disabling survives restart and administrator password rese
 organization access, an IdP deactivation denies access live and leaves the grant in place for
 reactivation, and a deleted account's grants are gone for good. Tenant APIs enforce live membership on every
 operation; platform administrators need explicit membership too. Membership administration is available through the tenant API and the web UI: pick an
-organization in the header, then manage environments, members and audit history under
-`/organizations/{organization}`. Links are deep-linkable and survive sign-in. Provider settings are available under Settings → Single sign-on.
+organization in the header, then manage environments, members, access (service tokens, agent tokens, registries) and audit
+history under `/organizations/{organization}`. Links are deep-linkable and survive sign-in. Provider settings are available under Settings → Single sign-on.
 
 ### Organizations and accounts
 

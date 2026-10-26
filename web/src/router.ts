@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 // Routes are plain paths so deep links, reloads and browser history work without state.
 export type Route =
   | { name: 'dashboard' | 'endpoints' | 'backup' | 'suite' | 'settings' | 'notfound' }
-  | { name: 'organization' | 'members' | 'audit'; org: string }
+  | { name: 'organization' | 'members' | 'access' | 'audit'; org: string }
   | { name: 'environment'; org: string; env: string }
   | { name: 'endpoint' | 'container-new' | 'workload-new'; org: string; endpoint: string }
   | { name: 'workload'; org: string; endpoint: string; namespace: string; kind: string; workload: string }
@@ -35,7 +35,7 @@ export function matchRoute(pathname: string): Route {
   if (parts[0] === 'organizations' && parts.length >= 2 && segment.test(parts[1])) {
     const org = parts[1];
     if (parts.length === 2) return { name: 'organization', org };
-    if (parts.length === 3 && (parts[2] === 'members' || parts[2] === 'audit')) return { name: parts[2], org };
+    if (parts.length === 3 && (parts[2] === 'members' || parts[2] === 'access' || parts[2] === 'audit')) return { name: parts[2], org };
     if (parts.length === 4 && parts[2] === 'environments' && segment.test(parts[3])) return { name: 'environment', org, env: parts[3] };
     if (parts.length === 4 && parts[2] === 'endpoints' && segment.test(parts[3])) return { name: 'endpoint', org, endpoint: parts[3] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && parts[5] === 'new') return { name: 'container-new', org, endpoint: parts[3] };

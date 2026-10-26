@@ -8,6 +8,7 @@ import { Suite } from './pages/Suite';
 import { Settings } from './pages/Settings';
 import { Organization } from './pages/Organization';
 import { Members } from './pages/Members';
+import { Access } from './pages/Access';
 import { Environment } from './pages/Environment';
 import { EndpointPage } from './pages/EndpointPage';
 import { ContainerPage, ContainerRunPage } from './pages/ContainerPage';
@@ -112,13 +113,14 @@ export const App: React.FC = () => {
 
 const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, settings, user }) => {
   switch (route.name) {
-    case 'dashboard': return <Dashboard />;
-    case 'endpoints': return <Dashboard mode="endpoints" />;
+    case 'dashboard': return <Dashboard platformAdmin={user?.role === 'admin'} />;
+    case 'endpoints': return <Dashboard mode="endpoints" platformAdmin={user?.role === 'admin'} />;
     case 'backup': return <Backup />;
     case 'suite': return <Suite totp={user?.totp_enabled === true} />;
     case 'settings': return <Settings settings={settings} role={user?.role} />;
     case 'organization': return <Organization org={route.org} />;
     case 'members': return <Members org={route.org} />;
+    case 'access': return <Access org={route.org} />;
     case 'environment': return <Environment key={`${route.org}/${route.env}`} org={route.org} env={route.env} />;
     case 'endpoint': return <EndpointPage key={`${route.org}/${route.endpoint}`} org={route.org} endpoint={route.endpoint} />;
     case 'container-new': return <ContainerRunPage key={`${route.org}/${route.endpoint}/new`} org={route.org} endpoint={route.endpoint} />;

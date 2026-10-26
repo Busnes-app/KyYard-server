@@ -57,7 +57,7 @@ export const Environment: React.FC<{ org: string; env: string }> = ({ org, env }
             </form>
             {message && <p role="alert" className="dr-alert dr-alert-error">{message}</p>}
           </details>}
-          <nav className="ky-subnav" aria-label="Administration"><Link to={orgPath(org, '/audit')}>View audit history</Link><Link to={orgPath(org, '/members')}>Manage members</Link></nav>
+          <nav className="ky-subnav" aria-label="Administration"><Link to={orgPath(org, '/audit')}>View audit history</Link><Link to={orgPath(org, '/members')}>Manage members</Link><Link to={orgPath(org, '/access')}>Access and registries</Link></nav>
         </>
       )}
     </div>

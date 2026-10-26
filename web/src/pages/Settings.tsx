@@ -8,8 +8,10 @@ import { Administration } from '../components/Administration';
 
 // role is the platform role from /api/auth/me; the server refuses /api/admin/* to anyone else regardless.
 export function Settings({ settings, role }: { settings: { db_driver?: string } | null; role?: string }) {
-  const [section, setSection] = useState(new URLSearchParams(window.location.search).get('sso') === 'linked' ? 'sign-in' : 'appearance');
   const sections = ['appearance', 'security', 'sign-in', 'recovery', 'storage', ...(role === 'admin' ? ['suite', 'administration'] : [])];
+  const query = new URLSearchParams(window.location.search);
+  // ?section= deep-links a tab (the empty Home page links Administration); unknown names fall back.
+  const [section, setSection] = useState(query.get('sso') === 'linked' ? 'sign-in' : sections.includes(query.get('section') ?? '') ? query.get('section')! : 'appearance');
   return <div className="ky-page">
     <h1>Settings</h1>
     <p>Appearance, account security, sign-in, and recovery for this installation.</p>

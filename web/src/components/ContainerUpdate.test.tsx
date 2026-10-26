@@ -72,7 +72,7 @@ it.each([
   render(<Rows />);
   expect(await screen.findByText(text)).toBeTruthy();
   expect(screen.queryByText('secret diagnostic')).toBeNull();
-  if (status === 409) expect(screen.getByRole('link', { name: 'Configure registry access' }).getAttribute('href')).toBe('/organizations/a/members#registries-heading');
+  if (status === 409) expect(screen.getByRole('link', { name: 'Configure registry access' }).getAttribute('href')).toBe('/organizations/a/access#registries-heading');
 });
 it('reads Checking…, not Endpoint offline, on an active row before its check starts', () => {
   vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));

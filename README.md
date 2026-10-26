@@ -29,7 +29,7 @@ The default local URL is `http://localhost:9273`; follow the installation guide 
 ## Connect an AI agent
 
 AI agents such as OpenClaw and Hermes Agent reach an organization over MCP at
-`https://<your host>/mcp`. On the organization's **Members** page, under **AI agents (MCP)**,
+`https://<your host>/mcp`. On the organization's **Access** page, under **AI agents (MCP)**,
 an organization administrator names the agent and picks an access level:
 
 - **Read only** (the default): the agent lists hosts, clusters, applications and containers,

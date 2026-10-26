@@ -8,7 +8,8 @@ Commands and unlinked file paths below are relative to the repository root.
 
 An organization administrator can let kyPulse read the organization's health: endpoints,
 inventory, samples, container logs and the audit feed. It can change nothing. On the
-organization's **Members** page, under **Service tokens**, **Pair kyPulse** mints a six-digit
+organization's **Access** page (`/organizations/<org>/access`, beside Members), under **Service
+tokens**, **Pair kyPulse** mints a six-digit
 code shown once; enter it into kyPulse within 15 minutes to complete the pairing. Revoking a
 token here stops it immediately, but that is only one side: unpair it in kyPulse as well, so
 each product's own admin makes their own half of the change. `GET /healthz` reports the suite
@@ -18,7 +19,7 @@ health contract (`ky.health/1`) for external monitors, unrelated to a kyPulse pa
 
 KyYard serves MCP (Streamable HTTP, stateless) at `https://<your host>/mcp` for AI agents such as
 OpenClaw and Hermes Agent. An organization administrator creates an agent token on the
-organization's **Members** page under **AI agents (MCP)**: a name and an access level, **Read
+organization's **Access** page under **AI agents (MCP)**: a name and an access level, **Read
 only** (the default) or **Operator**. The token (`kyy_mcp_…`) is shown once with copy-ready
 configuration for both agents that reads it from `KYYARD_TOKEN`, so it never sits in a config
 file:
@@ -84,7 +85,7 @@ Rules the server enforces:
 - `/mcp` accepts only `Authorization: Bearer kyy_mcp_…`. A request with an `Origin` header is
   refused (browsers never reach it), a session cookie or a kyPulse token is 401, and ten failed
   attempts from one address in 15 minutes answer 429. An agent token at `/api` is 401.
-- Revoking a token or changing its access on the Members page takes effect on the next request. A
+- Revoking a token or changing its access on the Access page takes effect on the next request. A
   token unused for 90 days is refused and revoked when presented, and an hourly sweep revokes the
   rest (`agent_token.expired` in the audit history).
 - Operations (`container.operate`, `application.deploy`) are audited as `service:<token id>`, with
