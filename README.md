@@ -1,5 +1,8 @@
 # kyyard-server
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15935/badge)](https://www.bestpractices.dev/projects/15935)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/KyYard-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/KyYard-server)
+
 **Start here:** [Standalone installation](INSTALL.md). Local accounts and MFA work without KyIdentity. The default Docker installation connects the local Docker host and grants KyYard host-level authority through the mounted Docker socket. Remote hosts and Kubernetes clusters need separate enrollment; suite management needs a KyQuickStart runner handoff.
 
 The simple control plane for your container fleet.
