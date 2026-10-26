@@ -8,8 +8,10 @@ Applies the approved Busnes look to KyYard's web shell and gives it the shared k
 - **01 after**: suite shell scale (240px sidebar, 24px title, 40px controls and nav rows, shared field border and type) and the Appearance cards.
 - **02 after**: owner correction — shared description class and copy, consistent wrapping, preview hairline, no theme selector in the shell navigation. Only affected Appearance/shell views were recaptured.
 - **02 confirm**: one confirmation recapture after the single stage 02 fix batch, where a fix was needed.
+- **03 after**: owner decisions on the reported conflicts (phone inset for two card columns at 390px, preview fidelity for KyDrive's shipped themes, KyYard's Polished Ky kept), light/dark × desktop/phone Appearance only. Its before is the latest stage 02 batch of the same view (`previous_file` in `results.csv`). The in-app check gained three assertions: every named preview matches the applied palette, two columns with no overflow at 390px, and a keyboard choice survives a reload.
+- **03 confirm**: one confirmation recapture after the single stage 03 fix, where a fix was needed.
 
-Surfaces: Home (main view) and Settings → Appearance. The automatic local Docker endpoint was disabled (`KY_DOCKER_SOCKET=`), so no host container data appears; an earlier baseline that showed this host's container counts was deleted before commit.
+Surfaces: Home (main view) and Settings → Appearance. The automatic local Docker endpoint was disabled (`KY_DOCKER_SOCKET=`), so no host container data appears; an earlier baseline that showed this host's container counts was deleted before commit. Stage 03 changed no KyYard source; only the extended in-app check was run.
 
 ## Catalog and saved choice
 
@@ -18,7 +20,7 @@ Surfaces: Home (main view) and Settings → Appearance. The automatic local Dock
 
 ## Product notes
 
-- Polished Ky keeps KyYard's shipped button text `#021716` (`LOCAL_PALETTE` in `web/src/theme.ts`). The suite catalog carries `#042f2e`, which is 3.9:1 on the Polished Ky accent and fails the AA test KyYard already enforced. Upstream should decide whether the catalog adopts `#021716`.
+- Owner decision (2026-10-26): Polished Ky keeps KyYard's shipped button text `#021716` (`LOCAL_PALETTE` in `web/src/theme.ts`). The catalog's `#042f2e` is 3.9:1 on the Polished Ky accent and fails the AA test KyYard enforces; that gap stays recorded here, with no catalog change.
 - Appearance stays a Settings section (KyYard's documented Home/Endpoints/Settings navigation); the page h1 is Settings and the section heading is Appearance.
 
 ## Capture batches
@@ -42,6 +44,7 @@ Conditions: linux 7.2.10-1-cachyos, playwright chromium 156.0.8078.4 (headless),
 | --- | --- | --- |
 | `kyyard-01-after` | `038fb4ad67` | 16/16 |
 | `kyyard-02-after` | `59dd637e7f` | 16/16 |
+| `kyyard-03-after` | `0cb1810712` | 19/19 |
 
 ## Checks
 
@@ -53,7 +56,7 @@ Conditions: linux 7.2.10-1-cachyos, playwright chromium 156.0.8078.4 (headless),
 | Vendored ky-ui check | pass at 4f83f34 |
 | Fuzz, govulncheck, shellcheck, smoke, Docker and agent-install tests | not run locally: CI runs them |
 
-Go: `go build ./...`, `go vet ./...`, gofmt and the full `go test -race -count=1 ./...` passed locally on this machine (CachyOS, Go 1.27.1); Go code is unchanged by this work. Docker image, publish and attestation jobs were not run locally: CI runs them on this PR.
+Go: `go build ./...`, `go vet ./...`, gofmt and the full `go test -race -count=1 ./...` passed locally (CachyOS, Go 1.27.1) at stage 02; Go code is unchanged since then and by this work, so those results stand. Docker image, publish and attestation jobs were not run locally: CI runs them.
 
 ## Reproduce
 
