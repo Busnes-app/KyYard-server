@@ -1,0 +1,6 @@
+# Append to the existing COMPOSE_FILE chain; preserve .env.server, data and networks.
+# See docs/STRONG-CRYPTO.md. Configure each remote agent separately.
+services:
+  kyyard:
+    environment:
+      GODEBUG: fips140=on

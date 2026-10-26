@@ -1,5 +1,7 @@
 # Assurance case
 
+The supported [key-strength/TLS configuration](STRONG-CRYPTO.md) covers imported HMAC/RSA/TOTP floors, verifier-matched JWK parsing and Go certificate-chain policy. Preserve original data/instance identity, endpoint authority and custody; independent proxy/daemon/cluster rollout remains operational verification.
+
 [Product overview](../README.md) · [Threat model](threat-model.md) · [Authorization matrix](authorization-matrix.md) · [Verifying releases](VERIFYING-RELEASES.md)
 
 This is the argument that KyYard meets its security requirements: what it protects, from whom,

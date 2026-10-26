@@ -1,5 +1,7 @@
 # Security Policy
 
+Supported cryptographic configuration and migration: [Key strength and TLS](docs/STRONG-CRYPTO.md).
+
 KyYard is a self-hosted control plane for a container fleet. It connects to hosts and performs container operations on behalf of authenticated operators.
 
 ## Reporting vulnerabilities

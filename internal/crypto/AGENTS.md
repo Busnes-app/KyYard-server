@@ -7,6 +7,7 @@ Provides cryptographic primitives for data-at-rest encryption (AES-256-GCM), HMA
 Owns core cryptographic implementations, key derivation, and constant-time equality checks.
 
 ## Local Contracts
+- `MinHMACKeyBytes` owns the 16-byte imported legacy webhook signing-key floor; configuration and webhook boundaries enforce it.
 - Never store or log plaintext cryptographic keys or master secrets.
 - Password hashing parameters are `ky-primitives/password`'s to choose; this package must not grow a second implementation.
 - AES-256-GCM uses fresh 12-byte random IVs per encryption operation.

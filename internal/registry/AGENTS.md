@@ -7,6 +7,7 @@ Parses image references and resolves a tag or digest to the registry's manifest 
 Owns `Reference`, `ParseReference`, `CanonicalHost`, `Credential`, `Client`, `Options`, `Resolved`, the egress guard (`egress.go`) and the typed errors. Must not import `internal/store`; the store imports this package.
 
 ## Local Contracts
+- The supported Go TLS profile applies to this metadata client without changing its egress/redirect/body/credential rules. `key_strength_test.go` exercises trusted RSA-root floors with strong-leaf controls; daemon image-pull TLS is separately configured.
 - `ParseReference`: no host is `docker.io`; a one-component Docker Hub repository is `library/<name>`; no tag or digest is `latest`; a tag beside a digest, a tag over 128 characters (the grammar reads `name:<digits>` as a host port, so it does not bound that tag itself) and a bare image ID are `ErrInvalidReference`.
 - `Head` is `Resolve` with `HEAD` on the manifest URL (one shared `manifest` function): same guard, auth flow and budget (two HEADs, one token GET). It reads no body; the digest is `Docker-Content-Digest` (format-checked, equal to a requested digest), the media type the `Content-Type`, `Platforms` nil. Docker Hub counts a manifest GET as a pull and not a HEAD, so the update check uses `Head` alone; `Resolve` is for when platforms are needed.
 - `CheckHost` runs that guard (lookup and `checkAddr`, port stripped, Docker Hub mapped to its API host) on a reference's host with no request, for a digest reference that needs no `Head`.

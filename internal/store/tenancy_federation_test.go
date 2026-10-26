@@ -15,7 +15,7 @@ import (
 
 // directorySync delivers a signed KySignOn directory webhook event for one external account.
 func directorySync(t *testing.T, st store.Store) func(event, id, username, status string) {
-	secret := "webhook-secret"
+	secret := "independent-directory-fixture-secret"
 	client := sso.NewKySignOnClient(config.SSOConfig{KySignOnHMACSecret: secret}, st)
 	return func(event, id, username, status string) {
 		t.Helper()

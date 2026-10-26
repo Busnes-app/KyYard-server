@@ -1,5 +1,7 @@
 # KyYard standalone installation
 
+Supported cryptographic configuration and migration: [Key strength and TLS](docs/STRONG-CRYPTO.md).
+
 ## Before you start
 
 These steps are for a **new, independent installation** from this repository. Use the

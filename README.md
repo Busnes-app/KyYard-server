@@ -1,5 +1,7 @@
 # kyyard-server
 
+Supported cryptographic configuration and migration: [Key strength and TLS](docs/STRONG-CRYPTO.md).
+
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15935/badge)](https://www.bestpractices.dev/projects/15935)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/KyYard-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/KyYard-server)
 
