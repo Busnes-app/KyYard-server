@@ -180,7 +180,7 @@ index 2a2928df..484b3151 100644
      {section === 'sign-in' && <><AccountSSO />{role === 'admin' && <SSOSettings />}</>}
      {section === 'recovery' && <section className="panel"><h2>Backup & recovery</h2><p>Back up the control plane and verify that it can be restored.</p><Link className="btn btn-secondary" to="/backup">Open backup & recovery</Link></section>}
 diff --git a/web/src/styles/theme.css b/web/src/styles/theme.css
-index a7b1df77..4a567de6 100644
+index a7b1df77..de1cd149 100644
 --- a/web/src/styles/theme.css
 +++ b/web/src/styles/theme.css
 @@ -184,10 +184,10 @@ input, select, textarea {
@@ -265,7 +265,15 @@ index a7b1df77..4a567de6 100644
  .ky-nav-link:hover { background: var(--panel-hover); }
  /* Selected navigation state is supplied by ky-ui/navigation.css. */
  .ky-nav-link.active svg { color: var(--accent); }
-@@ -481,7 +468,6 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
+@@ -413,6 +400,7 @@ details[open] > summary { margin-bottom: 16px; }
+ .ky-skip:focus { top: 12px; }
+ .ky-page, .dr-page { width: 100%; max-width: 1480px; margin: 0 auto; padding: 32px; gap: 24px; }
+ .ky-page > .panel { margin-top: 0; }
++.ky-appearance-section > h2 { margin-bottom: 8px; }
+ .ky-page > p { margin: 0; color: var(--ink); max-width: 75ch; }
+ .ky-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+ .ky-page-heading h1 { display: flex; align-items: center; gap: 12px; }
+@@ -481,7 +469,6 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
   .ky-icon-button { min-height: 40px; min-width: 40px; }
   .ky-facts { grid-template-columns: 1fr; gap: 4px; }
   .ky-facts dd { margin-bottom: 12px; }
@@ -273,7 +281,7 @@ index a7b1df77..4a567de6 100644
   .ky-inline-form { align-items: stretch; }
   .ky-inline-form select { max-width: 100%; }
  }
-@@ -627,7 +613,7 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
+@@ -627,7 +614,7 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
  
  .ky-endpoint-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1rem; margin:1rem 0; }
  .ky-endpoint-summary > div { padding:1rem; border:1px solid var(--line); border-radius:.5rem; }
