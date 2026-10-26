@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ThemeSwitcher } from './ThemeSwitcher';
-import { getStoredTheme, themes } from '../theme';
+import { LOCAL_PALETTE, getStoredTheme, themes } from '../theme';
 import { THEME_PALETTES } from '../ky-ui/themes';
 afterEach(() => { cleanup(); localStorage.clear(); document.documentElement.removeAttribute('style'); vi.unstubAllGlobals(); });
 
@@ -36,7 +36,8 @@ it('keeps body, panel and primary-button text at AA contrast in every named pale
     const values = [1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16) / 255).map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
     return (values[0] ?? 0) * 0.2126 + (values[1] ?? 0) * 0.7152 + (values[2] ?? 0) * 0.0722;
   };
-  for (const theme of Object.values(THEME_PALETTES)) {
+  for (const [id, shared] of Object.entries(THEME_PALETTES)) {
+    const theme = { ...shared, buttonText: LOCAL_PALETTE[id]?.['--button-text'] ?? shared.buttonText };
     for (const [foreground, background] of [[theme.ink, theme.bg], [theme.ink, theme.panel], [theme.inkStrong, theme.panel], [theme.buttonText, theme.accent]]) {
       const a = luminance(foreground), b = luminance(background);
       expect((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)).toBeGreaterThanOrEqual(4.5);

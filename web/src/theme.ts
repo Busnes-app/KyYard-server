@@ -6,6 +6,9 @@ import type { CatalogTheme, SystemTheme } from './ky-ui/themes';
 export type Theme = CatalogTheme | SystemTheme;
 export const themes: readonly Theme[] = [SYSTEM_THEME, ...THEME_CATALOG];
 const key = 'kyyard-theme';
+// KyYard shipped a darker Polished Ky button text so primary buttons pass AA (4.5:1);
+// the suite catalog carries the other products' value. Keep KyYard's.
+export const LOCAL_PALETTE: Partial<Record<string, Record<string, string>>> = { 'polished-ky': { '--button-text': '#021716' } };
 const prefersDark = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
 
 /** The saved choice (names saved by earlier versions included), else Match system. */
@@ -23,6 +26,7 @@ export function applyTheme(theme: Theme, persist = true) {
     delete root.dataset.kyTheme;
     root.style.setProperty('--danger', named === 'light' ? '#b91c1c' : '#f87171');
     root.style.setProperty('--success', named === 'light' ? '#166534' : '#34d399');
+    for (const [name, value] of Object.entries(LOCAL_PALETTE[theme.id] ?? {})) root.style.setProperty(name, value);
   } else {
     const busnes = theme.id === 'system' ? (prefersDark() ? 'busnes-dark' : 'busnes-light') : theme.id;
     root.dataset.theme = busnes;
