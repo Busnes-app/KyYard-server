@@ -132,6 +132,11 @@ socket, and a malicious platform administrator.
   with real-Docker regressions for exec, inspection, deploy, recreate and rollback; Vitest for the
   frontend; and an end-to-end smoke test that enrolls, approves, connects and revokes a real agent.
   The Go statement coverage is printed in each CI run's summary.
+- **Installer authentication:** the smoke job also runs `scripts/installer-oidc-test.py`
+  against the real server and a disposable certificate-verified TLS identity provider:
+  setup, PKCE, signed-token owner/everyday/unassigned admission, global-role rejection,
+  app-role loss and session revocation. Main publication and release images require smoke.
+  This does not qualify every installer workflow or establish broad branch/input coverage.
 - **Static analysis:** CodeQL (GitHub default setup: Go, JavaScript/TypeScript, Python, Actions),
   `go vet`, `govulncheck`, and the TypeScript compiler in `strict` mode.
 - **Dynamic analysis:** the race detector, real-Docker and smoke tests, and the Docker job, which

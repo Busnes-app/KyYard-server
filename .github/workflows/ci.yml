@@ -247,6 +247,11 @@ jobs:
 
       - run: shellcheck scripts/*.sh
       - run: make build
+      - name: Installer and verified OIDC regression
+        timeout-minutes: 5
+        env:
+          KY_INSTALLER_TEST_BINARY: ${{ github.workspace }}/kyyard-server
+        run: python3 scripts/installer-oidc-test.py
       # The edit and run block needs the image present; without it the script fails here.
       - run: docker pull alpine:3.24
       - run: scripts/smoke-test.sh

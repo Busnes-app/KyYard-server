@@ -65,4 +65,5 @@ Focused store/API checks run against SQLite and PostgreSQL through the existing
 binary and a disposable certificate-verified TLS identity provider. Set
 `KY_INSTALLER_TEST_BINARY` to the absolute binary path and run it with Python 3;
 OpenSSL is required for its temporary certificate and signed ID tokens. The fixture
-disables the local Docker agent and never contacts existing suite services.
+disables the local Docker agent and never contacts existing suite services. CI's smoke
+job runs it after `make build`; the same job gates main publication and release images.
