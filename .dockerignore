@@ -28,3 +28,4 @@
 !**/.env.example
 
 /kyyard-agent
+/tests/browser/

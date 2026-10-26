@@ -1,4 +1,4 @@
-.PHONY: all build build-web test test-race test-postgres test-web tidy-check lint smoke ci run clean docker-build
+.PHONY: all build build-web test test-race test-postgres test-web test-browser tidy-check lint smoke ci run clean docker-build
 
 all: build-web build
 
@@ -29,6 +29,9 @@ test-web:
 	@echo "==> Running frontend test suite..."
 	@cd web && npm ci && npm test
 
+test-browser:
+	@cd tests/browser && npm ci && npx playwright install chromium && npm test
+
 # The same gate CI runs: a stale go.sum fails the build there, so fail here first.
 tidy-check:
 	@echo "==> Checking go.mod is tidy..."
@@ -43,7 +46,7 @@ lint:
 smoke: build
 	@./scripts/smoke-test.sh
 
-ci: tidy-check lint test-race test-web smoke
+ci: tidy-check lint test-race test-web smoke test-browser
 	@echo "==> Local CI checks passed"
 
 run: build

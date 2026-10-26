@@ -38,6 +38,25 @@ It requires Python 3 and OpenSSL, uses disposable local data and a TLS identity-
 fixture, and never contacts existing suite services. Keep this check in the job that
 gates main publication and release images.
 
+### Browser regressions
+
+Run `make test-browser` from the repository root (Go, Node 26 and Chromium system
+libraries required; on a fresh Linux machine, install those with
+`cd tests/browser && npm ci && npx playwright install --with-deps chromium`).
+The target builds the current server and tests the committed `web/dist`; run
+`make build-web` and commit its generated files when changing frontend source.
+To select a case: `cd tests/browser && npm test -- --project=desktop --grep 'CSRF'`.
+
+Each test owns a fresh loopback-only SQLite server, data directory and browser
+context. Docker auto-connection and CAPTCHA are disabled only in this fixture.
+Cases exercise bootstrap password replacement, replayed-session refusal, deep
+links, real tenant writes/refusals, appearance persistence, keyboard navigation
+and a phone viewport. These checks do not establish whole-product branch coverage,
+real Docker/Kubernetes acceptance, HTTPS cookie behavior or the human/soak gates.
+CI requires the browser job before main publication and release images; failures
+retain traces/screenshots as the `browser-failures` artifact. Private test packages
+have their own lockfile and Dependabot entry, outside the shipped frontend.
+
 ## AI attribution
 
 AI-assisted contributions are welcome; undisclosed ones are not. Disclose

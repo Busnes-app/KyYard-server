@@ -91,3 +91,27 @@ Shared ky-ui 0.4 Appearance radio cards over the suite catalog, plus the suite s
 ## Match system label consistency — stage04
 
 Match system now reads **Follows device**, matching the other ten web interfaces. Stage04 before/after captures cover Appearance at1280×900 and390×844 in OS light/dark, with no saved choice, through the same disposable real-server harness. Each manifest records source revisions, edit hash, browser, fixture and image checksums; `mode-copy-04-after.patch` retains the exact source diff. All563 frontend tests and typecheck/build pass; ky-ui0.4.1 vendor verification passes. Existing Go source/dependencies/configuration are unchanged from the full `make ci` pass at6ecb621; new-head CI still gates handback. DOX reviewed: this is copy consistency within the existing Appearance contract; ownership, workflow and child indexes are unchanged.
+
+
+## Automated desktop/phone regression gate (2026-10-26)
+
+`make test-browser` builds the current Go server and executes the committed bundle
+on desktop Chromium and Pixel 7 emulation against a new private loopback SQLite
+fixture per case. All 16 cases pass on Node 26.11.1/Go 1.27.3: mandatory password
+replacement and replayed-cookie refusal, authenticated deep links and HttpOnly
+sessions, real CSRF-protected environment writes, duplicate-name recovery,
+existing non-member tenant refusal, appearance system/explicit/cross-tab behavior,
+logout across tabs, keyboard navigation and bounded Settings width.
+
+Three temporary mutations were detected: omit the CSRF header on environment
+writes, remove theme storage, and force Appearance wider than the phone viewport.
+All mutated committed assets were restored byte-for-byte. The width check compares
+the document with the configured viewport, avoiding a mobile layout viewport
+expanding along with overflowing content. Final frontend tests (563/563), vendor
+verification, typecheck/build and both npm audits pass; committed dist is unchanged.
+The existing Vite chunk-size advisory remains; no source or bundle was changed.
+
+This is executable browser regression evidence, separate from visual approval,
+HTTPS-cookie, Docker/Kubernetes, human acceptance and 24-hour soak qualification.
+The suite adds no whole-product coverage or OpenSSF Passing claim. See
+[CONTRIBUTING](CONTRIBUTING.md#browser-regressions) for prerequisites and failure traces.
