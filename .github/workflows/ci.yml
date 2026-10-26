@@ -32,6 +32,8 @@ jobs:
           rident="https://github.com/$GITHUB_REPOSITORY/.github/workflows/release-image.yml@refs/tags/v\$v"
           # every compose file and every non-historical doc an operator might copy from
           mapfile -t all < <(git ls-files 'docker-compose*.yml' '*.md')
+          # Match literal Markdown backticks; this pattern must not execute shell expansions.
+          # shellcheck disable=SC2016
           bad=$(grep -in 'busness-app' README.md | grep -vE '^[0-9]+:(## Upgrading after the Busnes-app owner move|The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr\.io/busnes-app/kyyard`\.)' || true); [ -z "$bad" ] || { echo "retired owner outside the README warning lines:"; echo "$bad"; exit 1; }
           bad=$(grep -il 'busness-app' "${all[@]}" | grep -vx README.md | while read -r f; do grep -q '^> \*\*Retired owner:\*\*' "$f" || echo "$f"; done || true); [ -z "$bad" ] || { echo "retired owner named without the retirement annotation in:"; echo "$bad"; exit 1; }
           bad=$(grep -inE 'github\.com/busness-app|ghcr\.io/busness-app|go get.*busness-app|go mod edit -replace.*busness-app|^module.*busness-app|gh api orgs/busness-app' "${all[@]}" | grep -vE '^README.md:[0-9]+:(## Upgrading|The GitHub organisation was renamed)' | grep -vE 'gh api orgs/Busness-app.*returns 404' || true); [ -z "$bad" ] || { echo "fetchable coordinate under the retired owner:"; echo "$bad"; exit 1; }
@@ -49,7 +51,9 @@ jobs:
           # the pin block itself must carry both flags; a value elsewhere does not excuse it
           for f in docker-compose.yml $( [ -f docs/RESTORE.md ] && echo docs/RESTORE.md ); do
             if [ "$f" = docker-compose.yml ] || grep -qE -- '--(repo|cert-identity)[ =]' "$f"; then
-              grep -qE -- '--repo[ =]' "$f" && grep -qE -- '--cert-identity[ =]' "$f" || { echo "$f lacks --repo or --cert-identity"; exit 1; }
+              if ! grep -qE -- '--repo[ =]' "$f" || ! grep -qE -- '--cert-identity[ =]' "$f"; then
+                echo "$f lacks --repo or --cert-identity"; exit 1
+              fi
             fi
           done
           # every --repo and the whole of every --cert-identity (workflow file and ref included),
@@ -77,7 +81,8 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          mapfile -d '' -t go_files < <(git ls-files -z '*.go')
+          unformatted="$(gofmt -l "${go_files[@]}")"
           if [ -n "$unformatted" ]; then
             echo "These files need gofmt:"; echo "$unformatted"; exit 1
           fi
@@ -113,6 +118,11 @@ jobs:
         # internal/api alone runs close to go test's 10-minute default under -race.
         run: go test -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./...
 
+      - name: Strong-key profile (SQLite)
+        env:
+          GODEBUG: fips140=on
+        run: go test -race -timeout 20m -count=1 ./...
+
       # Bounded fuzzing, about 15 s each. Compose inputs are large, so their minimizing is capped.
       - run: go test -fuzz=FuzzParseReference -fuzztime=300000x ./internal/registry
       - run: go test -fuzz=FuzzParseCompose -fuzztime=50000x -fuzzminimizetime=5s ./internal/applications
@@ -127,7 +137,8 @@ jobs:
           KY_TEST_REGISTRY_ONLINE: "1"
         run: |
           docker pull "$KY_TEST_DOCKER_EXEC_IMAGE"
-          export KY_TEST_DOCKER_PULL_DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' alpine:3.24 | cut -d@ -f2)
+          KY_TEST_DOCKER_PULL_DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' alpine:3.24 | cut -d@ -f2)
+          export KY_TEST_DOCKER_PULL_DIGEST
           test -n "$KY_TEST_DOCKER_PULL_DIGEST"
           go test -race ./internal/runtime/docker -run '^Test(Exec|Inspection|Deploy|Recheck|Remove|Recreate|Run|RecreateRollback|StopWait)RealDocker$' -count=1
           go test -race ./internal/api -run '^Test(BrowserExec|Apply)RealDocker$' -count=1
@@ -169,6 +180,12 @@ jobs:
       - name: Tests against PostgreSQL
         env:
           KY_TEST_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:5432/ci_test?sslmode=disable
+        run: go test -race -timeout 20m -count=1 ./...
+
+      - name: Strong-key profile (PostgreSQL)
+        env:
+          KY_TEST_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:5432/ci_test?sslmode=disable
+          GODEBUG: fips140=on
         run: go test -race -timeout 20m -count=1 ./...
 
   web:
@@ -243,6 +260,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build image
         run: docker build -t kyyard:ci .
+
+      - name: Strong-key profile preserves Compose configuration
+        run: python3 docs/check-strong-crypto-compose.py
 
       - name: Bare image refuses an unacknowledged plaintext bind
         run: |

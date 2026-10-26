@@ -19,6 +19,9 @@ var ErrCiphertextTooShort = errors.New("crypto: ciphertext too short")
 // ErrKeyLength reports an AES-256-GCM key that is not exactly 32 bytes.
 var ErrKeyLength = errors.New("crypto: AES-256-GCM key must be exactly 32 bytes")
 
+// MinHMACKeyBytes is the imported signing-key floor; generated keys use 32 bytes.
+const MinHMACKeyBytes = 16
+
 // EncryptAESGCM encrypts plaintext with AES-256-GCM under a 32-byte key and a random
 // 12-byte nonce, returning nonce||ciphertext as raw base64url.
 func EncryptAESGCM(plaintext, key []byte) (string, error) {
