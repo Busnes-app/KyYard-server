@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ThemeSwitcher } from './ThemeSwitcher';
-import { getStoredTheme } from '../theme';
+import { getStoredTheme, themes } from '../theme';
 import { THEME_PALETTES } from '../ky-ui/themes';
 afterEach(() => { cleanup(); localStorage.clear(); document.documentElement.removeAttribute('style'); vi.unstubAllGlobals(); });
 
@@ -9,7 +9,7 @@ it('offers Match system and the suite catalog as radios and keeps the choice bro
   const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
   render(<ThemeSwitcher />);
   const radios = screen.getAllByRole('radio');
-  expect(radios).toHaveLength(22);
+  expect(radios).toHaveLength(themes.length);
   expect(screen.getByRole('radio', { name: /Match system/ })).toHaveProperty('checked', true);
   fireEvent.click(screen.getByRole('radio', { name: /^Ocean/ }));
   expect(localStorage.getItem('kyyard-theme')).toContain('Ocean');
@@ -26,9 +26,9 @@ it('offers Match system and the suite catalog as radios and keeps the choice bro
 });
 
 it('selects choices saved by earlier versions', () => {
-  localStorage.setItem('kyyard-theme', 'Patina Ky');
+  localStorage.setItem('kyyard-theme', 'Polished Ky');
   render(<ThemeSwitcher />);
-  expect(screen.getByRole('radio', { name: /^Patina Ky/ })).toHaveProperty('checked', true);
+  expect(screen.getByRole('radio', { name: /^Polished Ky/ })).toHaveProperty('checked', true);
 });
 
 it('keeps body, panel and primary-button text at AA contrast in every named palette', () => {

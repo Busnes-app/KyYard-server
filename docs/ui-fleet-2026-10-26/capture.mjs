@@ -4,7 +4,7 @@
 import { randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { here, run, waitReady } from './capture-core.mjs';
+import { here, main, waitReady } from './capture-core.mjs';
 
 const repo = join(here(import.meta.url), '../..');
 const PORT = '5872';
@@ -13,7 +13,7 @@ const secret = () => `Fleet-${randomBytes(18).toString('base64url')}9!`;
 let password = secret();
 const sh = (cmd, args, opts) => { const r = spawnSync(cmd, args, { stdio: ['pipe', 'ignore', 'inherit'], ...opts }); if (r.status !== 0) throw new Error(`${cmd} ${args[0]} exited ${r.status}`); };
 
-await run({
+await main({
   product: 'kyyard',
   repo,
   dist: join(repo, 'web/dist/index.html'),
@@ -52,6 +52,7 @@ await run({
     await page.getByRole('button', { name: /sign in/i }).first().click();
     await page.getByRole('navigation', { name: 'Primary' }).waitFor();
   },
+  hoverTarget: (page) => page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Endpoints' }),
   surfaces: {
     async home(page) {
       await page.goto('/');
