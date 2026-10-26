@@ -86,3 +86,8 @@ See [UI-POLISH.md](UI-POLISH.md) for the implemented changes, preservation scope
 ## Fleet Appearance — 2026-10-26
 
 Shared ky-ui 0.4 Appearance radio cards over the suite catalog, plus the suite shell scale. Staged before/after captures (light/dark × 1280×900/390×844, synthetic fixture), manifests with revisions and hashes, in-app theme transition checks, CSV results and the recorded check runs are in [docs/ui-fleet-2026-10-26](docs/ui-fleet-2026-10-26/README.md). Scores are not self-assigned; the council rates the captures separately.
+
+
+## Match system label consistency — stage04
+
+Match system now reads **Follows device**, matching the other ten web interfaces. Stage04 before/after captures cover Appearance at1280×900 and390×844 in OS light/dark, with no saved choice, through the same disposable real-server harness. Each manifest records source revisions, edit hash, browser, fixture and image checksums; `mode-copy-04-after.patch` retains the exact source diff. All563 frontend tests and typecheck/build pass; ky-ui0.4.1 vendor verification passes. Existing Go source/dependencies/configuration are unchanged from the full `make ci` pass at6ecb621; new-head CI still gates handback. DOX reviewed: this is copy consistency within the existing Appearance contract; ownership, workflow and child indexes are unchanged.

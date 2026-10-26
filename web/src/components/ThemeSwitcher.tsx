@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { applyTheme, getStoredTheme, themes } from '../theme';
 
-const mode = (scheme: string) => scheme === 'system' ? 'Light or dark' : scheme === 'light' ? 'Light' : 'Dark';
+const mode = (scheme: string) => scheme === 'system' ? 'Follows device' : scheme === 'light' ? 'Light' : 'Dark';
 
 /** The shared ky-ui Appearance cards: native radios, applied and saved on change. */
 export function ThemeSwitcher() {
