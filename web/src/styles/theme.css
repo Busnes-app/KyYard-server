@@ -400,6 +400,7 @@ details[open] > summary { margin-bottom: 16px; }
 .ky-skip:focus { top: 12px; }
 .ky-page, .dr-page { width: 100%; max-width: 1480px; margin: 0 auto; padding: 32px; gap: 24px; }
 .ky-page > .panel { margin-top: 0; }
+.ky-appearance-section > h2 { margin-bottom: 8px; }
 .ky-page > p { margin: 0; color: var(--ink); max-width: 75ch; }
 .ky-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .ky-page-heading h1 { display: flex; align-items: center; gap: 12px; }
