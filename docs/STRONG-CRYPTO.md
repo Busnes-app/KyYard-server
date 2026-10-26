@@ -89,7 +89,9 @@ synthetic credentials and starts no services.
 The SQLite profile keeps its current paths and backup arrangement. Native CLI
 processes must explicitly export the existing `KY_PORT` and `KY_DB_DRIVER=sqlite`
 for the restore drill environment checks; the shipped Compose base already
-supplies both. A bare image invocation must supply the driver too. Remote
+supplies both. A bare image invocation must supply the driver too. Container
+CLI commands must run as the server UID (`docker exec --user 10001:10001 ...`),
+so original owner-only key checks remain in force; a default root exec is refused. Remote
 PostgreSQL must use `sslmode=verify-full` with the correct CA/hostname and strong
 keys. The optional PostgreSQL overlay requires real TLS files; this profile does
 not add PostgreSQL capsule snapshots or change its separate backup procedure.

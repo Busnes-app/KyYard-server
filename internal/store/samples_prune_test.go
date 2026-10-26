@@ -235,7 +235,7 @@ func TestUsageReportsBytesAndBudget(t *testing.T) {
 // would refuse telemetry for every tenant until an operator intervened, with no way back.
 func TestPressureClearsAfterPruning(t *testing.T) {
 	ctx := context.Background()
-	cfg := testdb.Config(t)
+	cfg := testdb.DatabaseConfig(t)
 	// A budget the schema alone exceeds could never clear, and should not: the budget is set
 	// just above what an empty database holds, so only the samples put it over.
 	baseline, err := Open(ctx, cfg)
@@ -319,7 +319,7 @@ func TestPressureClearsAfterPruning(t *testing.T) {
 // never lift it again.
 func TestPressureClearsWhenRetentionCannotReclaim(t *testing.T) {
 	ctx := context.Background()
-	cfg := testdb.Config(t)
+	cfg := testdb.DatabaseConfig(t)
 	baseline, err := Open(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
