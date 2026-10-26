@@ -32,6 +32,12 @@ Run the checks that apply to the files you changed, and the repository's
 full required checks before hand-off. Record the exact commands and their
 results in the pull request.
 
+CI's smoke job runs the real-binary installer/OIDC regression after `make build`:
+`KY_INSTALLER_TEST_BINARY="$PWD/kyyard-server" python3 scripts/installer-oidc-test.py`.
+It requires Python 3 and OpenSSL, uses disposable local data and a TLS identity-provider
+fixture, and never contacts existing suite services. Keep this check in the job that
+gates main publication and release images.
+
 ## AI attribution
 
 AI-assisted contributions are welcome; undisclosed ones are not. Disclose

@@ -133,7 +133,7 @@ Beyond what the tools check: keep to the naming and comment density of the file 
 
 - `python3 scripts/check-proxy-compose.py` renders the container-proxy profile with and without PostgreSQL, checking exact IPv4/IPv6 address trust, no host publish, external network ownership and database DNS/TLS configuration. It starts no containers.
 
-- `KY_INSTALLER_TEST_BINARY=/absolute/path/to/kyyard-server python3 scripts/installer-oidc-test.py`: disposable built-process setup and certificate-verified TLS OIDC regression (Python 3 and OpenSSL). Checks explicit owner/everyday/unassigned admission, PKCE, global-role rejection, app-role loss and durable session revocation. The installer prototype currently builds through a local `ky-primitives` workspace until the shared `applysetup` release lands.
+- `KY_INSTALLER_TEST_BINARY=/absolute/path/to/kyyard-server python3 scripts/installer-oidc-test.py`: disposable built-process setup and certificate-verified TLS OIDC regression (Python 3 and OpenSSL). Checks explicit owner/everyday/unassigned admission, PKCE, global-role rejection, app-role loss and durable session revocation. CI runs it in the existing `smoke` job after `make build`; main publication and release-image validation require this job.
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `make lint` equivalent: gofmt, `go vet`, `go mod tidy`/`verify`
