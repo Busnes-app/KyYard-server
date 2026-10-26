@@ -18,7 +18,7 @@ export function Settings({ settings, role }: { settings: { db_driver?: string } 
     <nav className="ky-resource-tabs" aria-label="Settings sections">
       {sections.map((name) => <button key={name} aria-pressed={section === name} onClick={() => setSection(name)}>{name === 'sign-in' ? 'Sign-in' : name[0].toUpperCase() + name.slice(1)}</button>)}
     </nav>
-    {section === 'appearance' && <section className="ky-appearance-section" aria-labelledby="appearance-heading"><h2 id="appearance-heading">Appearance</h2><p>Pick a theme. It applies straight away and is remembered by this browser only.</p><ThemeSwitcher /></section>}
+    {section === 'appearance' && <section className="ky-appearance-section" aria-labelledby="appearance-heading"><h2 id="appearance-heading">Appearance</h2><p className="ky-appearance-description">Pick a theme. It applies straight away and is saved in this browser only. Match system follows your device’s light or dark setting.</p><ThemeSwitcher /></section>}
     {section === 'security' && <AccountSecurity />}
     {section === 'sign-in' && <><AccountSSO />{role === 'admin' && <SSOSettings />}</>}
     {section === 'recovery' && <section className="panel"><h2>Backup & recovery</h2><p>Back up the control plane and verify that it can be restored.</p><Link className="btn btn-secondary" to="/backup">Open backup & recovery</Link></section>}
