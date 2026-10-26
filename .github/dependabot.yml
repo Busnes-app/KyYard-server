@@ -7,7 +7,7 @@ version: 2
 # pin to a tagged release once it does. The pattern is a prefix so a /v2 module path
 # or a published submodule stays in this group instead of falling through to `go`.
 #
-# There is deliberately no npm entry. The built frontend (web/dist or frontend/dist) is
+# There is deliberately no production frontend npm entry. The built frontend (web/dist or frontend/dist) is
 # committed and CI diff-checks it, so a lockfile-only bump can never go green; until the
 # bundle is built in CI instead, the frontend gets advisory-driven security updates only,
 # and whoever merges one rebuilds and commits dist in the same PR.
@@ -23,6 +23,16 @@ version: 2
 # proposes SHA moves and the cooldown genuinely sits between an upstream release and
 # this repo running it; a mutable major tag would bypass both.
 updates:
+  # Private browser tooling does not change the committed application bundle.
+  - package-ecosystem: npm
+    directory: /tests/browser
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: "chore(test-deps)"
+
   - package-ecosystem: gomod
     directory: /
     schedule:

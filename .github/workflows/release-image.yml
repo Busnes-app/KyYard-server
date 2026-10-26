@@ -114,6 +114,7 @@ jobs:
             Go build, vet & tests (SQLite)
             Go tests (PostgreSQL)
             Frontend typecheck & build
+            Browser regressions (desktop & phone)
             Vulnerability scan
             End-to-end smoke test
             Docker image build & run

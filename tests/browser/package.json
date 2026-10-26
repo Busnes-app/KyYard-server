@@ -1,0 +1,7 @@
+{
+  "name": "kyyard-browser-regressions",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node run.mjs" },
+  "devDependencies": { "@playwright/test": "1.63.0" }
+}

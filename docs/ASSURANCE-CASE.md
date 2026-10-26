@@ -137,6 +137,13 @@ socket, and a malicious platform administrator.
   setup, PKCE, signed-token owner/everyday/unassigned admission, global-role rejection,
   app-role loss and session revocation. Main publication and release images require smoke.
   This does not qualify every installer workflow or establish broad branch/input coverage.
+- **Real-browser regressions:** desktop and phone Chromium execute committed `web/dist`
+  against a disposable real SQLite server: mandatory password replacement, replayed
+  session refusal, deep links, CSRF-protected writes, duplicate-name recovery,
+  existing non-member tenant denial, appearance persistence and keyboard/viewport
+  checks. The browser job gates main publication and release images. Fixture rules
+  are in `tests/browser/AGENTS.md`; these bounded cases do not establish broad
+  branch coverage, HTTPS cookie behavior or real-runtime/human acceptance.
 - **Static analysis:** CodeQL (GitHub default setup: Go, JavaScript/TypeScript, Python, Actions),
   `go vet`, `govulncheck`, and the TypeScript compiler in `strict` mode.
 - **Dynamic analysis:** the race detector, real-Docker and smoke tests, and the Docker job, which

@@ -140,6 +140,7 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `go test -race` with coverage on SQLite, and the same suite against PostgreSQL 17
 - Bounded fuzzing in the Go job, one step per target with a fixed execution count: `FuzzParseReference` (`internal/registry`), `FuzzParseCompose` (`internal/applications`), `FuzzSnapshotDecodeClamp` and `FuzzCleanText` (`internal/agent/protocol`). Each target's corpus seeds also run in the normal `go test`; a crasher found later is committed under the package's `testdata/fuzz/<Target>/`.
 - Frontend vitest suite, then typecheck/build plus a check that committed `web/dist` matches source (it is embedded in the binary). Generated bundles and TypeScript build metadata use non-text diffs so review input includes source; the build comparison (`git status --porcelain`) still fails on any changed, deleted or untracked file under `web/dist` or in `web/tsconfig.tsbuildinfo`.
+- Browser regressions run the committed bundle against a fresh real SQLite server on desktop and phone Chromium, with real cookies, CSRF, tenant writes and revocation. `tests/browser/AGENTS.md` owns fixture isolation and scope; both publication and release images require this job.
 - `govulncheck` (pinned version) and `npm audit --audit-level=high`
 - `release binaries are repeatable` (Go job, right after `go vet`): builds `kyyard-server` and `kyyard-agent` from `git archive` copies in two directories with `-trimpath`, as the Dockerfile does, and requires identical bytes. `docs/VERIFYING-RELEASES.md` tells users how to rebuild a release and compare; `docs/ASSURANCE-CASE.md` is the security argument and moves with `docs/threat-model.md`.
 - `scripts/smoke-test.sh`: bounds its owned container fixture by CPU, memory, swap and PIDs, checks memory-limit readback, and runs the built binaries and asserts CLI, auth, session, SPA behavior and the agent enroll/approve/connect/revoke path; with `KY_SMOKE_IMAGE` (default `alpine:3.24`) present on the host it also runs, reads, recreates, reads and removes a container through the enrolled agent (`--inventory-every 2s`), and prints a skip otherwise; the CI `smoke` job pulls `alpine:3.24` and sets `KY_SMOKE_REQUIRE_EDIT=1`, which makes a missing image or agent binary a failure
@@ -152,9 +153,11 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - `dependency-release.yml` runs daily at 23:00 UTC: if Dependabot commits landed on `master` since the newest release on the current line and the push CI run on `master`'s tip succeeded, it publishes the next `vX.Y.Z.N` (one per day however many PRs merged) and dispatches `release-image.yml` on it, since a `GITHUB_TOKEN` release raises no release event. Run by hand, it releases `master` without the Dependabot condition. It waits while the line in `VERSION` has no `vX.Y.Z` release: bump `VERSION` (and the skill's `version`) and publish `vX.Y.Z` by hand for a new line.
 - Kubernetes: `go test ./internal/runtime/kubernetes/...` runs against the fake clientset in CI; the real-cluster tests run only with `KY_TEST_KUBECONFIG` set, locally, against a disposable cluster: `TestManifestOnARealCluster` (manifest, RBAC including the workload and `pods/exec` grants per namespace by `SelfSubjectAccessReview`, static Service IPs, and a standalone workload run written `name:kyyard-pin@<digest>` whose pod reports that digest; needs `KY_TEST_DEPLOY_IMAGE`) and `TestPodExecOnARealCluster` (a pod terminal's output and exit code; needs `KY_TEST_EXEC_IMAGE`, a digest-pinned image with `sh`).
 
-Run the same checks locally with `make ci` (`tidy-check lint test-race test-web smoke`); add `make test-postgres` when a Postgres instance is available.
+Run the same checks locally with `make ci` (`tidy-check lint test-race test-web smoke test-browser`); add `make test-postgres` when a Postgres instance is available.
 
 ## Child DOX Index
+
+- [tests/browser/AGENTS.md](tests/browser/AGENTS.md): Real-server Chromium regressions, disposable fixture lifecycle and test-only tooling.
 
 - [internal/applications/AGENTS.md](internal/applications/AGENTS.md): Bounded Compose import and transient secret separation.
 

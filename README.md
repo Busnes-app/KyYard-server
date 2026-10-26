@@ -65,3 +65,5 @@ whose logs it reads.
 - [Updates](docs/UPDATES.md) — Upgrading. <a id="upgrading"></a>
 - [Verifying releases](docs/VERIFYING-RELEASES.md) — Check a release image's signature and source commit, and rebuild its binaries to the same bytes.
 - [Assurance case](docs/ASSURANCE-CASE.md) — Threat model summary, trust boundaries, and why the security requirements are met.
+
+- [Contributing and verification](CONTRIBUTING.md#verification) — Local checks and desktop/phone browser regressions.
