@@ -1,0 +1,56 @@
+{
+  "prefix": "kyyard-04-after",
+  "product": "kyyard",
+  "branch": "ui/appearance-mode-copy",
+  "head": "f7404125c319b8efa99c92fc29b390e70f0f89b9",
+  "uncommitted_diff_sha256": "7c43cdb1009db6643f8a66b1acd28bcae0f91037e4fef51b4ff66df4407652d2",
+  "uncommitted_diff_bytes": 1504,
+  "server_binary_sha256": "c07740128a5730c6981946c4fde70639b2ca636135cdc559b419b66191980558",
+  "embedded_index_sha256": "140e7c4c339e2e0de217535c908937a92377beaf856cead1fc0292d17f1b5b9c",
+  "captured": "2026-10-26T14:11:16.132Z",
+  "os": "linux 7.2.10-1-cachyos",
+  "driver": "playwright chromium 153.0.8010.12 (headless)",
+  "device_scale_factor": 1,
+  "timezone": "America/Chicago",
+  "locale": "en-US",
+  "theme_source": "context colorScheme emulation with no saved theme choice (OS-following default)",
+  "fixture": "web built from this tree; fresh SQLite data dir; captcha none; KY_DOCKER_SOCKET empty (no local Docker endpoint), no enrolled endpoints or organizations beyond first-run defaults; init-admin \"admin\" (generated password on stdin, replaced through /api/auth/change-password when required)",
+  "files": [
+    {
+      "file": "kyyard-04-after-appearance-desktop-light.png",
+      "sha256": "a091bf1e594723a99638adc2c6fb1674e9ab9278abd2a5617267bddcde73f651",
+      "surface": "appearance",
+      "viewport": "1280x900",
+      "theme": "os-light (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-04-after-appearance-mobile-light.png",
+      "sha256": "6522a39a7b7d551e1e3a684a0cd8a87d1f2758cff9ae842f81d5825bc6c73866",
+      "surface": "appearance",
+      "viewport": "390x844",
+      "theme": "os-light (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-04-after-appearance-desktop-dark.png",
+      "sha256": "198c00e0a163977544244b35552ce6fec6da3e6166c39422226c247be2616acc",
+      "surface": "appearance",
+      "viewport": "1280x900",
+      "theme": "os-dark (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-04-after-appearance-mobile-dark.png",
+      "sha256": "48a1fcbd4338ca7a0ed32a627c36c49943ba3a0d2b224677507e682908589c0f",
+      "surface": "appearance",
+      "viewport": "390x844",
+      "theme": "os-dark (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    }
+  ]
+}

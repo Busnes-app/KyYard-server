@@ -69,3 +69,8 @@ node docs/ui-fleet-2026-10-26/results.mjs
 ```
 
 Each run starts a disposable loopback server on its own port with generated secrets and removes its data directory afterwards. No live service, personal data or authentication bypass is used.
+
+
+## Match system label consistency — stage04
+
+Match system now reads **Follows device**, matching the other ten web interfaces. Stage04 before/after captures cover Appearance at1280×900 and390×844 in OS light/dark, with no saved choice, through the same disposable real-server harness. Each manifest records source revisions, edit hash, browser, fixture and image checksums; `mode-copy-04-after.patch` retains the exact source diff. All563 frontend tests and typecheck/build pass; ky-ui0.4.1 vendor verification passes. Existing Go source/dependencies/configuration are unchanged from the full `make ci` pass at6ecb621; new-head CI still gates handback. DOX reviewed: this is copy consistency within the existing Appearance contract; ownership, workflow and child indexes are unchanged.
