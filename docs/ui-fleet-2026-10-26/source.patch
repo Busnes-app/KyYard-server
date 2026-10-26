@@ -1,0 +1,396 @@
+diff --git a/UI-VERIFICATION.md b/UI-VERIFICATION.md
+index a903caf2..c4495aa3 100644
+--- a/UI-VERIFICATION.md
++++ b/UI-VERIFICATION.md
+@@ -82,3 +82,7 @@ Covered by frontend tests only; no live cluster or browser run. The cluster page
+ ## Approved interface polish — 2026-10-19
+ 
+ See [UI-POLISH.md](UI-POLISH.md) for the implemented changes, preservation scope, checks, actual before/after screenshots and disposable capture conditions. Earlier captures above remain historical evidence.
++
++## Fleet Appearance — 2026-10-26
++
++Shared ky-ui 0.4 Appearance radio cards over the suite catalog, plus the suite shell scale. Staged before/after captures (light/dark × 1280×900/390×844, synthetic fixture), manifests with revisions and hashes, in-app theme transition checks, CSV results and the recorded check runs are in [docs/ui-fleet-2026-10-26](docs/ui-fleet-2026-10-26/README.md). Scores are not self-assigned; the council rates the captures separately.
+diff --git a/web/AGENTS.md b/web/AGENTS.md
+index d355ee8b..0c4c9ebc 100644
+--- a/web/AGENTS.md
++++ b/web/AGENTS.md
+@@ -39,7 +39,7 @@ Owns user interface components, service worker caching, PWA installation manifes
+ - Home-page guidance presents local Docker as automatic in the standard installation; manual enrollment is for additional hosts. Empty inventories with no runtime version report Docker unavailability and socket/service guidance rather than claiming the host has no containers.
+ - Endpoint image controls pull explicit tags/digests and remove immutable image IDs after a fresh server-inventory preview and full-ID confirmation. Stale/incomplete dependency data or known container dependents block the preview. The agent rechecks before deletion; no force or automatic retries. Unknown submissions/results remain blocked until the operator checks activity and refreshes. Image controls take no registry credentials; those live only in the Registries panel.
+ - Endpoint resource tables remain bounded at 25 rows with full-snapshot search, identity-bound icon actions and endpoint links. Home replaces the redundant Containers landing screen; the primary navigation is Home, Endpoints and Settings.
+-- Settings offers provider configuration through admin-only `/api/settings/sso`, callback URLs from the server's advertised origin, and the shared theme swatches. Login renders only the public provider list.
++- Settings offers provider configuration through admin-only `/api/settings/sso`, callback URLs from the server's advertised origin, and the shared Appearance cards. Login renders only the public provider list.
+ - Endpoint container controls use immutable IDs and observed image/state preconditions. Removal first fetches the server preview and requires the full observed name. Commands are never retried automatically; recent activity remains accessible for unknown outcomes.
+ - Container logs support bounded reads, search, timestamps, download and SSE follow. Browser display retains 256 KiB; follow closes on error without automatic reconnection, and unmount/filter changes cancel the reader. Server notices are separate from container output during follow.
+ - A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion.
+@@ -48,7 +48,7 @@ Owns user interface components, service worker caching, PWA installation manifes
+ - Site branding uses Lucide’s shipping-container outline in the header, login, favicon and install icons; retain its rounded line-art style and theme color inheritance inside the app. Static icon assets carry the Lucide license and are rasterized from the same geometry.
+ - Product title, PWA name, and pre-settings fallback name are `KyYard`.
+ - Strict TypeScript type safety without unused imports.
+-- `theme.ts` carries the fifteen KyPost/KyDNS palettes. Settings shows visual swatches; header and login have no upper-right theme dropdown, by user preference. Apply before React renders, persist under `kyyard-theme`, synchronize theme changes across tabs, and never write a personal theme to instance settings.
++- `theme.ts` adapts the ky-ui suite catalog (`src/ky-ui/themes.js`): Match system plus every catalog theme. Settings → Appearance shows the shared native radio cards (`ky-appearance`, no card around the section); header and login have no upper-right theme dropdown, by user preference. Apply before React renders, persist the theme name (or `system`) under `kyyard-theme` so names saved by earlier versions still select their theme, synchronize theme changes across tabs, and never write a personal theme to instance settings. Polished Ky keeps KyYard's shipped `--button-text` `#021716` (`LOCAL_PALETTE`) so primary buttons stay at AA; the catalog's `#042f2e` is 3.9:1 on that accent. Owner decision (2026-10-26): keep the override, no catalog change.
+ - Authenticated state-changing requests use `secureFetch` so the `ky_csrf` cookie is mirrored into `X-CSRF-Token`.
+ - The organization page offers New environment, and the environment page its settings (rename, delete), only when `canManageEnvironments(role)` (`tenant.ts`, `organization_admin` and `environment_admin`, mirroring `permissions.Allows` for environment create/update/delete) with the role from `GET /api/organizations`; other roles see the list only.
+ - Navigation is path-based (`src/router.ts`, no router dependency): `/`, `/endpoints`, `/backup`, `/suite`, `/settings`, `/organizations/{org}`, `/organizations/{org}/members`, `/organizations/{org}/audit`, `/organizations/{org}/environments/{env}`. Segments are limited to 64 safe characters; anything else is the not-found screen. `Link` renders real anchors with `aria-current` and leaves modified clicks to the browser. Deep links survive sign-in because the path is untouched while `Login` is shown, and the service worker serves the app shell for offline navigations.
+diff --git a/web/src/App.tsx b/web/src/App.tsx
+index 3af265f9..b85809bd 100644
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -18,6 +18,8 @@ import { Link } from './components/Link';
+ import './styles/theme.css';
+ import './ky-ui/tokens.css';
+ import './ky-ui/navigation.css';
++import './ky-ui/appearance.css';
++import './ky-ui/appearance-themes.css';
+ import { secureFetch } from './api';
+ import { useRoute, type Route } from './router';
+ 
+diff --git a/web/src/components/ThemeSwitcher.test.tsx b/web/src/components/ThemeSwitcher.test.tsx
+index 3f6a7ca0..762bf4af 100644
+--- a/web/src/components/ThemeSwitcher.test.tsx
++++ b/web/src/components/ThemeSwitcher.test.tsx
+@@ -1,28 +1,43 @@
+ import { afterEach, expect, it, vi } from 'vitest';
+ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+ import { ThemeSwitcher } from './ThemeSwitcher';
+-import { applyTheme, getStoredTheme, themeNames, themes } from '../theme';
+-afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
+-it('shows Busnes defaults alongside the fifteen KyPost/KyDNS swatches and keeps theme choice browser-local', () => {
++import { LOCAL_PALETTE, getStoredTheme, themes } from '../theme';
++import { THEME_PALETTES } from '../ky-ui/themes';
++afterEach(() => { cleanup(); localStorage.clear(); document.documentElement.removeAttribute('style'); vi.unstubAllGlobals(); });
++
++it('offers Match system and the suite catalog as radios and keeps the choice browser-local', () => {
+   const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+-  render(<><ThemeSwitcher swatches /><ThemeSwitcher /></>);
+-  expect(screen.getAllByRole('button')).toHaveLength(17);
+-  expect(themeNames).toContain('Polished Ky');
+-  fireEvent.click(screen.getByRole('button', { name: 'Ocean' }));
+-  expect(getStoredTheme()).toBe('Ocean');
++  render(<ThemeSwitcher />);
++  const radios = screen.getAllByRole('radio');
++  expect(radios).toHaveLength(themes.length);
++  expect(screen.getByRole('radio', { name: /Match system/ })).toHaveProperty('checked', true);
++  fireEvent.click(screen.getByRole('radio', { name: /^Ocean/ }));
++  expect(localStorage.getItem('kyyard-theme')).toContain('Ocean');
++  expect(getStoredTheme().id).toBe('ocean');
+   expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#0f1b24');
+-  expect(screen.getByRole('combobox')).toHaveProperty('value', 'Ocean');
++  expect(document.documentElement.dataset.theme).toBe('ocean');
++  fireEvent.click(screen.getByRole('radio', { name: /^Busnes Dark/ }));
++  expect(document.documentElement.style.getPropertyValue('--bg')).toBe('');
++  expect(document.documentElement.dataset.theme).toBe('busnes-dark');
++  expect(document.documentElement.style.colorScheme).toBe('dark');
++  fireEvent.click(screen.getByRole('radio', { name: /Match system/ }));
++  expect(getStoredTheme().id).toBe('system');
+   expect(fetcher).not.toHaveBeenCalled();
+-  applyTheme('Polished Ky');
+-  expect(document.documentElement.style.colorScheme).toBe('light');
+ });
+ 
+-it('keeps body, panel and primary-button text at AA contrast in every palette', () => {
++it('selects choices saved by earlier versions', () => {
++  localStorage.setItem('kyyard-theme', 'Polished Ky');
++  render(<ThemeSwitcher />);
++  expect(screen.getByRole('radio', { name: /^Polished Ky/ })).toHaveProperty('checked', true);
++});
++
++it('keeps body, panel and primary-button text at AA contrast in every named palette', () => {
+   const luminance = (hex: string) => {
+     const values = [1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16) / 255).map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+     return (values[0] ?? 0) * 0.2126 + (values[1] ?? 0) * 0.7152 + (values[2] ?? 0) * 0.0722;
+   };
+-  for (const theme of Object.values(themes)) {
++  for (const [id, shared] of Object.entries(THEME_PALETTES)) {
++    const theme = { ...shared, buttonText: LOCAL_PALETTE[id]?.['--button-text'] ?? shared.buttonText };
+     for (const [foreground, background] of [[theme.ink, theme.bg], [theme.ink, theme.panel], [theme.inkStrong, theme.panel], [theme.buttonText, theme.accent]]) {
+       const a = luminance(foreground), b = luminance(background);
+       expect((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)).toBeGreaterThanOrEqual(4.5);
+diff --git a/web/src/components/ThemeSwitcher.tsx b/web/src/components/ThemeSwitcher.tsx
+index ff916024..00c242ff 100644
+--- a/web/src/components/ThemeSwitcher.tsx
++++ b/web/src/components/ThemeSwitcher.tsx
+@@ -1,20 +1,25 @@
+ import { useEffect, useState } from 'react';
+-import { applyTheme, getStoredTheme, isThemeName, themeNames, themes } from '../theme';
++import { applyTheme, getStoredTheme, themes } from '../theme';
+ 
+-export function ThemeSwitcher({ swatches = false }: { swatches?: boolean }) {
++const mode = (scheme: string) => scheme === 'system' ? 'Light or dark' : scheme === 'light' ? 'Light' : 'Dark';
++
++/** The shared ky-ui Appearance cards: native radios, applied and saved on change. */
++export function ThemeSwitcher() {
+   const [selected, setSelected] = useState(getStoredTheme);
+   useEffect(() => {
+-    const update = () => { const value = document.documentElement.dataset.theme ?? ''; if (isThemeName(value)) setSelected(value); };
++    const update = () => setSelected(getStoredTheme());
+     window.addEventListener('ky:theme', update);
+     return () => window.removeEventListener('ky:theme', update);
+   }, []);
+-  const choose = (name: string) => { if (isThemeName(name)) { setSelected(name); applyTheme(name); } };
+-  if (!swatches) return <select aria-label="Select color theme" value={selected} onChange={(e) => choose(e.target.value)} style={{ width: 'auto', maxWidth: 180 }}>{themeNames.map((name) => <option key={name}>{name}</option>)}</select>;
+-  return <div className="theme-grid">{themeNames.map((name) => {
+-    const c = themes[name];
+-    return <button key={name} type="button" aria-pressed={name === selected} className="theme-swatch" onClick={() => choose(name)}>
+-      <span className="theme-swatch-preview" style={{ background: `linear-gradient(90deg, ${c.sidebarStart} 30%, ${c.bg} 30%)` }}><i style={{ background: c.accent }} /><i style={{ background: c.inkStrong, opacity: 0.55 }} /></span>
+-      <span className="theme-swatch-name">{name}</span>
+-    </button>;
+-  })}</div>;
++  return <fieldset className="ky-appearance">
++    <legend className="ky-appearance-legend">Theme</legend>
++    <div className="ky-appearance-grid">
++      {themes.map((theme) => <label key={theme.id} className="ky-appearance-option">
++        <input className="ky-appearance-radio" type="radio" name="kyyard-theme" value={theme.id} checked={theme.id === selected.id} onChange={() => { setSelected(theme); applyTheme(theme); }} />
++        <span className="ky-appearance-preview" aria-hidden="true" data-ky-preview={theme.id} />
++        <span className="ky-appearance-name">{theme.name}</span>
++        <small className="ky-appearance-mode">{mode(theme.scheme)}</small>
++      </label>)}
++    </div>
++  </fieldset>;
+ }
+diff --git a/web/src/pages/Settings.test.tsx b/web/src/pages/Settings.test.tsx
+index 5323a6a6..5272180c 100644
+--- a/web/src/pages/Settings.test.tsx
++++ b/web/src/pages/Settings.test.tsx
+@@ -6,11 +6,11 @@ it('keeps administration separate from the theme picker and loads providers only
+  const fetcher = vi.fn(async () => new Response('[]', { headers: { 'Content-Type': 'application/json' } }));
+  vi.stubGlobal('fetch', fetcher);
+  render(<Settings settings={{ db_driver: 'sqlite' }} role="admin" />);
+- expect(screen.getByRole('button', { name: 'Ocean' })).toBeTruthy();
++ expect(screen.getByRole('radio', { name: /^Ocean/ })).toBeTruthy();
+  expect(fetcher).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Recovery' }));
+  expect(screen.getByRole('link', { name: 'Open backup & recovery' })).toBeTruthy();
+- expect(screen.queryByRole('button', { name: 'Ocean' })).toBeNull();
++ expect(screen.queryByRole('radio', { name: /^Ocean/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Sign-in' }));
+  await screen.findByText('Add sign-in provider');
+  expect(fetcher).toHaveBeenCalledTimes(2);
+diff --git a/web/src/pages/Settings.tsx b/web/src/pages/Settings.tsx
+index 2a2928df..484b3151 100644
+--- a/web/src/pages/Settings.tsx
++++ b/web/src/pages/Settings.tsx
+@@ -18,7 +18,7 @@ export function Settings({ settings, role }: { settings: { db_driver?: string }
+     <nav className="ky-resource-tabs" aria-label="Settings sections">
+       {sections.map((name) => <button key={name} aria-pressed={section === name} onClick={() => setSection(name)}>{name === 'sign-in' ? 'Sign-in' : name[0].toUpperCase() + name.slice(1)}</button>)}
+     </nav>
+-    {section === 'appearance' && <section className="panel"><h2>Appearance</h2><p>Choose a Ky theme. Your preference stays in this browser.</p><ThemeSwitcher swatches /></section>}
++    {section === 'appearance' && <section className="ky-appearance-section" aria-labelledby="appearance-heading"><h2 id="appearance-heading">Appearance</h2><p className="ky-appearance-description">Pick a theme. It applies straight away and is saved in this browser only. Match system follows your device’s light or dark setting.</p><ThemeSwitcher /></section>}
+     {section === 'security' && <AccountSecurity />}
+     {section === 'sign-in' && <><AccountSSO />{role === 'admin' && <SSOSettings />}</>}
+     {section === 'recovery' && <section className="panel"><h2>Backup & recovery</h2><p>Back up the control plane and verify that it can be restored.</p><Link className="btn btn-secondary" to="/backup">Open backup & recovery</Link></section>}
+diff --git a/web/src/styles/theme.css b/web/src/styles/theme.css
+index a7b1df77..de1cd149 100644
+--- a/web/src/styles/theme.css
++++ b/web/src/styles/theme.css
+@@ -184,10 +184,10 @@ input, select, textarea {
+   font-family: var(--font-sans);
+   background: var(--bg);
+   color: var(--ink-strong);
+-  border: 1px solid var(--line);
+-  border-radius: 6px;
++  border: 1px solid var(--ky-field-border);
++  border-radius: var(--ky-control-radius);
+   padding: 8px 12px;
+-  font-size: 14px;
++  font-size: var(--ky-type-body);
+   width: 100%;
+ }
+ 
+@@ -322,7 +322,6 @@ input:focus, select:focus, textarea:focus {
+   padding: 6px 12px; font-size: 13px; border-radius: 6px;
+   color: var(--ink); border: 1px solid transparent; text-decoration: none;
+ }
+-.ky-nav-link.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+ .ky-nav-link:focus-visible, .ky-subnav a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+ .ky-page { max-width: 1080px; margin: 0 auto; padding: 24px 20px; display: flex; flex-direction: column; gap: 16px; }
+ .ky-subnav { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; }
+@@ -351,18 +350,6 @@ input:focus, select:focus, textarea:focus {
+ .ky-config-save { display: flex; flex-direction: column; gap: 8px; }
+ .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+ 
+-.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .75rem;
+-              margin-top: 1rem; }
+-.theme-swatch { display: block; width: 100%; padding: 6px; border: 2px solid transparent; border-radius: 12px;
+-                background: transparent; color: var(--ink-strong); text-align: left; cursor: pointer;
+-                font-family: var(--font-sans); font-weight: 500; white-space: normal; }
+-.theme-swatch:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); filter: none; }
+-.theme-swatch[aria-pressed="true"] { border-color: var(--ink-strong); }
+-.theme-swatch-preview { display: grid; align-content: start; gap: 6px; height: 84px; padding: 12px 12px 12px 42%;
+-                        border-radius: 8px; border: 1px solid rgba(0,0,0,.25); }
+-.theme-swatch-preview i { display: block; height: 8px; border-radius: 4px; }
+-.theme-swatch-preview i:first-child { width: 40%; }
+-.theme-swatch-name { display: block; margin-top: 6px; font-size: .85rem; }
+ .ky-page > p { margin: 12px 0; }
+ .ky-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin:16px 0; }
+ .ky-toolbar input { max-width:320px; }
+@@ -372,15 +359,15 @@ a { color: var(--ink-strong); }
+ .ky-log { max-height:480px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--bg); padding:16px; font-size:12px; }
+ 
+ /* Shared application layout: operational pages use one spacing and control scale. */
+-:root { --radius: 12px; }
+-body { font-size: 14px; line-height: 1.5; }
+-h1 { font-size: clamp(24px, 2.5vw, 30px); line-height: 1.2; letter-spacing: -.025em; }
+-h2 { font-size: 18px; line-height: 1.35; }
++:root { --radius: var(--ky-control-radius); }
++body { font-size: var(--ky-type-body); line-height: 1.5; }
++h1 { font-size: var(--ky-type-title); font-weight: 600; line-height: 1.25; }
++h2 { font-size: var(--ky-type-section); font-weight: 600; line-height: 1.35; }
+ h3 { font-size: 15px; }
+ a { text-underline-offset: 3px; }
+-button, .btn { min-height: 38px; justify-content: center; white-space: nowrap; }
+-button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink-strong); outline-offset: 3px; }
+-input, select, textarea { min-height: 40px; min-width: 0; }
++button, .btn { min-height: var(--ky-control-size); justify-content: center; white-space: nowrap; }
++button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
++input, select, textarea { min-height: var(--ky-control-size); min-width: 0; }
+ input[type="checkbox"], input[type="radio"] { min-height: auto; width: auto; }
+ label { font-size: 13px; font-weight: 500; }
+ label > input, label > select { margin-top: 6px; }
+@@ -395,12 +382,12 @@ label:has(input[type="radio"]) > input { margin-top: 0; }
+ .panel h2 + p { margin-top: 8px; }
+ summary { cursor: pointer; font-weight: 600; padding-block: 4px; }
+ details[open] > summary { margin-bottom: 16px; }
+-.ky-shell { min-height: 100dvh; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+-.ky-header { position: sticky; top: 0; align-self: start; height: 100dvh; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; flex-wrap: nowrap; gap: 30px; padding: 28px 16px 20px; border-bottom: 0; border-right: 1px solid var(--line); background: linear-gradient(180deg, var(--sidebar-start, var(--panel)), var(--sidebar-end, var(--panel))); }
+-.ky-brand { display: flex; gap: 10px; align-items: center; text-decoration: none; font-weight: 700; font-size: 21px; color: var(--ink-strong); padding: 4px 12px; }
++.ky-shell { min-height: 100dvh; display: grid; grid-template-columns: var(--ky-sidebar-size) minmax(0, 1fr); }
++.ky-header { position: sticky; top: 0; align-self: start; height: 100dvh; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; flex-wrap: nowrap; gap: 24px; padding: 24px 16px 16px; border-bottom: 0; border-right: 1px solid var(--line); background: linear-gradient(180deg, var(--sidebar-start, var(--panel)), var(--sidebar-end, var(--panel))); }
++.ky-brand { display: flex; gap: 10px; align-items: center; text-decoration: none; font-weight: 700; font-size: 20px; color: var(--ink-strong); padding: 4px 12px; }
+ .ky-brand svg { color: var(--accent); flex-shrink: 0; }
+-.ky-nav { display: flex; flex-direction: column; gap: 6px; overflow: visible; }
+-.ky-nav-link { min-height: 44px; padding: 11px 14px; gap: 10px; font-size: 14px; color: var(--ink); border-radius: 8px; }
++.ky-nav { display: flex; flex-direction: column; gap: 4px; overflow: visible; }
++.ky-nav-link { min-height: var(--ky-control-size); padding: 8px 12px; gap: 10px; font-size: var(--ky-type-nav); color: var(--ink); border-radius: 8px; }
+ .ky-nav-link:hover { background: var(--panel-hover); }
+ /* Selected navigation state is supplied by ky-ui/navigation.css. */
+ .ky-nav-link.active svg { color: var(--accent); }
+@@ -413,6 +400,7 @@ details[open] > summary { margin-bottom: 16px; }
+ .ky-skip:focus { top: 12px; }
+ .ky-page, .dr-page { width: 100%; max-width: 1480px; margin: 0 auto; padding: 32px; gap: 24px; }
+ .ky-page > .panel { margin-top: 0; }
++.ky-appearance-section > h2 { margin-bottom: 8px; }
+ .ky-page > p { margin: 0; color: var(--ink); max-width: 75ch; }
+ .ky-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+ .ky-page-heading h1 { display: flex; align-items: center; gap: 12px; }
+@@ -481,7 +469,6 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
+  .ky-icon-button { min-height: 40px; min-width: 40px; }
+  .ky-facts { grid-template-columns: 1fr; gap: 4px; }
+  .ky-facts dd { margin-bottom: 12px; }
+- .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ky-inline-form { align-items: stretch; }
+  .ky-inline-form select { max-width: 100%; }
+ }
+@@ -627,7 +614,7 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
+ 
+ .ky-endpoint-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1rem; margin:1rem 0; }
+ .ky-endpoint-summary > div { padding:1rem; border:1px solid var(--line); border-radius:.5rem; }
+-.ky-endpoint-summary span { display:block; color:var(--ink-muted); margin-bottom:.5rem; }
++.ky-endpoint-summary span { display:block; color:var(--ink-muted, var(--ink)); margin-bottom:.5rem; }
+ .ky-endpoint-summary strong { font-size:1.5rem; }
+ .ky-config-disclosure { border:1px solid var(--line); border-radius:.5rem; padding:.8rem 1rem; }
+ .ky-config-disclosure > summary { cursor:pointer; font-weight:600; }
+diff --git a/web/src/theme.ts b/web/src/theme.ts
+index d65a005b..21a6d3fc 100644
+--- a/web/src/theme.ts
++++ b/web/src/theme.ts
+@@ -1,59 +1,47 @@
+ import { readChoice, saveChoice } from './ky-ui/theme';
+-import { busnesPalettes } from './ky-ui/palettes';
+-// Shared KyPost/KyDNS palette tokens; mail-only tokens are omitted.
+-export const themes = {
+-  "Busnes Light": busnesPalettes["Busnes Light"],
+-  "Busnes Dark": busnesPalettes["Busnes Dark"],
++import { SYSTEM_THEME, THEME_CATALOG, applyThemeVariables, findTheme } from './ky-ui/themes';
++import type { CatalogTheme, SystemTheme } from './ky-ui/themes';
+ 
+-    "Dark Matter": { bg: "#1a1a1e", panel: "#252530", ink: "#d4c5e2", inkStrong: "#e8ddf5", accent: "#c29a72", accentSoft: "#5a3f31", line: "#404050", glow: "rgba(107, 74, 66, 0.25)", sidebarStart: "#1f1f24", sidebarEnd: "#2a2530", buttonText: "#24170f" },
+-    "Light Matter": { bg: "#f5efe5", panel: "#fff8ee", ink: "#4c3d32", inkStrong: "#2d1f15", accent: "#c29a72", accentSoft: "#e6d2be", line: "#c5b29d", glow: "rgba(175, 126, 92, 0.2)", sidebarStart: "#ede2d2", sidebarEnd: "#e4d6c3", buttonText: "#24170f" },
+-    "Tropics": { bg: "#f4f1eb", panel: "#fffaf0", ink: "#43362d", inkStrong: "#241a14", accent: "#9bc400", accentSoft: "#d4e3a0", line: "#c4b7a3", glow: "rgba(123, 165, 31, 0.2)", sidebarStart: "#ece5d8", sidebarEnd: "#e3dacb", buttonText: "#243100" },
+-    "Tropic Night": { bg: "#15131a", panel: "#221f2b", ink: "#cdbde0", inkStrong: "#e8ddf5", accent: "#9bc400", accentSoft: "#6b4a42", line: "#3c3650", glow: "rgba(107, 74, 66, 0.28)", sidebarStart: "#1d1a24", sidebarEnd: "#292233", buttonText: "#1a2400" },
+-    "Ocean": { bg: "#0f1b24", panel: "#152a36", ink: "#b8d8e8", inkStrong: "#e0f2fb", accent: "#5ea9be", accentSoft: "#214657", line: "#2f5567", glow: "rgba(58, 130, 155, 0.24)", sidebarStart: "#112430", sidebarEnd: "#173342", buttonText: "#0a1b22" },
+-    "Coffee": { bg: "#1d1714", panel: "#2a211d", ink: "#d6c0b3", inkStrong: "#f0ded2", accent: "#b47f5c", accentSoft: "#5f3f2f", line: "#4a3830", glow: "rgba(132, 86, 61, 0.24)", sidebarStart: "#231a16", sidebarEnd: "#32251f", buttonText: "#220f08" },
+-    "White Cliffs": { bg: "#f7f9fb", panel: "#ffffff", ink: "#2e4c63", inkStrong: "#163246", accent: "#5ea8d8", accentSoft: "#dff1fb", line: "#8fc3df", glow: "rgba(94, 168, 216, 0.2)", sidebarStart: "#f1f8fd", sidebarEnd: "#e7f3fb", buttonText: "#103246" },
+-    "Cyber Punk": { bg: "#120918", panel: "#1e1028", ink: "#f5d0ff", inkStrong: "#ffe9ff", accent: "#00f5d4", accentSoft: "#3b1760", line: "#5c2d84", glow: "rgba(255, 0, 153, 0.2)", sidebarStart: "#1b0d24", sidebarEnd: "#281236", buttonText: "#051d1a" },
+-    "Neon Purple": { bg: "#130b1d", panel: "#231233", ink: "#e4ccff", inkStrong: "#f2e6ff", accent: "#c86cff", accentSoft: "#47206c", line: "#63358a", glow: "rgba(200, 108, 255, 0.2)", sidebarStart: "#1b1029", sidebarEnd: "#2a1740", buttonText: "#210a35" },
+-    "Space": { bg: "#0b0f1a", panel: "#151c2d", ink: "#c8d5f0", inkStrong: "#e7efff", accent: "#86a8ff", accentSoft: "#263e74", line: "#34496f", glow: "rgba(92, 126, 220, 0.18)", sidebarStart: "#0f1625", sidebarEnd: "#18233a", buttonText: "#101930" },
+-    "Sky": { bg: "#dff1ff", panel: "#f4fbff", ink: "#2f4f64", inkStrong: "#183142", accent: "#6db3d6", accentSoft: "#b6dced", line: "#93bdd2", glow: "rgba(109, 179, 214, 0.28)", sidebarStart: "#d3ecfa", sidebarEnd: "#c2e2f4", buttonText: "#0f2e3f" },
+-    "Forest": { bg: "#142018", panel: "#1f2f24", ink: "#c7dbc7", inkStrong: "#e3f0df", accent: "#8faa74", accentSoft: "#3a5837", line: "#4f694f", glow: "rgba(118, 148, 95, 0.24)", sidebarStart: "#18261c", sidebarEnd: "#223629", buttonText: "#12200f" },
+-    "Sun": { bg: "#fff3dc", panel: "#fff9ec", ink: "#5a4024", inkStrong: "#392611", accent: "#e0ab4f", accentSoft: "#f1d9a2", line: "#d4b27a", glow: "rgba(224, 171, 79, 0.28)", sidebarStart: "#f8e7c5", sidebarEnd: "#f2dab1", buttonText: "#2a1808" },
+-    "Patina Ky": { bg: "#0d0f14", panel: "#161a22", ink: "#94a3b8", inkStrong: "#e2e8f0", accent: "#4deeea", accentSoft: "#0e4a48", line: "#1e293b", glow: "rgba(77, 238, 234, 0.22)", sidebarStart: "#0d0f14", sidebarEnd: "#1b212c", buttonText: "#04120d" },
+-    "Polished Ky": { bg: "#eef2f6", panel: "#ffffff", ink: "#475569", inkStrong: "#0f172a", accent: "#0891b2", accentSoft: "#cffafe", line: "#cbd5e1", glow: "rgba(8, 145, 178, 0.18)", sidebarStart: "#f1f5f9", sidebarEnd: "#e2e8f0", buttonText: "#021716" },
+-};
+-export type ThemeName = keyof typeof themes;
+-export const themeNames = Object.keys(themes).filter(isThemeName);
+-export function isThemeName(value: string): value is ThemeName { return Object.hasOwn(themes, value); }
++// The suite catalog: Match system, Busnes Light/Dark and every named palette.
++export type Theme = CatalogTheme | SystemTheme;
++export const themes: readonly Theme[] = [SYSTEM_THEME, ...THEME_CATALOG];
+ const key = 'kyyard-theme';
+-const systemTheme = (): ThemeName => window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'Busnes Dark' : 'Busnes Light';
+-export function getStoredTheme(): ThemeName {
+-  try {
+-    const saved = readChoice(key) ?? '';
+-    return isThemeName(saved) ? saved : systemTheme();
+-  } catch { return systemTheme(); }
++// KyYard shipped a darker Polished Ky button text so primary buttons pass AA (4.5:1);
++// the suite catalog carries the other products' value. Keep KyYard's.
++export const LOCAL_PALETTE: Partial<Record<string, Record<string, string>>> = { 'polished-ky': { '--button-text': '#021716' } };
++const prefersDark = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
++
++/** The saved choice (names saved by earlier versions included), else Match system. */
++export function getStoredTheme(): Theme {
++  try { return findTheme(readChoice(key)) ?? SYSTEM_THEME; } catch { return SYSTEM_THEME; }
+ }
+-export function applyTheme(name: ThemeName, persist = true) {
+-  const t = themes[name];
++
++export function applyTheme(theme: Theme, persist = true) {
+   const root = document.documentElement;
+-  for (const [key, value] of Object.entries(t)) root.style.setProperty('--' + key.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase()), value);
+-  const n = Number.parseInt(t.bg.slice(1), 16);
+-  const light = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255 > 0.55;
+-  root.style.colorScheme = light ? 'light' : 'dark';
+-  const shared = name === 'Busnes Light' || name === 'Busnes Dark';
+-  if (shared) root.dataset.kyTheme = light ? 'busnes-light' : 'busnes-dark';
+-  else delete root.dataset.kyTheme;
+-  root.style.setProperty('--panel-hover', shared ? 'var(--ky-panel-hover)' : 'color-mix(in srgb, ' + t.panel + ' 92%, ' + t.inkStrong + ')');
+-  root.style.setProperty('--line-strong', shared ? 'var(--ky-line-strong)' : t.ink);
+-  root.style.setProperty('--danger', shared ? 'var(--ky-danger)' : light ? '#b91c1c' : '#f87171');
+-  root.style.setProperty('--success', shared ? 'var(--ky-success)' : light ? '#166534' : '#34d399');
+-  root.dataset.theme = name;
+-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', t.bg);
+-  if (persist) { try { saveChoice(key, name); } catch { /* Applies without storage. */ } }
++  const named = applyThemeVariables(theme.id, root);
++  if (named) {
++    // data-theme keeps the base-family rules (patina, cyber, nord, paper, oled) for the
++    // variables the shared palette does not set; the shared ones are inline and win.
++    root.dataset.theme = theme.id;
++    delete root.dataset.kyTheme;
++    root.style.setProperty('--danger', named === 'light' ? '#b91c1c' : '#f87171');
++    root.style.setProperty('--success', named === 'light' ? '#166534' : '#34d399');
++    for (const [name, value] of Object.entries(LOCAL_PALETTE[theme.id] ?? {})) root.style.setProperty(name, value);
++  } else {
++    const busnes = theme.id === 'system' ? (prefersDark() ? 'busnes-dark' : 'busnes-light') : theme.id;
++    root.dataset.theme = busnes;
++    root.dataset.kyTheme = busnes;
++    root.style.colorScheme = busnes === 'busnes-dark' ? 'dark' : 'light';
++    root.style.removeProperty('--danger');
++    root.style.removeProperty('--success');
++  }
++  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(root).getPropertyValue('--bg').trim());
++  // Names are what earlier versions saved; keep writing them.
++  if (persist) { try { saveChoice(key, theme.id === 'system' ? 'system' : theme.name); } catch { /* Applies without storage. */ } }
+   window.dispatchEvent(new Event('ky:theme'));
+ }
+-window.addEventListener('storage', (e) => { if (e.key === key) applyTheme(getStoredTheme(), false); });
+ 
++window.addEventListener('storage', (e) => { if (e.key === key) applyTheme(getStoredTheme(), false); });
+ window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
+-  try { if (isThemeName(readChoice(key) ?? '')) return; } catch { /* Follow the OS when storage is unavailable. */ }
+-  applyTheme(systemTheme(), false);
++  if (getStoredTheme().id === 'system') applyTheme(SYSTEM_THEME, false);
+ });
+diff --git a/web/tsconfig.tsbuildinfo b/web/tsconfig.tsbuildinfo
+index 775d7842..c50d24e3 100644
+Binary files a/web/tsconfig.tsbuildinfo and b/web/tsconfig.tsbuildinfo differ

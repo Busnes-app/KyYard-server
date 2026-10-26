@@ -1,0 +1,92 @@
+{
+  "prefix": "kyyard-01-after",
+  "product": "kyyard",
+  "branch": "ui/fleet-appearance",
+  "head": "038fb4ad67e4f7789800953d650b25a46e205e1c",
+  "uncommitted_diff_sha256": "b424025ed9a38d50fe6a174499ce1e503e7693ee07aafed76774225c5145930f",
+  "uncommitted_diff_bytes": 14991,
+  "server_binary_sha256": "5955be57ffcd02888d3e7cb6657dcff58df2b3ba579f4211a33381da24557ae8",
+  "embedded_index_sha256": "1a94e85f2c87da2b5d83483075674c40adde09d1fe4d36ea3982e5e59f5e2214",
+  "captured": "2026-10-26T11:21:45.467Z",
+  "os": "linux 7.2.10-1-cachyos",
+  "driver": "playwright chromium 156.0.8078.4 (headless)",
+  "device_scale_factor": 1,
+  "timezone": "America/Chicago",
+  "locale": "en-US",
+  "theme_source": "context colorScheme emulation with no saved theme choice (OS-following default)",
+  "fixture": "web built from this tree; fresh SQLite data dir; captcha none; KY_DOCKER_SOCKET empty (no local Docker endpoint), no enrolled endpoints or organizations beyond first-run defaults; init-admin \"admin\" (generated password on stdin, replaced through /api/auth/change-password when required)",
+  "files": [
+    {
+      "file": "kyyard-01-after-home-desktop-light.png",
+      "sha256": "3a612ca966a82b2403adbde942fa381a4be7720423aab774a3f9d48b63190251",
+      "surface": "home",
+      "viewport": "1280x900",
+      "theme": "os-light (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-01-after-appearance-desktop-light.png",
+      "sha256": "86d5d8cd94be03a7e242f20adc3bf5a37a5afc95b90d140022990ab194facb95",
+      "surface": "appearance",
+      "viewport": "1280x900",
+      "theme": "os-light (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-01-after-home-mobile-light.png",
+      "sha256": "d98548830d5a9a31e738bdeee3d0f67b4878a8cd4f8b9f1286475e5d9deb6536",
+      "surface": "home",
+      "viewport": "390x844",
+      "theme": "os-light (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-01-after-appearance-mobile-light.png",
+      "sha256": "5e36fc6dc66ee1a3bb7c20334e4a14961df109389f063f75a96d135c5d84994f",
+      "surface": "appearance",
+      "viewport": "390x844",
+      "theme": "os-light (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-01-after-home-desktop-dark.png",
+      "sha256": "80a0d81b7600daf104af3ddc8bed69f49d68f282958b4463017d0ef9de6b740c",
+      "surface": "home",
+      "viewport": "1280x900",
+      "theme": "os-dark (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-01-after-appearance-desktop-dark.png",
+      "sha256": "3ec7de2971454843c5b06817deb8ef067922d53c73593058689252d212effdc1",
+      "surface": "appearance",
+      "viewport": "1280x900",
+      "theme": "os-dark (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-01-after-home-mobile-dark.png",
+      "sha256": "5e2c450cea37b7217843179470dcff9ad623242e54d3f83a2a9282c2e822de9a",
+      "surface": "home",
+      "viewport": "390x844",
+      "theme": "os-dark (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    },
+    {
+      "file": "kyyard-01-after-appearance-mobile-dark.png",
+      "sha256": "951ebe0cd2012e34d8f56ee8160072b43835b52735c15a95c40c45b2162d7835",
+      "surface": "appearance",
+      "viewport": "390x844",
+      "theme": "os-dark (no saved choice)",
+      "overflow_px": 0,
+      "full_page": false
+    }
+  ]
+}
