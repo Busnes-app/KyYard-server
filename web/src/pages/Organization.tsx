@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Building2, Users, ScrollText } from 'lucide-react';
+import { Building2, Users, ScrollText, KeyRound } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { envPath, orgPath } from '../router';
@@ -32,6 +32,7 @@ export const Organization: React.FC<{ org: string }> = ({ org }) => {
       </h1>
       <nav aria-label="Administration" className="ky-subnav">
         <Link to={orgPath(org, '/members')}><Users size={14} /> Members</Link>
+        <Link to={orgPath(org, '/access')}><KeyRound size={14} /> Access</Link>
         <Link to={orgPath(org, '/audit')}><ScrollText size={14} /> Audit</Link>
       </nav>
       <StateNotice state={details.state} onRetry={() => { details.reload(); envs.reload(); organizations.reload(); }} />

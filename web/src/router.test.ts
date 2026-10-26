@@ -7,6 +7,7 @@ it('maps paths to routes and rejects unsafe segments', () => {
   expect(matchRoute('/suite')).toEqual({ name: 'suite' });
   expect(matchRoute('/organizations/org_initial')).toEqual({ name: 'organization', org: 'org_initial' });
   expect(matchRoute('/organizations/org_initial/members')).toEqual({ name: 'members', org: 'org_initial' });
+  expect(matchRoute('/organizations/org_initial/access')).toEqual({ name: 'access', org: 'org_initial' });
   expect(matchRoute('/organizations/org_initial/audit')).toEqual({ name: 'audit', org: 'org_initial' });
   expect(matchRoute('/organizations/a/environments/env-1')).toEqual({ name: 'environment', org: 'a', env: 'env-1' });
   expect(matchRoute('/organizations/a/endpoints/ep_1')).toEqual({ name: 'endpoint', org: 'a', endpoint: 'ep_1' });

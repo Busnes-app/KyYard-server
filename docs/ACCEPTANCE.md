@@ -18,7 +18,7 @@ Found while writing this runbook against the current UI. Each one the operator r
 in the results table.
 
 - Direct YAML runs accept the documented Compose subset and native Deployments only; other Kubernetes resource kinds use Applications. Image hints require an explicit registry check, and an unknown digest is not proof of being current.
-- Registry access (needed for update checks) is set on the Members page, not near Updates.
+- Registry access (needed for update checks) is set on the organization's Access page; the update badge links there.
 - Platform audit (sign-in, password change, backup, `organization.create`, `user.create`) has
   no screen; only tenant audit does.
 - The audit Actor column shows user IDs (`usr_…`), not names. Keep the list of which ID is
@@ -336,7 +336,7 @@ are as the UI shows them. Header navigation is Containers, Endpoints, Settings.
 
 ### 6. Update detection and approval
 
-- Registry access first: Members page (Environments, Members), Registries panel. Either add a
+- Registry access first: Access page (Environments, Access), Registries panel. Either add a
   registry entry for the image's host or switch on "Allow anonymous pulls" (confirm; audited).
 - Application, Updates, Check for updates. The table shows Service, Reference, Status ("Update
   available"), On host, In registry, Checked.

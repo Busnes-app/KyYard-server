@@ -5,7 +5,7 @@ import { useNow } from '../components/containerFacts';
 import { endpointPath, orgPath, runPath, workloadRunPath } from '../router';
 import { canConfigure, canEnroll, useTenantResource, type MemberOrganization, type Endpoint, type Inventory } from '../tenant';
 
-export function Dashboard({ mode = 'home' }: { mode?: 'home' | 'endpoints' }) {
+export function Dashboard({ mode = 'home', platformAdmin = false }: { mode?: 'home' | 'endpoints'; platformAdmin?: boolean }) {
   const organizations = useTenantResource<MemberOrganization[]>('/api/organizations');
   const [selected, setSelected] = useState('');
   const orgs = organizations.data ?? [];
@@ -14,7 +14,9 @@ export function Dashboard({ mode = 'home' }: { mode?: 'home' | 'endpoints' }) {
     <div className="ky-page-heading"><h1>{mode === 'home' ? 'Home' : 'Endpoints'}</h1>{org && <Link className="btn btn-secondary" to={orgPath(org.id)}>{canEnroll(org.role) ? 'Environments & add endpoint' : 'View environments'}</Link>}</div>
     <p>{mode === 'home' ? 'Your Docker hosts and Kubernetes clusters. Choose where to run or manage an application.' : 'Connect Docker hosts and Kubernetes clusters, review enrollment, and inspect their resources.'}</p>
     <StateNotice state={organizations.state} onRetry={organizations.reload} />
-    {organizations.state === 'ready' && !org && <EmptyNotice>No host access yet. Ask an administrator to add your account.</EmptyNotice>}
+    {organizations.state === 'ready' && !org && (platformAdmin
+      ? <EmptyNotice>No organization yet. Hosts and clusters belong to an organization: <Link to="/settings?section=administration">create one in Settings → Administration</Link> and name yourself its first administrator.</EmptyNotice>
+      : <EmptyNotice>No host access yet. Ask an administrator to add your account.</EmptyNotice>)}
     {org && <>
       <div className="ky-fleet-scope">
         <div><span className="text-muted">Organization</span>{orgs.length > 1 ? <><label className="ky-scope-label" htmlFor="fleet-org">Access scope</label><select id="fleet-org" value={org.id} onChange={(e) => setSelected(e.target.value)}>{orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select></> : <strong>{org.name}</strong>}</div>

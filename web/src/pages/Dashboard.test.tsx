@@ -64,3 +64,13 @@ it('shows scope and role-aware navigation, and clears a search without losing en
   fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
   expect(screen.getByRole('link', { name: 'docker.example.com' })).toBeTruthy();
 });
+// Before any organization exists, a platform administrator is pointed at creating one; everyone
+// else is told to ask for access.
+it('points a platform administrator without an organization at Administration', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json([])));
+  render(<Dashboard platformAdmin />);
+  expect((await screen.findByRole('link', { name: 'create one in Settings → Administration' })).getAttribute('href')).toBe('/settings?section=administration');
+  cleanup();
+  render(<Dashboard />);
+  expect(await screen.findByText('No host access yet. Ask an administrator to add your account.')).toBeTruthy();
+});
