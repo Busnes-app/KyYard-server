@@ -1,9 +1,9 @@
 {
   "prefix": "kyyard-01-after",
   "product": "kyyard",
-  "head": "b2c9550899d04ed54e3cb0d02c5fa1c0d6245ed2",
-  "uncommitted_diff_sha256": "553e55718f0c0dd38da7d57a84355b3f9e9334c9be45641df74a6fa9f1efb703",
-  "run": "2026-10-26T11:12:58.727Z",
+  "head": "038fb4ad67e4f7789800953d650b25a46e205e1c",
+  "uncommitted_diff_sha256": "b424025ed9a38d50fe6a174499ce1e503e7693ee07aafed76774225c5145930f",
+  "run": "2026-10-26T11:21:59.729Z",
   "viewport": "1280x900",
   "colorScheme": "dark",
   "results": [
