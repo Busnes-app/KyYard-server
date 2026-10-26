@@ -1,20 +1,25 @@
 import { useEffect, useState } from 'react';
-import { applyTheme, getStoredTheme, isThemeName, themeNames, themes } from '../theme';
+import { applyTheme, getStoredTheme, themes } from '../theme';
 
-export function ThemeSwitcher({ swatches = false }: { swatches?: boolean }) {
+const mode = (scheme: string) => scheme === 'system' ? 'Light or dark' : scheme === 'light' ? 'Light' : 'Dark';
+
+/** The shared ky-ui Appearance cards: native radios, applied and saved on change. */
+export function ThemeSwitcher() {
   const [selected, setSelected] = useState(getStoredTheme);
   useEffect(() => {
-    const update = () => { const value = document.documentElement.dataset.theme ?? ''; if (isThemeName(value)) setSelected(value); };
+    const update = () => setSelected(getStoredTheme());
     window.addEventListener('ky:theme', update);
     return () => window.removeEventListener('ky:theme', update);
   }, []);
-  const choose = (name: string) => { if (isThemeName(name)) { setSelected(name); applyTheme(name); } };
-  if (!swatches) return <select aria-label="Select color theme" value={selected} onChange={(e) => choose(e.target.value)} style={{ width: 'auto', maxWidth: 180 }}>{themeNames.map((name) => <option key={name}>{name}</option>)}</select>;
-  return <div className="theme-grid">{themeNames.map((name) => {
-    const c = themes[name];
-    return <button key={name} type="button" aria-pressed={name === selected} className="theme-swatch" onClick={() => choose(name)}>
-      <span className="theme-swatch-preview" style={{ background: `linear-gradient(90deg, ${c.sidebarStart} 30%, ${c.bg} 30%)` }}><i style={{ background: c.accent }} /><i style={{ background: c.inkStrong, opacity: 0.55 }} /></span>
-      <span className="theme-swatch-name">{name}</span>
-    </button>;
-  })}</div>;
+  return <fieldset className="ky-appearance">
+    <legend className="ky-appearance-legend">Theme</legend>
+    <div className="ky-appearance-grid">
+      {themes.map((theme) => <label key={theme.id} className="ky-appearance-option">
+        <input className="ky-appearance-radio" type="radio" name="kyyard-theme" value={theme.id} checked={theme.id === selected.id} onChange={() => { setSelected(theme); applyTheme(theme); }} />
+        <span className="ky-appearance-preview" aria-hidden="true" data-ky-preview={theme.id} />
+        <span className="ky-appearance-name">{theme.name}</span>
+        <small className="ky-appearance-mode">{mode(theme.scheme)}</small>
+      </label>)}
+    </div>
+  </fieldset>;
 }
