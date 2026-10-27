@@ -1037,10 +1037,17 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// A session and an MFA transaction remember the provider login they came from, so a
 	// back-channel logout can end it. sso_logouts fences an ended login, and
 	// sso_subject_logouts a subject's logins issued before cutoff, against a callback in flight.
+	// Sessions and MFA transactions from before it carry no provider login, so no logout could
+	// reach them: those that may have come from a provider are ended here, once, on upgrade.
 	{Version: 46, Name: "backchannel_logout", SQLite: backchannelLogout, Postgres: strings.ReplaceAll(backchannelLogout, "DATETIME", "TIMESTAMPTZ")},
 }
 
-const backchannelLogout = `ALTER TABLE sessions ADD COLUMN sso_provider TEXT NOT NULL DEFAULT '';
+// A linked local account's password session is indistinguishable from its provider session,
+// so it signs in again too. A pending MFA transaction lives five minutes; all of them go.
+const backchannelLogout = `DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE sso_provider <> 'local')
+ OR user_id IN (SELECT user_id FROM user_sso_identities);
+DELETE FROM mfa_challenges;
+ALTER TABLE sessions ADD COLUMN sso_provider TEXT NOT NULL DEFAULT '';
 ALTER TABLE sessions ADD COLUMN sso_sid TEXT NOT NULL DEFAULT '';
 CREATE INDEX idx_sessions_sso_sid ON sessions(sso_provider, sso_sid) WHERE sso_sid <> '';
 ALTER TABLE mfa_challenges ADD COLUMN sso_provider TEXT NOT NULL DEFAULT '';

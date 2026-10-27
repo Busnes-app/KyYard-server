@@ -283,7 +283,8 @@ func TestBackchannelLogoutEndsTheSSOLogin(t *testing.T) {
 	if signedIn(t, srv, mfa) {
 		t.Fatal("MFA-completed SSO session survived its logout")
 	}
-	if w := completeRecovery(t, srv, pending, codes[1]); w.Code != http.StatusUnauthorized || sessionCookie(w) != nil || !strings.Contains(w.Body.String(), "ended at the provider") {
+	// The logout removed the pending MFA transaction itself.
+	if w := completeRecovery(t, srv, pending, codes[1]); w.Code != http.StatusUnauthorized || sessionCookie(w) != nil {
 		t.Fatalf("MFA completion revived an ended login: %d %s", w.Code, w.Body.String())
 	}
 	pendingSub := ssoLoginAt(t, srv, f, "idp_a", "yard-a", "carol-sub", "sid-c3", time.Now().Add(-time.Minute))
@@ -298,9 +299,55 @@ func TestBackchannelLogoutEndsTheSSOLogin(t *testing.T) {
 	if w := completeRecovery(t, srv, pendingSub, codes[2]); w.Code != http.StatusUnauthorized || sessionCookie(w) != nil {
 		t.Fatalf("MFA completion survived a subject-wide logout: %d %s", w.Code, w.Body.String())
 	}
-
 	if len(auditRows(t, st, "auth.sso.logout")) == 0 {
 		t.Fatal("back-channel logout was not audited")
+	}
+}
+
+// A callback still in flight when the logout arrives starts its MFA transaction afterwards,
+// so no logout could delete it; completing it is refused against the ID token's sid and iat.
+func TestBackchannelLogoutFencesLateMFACompletion(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeIdP(t)
+	srv, st, cfg := setupTestServer(t)
+	plain, _ := json.Marshal([]sso.Provider{{ID: "idp_a", Name: "A", Kind: "oidc", Issuer: f.issuer, ClientID: "yard-a", Enabled: true}})
+	sealed, _ := crypto.EncryptAESGCM(plain, crypto.DeriveKey(cfg.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	if err := st.Settings().SetSetting(ctx, "sso_providers_enc", sealed); err != nil {
+		t.Fatal(err)
+	}
+	local := loginAs(t, srv, st, "carol", "user")
+	carol, err := st.Users().GetUserByUsername(ctx, "carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().LinkSSO(ctx, carol.ID, crypto.SHA256Hex([]byte(local.Value)), carol.PasswordHash, "idp_a", "carol-sub", ""); err != nil {
+		t.Fatal(err)
+	}
+	codes, hashed, err := auth.GenerateRecoveryCodes(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carol.TOTPEnabled, carol.RecoveryCodesHash = true, hashed
+	if err := st.Users().UpdateUser(ctx, carol); err != nil {
+		t.Fatal(err)
+	}
+	subjectLogout := f.sign(t, "logout+jwt", "yard-a", map[string]any{"sub": "carol-sub", "iat": time.Now().Add(-30 * time.Second).Unix(),
+		"events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}})
+	for _, token := range []string{f.logoutToken(t, "yard-a", "carol-sub", "sid-1"), subjectLogout} {
+		if w := postLogout(srv, "idp_a", token); w.Code != http.StatusOK {
+			t.Fatalf("logout: got %d", w.Code)
+		}
+	}
+	for i, late := range []*httptest.ResponseRecorder{
+		ssoLogin(t, srv, f, "idp_a", "yard-a", "carol-sub", "sid-1"),
+		ssoLoginAt(t, srv, f, "idp_a", "yard-a", "carol-sub", "sid-2", time.Now().Add(-time.Minute)),
+	} {
+		if w := completeRecovery(t, srv, late, codes[i]); w.Code != http.StatusUnauthorized || sessionCookie(w) != nil || !strings.Contains(w.Body.String(), "ended at the provider") {
+			t.Fatalf("late MFA completion %d revived an ended login: %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	if w := completeRecovery(t, srv, ssoLogin(t, srv, f, "idp_a", "yard-a", "carol-sub", "sid-3"), codes[2]); w.Code != http.StatusOK || !signedIn(t, srv, sessionCookie(w)) {
+		t.Fatalf("MFA completion of a login after the logout was refused: %d %s", w.Code, w.Body.String())
 	}
 }
 

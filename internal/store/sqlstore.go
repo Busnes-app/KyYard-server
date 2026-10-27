@@ -616,6 +616,9 @@ func (s *sessionStore) EndSSOSession(ctx context.Context, provider, sid string, 
 	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`INSERT INTO sso_logouts (provider, sid, expires_at) VALUES (?, ?, ?) ON CONFLICT (provider, sid) DO UPDATE SET expires_at = excluded.expires_at`), provider, sid, fenceUntil.UTC()); err != nil {
 		return err
 	}
+	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM mfa_challenges WHERE sso_provider = ? AND sso_sid = ?`), provider, sid); err != nil {
+		return err
+	}
 	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE sso_provider = ? AND sso_sid = ?`), provider, sid)
 	return err
 }
@@ -627,6 +630,10 @@ func (s *sessionStore) EndSSOSubject(ctx context.Context, provider, subject stri
 	// Keyed by subject, not user, so it also fences a first login that is still provisioning.
 	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`INSERT INTO sso_subject_logouts (provider, subject, cutoff, expires_at) VALUES (?, ?, ?, ?)
 ON CONFLICT (provider, subject) DO UPDATE SET cutoff = excluded.cutoff, expires_at = excluded.expires_at WHERE sso_subject_logouts.cutoff < excluded.cutoff`), provider, subject, cutoff.UTC(), fenceUntil.UTC()); err != nil {
+		return err
+	}
+	// A pending MFA transaction is dated by its ID token like the session it would become.
+	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM mfa_challenges WHERE sso_provider = ? AND (sso_issued_at IS NULL OR sso_issued_at < ?) AND user_id IN (SELECT user_id FROM user_sso_identities WHERE provider = ? AND subject = ?)`), provider, cutoff.UTC(), provider, subject); err != nil {
 		return err
 	}
 	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE sso_provider = ? AND created_at < ? AND user_id IN (SELECT user_id FROM user_sso_identities WHERE provider = ? AND subject = ?)`), provider, cutoff.UTC(), provider, subject)

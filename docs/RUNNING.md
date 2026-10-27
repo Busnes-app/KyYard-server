@@ -182,7 +182,10 @@ bind and DNS overlays already in use:
   displayed callback URL with the provider. For an OIDC provider that supports back-channel
   logout (KyIdentity does), also register `<KY_APP_URL>/api/sso/<provider ID>/backchannel-logout`
   (the callback URL with `callback` replaced) so signing out there ends the KyYard session.
-  Without it a KyYard session lasts until it expires or the user signs out here. New
+  Without it a KyYard session lasts until it expires or the user signs out here. The upgrade
+  that adds back-channel logout signs out every account with an SSO identity, linked local
+  accounts included, and drops pending MFA sign-ins: their sessions name no provider login a
+  logout could end. New
   identities require an organization membership grant. SCIM and phone pairing are not part
   of KyYard. Local login remains available.
   To use SSO with an existing local account, sign in locally and open **Settings → Sign-in →
