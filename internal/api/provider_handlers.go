@@ -411,7 +411,7 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if user.SSOProvider == "local" && user.TOTPEnabled {
-		token, err := s.beginMFA(ctx, user)
+		token, err := s.beginMFA(ctx, user, p.ID, claims.SessionID)
 		if err != nil {
 			s.writeError(w, 403, "Account unavailable")
 			return
@@ -422,7 +422,10 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/#sso-mfa="+token, http.StatusFound)
 		return
 	}
-	if _, _, err = s.sessions.IssueSession(ctx, w, r, user); err != nil {
+	if _, _, err = s.sessions.IssueSSOSession(ctx, w, r, user, p.ID, claims.SessionID); errors.Is(err, store.ErrSSOSessionEnded) {
+		s.writeError(w, 401, "Sign-in already ended at the provider; sign in again")
+		return
+	} else if err != nil {
 		s.writeError(w, 403, "Account unavailable")
 		return
 	}

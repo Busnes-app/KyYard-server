@@ -22,12 +22,14 @@ var (
 	// ErrEndpointOffline says the endpoint is not connected, so there is nowhere to send a
 	// command. It is distinct from a bad request: the caller asked for something reasonable
 	// that cannot happen right now.
-	ErrEndpointOffline   = errors.New("endpoint is not connected")
-	ErrInUse             = errors.New("record is still referenced")
-	ErrRotationPending   = errors.New("a rotated key is already awaiting review")
-	ErrRotationBlocked   = errors.New("rotation is blocked until a duplicate connection is cleared")
-	ErrSessionExpired    = errors.New("session expired")
-	ErrPairingExpired    = errors.New("pairing session expired")
+	ErrEndpointOffline = errors.New("endpoint is not connected")
+	ErrInUse           = errors.New("record is still referenced")
+	ErrRotationPending = errors.New("a rotated key is already awaiting review")
+	ErrRotationBlocked = errors.New("rotation is blocked until a duplicate connection is cleared")
+	ErrSessionExpired  = errors.New("session expired")
+	ErrPairingExpired  = errors.New("pairing session expired")
+	// ErrSSOSessionEnded means the identity provider already ended the login being signed in.
+	ErrSSOSessionEnded   = errors.New("SSO session already ended")
 	ErrDeploymentPlanned = errors.New("a live deployment plan exists")
 	// ErrDeploymentInProgress says a deployment is applying: neither a new plan nor a
 	// release may proceed until it settles.
@@ -174,8 +176,12 @@ type SessionStore interface {
 	DeleteSession(ctx context.Context, tokenHash string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
 	CleanExpiredSessions(ctx context.Context) error
+	// EndSSOSession ends every session of a provider login and fences its sid until fenceUntil.
+	EndSSOSession(ctx context.Context, provider, sid string, fenceUntil time.Time) error
+	// EndSSOSubject ends the provider subject's sessions from that provider created before t.
+	EndSSOSubject(ctx context.Context, provider, subject string, before time.Time) error
 	CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error
-	ConsumeMFAChallenge(ctx context.Context, tokenHash string) (userID, passwordHash string, err error)
+	ConsumeMFAChallenge(ctx context.Context, tokenHash string) (*MFAChallenge, error)
 }
 
 // DeviceStore handles 90s ephemeral QR pairing sessions and paired push clients.

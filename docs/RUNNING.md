@@ -179,8 +179,12 @@ bind and DNS overlays already in use:
   stray compose project) corrupts the first one's command results.
 - SSO: configure providers in **Settings → Sign-in**. OIDC discovery supports KyIdentity;
   OAuth 2 providers can supply explicit endpoints and JSON profile field mappings. Register the
-  displayed callback URL with the provider. New identities require an organization membership
-  grant. SCIM and phone pairing are not part of KyYard. Local login remains available.
+  displayed callback URL with the provider. For an OIDC provider that supports back-channel
+  logout (KyIdentity does), also register `<KY_APP_URL>/api/sso/<provider ID>/backchannel-logout`
+  (the callback URL with `callback` replaced) so signing out there ends the KyYard session.
+  Without it a KyYard session lasts until it expires or the user signs out here. New
+  identities require an organization membership grant. SCIM and phone pairing are not part
+  of KyYard. Local login remains available.
   To use SSO with an existing local account, sign in locally and open **Settings → Sign-in →
   Connect single sign-on to your account**. Supply the current KyYard password, then sign in
   to the provider as the identity to connect. The same account ID and permissions are retained;

@@ -148,6 +148,7 @@ func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 	// roles is KyIdentity's per-app role claim, a string array; any other non-null type rejects the token.
 	var raw struct {
 		Sub               string   `json:"sub"`
+		SID               string   `json:"sid"`
 		Email             string   `json:"email"`
 		Name              string   `json:"name"`
 		PreferredUsername string   `json:"preferred_username"`
@@ -164,5 +165,5 @@ func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 	if username == "" {
 		username = raw.Sub
 	}
-	return &IdentityClaims{Issuer: idToken.Issuer, AppRoles: raw.AppRoles, Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role}, nil
+	return &IdentityClaims{Issuer: idToken.Issuer, AppRoles: raw.AppRoles, Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role, SessionID: raw.SID}, nil
 }

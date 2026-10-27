@@ -35,6 +35,13 @@ func NewSessionManager(st store.Store, cfg config.SecurityConfig) *SessionManage
 
 // IssueSession creates an active session in the database and writes HttpOnly cookie + CSRF token.
 func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User) (*store.Session, string, error) {
+	return sm.IssueSSOSession(ctx, w, r, user, "", "")
+}
+
+// IssueSSOSession issues a session for a provider sign-in named by its ID token sid, so a
+// back-channel logout ends it. It fails with store.ErrSSOSessionEnded when the provider
+// already ended that login. Empty provider and sid issue a local session.
+func (sm *SessionManager) IssueSSOSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, provider, sid string) (*store.Session, string, error) {
 	rawToken := crypto.RandomHex(32)
 	tokenHash := crypto.SHA256Hex([]byte(rawToken))
 
@@ -44,12 +51,14 @@ func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWrite
 	}
 
 	sess := &store.Session{
-		TokenHash: tokenHash,
-		UserID:    user.ID,
-		UserAgent: r.UserAgent(),
-		IPAddress: ClientIP(r, sm.config.TrustedProxies),
-		CreatedAt: time.Now().UTC(),
-		ExpiresAt: time.Now().UTC().Add(ttl),
+		TokenHash:   tokenHash,
+		UserID:      user.ID,
+		UserAgent:   r.UserAgent(),
+		IPAddress:   ClientIP(r, sm.config.TrustedProxies),
+		CreatedAt:   time.Now().UTC(),
+		ExpiresAt:   time.Now().UTC().Add(ttl),
+		SSOProvider: provider,
+		SSOSID:      sid,
 	}
 
 	if err := sm.store.Sessions().CreateSession(ctx, sess, user.PasswordHash); err != nil {

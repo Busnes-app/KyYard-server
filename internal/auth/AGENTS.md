@@ -10,6 +10,7 @@ Owns session issuance and verification, TOTP token generation/validation, recove
 - Shared TOTP verification requires sixteen decoded key bytes; generation remains twenty random bytes. Keep original sealed weak records readable and preserve recovery access while refusing short-key authentication.
 - Every authenticated session rechecks installer ownership against the immutable setup record; an altered or unassigned `kyidentity` binding fails closed. `TrustedPeer` shares `ClientIP`'s transport-peer allowlist for the public installer scheme self-check.
 - Linked local SSO accounts retain local MFA: verified provider authentication can create the same five-minute password-hash-bound transaction; only successful local TOTP/recovery completion issues a session.
+- `IssueSSOSession` stores the provider ID and ID token `sid` on the session so back-channel logout can end it, and fails with `store.ErrSSOSessionEnded` when that login was already ended. `IssueSession` is the local form (both empty).
 - Sessions for `must_change_password` users authenticate only GET `/api/auth/me` and POST `/api/auth/change-password` or `/api/auth/logout`; private settings and product actions fail closed. Session issuance is bound to the verified password hash and serialized with replacement.
 - Passwords require at least 12 characters (`ValidatePassword`).
 - Active sessions are stored with SHA-256 hashed tokens and verified against secure HttpOnly / SameSite cookies or Bearer headers.

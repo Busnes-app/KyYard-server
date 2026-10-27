@@ -36,12 +36,20 @@ type Session struct {
 	IPAddress string    `json:"ip_address"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// The provider ID and its ID token sid for an SSO sign-in; empty for a local one.
+	SSOProvider string `json:"-"`
+	SSOSID      string `json:"-"`
 }
 
 type MFAChallenge struct {
 	TokenHash string
 	UserID    string
 	ExpiresAt time.Time
+	// PasswordHash is the hash the challenge was bound to, as ConsumeMFAChallenge returns it.
+	PasswordHash string
+	// The SSO sign-in the challenge completes, carried onto its session.
+	SSOProvider string
+	SSOSID      string
 }
 
 // DevicePairing represents a 90-second ephemeral session to link mobile/PWA wrappers.

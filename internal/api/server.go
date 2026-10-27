@@ -524,6 +524,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sso/{provider}/callback", s.handleProviderCallback)
 	s.mux.HandleFunc("GET /api/auth/sso", s.handleSSOLinkOptions)
 	s.mux.HandleFunc("POST /api/sso/{provider}/link", s.handleLinkProvider)
+	s.mux.HandleFunc("POST /api/sso/{provider}/backchannel-logout", s.handleBackchannelLogout)
 	s.mux.HandleFunc("/api/sso/kysignon/sync", s.handleKySignOnSyncWebhook)
 	s.mux.HandleFunc("POST /api/installer/directory", s.handleInstallerDirectory)
 	s.mux.HandleFunc("GET /api/installer/network", s.handleInstallerNetwork)

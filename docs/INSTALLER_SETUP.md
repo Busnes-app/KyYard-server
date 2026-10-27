@@ -5,6 +5,8 @@ The server exposes a container-local `apply-setup` interface. It requires the sh
 KyIdentity issuer, client ID, protected absolute client/directory credential paths,
 and explicit administrator and everyday issuer/subject assignments. Usernames match
 `[a-z0-9._-]{3,64}`. The callback is `/api/sso/kyidentity/callback` under `KY_APP_URL`.
+Register `/api/sso/kyidentity/backchannel-logout` under `KY_APP_URL` as the client's
+back-channel logout URI in KyIdentity, so signing out there ends the KyYard session too.
 
 Run `/app/kyyard-server apply-setup --capabilities`, then
 `/app/kyyard-server apply-setup --file /data/installer/setup.json` inside the running
