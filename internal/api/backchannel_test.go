@@ -38,9 +38,11 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 		t.Fatal(err)
 	}
 	f := &fakeIdP{key: key}
+	// A unique issuer path: configured-provider flows are cached per issuer, and ports are reused.
+	base := "/" + rand.Text()
 	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
+		switch strings.TrimPrefix(r.URL.Path, base) {
 		case "/.well-known/openid-configuration":
 			f.discoveries.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -61,7 +63,7 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 		}
 	}))
 	t.Cleanup(idp.Close)
-	f.issuer = idp.URL
+	f.issuer = idp.URL + base
 	// sso.ProviderContext verifies TLS through the default transport; trust only this fixture.
 	saved := http.DefaultTransport
 	http.DefaultTransport = idp.Client().Transport

@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,9 +46,12 @@ func TestOIDCJWKMemberParsingMatchesVerifier(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/RSA%d/%s", provider, bits, variant.name), func(t *testing.T) {
 					var issuer, token string
 					var fetches atomic.Int32
+					// Configured-provider flows are cached per issuer for the process; a unique
+					// path keeps a reused port from inheriting another subtest's flow.
+					base := "/" + rand.Text()
 					idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						w.Header().Set("Content-Type", "application/json")
-						switch r.URL.Path {
+						switch strings.TrimPrefix(r.URL.Path, base) {
 						case "/.well-known/openid-configuration":
 							_ = json.NewEncoder(w).Encode(map[string]any{
 								"issuer": issuer, "authorization_endpoint": issuer + "/authorize",
@@ -65,7 +69,7 @@ func TestOIDCJWKMemberParsingMatchesVerifier(t *testing.T) {
 						}
 					}))
 					defer idp.Close()
-					issuer = idp.URL
+					issuer = idp.URL + base
 					token = signedIDToken(t, key, issuer)
 					ctx := oidc.ClientContext(context.Background(), idp.Client())
 					cfg := config.SSOConfig{KySignOnIssuer: issuer, KySignOnClientID: "client", GenericOIDCIssuer: issuer, GenericOIDCClientID: "client"}

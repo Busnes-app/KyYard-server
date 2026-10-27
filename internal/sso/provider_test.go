@@ -2,6 +2,7 @@ package sso
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,8 @@ func TestHTTPSDiscoveryCannotDowngradeEndpoints(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(values)
 			}))
 			defer server.Close()
-			issuer = server.URL
+			// A unique issuer path: flows (and failed discoveries) are cached per issuer, and ports are reused.
+			issuer = server.URL + "/" + rand.Text()
 			ctx := context.WithValue(context.Background(), oauth2.HTTPClient, server.Client())
 			p := Provider{Kind: "oidc", Issuer: issuer, ClientID: "yard"}
 			if _, err := p.AuthURL(ctx, "https://yard.test/callback", "state", "verifier", "nonce"); err == nil {
