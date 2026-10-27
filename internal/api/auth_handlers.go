@@ -105,7 +105,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Check if MFA is required
 	if user.TOTPEnabled {
-		rawChallenge, err := s.beginMFA(r.Context(), user)
+		rawChallenge, err := s.beginMFA(r.Context(), user, "", "", time.Time{})
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "Failed to start MFA verification")
 			return
@@ -156,23 +156,23 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, verifiedHash, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
+	challenge, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "Invalid or expired MFA transaction")
 		return
 	}
 	// Per-account, so a botnet spread across many IPs cannot outrun the per-IP window. Each
 	// guess already costs a fresh password login, since the challenge is consumed either way.
-	if !s.allowAccountAttempt("mfa-user:"+userID, 5, 5*time.Minute) {
+	if !s.allowAccountAttempt("mfa-user:"+challenge.UserID, 5, 5*time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts for this account")
 		return
 	}
-	user, err := s.store.Users().GetUserByID(r.Context(), userID)
+	user, err := s.store.Users().GetUserByID(r.Context(), challenge.UserID)
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "User not found")
 		return
 	}
-	if user.Status != "active" || !user.TOTPEnabled || user.PasswordHash != verifiedHash {
+	if user.Status != "active" || !user.TOTPEnabled || user.PasswordHash != challenge.PasswordHash {
 		s.writeError(w, http.StatusForbidden, "Account is not eligible for MFA login")
 		return
 	}
@@ -193,9 +193,7 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user)
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
+	if !s.issueMFASession(w, r, user, challenge) {
 		return
 	}
 
@@ -230,23 +228,23 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, verifiedHash, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
+	challenge, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "Invalid or expired MFA transaction")
 		return
 	}
 	// Per-account, so a botnet spread across many IPs cannot outrun the per-IP window. Each
 	// guess already costs a fresh password login, since the challenge is consumed either way.
-	if !s.allowAccountAttempt("mfa-user:"+userID, 5, 5*time.Minute) {
+	if !s.allowAccountAttempt("mfa-user:"+challenge.UserID, 5, 5*time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts for this account")
 		return
 	}
-	user, err := s.store.Users().GetUserByID(r.Context(), userID)
+	user, err := s.store.Users().GetUserByID(r.Context(), challenge.UserID)
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "User not found")
 		return
 	}
-	if user.Status != "active" || !user.TOTPEnabled || user.PasswordHash != verifiedHash {
+	if user.Status != "active" || !user.TOTPEnabled || user.PasswordHash != challenge.PasswordHash {
 		s.writeError(w, http.StatusForbidden, "Account is not eligible for MFA login")
 		return
 	}
@@ -262,9 +260,7 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user)
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
+	if !s.issueMFASession(w, r, user, challenge) {
 		return
 	}
 
@@ -303,11 +299,32 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 // beginMFA binds either password or provider verification to the same one-use
-// local second-factor transaction. No authenticated session exists yet.
-func (s *Server) beginMFA(ctx context.Context, user *store.User) (string, error) {
+// local second-factor transaction. No authenticated session exists yet. A provider
+// sign-in passes its provider ID, sid and ID token iat so the session it completes can
+// be logged out.
+func (s *Server) beginMFA(ctx context.Context, user *store.User, ssoProvider, sid string, issuedAt time.Time) (string, error) {
 	raw := crypto.RandomHex(32)
 	err := s.store.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
 		TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: user.ID, ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+		SSOProvider: ssoProvider, SSOSID: sid, SSOIssuedAt: issuedAt,
 	}, user.PasswordHash)
 	return raw, err
+}
+
+// issueMFASession issues the session a completed MFA challenge earned, writing the error itself.
+func (s *Server) issueMFASession(w http.ResponseWriter, r *http.Request, user *store.User, challenge *store.MFAChallenge) bool {
+	issuedAt := time.Now()
+	if challenge.SSOProvider != "" {
+		issuedAt = challenge.SSOIssuedAt
+	}
+	_, _, err := s.sessions.IssueSSOSession(r.Context(), w, r, user, challenge.SSOProvider, challenge.SSOSID, issuedAt)
+	if errors.Is(err, store.ErrSSOSessionEnded) {
+		s.writeError(w, http.StatusUnauthorized, "Sign-in already ended at the provider; sign in again")
+		return false
+	}
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
+		return false
+	}
+	return true
 }

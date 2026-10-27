@@ -210,7 +210,7 @@ func TestRestorePreservesKeysAndRevokesOnlySnapshotGrants(t *testing.T) {
 	if _, err := copyStore.Sessions().GetSession(ctx, "session"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("restored session survived", err)
 	}
-	if _, _, err := copyStore.Sessions().ConsumeMFAChallenge(ctx, "challenge"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := copyStore.Sessions().ConsumeMFAChallenge(ctx, "challenge"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("restored challenge survived", err)
 	}
 	if _, err := copyStore.Devices().GetPairingBySecret(ctx, "pair"); !errors.Is(err, store.ErrNotFound) {
@@ -219,7 +219,7 @@ func TestRestorePreservesKeysAndRevokesOnlySnapshotGrants(t *testing.T) {
 	if _, err := st.Sessions().GetSession(ctx, "session"); err != nil {
 		t.Fatal("live session was revoked", err)
 	}
-	if _, _, err := st.Sessions().ConsumeMFAChallenge(ctx, "challenge"); err != nil {
+	if _, err := st.Sessions().ConsumeMFAChallenge(ctx, "challenge"); err != nil {
 		t.Fatal("live challenge was revoked", err)
 	}
 	if _, err := st.Devices().GetPairingBySecret(ctx, "pair"); err != nil {

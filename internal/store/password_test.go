@@ -49,7 +49,7 @@ func TestPasswordReplacementIsAtomicAndSingleUse(t *testing.T) {
 	if _, err := st.Sessions().GetSession(ctx, sess.TokenHash); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("session survived", err)
 	}
-	if _, _, err := st.Sessions().ConsumeMFAChallenge(ctx, challenge.TokenHash); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.Sessions().ConsumeMFAChallenge(ctx, challenge.TokenHash); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("challenge survived", err)
 	}
 	if err := st.Sessions().CreateSession(ctx, sess, "old"); !errors.Is(err, store.ErrNotFound) {
@@ -107,7 +107,7 @@ func TestAdminPasswordResetRevokesGrants(t *testing.T) {
 	if _, err := st.Sessions().GetSession(ctx, sess.TokenHash); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("session survived", err)
 	}
-	if _, _, err := st.Sessions().ConsumeMFAChallenge(ctx, challenge.TokenHash); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.Sessions().ConsumeMFAChallenge(ctx, challenge.TokenHash); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("challenge survived", err)
 	}
 	if err := st.Sessions().CreateSession(ctx, sess, "old"); !errors.Is(err, store.ErrNotFound) {

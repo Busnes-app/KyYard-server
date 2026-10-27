@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/sso"
 	"github.com/Busnes-app/kyyard-server/internal/store"
@@ -51,6 +53,50 @@ func (s *Server) handleKySignOnSyncWebhook(w http.ResponseWriter, r *http.Reques
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]bool{"synced": true})
+}
+
+// ssoLogoutFence outlives the five-minute login and MFA windows, so a logout that lands
+// while the browser is still finishing that login also ends it.
+const ssoLogoutFence = 10 * time.Minute
+
+// handleBackchannelLogout is the OpenID Connect Back-Channel Logout receiver: the provider
+// POSTs a signed logout_token when a login ends, and every local session of it ends here.
+// Anonymous by design: the provider's signature is its authority.
+func (s *Server) handleBackchannelLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	all, err := s.providers(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "Sign-in providers unavailable")
+		return
+	}
+	// A disabled provider still ends the sessions it issued.
+	var p sso.Provider
+	for _, candidate := range all {
+		if candidate.ID == r.PathValue("provider") {
+			p = candidate
+		}
+	}
+	ctx, cancel := context.WithTimeout(sso.ProviderContext(r.Context()), 20*time.Second)
+	defer cancel()
+	claims, err := p.VerifyLogout(ctx, r.PostFormValue("logout_token"))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	fenceUntil := time.Now().Add(ssoLogoutFence)
+	if claims.SessionID != "" {
+		err = s.store.Sessions().EndSSOSession(ctx, p.ID, claims.SessionID, fenceUntil)
+	} else {
+		// iat has whole-second precision: round up so a login from that same second ends too.
+		err = s.store.Sessions().EndSSOSubject(ctx, p.ID, claims.Subject, claims.IssuedAt.Add(time.Second), fenceUntil)
+	}
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "logout failed")
+		return
+	}
+	s.auditPlatform(r, "", "auth.sso.logout", p.ID, "", "success")
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {

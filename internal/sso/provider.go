@@ -85,13 +85,13 @@ func (p Provider) oauthConfig(redirect string) *oauth2.Config {
 }
 func (p Provider) AuthURL(ctx context.Context, redirect, state, verifier, nonce string) (string, error) {
 	if p.Kind == "oidc" {
-		return newOAuthFlow(p.Issuer, p.ClientID, p.ClientSecret).authCodeURL(ctx, redirect, state, verifier, nonce)
+		return cachedOAuthFlow(p.Issuer, p.ClientID, p.ClientSecret).authCodeURL(ctx, redirect, state, verifier, nonce)
 	}
 	return p.oauthConfig(redirect).AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), nil
 }
 func (p Provider) Exchange(ctx context.Context, code, verifier, redirect, nonce string) (*IdentityClaims, error) {
 	if p.Kind == "oidc" {
-		return newOAuthFlow(p.Issuer, p.ClientID, p.ClientSecret).exchange(ctx, code, verifier, redirect, nonce)
+		return cachedOAuthFlow(p.Issuer, p.ClientID, p.ClientSecret).exchange(ctx, code, verifier, redirect, nonce)
 	}
 	token, err := p.oauthConfig(redirect).Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {

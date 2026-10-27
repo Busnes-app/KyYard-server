@@ -5,30 +5,60 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
+	"sync"
+	"time"
 
 	josejson "github.com/go-jose/go-jose/v4/json"
 )
 
 // This client belongs only to the upstream OIDC verifier's JWKS fetches. Keep
 // discovery, caching, rotation, signatures and claims in coreos/go-oidc.
-type strongJWKSTransport struct{ base http.RoundTripper }
+//
+// go-oidc refetches the JWKS for every token whose signature does not verify, and the
+// back-channel logout route is anonymous, so a refetch within jwksRefresh of the last
+// one is answered from the last accepted set instead of the network.
+type strongJWKSTransport struct {
+	base    http.RoundTripper
+	mu      sync.Mutex
+	fetched time.Time
+	last    []byte
+}
 
-func (t strongJWKSTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+const jwksRefresh = time.Minute
+
+func (t *strongJWKSTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if time.Since(t.fetched) >= jwksRefresh {
+		t.fetched = time.Now()
+		raw, err := t.fetch(req)
+		if err != nil {
+			return nil, err
+		}
+		t.last = raw
+	}
+	if t.last == nil {
+		return nil, errors.New("OIDC JWKS refresh throttled")
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(t.last)), Request: req}, nil
+}
+
+func (t *strongJWKSTransport) fetch(req *http.Request) ([]byte, error) {
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		resp.Body.Close()
 		return nil, errors.New("OIDC JWKS redirects are refused")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return resp, nil
+		return nil, fmt.Errorf("OIDC JWKS fetch: %s", resp.Status)
 	}
-	defer resp.Body.Close()
 	const maxJWKSBytes = 1 << 20
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBytes+1))
 	if err != nil {
@@ -61,6 +91,5 @@ func (t strongJWKSTransport) RoundTrip(req *http.Request) (*http.Response, error
 			return nil, errors.New("OIDC JWKS RSA keys must be at least 2048 bits")
 		}
 	}
-	resp.Body = io.NopCloser(bytes.NewReader(raw))
-	return resp, nil
+	return raw, nil
 }
