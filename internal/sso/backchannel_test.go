@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,9 +31,11 @@ func TestVerifyLogoutToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	var issuer string
+	// A unique issuer path: configured-provider flows are cached per issuer, and ports are reused.
+	base := "/" + rand.Text()
 	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
+		switch strings.TrimPrefix(r.URL.Path, base) {
 		case "/.well-known/openid-configuration":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer": issuer, "authorization_endpoint": issuer + "/authorize",
@@ -49,7 +52,7 @@ func TestVerifyLogoutToken(t *testing.T) {
 		}
 	}))
 	defer idp.Close()
-	issuer = idp.URL
+	issuer = idp.URL + base
 	provider := sso.Provider{ID: "idp_test", Kind: "oidc", Issuer: issuer, ClientID: "client"}
 	ctx := oidc.ClientContext(context.Background(), idp.Client())
 
