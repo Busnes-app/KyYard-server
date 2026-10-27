@@ -23,7 +23,7 @@ func (p Provider) VerifyLogout(ctx context.Context, raw string) (*LogoutClaims, 
 	if p.Kind != "oidc" {
 		return nil, ErrInvalidLogoutToken
 	}
-	return newOAuthFlow(p.Issuer, p.ClientID, p.ClientSecret).verifyLogout(ctx, raw)
+	return cachedOAuthFlow(p.Issuer, p.ClientID, p.ClientSecret).verifyLogout(ctx, raw)
 }
 
 // verifyLogout checks a logout token per OpenID Connect Back-Channel Logout 1.0 §2.6:

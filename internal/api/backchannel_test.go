@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,8 @@ type fakeIdP struct {
 	key     *rsa.PrivateKey
 	issuer  string
 	idToken string
+	// Requests for the discovery document and the JWKS.
+	discoveries, keyFetches atomic.Int32
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -39,12 +42,14 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
+			f.discoveries.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer": f.issuer, "authorization_endpoint": f.issuer + "/authorize",
 				"token_endpoint": f.issuer + "/token", "jwks_uri": f.issuer + "/keys",
 				"id_token_signing_alg_values_supported": []string{"RS256"},
 			})
 		case "/keys":
+			f.keyFetches.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]any{
 				"kty": "RSA", "alg": "RS256", "kid": "k",
 				"n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": "AQAB",
@@ -97,13 +102,19 @@ func (f *fakeIdP) logoutToken(t *testing.T, aud, sub, sid string) string {
 // ssoLogin runs provider login and callback for sub/sid and returns the callback response.
 func ssoLogin(t *testing.T, srv *api.Server, f *fakeIdP, provider, aud, sub, sid string) *httptest.ResponseRecorder {
 	t.Helper()
+	return ssoLoginAt(t, srv, f, provider, aud, sub, sid, time.Now())
+}
+
+// ssoLoginAt is ssoLogin with an ID token the provider issued at iat.
+func ssoLoginAt(t *testing.T, srv *api.Server, f *fakeIdP, provider, aud, sub, sid string, iat time.Time) *httptest.ResponseRecorder {
+	t.Helper()
 	start := do(t, srv, "GET", "/api/sso/"+provider+"/login", nil)
 	loc, err := url.Parse(start.Header().Get("Location"))
 	if start.Code != http.StatusFound || err != nil {
 		t.Fatalf("login redirect: %d %s", start.Code, start.Body.String())
 	}
 	q := loc.Query()
-	f.idToken = f.sign(t, "", aud, map[string]any{"sub": sub, "sid": sid, "nonce": q.Get("nonce"), "preferred_username": sub})
+	f.idToken = f.sign(t, "", aud, map[string]any{"sub": sub, "sid": sid, "nonce": q.Get("nonce"), "preferred_username": sub, "iat": iat.Unix()})
 	req := httptest.NewRequest(http.MethodGet, "/api/sso/"+provider+"/callback?code=c&state="+q.Get("state"), nil)
 	for _, c := range start.Result().Cookies() {
 		req.AddCookie(c)
@@ -227,6 +238,20 @@ func TestBackchannelLogoutEndsTheSSOLogin(t *testing.T) {
 		t.Fatalf("logout for an unknown subject: got %d", w.Code)
 	}
 
+	// A subject-wide logout fences a callback already holding an ID token issued before
+	// it, even for a subject not yet provisioned here; a later login still works.
+	daveLogout := f.sign(t, "logout+jwt", "yard-a", map[string]any{"sub": "dave", "jti": "dave", "iat": time.Now().Add(-30 * time.Second).Unix(),
+		"events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}})
+	if w := postLogout(srv, "idp_a", daveLogout); w.Code != http.StatusOK {
+		t.Fatalf("subject-wide logout of an unprovisioned subject: got %d", w.Code)
+	}
+	if w := ssoLoginAt(t, srv, f, "idp_a", "yard-a", "dave", "sid-d1", time.Now().Add(-time.Minute)); w.Code != http.StatusUnauthorized || sessionCookie(w) != nil {
+		t.Fatalf("pending callback survived a subject-wide logout: %d", w.Code)
+	}
+	if w := ssoLoginAt(t, srv, f, "idp_a", "yard-a", "dave", "sid-d2", time.Now().Add(5*time.Second)); w.Code != http.StatusFound || !signedIn(t, srv, sessionCookie(w)) {
+		t.Fatalf("login issued after the subject-wide logout was refused: %d", w.Code)
+	}
+
 	// A linked local account with MFA gets its session after the second factor; the provider's
 	// logout still reaches that session and fences a pending one, and never its password session.
 	local := loginAs(t, srv, st, "carol", "user")
@@ -237,7 +262,7 @@ func TestBackchannelLogoutEndsTheSSOLogin(t *testing.T) {
 	if err := st.Users().LinkSSO(ctx, carol.ID, crypto.SHA256Hex([]byte(local.Value)), carol.PasswordHash, "idp_a", "carol-sub", ""); err != nil {
 		t.Fatal(err)
 	}
-	codes, hashed, err := auth.GenerateRecoveryCodes(2)
+	codes, hashed, err := auth.GenerateRecoveryCodes(3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,14 +286,46 @@ func TestBackchannelLogoutEndsTheSSOLogin(t *testing.T) {
 	if w := completeRecovery(t, srv, pending, codes[1]); w.Code != http.StatusUnauthorized || sessionCookie(w) != nil || !strings.Contains(w.Body.String(), "ended at the provider") {
 		t.Fatalf("MFA completion revived an ended login: %d %s", w.Code, w.Body.String())
 	}
-	if w := postLogout(srv, "idp_a", f.logoutToken(t, "yard-a", "carol-sub", "")); w.Code != http.StatusOK {
+	pendingSub := ssoLoginAt(t, srv, f, "idp_a", "yard-a", "carol-sub", "sid-c3", time.Now().Add(-time.Minute))
+	carolLogout := f.sign(t, "logout+jwt", "yard-a", map[string]any{"sub": "carol-sub", "iat": time.Now().Add(-30 * time.Second).Unix(),
+		"events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}})
+	if w := postLogout(srv, "idp_a", carolLogout); w.Code != http.StatusOK {
 		t.Fatalf("subject-wide logout for a linked account: got %d", w.Code)
 	}
 	if !signedIn(t, srv, local) {
 		t.Fatal("provider logout ended the linked account's local password session")
 	}
+	if w := completeRecovery(t, srv, pendingSub, codes[2]); w.Code != http.StatusUnauthorized || sessionCookie(w) != nil {
+		t.Fatalf("MFA completion survived a subject-wide logout: %d %s", w.Code, w.Body.String())
+	}
 
 	if len(auditRows(t, st, "auth.sso.logout")) == 0 {
 		t.Fatal("back-channel logout was not audited")
+	}
+}
+
+// The logout route is anonymous and not rate limited, so it must reuse the provider's
+// discovery document and keys rather than fetch them per request, forged tokens included.
+func TestBackchannelLogoutFetchesProviderMetadataOnce(t *testing.T) {
+	f := newFakeIdP(t)
+	srv, st, cfg := setupTestServer(t)
+	plain, _ := json.Marshal([]sso.Provider{{ID: "idp_a", Name: "A", Kind: "oidc", Issuer: f.issuer, ClientID: "yard-a", Enabled: true}})
+	sealed, _ := crypto.EncryptAESGCM(plain, crypto.DeriveKey(cfg.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	if err := st.Settings().SetSetting(context.Background(), "sso_providers_enc", sealed); err != nil {
+		t.Fatal(err)
+	}
+	valid := f.logoutToken(t, "yard-a", "alice", "sid-1")
+	head, _, _ := strings.Cut(valid, ".")
+	forged := head + "." + base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"`+f.issuer+`","aud":"yard-a","sub":"x","exp":9999999999}`)) + ".AAAA"
+	for i := 0; i < 20; i++ {
+		if w := postLogout(srv, "idp_a", valid); w.Code != http.StatusOK {
+			t.Fatalf("logout %d: got %d", i, w.Code)
+		}
+		if w := postLogout(srv, "idp_a", forged); w.Code != http.StatusBadRequest {
+			t.Fatalf("forged logout %d: got %d", i, w.Code)
+		}
+	}
+	if d, k := f.discoveries.Load(), f.keyFetches.Load(); d > 1 || k > 1 {
+		t.Fatalf("40 logouts fetched discovery %d times and the JWKS %d times", d, k)
 	}
 }

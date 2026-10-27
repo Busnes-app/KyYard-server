@@ -47,9 +47,10 @@ type MFAChallenge struct {
 	ExpiresAt time.Time
 	// PasswordHash is the hash the challenge was bound to, as ConsumeMFAChallenge returns it.
 	PasswordHash string
-	// The SSO sign-in the challenge completes, carried onto its session.
+	// The SSO sign-in the challenge completes, carried onto its session, and its ID token iat.
 	SSOProvider string
 	SSOSID      string
+	SSOIssuedAt time.Time
 }
 
 // DevicePairing represents a 90-second ephemeral session to link mobile/PWA wrappers.

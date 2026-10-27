@@ -178,8 +178,9 @@ type SessionStore interface {
 	CleanExpiredSessions(ctx context.Context) error
 	// EndSSOSession ends every session of a provider login and fences its sid until fenceUntil.
 	EndSSOSession(ctx context.Context, provider, sid string, fenceUntil time.Time) error
-	// EndSSOSubject ends the provider subject's sessions from that provider created before t.
-	EndSSOSubject(ctx context.Context, provider, subject string, before time.Time) error
+	// EndSSOSubject ends the provider subject's sessions from that provider created before
+	// cutoff and fences that subject's earlier logins until fenceUntil.
+	EndSSOSubject(ctx context.Context, provider, subject string, cutoff, fenceUntil time.Time) error
 	CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error
 	ConsumeMFAChallenge(ctx context.Context, tokenHash string) (*MFAChallenge, error)
 }

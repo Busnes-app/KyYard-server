@@ -21,10 +21,26 @@ type oauthFlow struct {
 	mu           sync.Mutex
 	provider     *oidc.Provider
 	verifier     *oidc.IDTokenVerifier
+	// A failed discovery is answered from here for discoveryRetry, not retried per request.
+	failed    time.Time
+	failedErr error
 }
+
+const discoveryRetry = 30 * time.Second
 
 func newOAuthFlow(issuer, clientID, clientSecret string) *oauthFlow {
 	return &oauthFlow{issuer: strings.TrimRight(issuer, "/"), clientID: clientID, clientSecret: clientSecret}
+}
+
+// flows keeps one flow per client, so its discovery document and JWKS cache outlive a
+// request: the anonymous login, callback and back-channel logout routes must not each
+// fetch them from the provider.
+var flows sync.Map // [3]string{issuer, client ID, client secret} -> *oauthFlow
+
+func cachedOAuthFlow(issuer, clientID, clientSecret string) *oauthFlow {
+	key := [3]string{strings.TrimRight(issuer, "/"), clientID, clientSecret}
+	f, _ := flows.LoadOrStore(key, newOAuthFlow(issuer, clientID, clientSecret))
+	return f.(*oauthFlow)
 }
 
 func (f *oauthFlow) getProvider(ctx context.Context) (*oidc.Provider, error) {
@@ -33,6 +49,17 @@ func (f *oauthFlow) getProvider(ctx context.Context) (*oidc.Provider, error) {
 	if f.provider != nil {
 		return f.provider, nil
 	}
+	if time.Since(f.failed) < discoveryRetry {
+		return nil, f.failedErr
+	}
+	provider, err := f.discover(ctx)
+	if err != nil && ctx.Err() == nil {
+		f.failed, f.failedErr = time.Now(), err
+	}
+	return provider, err
+}
+
+func (f *oauthFlow) discover(ctx context.Context) (*oidc.Provider, error) {
 	if fips140.Enabled() {
 		if err := requireOIDCHTTPS(f.issuer); err != nil {
 			return nil, err
@@ -64,7 +91,7 @@ func (f *oauthFlow) getProvider(ctx context.Context) (*oidc.Provider, error) {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	jwksClient.Transport = strongJWKSTransport{base: transport}
+	jwksClient.Transport = &strongJWKSTransport{base: transport}
 	if jwksClient.Timeout == 0 {
 		jwksClient.Timeout = 10 * time.Second
 	}
@@ -165,5 +192,5 @@ func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 	if username == "" {
 		username = raw.Sub
 	}
-	return &IdentityClaims{Issuer: idToken.Issuer, AppRoles: raw.AppRoles, Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role, SessionID: raw.SID}, nil
+	return &IdentityClaims{Issuer: idToken.Issuer, AppRoles: raw.AppRoles, Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role, SessionID: raw.SID, IssuedAt: idToken.IssuedAt}, nil
 }

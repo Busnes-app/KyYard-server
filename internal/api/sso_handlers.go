@@ -84,11 +84,12 @@ func (s *Server) handleBackchannelLogout(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	fenceUntil := time.Now().Add(ssoLogoutFence)
 	if claims.SessionID != "" {
-		err = s.store.Sessions().EndSSOSession(ctx, p.ID, claims.SessionID, time.Now().Add(ssoLogoutFence))
+		err = s.store.Sessions().EndSSOSession(ctx, p.ID, claims.SessionID, fenceUntil)
 	} else {
 		// iat has whole-second precision: round up so a login from that same second ends too.
-		err = s.store.Sessions().EndSSOSubject(ctx, p.ID, claims.Subject, claims.IssuedAt.Add(time.Second))
+		err = s.store.Sessions().EndSSOSubject(ctx, p.ID, claims.Subject, claims.IssuedAt.Add(time.Second), fenceUntil)
 	}
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "logout failed")

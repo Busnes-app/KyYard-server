@@ -35,7 +35,7 @@ func TestJWKSInputBoundary(t *testing.T) {
 				_, _ = io.WriteString(w, tc.body)
 			}))
 			defer server.Close()
-			client := &http.Client{Transport: strongJWKSTransport{base: http.DefaultTransport}}
+			client := &http.Client{Transport: &strongJWKSTransport{base: http.DefaultTransport}}
 			resp, err := client.Get(server.URL)
 			if (err == nil) != tc.accepted {
 				t.Fatalf("accepted=%v, error=%v", tc.accepted, err)

@@ -87,11 +87,7 @@ func TestOIDCJWKMemberParsingMatchesVerifier(t *testing.T) {
 						if _, err := exchange(ctx, "code", "verifier", "https://app.example/callback", "nonce"); err != nil {
 							t.Fatal(err)
 						}
-						wantFetches := int32(1)
-						if provider == "configured-provider" {
-							wantFetches = 2
-						}
-						if fetches.Load() != wantFetches {
+						if fetches.Load() != 1 {
 							t.Fatalf("JWKS cache not retained: %d", fetches.Load())
 						}
 						if claims, err := exchange(ctx, "code", "verifier", "https://app.example/callback", "wrong"); !errors.Is(err, sso.ErrInvalidIDToken) || claims != nil {

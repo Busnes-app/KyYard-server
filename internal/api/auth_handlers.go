@@ -105,7 +105,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Check if MFA is required
 	if user.TOTPEnabled {
-		rawChallenge, err := s.beginMFA(r.Context(), user, "", "")
+		rawChallenge, err := s.beginMFA(r.Context(), user, "", "", time.Time{})
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "Failed to start MFA verification")
 			return
@@ -300,19 +300,24 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 // beginMFA binds either password or provider verification to the same one-use
 // local second-factor transaction. No authenticated session exists yet. A provider
-// sign-in passes its provider ID and sid so the session it completes can be logged out.
-func (s *Server) beginMFA(ctx context.Context, user *store.User, ssoProvider, sid string) (string, error) {
+// sign-in passes its provider ID, sid and ID token iat so the session it completes can
+// be logged out.
+func (s *Server) beginMFA(ctx context.Context, user *store.User, ssoProvider, sid string, issuedAt time.Time) (string, error) {
 	raw := crypto.RandomHex(32)
 	err := s.store.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
 		TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: user.ID, ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
-		SSOProvider: ssoProvider, SSOSID: sid,
+		SSOProvider: ssoProvider, SSOSID: sid, SSOIssuedAt: issuedAt,
 	}, user.PasswordHash)
 	return raw, err
 }
 
 // issueMFASession issues the session a completed MFA challenge earned, writing the error itself.
 func (s *Server) issueMFASession(w http.ResponseWriter, r *http.Request, user *store.User, challenge *store.MFAChallenge) bool {
-	_, _, err := s.sessions.IssueSSOSession(r.Context(), w, r, user, challenge.SSOProvider, challenge.SSOSID)
+	issuedAt := time.Now()
+	if challenge.SSOProvider != "" {
+		issuedAt = challenge.SSOIssuedAt
+	}
+	_, _, err := s.sessions.IssueSSOSession(r.Context(), w, r, user, challenge.SSOProvider, challenge.SSOSID, issuedAt)
 	if errors.Is(err, store.ErrSSOSessionEnded) {
 		s.writeError(w, http.StatusUnauthorized, "Sign-in already ended at the provider; sign in again")
 		return false

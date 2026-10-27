@@ -1035,7 +1035,8 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// credentials apart. Existing rows are kyPulse's.
 	{Version: 45, Name: "agent_token_scope", SQLite: agentTokenScope, Postgres: agentTokenScope},
 	// A session and an MFA transaction remember the provider login they came from, so a
-	// back-channel logout can end it; sso_logouts fences an ended login against a callback in flight.
+	// back-channel logout can end it. sso_logouts fences an ended login, and
+	// sso_subject_logouts a subject's logins issued before cutoff, against a callback in flight.
 	{Version: 46, Name: "backchannel_logout", SQLite: backchannelLogout, Postgres: strings.ReplaceAll(backchannelLogout, "DATETIME", "TIMESTAMPTZ")},
 }
 
@@ -1044,11 +1045,19 @@ ALTER TABLE sessions ADD COLUMN sso_sid TEXT NOT NULL DEFAULT '';
 CREATE INDEX idx_sessions_sso_sid ON sessions(sso_provider, sso_sid) WHERE sso_sid <> '';
 ALTER TABLE mfa_challenges ADD COLUMN sso_provider TEXT NOT NULL DEFAULT '';
 ALTER TABLE mfa_challenges ADD COLUMN sso_sid TEXT NOT NULL DEFAULT '';
+ALTER TABLE mfa_challenges ADD COLUMN sso_issued_at DATETIME;
 CREATE TABLE sso_logouts (
     provider TEXT NOT NULL,
     sid TEXT NOT NULL,
     expires_at DATETIME NOT NULL,
     PRIMARY KEY (provider, sid)
+);
+CREATE TABLE sso_subject_logouts (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (provider, subject)
 );`
 
 const agentTokenScope = `ALTER TABLE service_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'pulse' CHECK(scope IN ('pulse','mcp:read','mcp:operate'));`

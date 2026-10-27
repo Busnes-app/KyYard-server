@@ -588,13 +588,18 @@ func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expecte
 		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_provider, sso_sid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOProvider, sess.SSOSID)
 		return err
 	})
-	if err != nil || sess.SSOSID == "" {
+	if err != nil || sess.SSOProvider == "" {
 		return err
 	}
-	// Check the fence only after the session committed: EndSSOSession commits the fence
-	// before deleting, so one of the two always sees the other under read committed.
+	// Check the fences only after the session committed: EndSSOSession and EndSSOSubject
+	// commit their fence before deleting, so under read committed one of the two always
+	// sees the other.
+	now := time.Now().UTC()
 	var fenced int
-	if err := s.store.db.QueryRowContext(ctx, s.store.rebind(`SELECT COUNT(1) FROM sso_logouts WHERE provider = ? AND sid = ? AND expires_at > ?`), sess.SSOProvider, sess.SSOSID, time.Now().UTC()).Scan(&fenced); err != nil || fenced > 0 {
+	if err := s.store.db.QueryRowContext(ctx, s.store.rebind(`SELECT
+ (SELECT COUNT(1) FROM sso_logouts WHERE provider = ? AND sid = ? AND sid <> '' AND expires_at > ?) +
+ (SELECT COUNT(1) FROM sso_subject_logouts f JOIN user_sso_identities i ON i.provider = f.provider AND i.subject = f.subject
+  WHERE f.provider = ? AND i.user_id = ? AND f.cutoff > ? AND f.expires_at > ?)`), sess.SSOProvider, sess.SSOSID, now, sess.SSOProvider, sess.UserID, sess.CreatedAt.UTC(), now).Scan(&fenced); err != nil || fenced > 0 {
 		_ = s.DeleteSession(ctx, sess.TokenHash)
 		if err != nil {
 			return err
@@ -615,8 +620,16 @@ func (s *sessionStore) EndSSOSession(ctx context.Context, provider, sid string, 
 	return err
 }
 
-func (s *sessionStore) EndSSOSubject(ctx context.Context, provider, subject string, before time.Time) error {
-	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE sso_provider = ? AND created_at < ? AND user_id IN (SELECT user_id FROM user_sso_identities WHERE provider = ? AND subject = ?)`), provider, before.UTC(), provider, subject)
+func (s *sessionStore) EndSSOSubject(ctx context.Context, provider, subject string, cutoff, fenceUntil time.Time) error {
+	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sso_subject_logouts WHERE expires_at <= ?`), time.Now().UTC()); err != nil {
+		return err
+	}
+	// Keyed by subject, not user, so it also fences a first login that is still provisioning.
+	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`INSERT INTO sso_subject_logouts (provider, subject, cutoff, expires_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (provider, subject) DO UPDATE SET cutoff = excluded.cutoff, expires_at = excluded.expires_at WHERE sso_subject_logouts.cutoff < excluded.cutoff`), provider, subject, cutoff.UTC(), fenceUntil.UTC()); err != nil {
+		return err
+	}
+	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE sso_provider = ? AND created_at < ? AND user_id IN (SELECT user_id FROM user_sso_identities WHERE provider = ? AND subject = ?)`), provider, cutoff.UTC(), provider, subject)
 	return err
 }
 
@@ -726,7 +739,7 @@ func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {
 
 func (s *sessionStore) CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error {
 	return s.store.withPassword(ctx, challenge.UserID, expectedPasswordHash, false, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at, password_hash, sso_provider, sso_sid) VALUES (?, ?, ?, ?, ?, ?)"), challenge.TokenHash, challenge.UserID, challenge.ExpiresAt, expectedPasswordHash, challenge.SSOProvider, challenge.SSOSID)
+		_, err := tx.ExecContext(ctx, s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at, password_hash, sso_provider, sso_sid, sso_issued_at) VALUES (?, ?, ?, ?, ?, ?, ?)"), challenge.TokenHash, challenge.UserID, challenge.ExpiresAt, expectedPasswordHash, challenge.SSOProvider, challenge.SSOSID, sql.NullTime{Time: challenge.SSOIssuedAt.UTC(), Valid: !challenge.SSOIssuedAt.IsZero()})
 		return err
 	})
 }
@@ -737,14 +750,16 @@ func (s *sessionStore) ConsumeMFAChallenge(ctx context.Context, tokenHash string
 		return nil, err
 	}
 	defer tx.Rollback()
-	q := s.store.rebind("SELECT user_id, expires_at, password_hash, sso_provider, sso_sid FROM mfa_challenges WHERE token_hash = ?")
+	q := s.store.rebind("SELECT user_id, expires_at, password_hash, sso_provider, sso_sid, sso_issued_at FROM mfa_challenges WHERE token_hash = ?")
 	c := MFAChallenge{TokenHash: tokenHash}
-	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&c.UserID, &c.ExpiresAt, &c.PasswordHash, &c.SSOProvider, &c.SSOSID); err != nil {
+	var issuedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&c.UserID, &c.ExpiresAt, &c.PasswordHash, &c.SSOProvider, &c.SSOSID, &issuedAt); err != nil {
 		if errorsIs(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	c.SSOIssuedAt = issuedAt.Time
 	if !time.Now().UTC().Before(c.ExpiresAt) {
 		return nil, ErrSessionExpired
 	}
