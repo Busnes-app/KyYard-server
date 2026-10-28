@@ -54,6 +54,12 @@ Container logs are written by the software you run, and an agent may treat them 
 Give an agent operator access only if you trust everyone who can message it and every workload
 whose logs it reads.
 
+## License
+
+kyyard-server is released under the [MIT License](LICENSE.txt).
+
+[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyYard-server/branch/master)](https://octocounts.com/github/Busnes-app/KyYard-server/tree/master)
+
 ## Documentation
 
 - [Running](docs/RUNNING.md) — Start KyYard, First sign-in, Account security, Transport and advanced deployment, and related procedures. <a id="start-kyyard"></a><a id="first-sign-in"></a><a id="account-security"></a><a id="transport-and-advanced-deployment"></a><a id="server-settings"></a>
