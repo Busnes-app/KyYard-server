@@ -30,6 +30,9 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
   // A namespace that left the cluster must not keep hiding everything.
   const selected = inventory.namespaces.includes(namespace) ? namespace : '';
   const scoped = <T extends { namespace: string }>(rows: T[]) => rows.filter((r) => selected === '' || r.namespace === selected);
+  // Rows outside the granted namespaces check only on demand: KyYard cannot update them, and
+  // each check spends the registry budget.
+  const granted = endpoint.deploy_namespaces ?? [];
   const qualified = (r: { namespace: string; name: string }) => `${displayName(r.namespace)}/${displayName(r.name)}`;
   const active = endpoint.state === 'active';
   const tools = onStatus && endpoint.capabilities.includes('kubernetes.workloads') && canOperate(role) ? onStatus : null;
@@ -55,7 +58,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
     </div>
     <ResourceTable key={`workloads-${selected}`} title="Workloads" rows={scoped(inventory.workloads)} rowKey={(w) => `${w.kind}/${w.namespace}/${w.name}`} empty="No workloads." head={['Workload', 'Kind', 'Ready', 'Images', ...(updates ? ['Update'] : []), ...(tools ? ['Actions'] : [])]} render={(w) => [
       page(w.namespace, w.kind, w.name, qualified(w)), w.kind, `${w.ready}/${w.desired}${w.paused ? ' (paused)' : ''}`, w.images.map(displayName).join(', '),
-      ...(updates && checkUpdate ? [Object.hasOwn(PAGE_KINDS, w.kind) && !w.application && !w.instance && <WorkloadUpdate key={`${w.kind}/${w.namespace}/${w.name}`} workload={w} pods={inventory.pods.filter((p) => p.namespace === w.namespace && p.owner_kind === w.kind && p.owner_name === w.name)} active={active} org={org} checkUpdate={checkUpdate} onUpdate={() => void imageUpdate?.update(w)} updateDisabled={!imageUpdate || workloadPending} />] : []),
+      ...(updates && checkUpdate ? [Object.hasOwn(PAGE_KINDS, w.kind) && !w.application && !w.instance && <WorkloadUpdate key={`${w.kind}/${w.namespace}/${w.name}`} workload={w} pods={inventory.pods.filter((p) => p.namespace === w.namespace && p.owner_kind === w.kind && p.owner_name === w.name)} active={active} org={org} checkUpdate={checkUpdate} onUpdate={() => void imageUpdate?.update(w)} updateDisabled={!imageUpdate || workloadPending} auto={granted.includes(w.namespace)} />] : []),
       ...(tools ? [Object.hasOwn(PAGE_KINDS, w.kind) && <WorkloadControls key={`${w.kind}/${w.namespace}/${w.name}`} {...toolProps} workload={w} open onStatus={tools} />] : []),
     ]} />
     <ResourceTable key={`pods-${selected}`} title="Pods" rows={scoped(inventory.pods)} rowKey={(p) => `${p.namespace}/${p.name}`} empty="No pods." head={['Pod', 'Phase', 'Uptime', 'Node', 'Restarts', 'Containers', ...(tools ? ['Actions'] : [])]} render={(p) => [
@@ -74,7 +77,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
       qualified(c), displayName(c.phase), displayName(c.storage_class) || '—', displayName(c.capacity) || '—',
     ]} />
     <section className="panel" aria-label="Applications"><h2 style={{ fontSize: 16 }}>Applications</h2>
-      <p>{(endpoint.deploy_namespaces ?? []).length ? `KyYard deploys only to ${(endpoint.deploy_namespaces ?? []).join(', ')}, as the applied manifest grants.` : 'The manifest grants no namespace, so nothing deploys to this cluster.'}</p>
+      <p>{granted.length ? `KyYard deploys only to ${granted.join(', ')}, as the applied manifest grants.` : 'The manifest grants no namespace, so nothing deploys to this cluster.'}</p>
       {instances === null ? <p>Applications could not be read.</p> : instances.length === 0 ? <p>No application is mapped to this cluster.</p> : <ul className="ky-list">{instances.map((i) => {
         const deployments = inventory.workloads.filter((w) => w.kind === 'Deployment' && w.instance === i.id);
         const ready = deployments.filter((w) => w.desired > 0 && w.ready === w.desired).length;
