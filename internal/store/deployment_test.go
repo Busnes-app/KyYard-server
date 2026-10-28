@@ -458,6 +458,7 @@ func TestPlanDeploymentRegistryErrorsBlock(t *testing.T) {
 		{fakeReply{err: registry.ErrNotFound}, "registry_not_found"},
 		{fakeReply{err: registry.ErrRateLimited}, "registry_rate_limited"},
 		{fakeReply{err: registry.ErrPrivateDestination}, "registry_private_destination"},
+		{fakeReply{err: registry.ErrRedirected}, "registry_redirected"},
 		{fakeReply{err: errors.New("boom")}, "registry_unavailable"},
 		{fakeReply{digest: "not-a-digest"}, "registry_unavailable"},
 	} {

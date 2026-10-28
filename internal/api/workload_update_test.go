@@ -87,7 +87,7 @@ func TestWorkloadUpdateCheckVerdicts(t *testing.T) {
 	for _, c := range []struct {
 		err    error
 		detail string
-	}{{registry.ErrUnauthorized, "unauthorized"}, {registry.ErrNotFound, "not_found"}, {registry.ErrRateLimited, "rate_limited"}, {registry.ErrPrivateDestination, "private_destination"}, {registry.ErrUnavailable, "unavailable"}} {
+	}{{registry.ErrUnauthorized, "unauthorized"}, {registry.ErrNotFound, "not_found"}, {registry.ErrRateLimited, "rate_limited"}, {registry.ErrPrivateDestination, "private_destination"}, {registry.ErrRedirected, "redirected"}, {registry.ErrUnavailable, "unavailable"}} {
 		api.SetDigestResolverForTest(f.s, &fakeDigests{err: fmt.Errorf("sensitive-registry-diagnostic: %w", c.err)})
 		api.ResetAttemptsForTest(f.s)
 		w := tenantRequest(f.s, f.org, "POST", f.webWorkload+"/updates/check", "", true)

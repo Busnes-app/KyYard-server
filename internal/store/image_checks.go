@@ -381,6 +381,8 @@ func registryErrorDetail(err error) string {
 		return "rate_limited"
 	case errors.Is(err, registry.ErrPrivateDestination):
 		return "private_destination"
+	case errors.Is(err, registry.ErrRedirected):
+		return "redirected"
 	}
 	return "unavailable"
 }

@@ -29,6 +29,7 @@ var (
 	ErrNotFound       = errors.New("image not found in registry")
 	ErrRateLimited    = errors.New("registry rate limit reached")
 	ErrUnavailable    = errors.New("registry unavailable")
+	ErrRedirected     = errors.New("registry redirects to another host") // a manifest 3xx, never followed
 	ErrDigestMismatch = errors.New("registry digest does not match the manifest")
 )
 
@@ -343,6 +344,9 @@ func statusErr(host string, code int) error {
 		err = ErrRateLimited
 	default:
 		err = ErrUnavailable
+		if code >= 300 && code < 400 {
+			err = ErrRedirected
+		}
 	}
 	return fmt.Errorf("%w: %s %d", err, host, code)
 }

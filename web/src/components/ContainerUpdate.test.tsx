@@ -66,6 +66,7 @@ it.each([
   [200, { image_id: container.image_id, verdict: 'registry_error', detail: 'unauthorized' }, 'Registry authentication required'],
   [200, { image_id: container.image_id, verdict: 'registry_error', detail: 'not_found' }, 'Image not found in registry'],
   [200, { image_id: container.image_id, verdict: 'registry_error', detail: 'rate_limited' }, 'Registry rate limit reached'],
+  [200, { image_id: container.image_id, verdict: 'registry_error', detail: 'redirected' }, 'Registry redirects to another host'],
   [200, { image_id: container.image_id, verdict: 'registry_error', detail: 'unavailable' }, 'Registry unavailable'],
 ])('shows a fixed reason for status %s', async (status, body, text) => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status })));

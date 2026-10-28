@@ -11,6 +11,7 @@ export const detailText: Record<string, string> = {
   not_found: 'The image was not found in the registry.',
   rate_limited: 'The registry rate limit was reached; try later.',
   private_destination: 'The registry is on a private address this organization may not reach.',
+  redirected: 'The registry redirects to another host, which KyYard does not follow.',
   unavailable: 'The registry could not be reached.',
 };
 const texts = {
