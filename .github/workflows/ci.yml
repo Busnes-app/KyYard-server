@@ -19,8 +19,8 @@ env:
   NODE_VERSION: "26"
 
 jobs:
-  go:
-    name: Go build, vet & tests (SQLite)
+  go-default:
+    name: Go SQLite (default)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,32 +118,6 @@ jobs:
         # internal/api alone runs close to go test's 10-minute default under -race.
         run: go test -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./...
 
-      - name: Strong-key profile (SQLite)
-        env:
-          GODEBUG: fips140=on
-        run: go test -race -timeout 20m -count=1 ./...
-
-      # Bounded fuzzing, about 15 s each. Compose inputs are large, so their minimizing is capped.
-      - run: go test -fuzz=FuzzParseReference -fuzztime=300000x ./internal/registry
-      - run: go test -fuzz=FuzzParseCompose -fuzztime=50000x -fuzzminimizetime=5s ./internal/applications
-      - run: go test -fuzz=FuzzSnapshotDecodeClamp -fuzztime=300000x ./internal/agent/protocol
-      - run: go test -fuzz=FuzzCleanText -fuzztime=300000x ./internal/agent/protocol
-
-      - name: Real Docker runtime regressions
-        env:
-          KY_TEST_DOCKER_EXEC_IMAGE: alpine:3.24
-          KY_TEST_DOCKER_INSPECTION_IMAGE: alpine:3.24
-          KY_TEST_DOCKER_DEPLOY_IMAGE: alpine:3.24
-          KY_TEST_REGISTRY_ONLINE: "1"
-        run: |
-          docker pull "$KY_TEST_DOCKER_EXEC_IMAGE"
-          KY_TEST_DOCKER_PULL_DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' alpine:3.24 | cut -d@ -f2)
-          export KY_TEST_DOCKER_PULL_DIGEST
-          test -n "$KY_TEST_DOCKER_PULL_DIGEST"
-          go test -race ./internal/runtime/docker -run '^Test(Exec|Inspection|Deploy|Recheck|Remove|Recreate|Run|RecreateRollback|StopWait)RealDocker$' -count=1
-          go test -race ./internal/api -run '^Test(BrowserExec|Apply)RealDocker$' -count=1
-          go test -race ./internal/registry -run '^TestResolveDockerHubAlpine$' -count=1
-
       - name: Coverage summary
         run: |
           go tool cover -func=coverage.out | tail -n 1 | tee -a "$GITHUB_STEP_SUMMARY"
@@ -153,9 +127,40 @@ jobs:
           name: coverage
           path: coverage.out
 
-  postgres:
-    name: Go tests (PostgreSQL)
+  go-strong-key:
+    name: Go SQLite (strong-key profile)
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Strong-key profile (SQLite)
+        env:
+          GODEBUG: fips140=on
+        run: go test -race -timeout 20m -count=1 ./...
+
+  # The required SQLite check: green only when both legs, and the real Docker
+  # regressions that moved to smoke, are.
+  go:
+    name: Go build, vet & tests (SQLite)
+    needs: [go-default, go-strong-key, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}" = true
+
+  postgres-legs:
+    name: Go PostgreSQL (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: default
+          - profile: strong-key profile
+            godebug: fips140=on
     services:
       postgres:
         image: postgres:17-alpine
@@ -178,15 +183,25 @@ jobs:
 
       # Same suite, real Postgres: each test gets its own schema (internal/testdb).
       - name: Tests against PostgreSQL
+        if: matrix.profile == 'default'
         env:
           KY_TEST_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:5432/ci_test?sslmode=disable
         run: go test -race -timeout 20m -count=1 ./...
 
       - name: Strong-key profile (PostgreSQL)
+        if: matrix.godebug
         env:
           KY_TEST_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:5432/ci_test?sslmode=disable
-          GODEBUG: fips140=on
+          GODEBUG: ${{ matrix.godebug }}
         run: go test -race -timeout 20m -count=1 ./...
+
+  postgres:
+    name: Go tests (PostgreSQL)
+    needs: postgres-legs
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}" = true
 
   web:
     name: Frontend typecheck & build
@@ -268,6 +283,12 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
+      # Bounded fuzzing, about 15 s each. Compose inputs are large, so their minimizing is capped.
+      - run: go test -fuzz=FuzzParseReference -fuzztime=300000x ./internal/registry
+      - run: go test -fuzz=FuzzParseCompose -fuzztime=50000x -fuzzminimizetime=5s ./internal/applications
+      - run: go test -fuzz=FuzzSnapshotDecodeClamp -fuzztime=300000x ./internal/agent/protocol
+      - run: go test -fuzz=FuzzCleanText -fuzztime=300000x ./internal/agent/protocol
+
   smoke:
     name: End-to-end smoke test
     runs-on: ubuntu-latest
@@ -277,6 +298,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # Moved from the SQLite job; first, on a Docker host nothing else has touched yet.
+      - name: Real Docker runtime regressions
+        env:
+          KY_TEST_DOCKER_EXEC_IMAGE: alpine:3.24
+          KY_TEST_DOCKER_INSPECTION_IMAGE: alpine:3.24
+          KY_TEST_DOCKER_DEPLOY_IMAGE: alpine:3.24
+          KY_TEST_REGISTRY_ONLINE: "1"
+        run: |
+          docker pull "$KY_TEST_DOCKER_EXEC_IMAGE"
+          KY_TEST_DOCKER_PULL_DIGEST=$(docker image inspect --format '{{index .RepoDigests 0}}' alpine:3.24 | cut -d@ -f2)
+          export KY_TEST_DOCKER_PULL_DIGEST
+          test -n "$KY_TEST_DOCKER_PULL_DIGEST"
+          go test -race ./internal/runtime/docker -run '^Test(Exec|Inspection|Deploy|Recheck|Remove|Recreate|Run|RecreateRollback|StopWait)RealDocker$' -count=1
+          go test -race ./internal/api -run '^Test(BrowserExec|Apply)RealDocker$' -count=1
+          go test -race ./internal/registry -run '^TestResolveDockerHubAlpine$' -count=1
 
       - run: shellcheck scripts/*.sh
       - run: make build
