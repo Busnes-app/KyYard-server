@@ -50,3 +50,15 @@ it('solves one challenge while typing and a fresh one after a refused login', as
   expect(JSON.parse(atob(tokens[0])).signature).toBe('sig1');
   expect(JSON.parse(atob(tokens[1])).signature).toBe('sig2');
 });
+
+it('labels a single provider "Single Sign On" and names several', () => {
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+  const one = [{ id: 'kysignon', name: 'KyIdentity', login_url: '/api/sso/kysignon/login' }];
+  render(<Login appName="KyYard" onSuccess={vi.fn()} providers={one} />);
+  expect(screen.getByRole('link', { name: 'Continue with Single Sign On' }).getAttribute('href')).toBe('/api/sso/kysignon/login');
+  expect(screen.queryByText(/Single Sign-On/)).toBeNull();
+  cleanup();
+  render(<Login appName="KyYard" onSuccess={vi.fn()} providers={[...one, { id: 'oidc', name: 'OpenID Connect', login_url: '/api/sso/oidc/login' }]} />);
+  expect(screen.getByRole('link', { name: 'Continue with KyIdentity' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Continue with OpenID Connect' })).toBeTruthy();
+});
