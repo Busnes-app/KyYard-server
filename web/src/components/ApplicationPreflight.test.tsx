@@ -18,7 +18,7 @@ it('loads on demand, pages results and never offers execution', async () => {
   expect(screen.queryByText('service-25')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
   expect(screen.getByText('service-25')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: /apply|execute|deploy$/i })).toBeNull();
+  expect(screen.queryByRole('button', { name: /apply|execute|deploy(?!ment)/i })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Refresh preflight' }));
   expect(fetcher).toHaveBeenCalledWith('/app/preflight');
 });
@@ -74,7 +74,7 @@ it('inspects only on request, displays selected facts and discards results on cl
   expect(screen.getByText('8080 → 80/tcp')).toBeTruthy();
   expect(screen.getByText('127.0.0.1')).toBeTruthy();
   expect(document.body.textContent).not.toContain('secret-canary');
-  expect(screen.queryByRole('button', { name: /apply|execute|deploy$/i })).toBeNull();
+  expect(screen.queryByRole('button', { name: /apply|execute|deploy(?!ment)/i })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Close inspection' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(screen.queryByText('linux/amd64')).toBeNull();
