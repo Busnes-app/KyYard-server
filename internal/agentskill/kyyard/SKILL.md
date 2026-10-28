@@ -1,7 +1,7 @@
 ---
 name: kyyard
 description: Inspect and carefully operate the user's homelab through the kyyard MCP tools - Docker hosts, Kubernetes clusters, containers, logs, resource usage and pending image updates. Use when the user asks what is running, why something is unhealthy, to read a container's logs, to restart a container, or to apply an update.
-version: "0.4.4"
+version: "0.5.0"
 ---
 
 # KyYard
