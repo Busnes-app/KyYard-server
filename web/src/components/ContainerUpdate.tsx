@@ -83,9 +83,9 @@ export function useContainerUpdateChecker(base: string): CheckUpdate {
   ), [base, run]);
 }
 
-// UpdateBadge checks when identity changes or on demand and offers the update; a managed answer
-// offers none, because the application's own flow owns those images.
-export function UpdateBadge({ label, identity, active, org, check: checkUpdate, onUpdate, updateDisabled = false, updateTitle = 'Pull the latest image and update using current settings' }: { label: string; identity: string; active: boolean; org: string; check: (signal: AbortSignal, fresh: boolean) => Promise<Verdict | null>; onUpdate: () => void; updateDisabled?: boolean; updateTitle?: string }) {
+// UpdateBadge checks when identity changes (unless auto is off) or on demand and offers the update;
+// a managed answer offers none, because the application's own flow owns those images.
+export function UpdateBadge({ label, identity, active, org, check: checkUpdate, onUpdate, updateDisabled = false, updateTitle = 'Pull the latest image and update using current settings', auto = true }: { label: string; identity: string; active: boolean; org: string; check: (signal: AbortSignal, fresh: boolean) => Promise<Verdict | null>; onUpdate: () => void; updateDisabled?: boolean; updateTitle?: string; auto?: boolean }) {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [busy, setBusy] = useState(false);
   const request = useRef<AbortController | null>(null);
@@ -102,11 +102,11 @@ export function UpdateBadge({ label, identity, active, org, check: checkUpdate, 
   }, [identity]);
   useEffect(() => {
     setVerdict(null);
-    if (active) void check(false);
+    if (active && auto) void check(false);
     return () => request.current?.abort();
-  }, [active, check]);
-  // An active row has a check about to start until its first verdict: it is never offline.
-  const text = busy || (active && !verdict) ? 'Checking…' : verdict ? VERDICTS[verdict] : 'Endpoint offline';
+  }, [active, auto, check]);
+  // An active auto row has a check about to start until its first verdict: it is never offline.
+  const text = busy || (active && auto && !verdict) ? 'Checking…' : verdict ? VERDICTS[verdict] : active ? 'Not checked' : 'Endpoint offline';
   return <span className="ky-image-update"><span role="status" className={`badge ${verdict === 'update_available' ? 'badge-warning' : 'badge-secondary'}`}>{text}</span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/access#registries-heading`} title="Add a registry entry for this image's host, or allow anonymous pulls, in Access → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${label}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && verdict !== 'managed' && <button type="button" className="btn-secondary" disabled={updateDisabled} onClick={onUpdate} title={updateTitle}>Update image</button>}</span>;
 }
 

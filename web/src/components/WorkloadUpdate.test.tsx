@@ -5,9 +5,9 @@ import type { Pod, Workload } from '../tenant';
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const workload: Workload = { kind: 'Deployment', namespace: 'shop', name: 'web', desired: 1, ready: 1, updated: 1, images: ['ghcr.io/acme/web:2'], paused: false };
 const pod: Pod = { namespace: 'shop', name: 'web-1', phase: 'Running', node: 'n', owner_kind: 'Deployment', owner_name: 'web', started_at: '', containers: [{ name: 'web', image: 'ghcr.io/acme/web:2', image_id: 'ghcr.io/acme/web@sha256:' + 'a'.repeat(64), state: 'running', reason: '', ready: true, restart_count: 0 }] };
-function Row({ pods = [pod], onUpdate = () => {} }: { pods?: Pod[]; onUpdate?: () => void }) {
+function Row({ pods = [pod], onUpdate = () => {}, auto }: { pods?: Pod[]; onUpdate?: () => void; auto?: boolean }) {
   const check = useWorkloadUpdateChecker('/api/c');
-  return <WorkloadUpdate workload={workload} pods={pods} active org="a" checkUpdate={check} onUpdate={onUpdate} />;
+  return <WorkloadUpdate workload={workload} pods={pods} active org="a" checkUpdate={check} onUpdate={onUpdate} auto={auto} />;
 }
 const reply = (verdict: string, workloadName = 'shop/deployment/web') => new Response(JSON.stringify({ workload: workloadName, verdict, detail: '', containers: [] }));
 it('checks the workload route and shows the verdict and the update button', async () => {
@@ -44,4 +44,18 @@ it('re-checks when the pods change images', async () => {
   view.rerender(<Row pods={[{ ...pod, containers: [{ ...pod.containers[0]!, image_id: 'ghcr.io/acme/web@sha256:' + 'b'.repeat(64) }] }]} />);
   await act(() => vi.advanceTimersByTimeAsync(5100));
   expect(fetcher).toHaveBeenCalledTimes(2);
+});
+it('checks only on demand when auto is off', async () => {
+  vi.useFakeTimers();
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ code: 'registry_not_configured' }), { status: 409 }));
+  vi.stubGlobal('fetch', fetcher);
+  render(<Row auto={false} />);
+  await act(() => vi.advanceTimersByTimeAsync(6000));
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(screen.getByRole('status').textContent).toBe('Not checked');
+  expect(screen.queryByRole('link', { name: 'Configure registry access' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Check image update for shop/web' }));
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('status').textContent).toBe('Registry access not configured');
 });

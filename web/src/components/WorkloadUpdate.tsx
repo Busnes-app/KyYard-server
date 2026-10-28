@@ -16,7 +16,7 @@ export function useWorkloadUpdateChecker(base: string): CheckWorkload {
   ), [base, run]);
 }
 
-export function WorkloadUpdate({ workload, pods, active, org, checkUpdate, onUpdate, updateDisabled = false }: { workload: Workload; pods: Pod[]; active: boolean; org: string; checkUpdate: CheckWorkload; onUpdate: () => void; updateDisabled?: boolean }) {
+export function WorkloadUpdate({ workload, pods, active, org, checkUpdate, onUpdate, updateDisabled = false, auto = true }: { workload: Workload; pods: Pod[]; active: boolean; org: string; checkUpdate: CheckWorkload; onUpdate: () => void; updateDisabled?: boolean; auto?: boolean }) {
   return <UpdateBadge label={`${workload.namespace}/${workload.name}`} identity={identity(workload, pods)} active={active} org={org}
-    check={(signal, fresh) => checkUpdate(workload, pods, signal, fresh)} onUpdate={onUpdate} updateDisabled={updateDisabled} />;
+    check={(signal, fresh) => checkUpdate(workload, pods, signal, fresh)} onUpdate={onUpdate} updateDisabled={updateDisabled} auto={auto} />;
 }

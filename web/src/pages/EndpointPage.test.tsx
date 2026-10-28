@@ -485,6 +485,35 @@ it('offers one-click Update image on an unmanaged cluster Deployment and none on
   expect(JSON.parse(String(apply?.[1]?.body)).pull).toEqual(['web']);
 });
 
+it('auto-checks only workloads in granted namespaces; others check on demand', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+  const now = new Date().toISOString();
+  const cluster = { ...endpoint, runtime: 'kubernetes', capabilities: ['kubernetes.inventory', 'kubernetes.workloads'], deploy_namespaces: ['shop'] };
+  const workload = (namespace: string, name: string) => ({ kind: 'Deployment', namespace, name, desired: 1, ready: 1, updated: 1, images: ['registry.k8s.io/x:1'], paused: false });
+  const kubernetes = { nodes: [], namespaces: ['kube-system', 'shop'], workloads: [workload('shop', 'web'), workload('kube-system', 'coredns')], pods: [], services: [], claims: [] };
+  const snapshot = { generation: 1, observed_at: now, engine: { runtime: 'kubernetes', version: '', api_version: '', os: '', arch: '', kernel: '', cpus: 0, memory_bytes: 0, hostname: '' }, containers: [], images: [], networks: [], volumes: [], kubernetes };
+  const urls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.endsWith('/web/updates/check')) return json({ workload: 'shop/deployment/web', verdict: 'up_to_date' });
+    if (url.endsWith('/coredns/updates/check')) return json({ code: 'registry_not_configured' }, 409);
+    if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot });
+    if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role: 'organization_admin' }]);
+    if (url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications')) return json([]);
+    return json(cluster);
+  }));
+  render(<EndpointPage org="a" endpoint="ep_1" />);
+  await screen.findByText('Up to date');
+  expect(urls.filter((u) => u.endsWith('/updates/check'))).toEqual(['/api/organizations/a/endpoints/ep_1/workloads/shop/deployment/web/updates/check']);
+  expect(screen.getByText('Not checked')).toBeTruthy();
+  expect(screen.queryByText('Registry access not configured')).toBeNull();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Check image update for kube-system/coredns' })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5100); });
+  expect(await screen.findByText('Registry access not configured')).toBeTruthy();
+  expect(urls.filter((u) => u.endsWith('/coredns/updates/check'))).toHaveLength(1);
+});
+
 function clusterRoutes(role: string, capabilities: string[], settled: { done: boolean } = { done: false }) {
   const now = new Date().toISOString();
   const cluster = { ...endpoint, runtime: 'kubernetes', capabilities, deploy_namespaces: ['shop'] };
