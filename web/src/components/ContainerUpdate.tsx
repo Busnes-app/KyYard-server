@@ -9,7 +9,7 @@ export const VERDICTS = {
   registry_error: 'Registry check failed', check_failed: 'Update check failed', forbidden: 'Update check not permitted',
   rate_limited: 'Update check limit reached', registry_policy: 'Registry access not configured',
   registry_unauthorized: 'Registry authentication required', registry_not_found: 'Image not found in registry',
-  registry_rate_limited: 'Registry rate limit reached', registry_private: 'Registry address blocked', registry_unavailable: 'Registry unavailable',
+  registry_rate_limited: 'Registry rate limit reached', registry_private: 'Registry address blocked', registry_redirected: 'Registry redirects to another host', registry_unavailable: 'Registry unavailable',
   managed: 'Managed by an application',
 };
 export type Verdict = keyof typeof VERDICTS;
@@ -28,7 +28,7 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-const DETAILS: Record<string, Verdict> = { unauthorized: 'registry_unauthorized', not_found: 'registry_not_found', rate_limited: 'registry_rate_limited', private_destination: 'registry_private', unavailable: 'registry_unavailable' };
+const DETAILS: Record<string, Verdict> = { unauthorized: 'registry_unauthorized', not_found: 'registry_not_found', rate_limited: 'registry_rate_limited', private_destination: 'registry_private', redirected: 'registry_redirected', unavailable: 'registry_unavailable' };
 // readVerdict maps a check answer to a fixed verdict; matches proves the answer is for this row.
 export async function readVerdict(response: Response, matches: (body: object) => boolean): Promise<Verdict> {
   if (response.status === 401 || response.status === 403) return 'forbidden';

@@ -339,6 +339,7 @@ func TestCheckImageUpdatesRegistryErrors(t *testing.T) {
 		{registry.ErrNotFound, "not_found"},
 		{registry.ErrRateLimited, "rate_limited"},
 		{registry.ErrPrivateDestination, "private_destination"},
+		{registry.ErrRedirected, "redirected"},
 		{errors.New("boom"), "unavailable"},
 	} {
 		f := &fakeResolver{reply: map[string]fakeReply{"docker.io/library/nginx:1": {err: tc.err}}}

@@ -78,6 +78,7 @@ func TestContainerUpdateCheckUsesImmutableLocalImageAndRegistryPolicy(t *testing
 		{registry.ErrNotFound, "not_found"},
 		{registry.ErrRateLimited, "rate_limited"},
 		{registry.ErrPrivateDestination, "private_destination"},
+		{registry.ErrRedirected, "redirected"},
 		{registry.ErrUnavailable, "unavailable"},
 	} {
 		api.SetDigestResolverForTest(f.s, &fakeDigests{err: fmt.Errorf("sensitive-registry-diagnostic: %w", tc.err)})

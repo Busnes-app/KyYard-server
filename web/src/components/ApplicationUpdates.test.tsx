@@ -52,6 +52,7 @@ it('maps every registry error detail to fixed text and never renders the raw det
     not_found: 'The image was not found in the registry.',
     rate_limited: 'The registry rate limit was reached; try later.',
     private_destination: 'The registry is on a private address this organization may not reach.',
+    redirected: 'The registry redirects to another host, which KyYard does not follow.',
     unavailable: 'The registry could not be reached.',
   };
   stub(body([...Object.keys(details).map((d, n) => row({ service: `s${n}`, verdict: 'registry_error', detail: d, remote_digest: '' })), row({ service: 'z', verdict: 'registry_error', detail: 'secret-canary', remote_digest: '' })]));
@@ -59,7 +60,7 @@ it('maps every registry error detail to fixed text and never renders the raw det
   openPanel();
   await screen.findByText(details.unauthorized);
   for (const text of Object.values(details)) expect(screen.getByText(text)).toBeTruthy();
-  expect(screen.getAllByText('Registry error').length).toBe(7);
+  expect(screen.getAllByText('Registry error').length).toBe(8);
   expect(document.body.textContent).not.toContain('secret-canary');
   expect(document.body.textContent).not.toContain('rate_limited');
 });
@@ -169,6 +170,7 @@ it.each([
   ['registry_not_found', 'The image was not found in the registry.'],
   ['registry_rate_limited', 'The registry rate limit was reached; try later.'],
   ['registry_private_destination', 'The registry is on a private address this organization may not reach.'],
+  ['registry_redirected', 'The registry redirects to another host, which KyYard does not follow.'],
   ['registry_unavailable', 'The registry could not be reached.'],
 ])('maps the %s blocker to fixed text', async (blocker, text) => {
   const onPlanned = vi.fn();

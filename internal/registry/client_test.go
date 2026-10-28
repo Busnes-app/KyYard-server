@@ -292,8 +292,11 @@ func TestResolveStatusErrors(t *testing.T) {
 		{http.StatusForbidden, ErrUnauthorized},
 		{http.StatusUnauthorized, ErrUnauthorized}, // no challenge
 		{http.StatusInternalServerError, ErrUnavailable},
-		{http.StatusFound, ErrUnavailable},
-		{http.StatusTemporaryRedirect, ErrUnavailable},
+		{http.StatusBadGateway, ErrUnavailable},
+		{http.StatusMovedPermanently, ErrRedirected},
+		{http.StatusFound, ErrRedirected},
+		{http.StatusTemporaryRedirect, ErrRedirected},
+		{http.StatusPermanentRedirect, ErrRedirected},
 	} {
 		rc := &recorder{}
 		srv := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
@@ -303,6 +306,9 @@ func TestResolveStatusErrors(t *testing.T) {
 		_, err := testClient(t, srv, Options{}).Resolve(context.Background(), ref(srv), testCred)
 		if !errors.Is(err, tc.want) {
 			t.Errorf("status %d: err %v, want %v", tc.status, err, tc.want)
+		}
+		if errors.Is(err, ErrRedirected) && errors.Is(err, ErrUnavailable) {
+			t.Errorf("status %d: err %v is both redirected and unavailable", tc.status, err)
 		}
 		noSecrets(t, err)
 		if n := len(rc.all()); n != 1 {
@@ -449,8 +455,8 @@ func TestCredentialNeverLeavesTheConfiguredHosts(t *testing.T) {
 			http.Redirect(w, r, otherURL, http.StatusTemporaryRedirect)
 		})
 		_, err := testClient(t, reg, Options{}).Resolve(context.Background(), ref(reg), testCred)
-		if !errors.Is(err, ErrUnavailable) {
-			t.Fatalf("err %v, want ErrUnavailable", err)
+		if !errors.Is(err, ErrRedirected) {
+			t.Fatalf("err %v, want ErrRedirected", err)
 		}
 		noSecrets(t, err)
 	})
@@ -784,6 +790,46 @@ func TestHeadRequestBudget(t *testing.T) {
 	}
 	if heads != 2 || gets != 1 {
 		t.Fatalf("%d HEADs and %d token GETs, want 2 and 1", heads, gets)
+	}
+}
+
+// registry.k8s.io answers a manifest with a 307 to a regional mirror (#141): that is its own
+// verdict, and no request, anonymous or authorized, goes to the mirror.
+func TestManifestRedirectIsNotFollowed(t *testing.T) {
+	rc := &recorder{}
+	mirror := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) { serve(w, r, singleType, singleBody) })
+	mirrorURL := "https://" + hostOf(mirror, "mirror") + "/v2/library/alpine/manifests/3.24"
+	auth := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"` + testToken + `"}`))
+	})
+	anonymous := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, mirrorURL, http.StatusTemporaryRedirect)
+	})
+	bearer := newServer(t, rc, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="https://`+hostOf(auth, "auth")+`/token"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, mirrorURL, http.StatusTemporaryRedirect)
+	})
+	for _, srv := range []*httptest.Server{anonymous, bearer} {
+		for _, cred := range []*Credential{nil, testCred} {
+			c := testClient(t, srv, Options{})
+			_, headErr := c.Head(context.Background(), ref(srv), cred)
+			_, getErr := c.Resolve(context.Background(), ref(srv), cred)
+			for _, err := range []error{headErr, getErr} {
+				if !errors.Is(err, ErrRedirected) || errors.Is(err, ErrUnavailable) {
+					t.Errorf("cred=%v: err %v, want ErrRedirected only", cred != nil, err)
+				}
+				noSecrets(t, err)
+			}
+		}
+	}
+	for _, h := range rc.all() {
+		if strings.HasPrefix(h.Host, "mirror.") {
+			t.Errorf("request reached the redirect target: %+v", h)
+		}
 	}
 }
 
