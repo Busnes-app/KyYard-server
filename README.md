@@ -4,7 +4,6 @@ Supported cryptographic configuration and migration: [Key strength and TLS](docs
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15935/badge)](https://www.bestpractices.dev/projects/15935)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/KyYard-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/KyYard-server)
-[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyYard-server/branch/master)](https://octocounts.com/github/Busnes-app/KyYard-server/tree/master)
 
 **Start here:** [Standalone installation](INSTALL.md). Local accounts and MFA work without KyIdentity. The default Docker installation connects the local Docker host and grants KyYard host-level authority through the mounted Docker socket. Remote hosts and Kubernetes clusters need separate enrollment; suite management needs a KyQuickStart runner handoff.
 
@@ -54,6 +53,12 @@ refusal is in the audit history. Details: [Integrations](docs/INTEGRATIONS.md#co
 Container logs are written by the software you run, and an agent may treat them as instructions.
 Give an agent operator access only if you trust everyone who can message it and every workload
 whose logs it reads.
+
+## License
+
+kyyard-server is released under the [MIT License](LICENSE.txt).
+
+[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyYard-server/branch/master)](https://octocounts.com/github/Busnes-app/KyYard-server/tree/master)
 
 ## Documentation
 
