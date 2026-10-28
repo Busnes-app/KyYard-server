@@ -9,11 +9,12 @@ on:
 permissions:
   contents: read
 
-# A superseded PR run is cancelled. A push to master is not: cancelling it mid-
-# publish could leave a :<sha> tag in GHCR with no attestation behind it.
+# A superseded PR run is cancelled. Every other run gets its own group: a shared
+# group would drop a queued push run, and cancelling one mid-publish could leave
+# a :<sha> tag in GHCR with no attestation behind it.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   NODE_VERSION: "26"
