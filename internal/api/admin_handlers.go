@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -52,7 +53,7 @@ func (s *Server) auditPlatform(r *http.Request, actor, action, resource, details
 		Scope: "platform", UserID: actor, Action: action, Resource: resource,
 		Details: details, Result: result, IPAddress: s.requestIP(r),
 	}); err != nil {
-		log.Printf("[ADMIN] audit %s for %s not recorded: %v", action, resource, err)
+		log.Printf("[ADMIN] audit %s for %s not recorded: %v", action, strings.NewReplacer("\n", "", "\r", "").Replace(resource), err)
 	}
 }
 
