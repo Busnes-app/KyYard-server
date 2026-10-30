@@ -56,7 +56,7 @@ func TestForcedPasswordReplacement(t *testing.T) {
 			}
 		}
 		w := call("GET", "/api/settings", "", cookies, true)
-		if strings.Contains(w.Body.String(), "extra_settings") || strings.Contains(w.Body.String(), "db_driver") {
+		if strings.Contains(w.Body.String(), "extra_settings") || strings.Contains(w.Body.String(), "db_driver") || strings.Contains(w.Body.String(), `"version"`) {
 			t.Fatal("restricted settings leaked", w.Body)
 		}
 	}

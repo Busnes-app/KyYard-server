@@ -10,6 +10,7 @@ import (
 
 	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyyard-server/internal/api"
+	"github.com/Busnes-app/kyyard-server/internal/appversion"
 	"github.com/Busnes-app/kyyard-server/internal/auth"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
@@ -94,7 +95,7 @@ func TestSettingsExposureByRole(t *testing.T) {
 	if anon["app_name"] == nil || anon["captcha_provider"] == nil {
 		t.Errorf("anonymous settings must keep the login screen working, got %v", anon)
 	}
-	for _, secret := range []string{"extra_settings", "db_driver"} {
+	for _, secret := range []string{"extra_settings", "db_driver", "version"} {
 		if _, found := anon[secret]; found {
 			t.Errorf("anonymous settings leaked %q: %v", secret, anon)
 		}
@@ -106,6 +107,9 @@ func TestSettingsExposureByRole(t *testing.T) {
 	member := decode(do(t, srv, "GET", "/api/settings", loginAs(t, srv, st, "bob", "user")))
 	if member["db_driver"] == nil {
 		t.Errorf("authenticated settings should include db_driver, got %v", member)
+	}
+	if member["version"] != appversion.String() {
+		t.Errorf("authenticated settings should report version %q, got %v", appversion.String(), member["version"])
 	}
 	if _, found := member["scim_enabled"]; found {
 		t.Errorf("settings still advertise retired SCIM: %v", member)

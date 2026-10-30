@@ -1,10 +1,12 @@
 import { LogOut, Server, Settings as SettingsIcon, LayoutDashboard } from 'lucide-react';
 import { OrganizationSelect } from './OrganizationSelect';
 import { Link } from './Link';
+import { LicenseFooter } from './LicenseFooter';
 import type { Route } from '../router';
 
 interface AppHeaderProps {
   appName: string;
+  version?: string;
   route: Route;
   user: { display_name?: string; username: string };
   onLogout: () => void;
@@ -14,7 +16,7 @@ const navItems = [
   { name: 'endpoints', to: '/endpoints', label: 'Endpoints', icon: Server },
   { name: 'settings', to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];
-export function AppHeader({ appName, route, user, onLogout }: AppHeaderProps) {
+export function AppHeader({ appName, version, route, user, onLogout }: AppHeaderProps) {
   const org = 'org' in route ? route.org : undefined;
   return <header className="ky-header">
     <Link to="/" className="ky-brand"><img src="/app-icon.png" width={28} height={28} alt="" /><span>{appName || 'KyYard'}</span></Link>
@@ -29,5 +31,6 @@ export function AppHeader({ appName, route, user, onLogout }: AppHeaderProps) {
       <span className="ky-account-name">{user.display_name || user.username}</span>
       <button className="btn-secondary ky-signout" onClick={onLogout} title="Sign out" aria-label="Sign out"><LogOut size={17} /><span>Sign out</span></button>
     </div>
+    <LicenseFooter appName={appName || 'KyYard'} version={version} />
   </header>;
 }

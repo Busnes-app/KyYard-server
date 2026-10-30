@@ -104,7 +104,7 @@ export const App: React.FC = () => {
   return (
     <div className="ky-shell">
       <a className="ky-skip" href="#main-content">Skip to content</a>
-      <AppHeader appName={settings?.app_name || 'KyYard'} route={route} user={user} onLogout={handleLogout} />
+      <AppHeader appName={settings?.app_name || 'KyYard'} version={typeof settings?.version === 'string' ? settings.version : undefined} route={route} user={user} onLogout={handleLogout} />
       {/* Keying on the organization discards every tenant screen's state when the context changes. */}
       <main id="main-content" className="ky-main" tabIndex={-1} key={org ?? ''}>
         <Screen route={route} settings={settings} user={user} />
