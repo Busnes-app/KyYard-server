@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/Busnes-app/kyyard-server/internal/appversion"
 )
 
 type ThemeUpdateRequest struct {
@@ -46,6 +48,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out["db_driver"] = s.config.Database.Driver
+	out["version"] = appversion.String()
 
 	// extra_settings holds secrets such as a legacy SCIM bearer token. The KyRecovery pairing
 	// token is sealed at rest and never leaves the process in either form: an admin can see

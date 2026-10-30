@@ -395,6 +395,18 @@ details[open] > summary { margin-bottom: 16px; }
 .ky-account-name, .ky-workspace { overflow-wrap: anywhere; padding: 0 12px; font-size: 13px; }
 .ky-workspace { color: var(--ink); }
 .ky-signout { justify-content: flex-start; background: transparent; border-color: transparent; color: var(--ink); padding: 8px 12px; }
+.sidebar-footer { font-size: 0.75rem; color: var(--ink); padding: 0 12px; }
+.sidebar-footer p { margin: 0; }
+.license-link { margin: 0; padding: 0; min-height: 0; border: none; background: none; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; }
+.license-dialog { width: min(720px, 96vw); max-width: none; max-height: 90vh; margin: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; color: var(--ink-strong); padding: 0; }
+.license-window { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.license-window-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.license-window-title { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.license-title-main { display: flex; align-items: baseline; gap: 10px; }
+.license-app-name { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+.license-version-badge { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; padding: 2px 8px; border-radius: 999px; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+.license-title-sub { margin: 0; font-size: 0.82rem; opacity: 0.7; }
+.license-text { width: 100%; flex: 1; min-height: 320px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; line-height: 1.4; white-space: pre; background: var(--panel); color: var(--ink-strong); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .ky-main { min-width: 0; }
 .ky-skip { position: fixed; left: 12px; top: -100px; z-index: 3000; background: var(--panel); padding: 12px; }
 .ky-skip:focus { top: 12px; }
@@ -452,6 +464,7 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
  .ky-account-name, .ky-account > .ky-workspace, .ky-account > select, .ky-account > span { display: none; }
  .ky-signout { padding: 8px; min-height: 36px; }
  .ky-signout span { display: none; }
+ .sidebar-footer { grid-column: 1 / -1; grid-row: 3; padding: 0; }
  .ky-page, .dr-page { padding: 20px 16px; gap: 20px; }
  .panel { padding: 16px; }
  .ky-page-heading { align-items: flex-start; }
