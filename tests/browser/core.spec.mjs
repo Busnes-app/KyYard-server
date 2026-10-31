@@ -144,3 +144,30 @@ test('keyboard navigation and Settings fit the viewport', async ({ page }) => {
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(width).toBeLessThanOrEqual(page.viewportSize().width + 1);
 });
+
+test('the shell follows the suite frame', async ({ page }, testInfo) => {
+  await enter(page, '/');
+  const nav = page.getByRole('navigation', { name: 'Primary' });
+  const current = nav.locator('[aria-current="page"]');
+  await expect(current).toHaveCount(1);
+  // Only the bar and tint mark the current row: its icon keeps the label colour.
+  expect(await current.evaluate(a => getComputedStyle(a.querySelector('svg')).color === getComputedStyle(a).color)).toBe(true);
+  // KyCalendar's brand: a 28px mark and the name.
+  expect((await page.locator('.ky-brand img').boundingBox()).width).toBe(28);
+  if (testInfo.project.name === 'phone') {
+    await expect(page.locator('.ky-mobile-head').getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
+    await expect(page.locator('.ky-user-name')).toBeHidden();
+    await expect(page.locator('.ky-content-foot .ky-license-link')).toBeVisible();
+    // One row of tabs, each with its icon beside the label.
+    const tabs = await nav.locator('.ky-nav-item').evaluateAll(items => items.map(item => {
+      const box = item.getBoundingClientRect(), icon = item.querySelector('svg').getBoundingClientRect(), label = item.querySelector('span').getBoundingClientRect();
+      return { top: Math.round(box.top), beside: icon.right <= label.left && Math.abs(icon.top + icon.height / 2 - (label.top + label.height / 2)) < 4 };
+    }));
+    expect(new Set(tabs.map(tab => tab.top)).size).toBe(1);
+    expect(tabs.every(tab => tab.beside)).toBe(true);
+  } else {
+    await expect(page.locator('.ky-mobile-signout')).toBeHidden();
+    // Content starts the shared inset from the sidebar (x=272).
+    expect((await page.locator('main h1').first().boundingBox()).x).toBe(272);
+  }
+});

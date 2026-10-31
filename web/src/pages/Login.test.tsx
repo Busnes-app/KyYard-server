@@ -36,7 +36,7 @@ it('solves one challenge while typing and a fresh one after a refused login', as
   });
   vi.stubGlobal('fetch', request);
   render(<Login appName="KyYard" onSuccess={vi.fn()} />);
-  await screen.findByText('Security check verified.');
+  await screen.findByText('Browser check passed');
   for (const value of ['a', 'ad', 'admin']) fireEvent.change(screen.getByLabelText('Username'), { target: { value } });
   fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'wrong-password' } });
   expect(issued).toBe(1);
@@ -44,18 +44,18 @@ it('solves one challenge while typing and a fresh one after a refused login', as
   fireEvent.submit(screen.getByLabelText('Password').closest('form')!);
   await screen.findByText('Invalid credentials');
   await waitFor(() => expect(issued).toBe(2));
-  await screen.findByText('Security check verified.');
+  await screen.findByText('Browser check passed');
   fireEvent.submit(screen.getByLabelText('Password').closest('form')!);
   await waitFor(() => expect(tokens).toHaveLength(2));
   expect(JSON.parse(atob(tokens[0])).signature).toBe('sig1');
   expect(JSON.parse(atob(tokens[1])).signature).toBe('sig2');
 });
 
-it('labels a single provider "Single Sign On" and names several', () => {
+it('labels a single provider "single sign-on" and names several', () => {
   vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
   const one = [{ id: 'kysignon', name: 'KyIdentity', login_url: '/api/sso/kysignon/login' }];
   render(<Login appName="KyYard" onSuccess={vi.fn()} providers={one} />);
-  expect(screen.getByRole('link', { name: 'Continue with Single Sign On' }).getAttribute('href')).toBe('/api/sso/kysignon/login');
+  expect(screen.getByRole('link', { name: 'Continue with single sign-on' }).getAttribute('href')).toBe('/api/sso/kysignon/login');
   expect(screen.queryByText(/Single Sign-On/)).toBeNull();
   cleanup();
   render(<Login appName="KyYard" onSuccess={vi.fn()} providers={[...one, { id: 'oidc', name: 'OpenID Connect', login_url: '/api/sso/oidc/login' }]} />);

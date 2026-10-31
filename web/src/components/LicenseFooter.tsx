@@ -5,10 +5,12 @@ interface LicenseFooterProps {
   appName: string;
   // From the signed-in tier of /api/settings; empty hides the badge.
   version?: string;
+  // The sidebar foot by default; `ky-content-foot` closes a phone page.
+  className?: string;
 }
 
 // The suite's licence line and About dialog (ky-ui shell markup).
-export function LicenseFooter({ appName, version }: LicenseFooterProps) {
+export function LicenseFooter({ appName, version, className = 'ky-license' }: LicenseFooterProps) {
   const [open, setOpen] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const year = new Date().getFullYear();
@@ -18,7 +20,7 @@ export function LicenseFooter({ appName, version }: LicenseFooterProps) {
     if (open && !d.open) d.showModal();
     else if (!open && d.open) d.close();
   }, [open]);
-  return <div className="ky-license">
+  return <div className={className}>
     <button type="button" className="ky-license-link" onClick={() => setOpen(true)}>
       &copy; {year} &middot; MIT License
     </button>

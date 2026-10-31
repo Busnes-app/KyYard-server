@@ -81,7 +81,7 @@ export const CaptchaWidget: React.FC<CaptchaProps> = ({ onToken }) => {
   return (
     <p className="ky-auth-check" data-ky-state={status === 'done' ? 'passed' : status === 'failed' ? 'failed' : undefined} aria-live="polite">
       {status === 'working' && <><Loader2 className="animate-spin" aria-hidden="true" /><span>Verifying security check ({progress}%)...</span></>}
-      {status === 'done' && <><ShieldCheck aria-hidden="true" /><span>Security check verified.</span></>}
+      {status === 'done' && <><ShieldCheck aria-hidden="true" /><span>Browser check passed</span></>}
       {status === 'failed' && <><AlertCircle aria-hidden="true" /><span>{errorMsg}</span></>}
     </p>
   );
