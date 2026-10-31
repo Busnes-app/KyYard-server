@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { Dashboard } from './Dashboard';
 const json = (body: unknown) => new Response(JSON.stringify(body));
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -9,7 +9,7 @@ const hosts = [
   { id: 'docker', name: 'docker.example.com', runtime: 'docker', state: 'active', facts: {} },
 ];
 function fleet(role = 'organization_admin', received = new Date().toISOString(), denied = false) {
-  const fetcher = vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', role }]) : url.includes('/inventory') ? denied ? new Response('{}', { status: 403 }) : json({ received_at: received, snapshot: { engine: { cpus: 16, memory_bytes: 16 * 2 ** 30 }, containers: [{ state: 'running' }, { state: 'exited' }], kubernetes: { nodes: [{ ready: true }, { ready: false }], pods: [{}, {}, {}], workloads: [{ ready: 1, desired: 1 }, { ready: 0, desired: 1 }] } } }) : json(hosts));
+  const fetcher = vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', role }]) : url.includes('/inventory') ? denied ? new Response('{}', { status: 403 }) : json({ received_at: received, snapshot: { engine: { cpus: 16, memory_bytes: 16 * 2 ** 30 }, containers: [{ id: 'c1', name: 'web', state: 'running' }, { id: 'c2', name: 'job', state: 'exited', status: 'Exited (1)' }], kubernetes: { nodes: [{ name: 'n1', ready: true }, { name: 'n2', ready: false }], pods: [{}, {}, {}], workloads: [{ ready: 1, desired: 1 }, { ready: 0, desired: 1 }] } } }) : url.includes('/commands') ? json([]) : json(hosts));
   vi.stubGlobal('fetch', fetcher); return fetcher;
 }
 it('lands on native endpoint summaries and direct run links, without stale local containers', async () => {
@@ -31,7 +31,10 @@ it('hides run actions from an operator', async () => {
 });
 it('reports stale inventory without claiming current running counts', async () => {
   fleet('organization_admin', new Date(Date.now() - 240000).toISOString()); render(<Dashboard />);
-  expect((await screen.findAllByText('Stale')).length).toBe(2);
+  const attention = await screen.findByRole('region', { name: 'Needs attention (3)' });
+  expect(within(attention).getAllByText('Stale').length).toBe(2);
+  expect(within(attention).getAllByRole('listitem')[0].textContent).toContain('Disconnected');
+  expect(within(screen.getByRole('table')).getAllByText('Stale').length).toBe(2);
   expect(screen.queryByText('16.0 GiB')).toBeNull();
 });
 it('distinguishes denied organization access from an empty fleet', async () => {
@@ -49,7 +52,7 @@ it.each([false, true])('polls active inventory and stops denied reads (%s)', asy
 });
 it('keeps endpoint discovery bounded at 20 per page', async () => {
   const fetcher = vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a' }]) : json(url.includes('offset=20') ? [] : Array.from({ length: 20 }, (_, i) => ({ id: `e${i}`, name: `host-${i}`, state: 'offline', runtime: 'docker', facts: {} }))));
-  vi.stubGlobal('fetch', fetcher); render(<Dashboard />); await screen.findByText('host-0');
+  vi.stubGlobal('fetch', fetcher); render(<Dashboard />); await screen.findAllByText('host-0');
   fireEvent.click(screen.getByRole('button', { name: 'Next endpoints' }));
   await screen.findByText('No endpoints on this page');
   expect(fetcher.mock.calls.some(([url]) => url.endsWith('offset=20&limit=20'))).toBe(true);
@@ -74,4 +77,35 @@ it('points a platform administrator without an organization at Administration', 
   cleanup();
   render(<Dashboard />);
   expect(await screen.findByText('No host access yet. Ask an administrator to add your account.')).toBeTruthy();
+});
+
+it('leads with what needs attention, worst first, and ends with recent commands', async () => {
+  const now = new Date().toISOString();
+  const inventory = (containers: object[]) => json({ received_at: now, snapshot: { engine: { cpus: 1, memory_bytes: 2 ** 30 }, containers } });
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/organizations' ? json([{ id: 'a', role: 'operator' }])
+    : url.includes('/calm/inventory') ? inventory([{ id: 'c9', name: 'cache', state: 'running', health: 'healthy', status: 'Up' }])
+    : url.includes('/busy/inventory') ? inventory([
+      { id: 'c1', name: 'web', state: 'running', health: 'starting', status: 'Up 1 minute (health: starting)' },
+      { id: 'c2', name: 'db', state: 'running', health: 'unhealthy', status: 'Up 5 hours (unhealthy)' },
+      { id: 'c3', name: 'idle', state: 'created', status: 'Created' }])
+    : url.includes('/busy/commands') ? json([{ id: 'k1', action: 'container.restart', outcome: 'failed', container_id: 'c2', created_at: now }, { id: 'k2', action: 'something.new', outcome: 'odd', created_at: now }])
+    : url.includes('/commands') ? json([])
+    : json([{ id: 'calm', name: 'Alpha', runtime: 'docker', state: 'active', facts: {} }, { id: 'busy', name: 'Zulu', runtime: 'docker', state: 'active', facts: {} }])));
+  render(<Dashboard />);
+  const attention = await screen.findByRole('region', { name: 'Needs attention (2)' });
+  const items = within(attention).getAllByRole('listitem');
+  expect(items.map((li) => li.textContent)).toEqual(['Unhealthydb' + 'Zulu · Up 5 hours (unhealthy)', 'Startingweb' + 'Zulu · Up 1 minute (health: starting)']);
+  expect(within(items[0]).getByText('Unhealthy').getAttribute('data-ky-status')).toBe('danger');
+  expect(within(items[0]).getByRole('link', { name: 'db' }).getAttribute('href')).toBe('/organizations/a/endpoints/busy/containers/c2');
+  expect(within(attention).queryByText('idle')).toBeNull();
+  // The endpoint with problems sorts ahead of a healthy one whose name comes first.
+  const rows = within(screen.getByRole('table')).getAllByRole('row').slice(1);
+  expect(rows.map((r) => within(r).getAllByRole('link')[0].textContent)).toEqual(['Zulu', 'Alpha']);
+  const activity = within(screen.getByRole('region', { name: 'Recent activity' })).getAllByRole('listitem');
+  expect(within(activity[0]).getByRole('link').textContent).toBe('Restart db');
+  expect(within(activity[0]).getByText('Failed').getAttribute('data-ky-status')).toBe('danger');
+  // Unknown codes never render raw.
+  expect(activity[1].textContent).toContain('Command');
+  expect(activity[1].textContent).toContain('Unrecognised');
+  expect(activity[1].textContent).not.toMatch(/something\.new|odd/);
 });

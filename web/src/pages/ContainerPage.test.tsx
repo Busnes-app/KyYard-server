@@ -43,7 +43,7 @@ it('shows overview facts with live uptime, IP, health and links back to the host
   expect(facts.textContent).toContain('always');
   expect(facts.textContent).toContain('tier=web');
   expect(facts.textContent).toContain('/data');
-  expect(screen.getByText('healthy')).toBeTruthy();
+  expect(screen.getByText('Healthy')).toBeTruthy();
   // Step 1 s at a time: the interval registers in an effect that may land late under load.
   for (let i = 0; i < 120 && !facts.textContent?.includes('1h 1m'); i++) await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   expect(facts.textContent).toContain('1h 1m');

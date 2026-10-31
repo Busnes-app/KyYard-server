@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { secureFetch } from '../api';
 import { useTenantResource } from '../tenant';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
+import { Status, type Tone } from '../components/Status';
 
 // Wire shapes of internal/suite (runner protocol v1) as /api/suite/* returns them.
 interface Target { name: string; kind: string }
@@ -16,8 +17,9 @@ type Kind = 'install' | 'uninstall' | 'unmanage' | 'upgrade';
 interface Action { kind: Kind; app?: string }
 
 const when = (t: string | null | undefined) => (t ? new Date(t).toLocaleString() : '—');
-const stateBadge: Record<string, string> = { running: 'badge-accent', succeeded: 'badge-success', ok: 'badge-success', failed: 'badge-danger', unknown: 'badge-warning', skipped: 'badge-secondary' };
-const Badge = ({ value }: { value: string }) => <span className={`badge ${stateBadge[value] ?? 'badge-secondary'}`}>{value}</span>;
+// running is in progress, not a call to act, so it is neutral rather than the accent.
+const stateTone: Record<string, Tone> = { succeeded: 'success', ok: 'success', failed: 'danger', unknown: 'warning' };
+const Badge = ({ value }: { value: string }) => <Status tone={Object.hasOwn(stateTone, value) ? stateTone[value] : undefined}>{value}</Status>;
 
 // A refusal shows the server's or runner's code and its message, which the runner redacts.
 async function refusal(r: Response): Promise<string> {
@@ -63,7 +65,7 @@ function SuiteManager({ status, reload, totp }: { status: SuiteStatus; reload: (
             <td data-label="Version">{a.version}</td>
             <td data-label="Newest">{newest.get(a.name) ?? '—'}</td>
             <td data-label="Target">{a.target}</td>
-            <td data-label="Health">{a.state !== 'installed' && <><Badge value={a.state} />{' '}</>}{a.health ? <span className={`badge ${a.health.ok ? 'badge-success' : 'badge-danger'}`} title={`Checked ${when(a.health.checked)}`}>{a.health.ok ? 'healthy' : 'unhealthy'}</span> : 'not checked'}</td>
+            <td data-label="Health">{a.state !== 'installed' && <><Badge value={a.state} />{' '}</>}{a.health ? <Status tone={a.health.ok ? 'success' : 'danger'} title={`Checked ${when(a.health.checked)}`}>{a.health.ok ? 'healthy' : 'unhealthy'}</Status> : 'not checked'}</td>
             <td data-label="Last result">{a.last_result ? <><code>{a.last_result.step}</code> <Badge value={a.last_result.status} /> {when(a.last_result.time)}</> : '—'}</td>
             <td data-label="Actions"><span className="ky-container-actions">
               {(['upgrade', 'uninstall', 'unmanage'] as const).map((kind) => <button key={kind} className={kind === 'uninstall' ? 'btn-danger' : 'btn-secondary'} disabled={busy} onClick={() => setAction({ kind, app: a.name })} aria-label={`${kind[0].toUpperCase() + kind.slice(1)} ${a.name}`}>{kind[0].toUpperCase() + kind.slice(1)}</button>)}</span>

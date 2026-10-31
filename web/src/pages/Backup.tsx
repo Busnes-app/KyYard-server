@@ -16,6 +16,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { secureFetch } from '../api';
+import { Status } from '../components/Status';
 
 export interface DepositReceipt {
   capsule_id: string;
@@ -129,8 +130,8 @@ const Alert: React.FC<{ kind: 'error' | 'warn' | 'success'; children: React.Reac
   </div>
 );
 
-const Badge: React.FC<{ tone: 'success' | 'accent' | 'danger' | 'muted'; children: React.ReactNode }> = ({ tone, children }) => (
-  <span className={tone === 'muted' ? 'badge dr-badge-muted' : `badge badge-${tone}`}>{children}</span>
+const Badge: React.FC<{ tone: 'success' | 'danger' | 'muted'; children: React.ReactNode }> = ({ tone, children }) => (
+  <Status tone={tone === 'muted' ? undefined : tone}>{children}</Status>
 );
 
 export const Backup: React.FC = () => {

@@ -40,7 +40,7 @@ it('approves with the exact fingerprint after confirmation and hides actions for
   document.cookie = 'ky_csrf=csrf-test';
   render(<Endpoints org="a" env="env-a" />);
   fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
-  await screen.findByText('revoked');
+  await screen.findByText('Revoked');
   expect(calls).toEqual(['/api/organizations/a/endpoints/ep_1/approve']);
   expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
@@ -58,10 +58,10 @@ it('follows an approved endpoint until its agent reports, without a manual refre
   document.cookie = 'ky_csrf=csrf-test';
   render(<Endpoints org="a" env="env-a" />);
   fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
-  await screen.findByText('approved');
+  await screen.findByText('Approved');
   await act(() => vi.advanceTimersByTimeAsync(3000));
-  await screen.findByText('active');
-  expect(screen.getByText('healthy')).toBeTruthy();
+  await screen.findByText('Active');
+  expect(screen.getByText('Healthy')).toBeTruthy();
   expect(screen.getByText('1 node')).toBeTruthy();
   const settled = lists;
   await act(() => vi.advanceTimersByTimeAsync(9000));
@@ -116,7 +116,7 @@ it('acknowledges a rotated key with both fingerprints shown and clears a duplica
   fireEvent.click(await screen.findByRole('button', { name: 'Clear' }));
   await waitFor(() => expect(calls.length).toBe(2));
   expect(calls).toEqual(['/api/organizations/a/endpoints/ep_1/keys/' + 'cd'.repeat(32) + '/acknowledge', '/api/organizations/a/endpoints/ep_1/events/8/acknowledge']);
-  expect(screen.getByRole('alert').textContent).toContain('duplicate_connection');
+  expect(screen.getByRole('alert').textContent).toContain('Duplicate connection');
 });
 
 it('refreshes hosts after the operator starts the agent', async () => {
@@ -182,7 +182,7 @@ it('shows a cluster endpoint with its health and node count', async () => {
   const cluster = { ...pending, id: 'ep_2', name: 'prod', runtime: 'kubernetes', state: 'active', facts: { runtime: 'kubernetes', server_version: 'v1.36.0', node_count: '3' }, cluster_health: 'degraded' };
   vi.stubGlobal('fetch', vi.fn(async () => json([cluster])));
   render(<Endpoints org="a" env="env-a" />);
-  expect(await screen.findByText('degraded')).toBeTruthy();
+  expect(await screen.findByText('Degraded')).toBeTruthy();
   expect(screen.getByText('3 nodes')).toBeTruthy();
   expect(screen.getByText('v1.36.0')).toBeTruthy();
 });

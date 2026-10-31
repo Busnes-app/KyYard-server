@@ -1,13 +1,12 @@
 import React from 'react';
 import { displayName } from './Endpoints';
-import { attachments, healthBadge, primaryIP, stateBadge } from './containerFacts';
+import { attachments, containerStatus, primaryIP } from './containerFacts';
+import { Status } from './Status';
 import type { Container, Port } from '../tenant';
 
-// merged shows one chip: a running container's health when it has a check, else its state.
-export const StateCell: React.FC<{ c: Container; merged?: boolean }> = ({ c, merged = false }) => {
-  const health = healthBadge(c.health);
-  if (merged && health && c.state === 'running') return <span className={`badge ${health.className}`} title={c.status}>{health.text}</span>;
-  return <span className="ky-state-cell"><span className={stateBadge(c.state)} title={c.status}>{displayName(c.state)}</span>{health && <span className={`badge ${health.className}`}>{health.text}</span>}</span>;
+export const StateCell: React.FC<{ c: Container }> = ({ c }) => {
+  const { text, tone } = containerStatus(c);
+  return <Status tone={tone} title={c.status}>{displayName(text)}</Status>;
 };
 
 export const IPCell: React.FC<{ c: Container }> = ({ c }) => <span title={attachments(c).map((n) => `${n.name}: ${n.ip || '—'}`).join('\n')}>{primaryIP(c) || '—'}</span>;
