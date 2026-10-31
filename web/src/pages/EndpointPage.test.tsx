@@ -20,12 +20,14 @@ it('renders a fresh snapshot and flags staleness and truncation', async () => {
   const snapshot = { generation: 7, observed_at: old, engine: { runtime: 'docker', version: '29.7.2', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 8, memory_bytes: 2 ** 31, hostname: 'h1' }, containers: [{ id: 'c1', name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [{ host: 8080, container: 80, protocol: 'tcp' }], labels: {}, networks: [], compose_project: 'shop' }], images: [], networks: [], volumes: [], truncated: ['images'] };
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 7, observed_at: old, received_at: old, snapshot }) : String(input).endsWith('/samples') ? json([{ container_id: 'c1', observed_at: old, cpu_percent: 12.34, memory_bytes: 3 * 2 ** 20, memory_limit: 0, rx_bytes: 0, tx_bytes: 0, pids: 1, restart_count: 3 }]) : json(endpoint)));
   render(<EndpointPage org="a" endpoint="ep_1" />);
-  expect(await screen.findByText('cpu 12.3% · mem 3 MiB · 3 restarts')).toBeTruthy();
+  expect(await screen.findByText('cpu 12.3% · mem 3 MiB')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Show details for web' }));
+  expect(screen.getByText('cpu 12.3% · mem 3 MiB · 3 restarts')).toBeTruthy();
   const status = await screen.findByText(/^Inventory generation/);
   expect(status.textContent).toContain('generation 7');
   expect(status.textContent).toContain('stale');
   expect(status.textContent).toContain('truncated: images');
-  expect(screen.getByText(/8080 → 80\/tcp/)).toBeTruthy();
+  expect(screen.getAllByText(/8080 → 80\/tcp/).length).toBe(2); // the row's summary and the drawer's list
   fireEvent.click(screen.getByRole('button', { name: 'Images' }));
   expect(screen.getByText('No images on this host.')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Details' }));
@@ -125,18 +127,18 @@ it('keeps a row\'s controls through a failed poll and a container added ahead', 
   try {
     const host = pollingHost();
     render(<EndpointPage org="a" endpoint="ep_1" />);
-    const group = await screen.findByRole('group', { name: 'Actions for web' });
+    const group = await screen.findByRole('menu', { name: 'Actions for web' });
     const table = screen.getByRole('table');
     const api = { ...host.web, id: 'c0', name: 'api' };
     host.poll(() => json({ endpoint_id: 'ep_1', state: 'active', generation: 2, observed_at: host.now, received_at: host.now, snapshot: { ...terminalSnapshot(host.now), generation: 2, containers: [api, host.web] } }));
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     await screen.findByText('api');
     // Rows keyed by index would remount web's controls here.
-    expect(screen.getByRole('group', { name: 'Actions for web' })).toBe(group);
+    expect(screen.getByRole('menu', { name: 'Actions for web' })).toBe(group);
     host.poll(() => json({ error: 'boom' }, 500));
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(screen.queryByRole('table')).toBe(table);
-    expect(screen.getByRole('group', { name: 'Actions for web' })).toBe(group);
+    expect(screen.getByRole('menu', { name: 'Actions for web' })).toBe(group);
     await screen.findByText(/Last refresh failed/);
   } finally {
     vi.useRealTimers();
@@ -203,10 +205,10 @@ function stubHost(organizations: () => Promise<Response>, ep: object = endpoint)
 }
 async function terminalOffered(org: string, fetcher: ReturnType<typeof stubHost>) {
   render(<EndpointPage org={org} endpoint="ep_1" />);
-  await screen.findByRole('group', { name: 'Actions for web' });
+  await screen.findByRole('menu', { name: 'Actions for web' });
   expect(fetcher).toHaveBeenCalledWith('/api/organizations');
   await new Promise((resolve) => setTimeout(resolve, 0));
-  return screen.queryByRole('link', { name: 'Terminal for web' }) !== null;
+  return screen.queryByRole('menuitem', { name: 'Open terminal for web' }) !== null;
 }
 it.each([['organization_admin', true], ['environment_admin', false], ['operator', false], ['developer', false], ['read_only', false], ['', false]])('offers Terminal to %s: %s', async (role, want) => {
   const fetcher = stubHost(async () => json(role ? [{ id: 'a', name: 'Team', role }] : []));
@@ -294,14 +296,14 @@ it('lists uptime, IP and health and links each container to its page', async () 
   render(<EndpointPage org="a" endpoint="ep_1" />);
   const table = await screen.findByRole('table');
   const head = within(table).getAllByRole('columnheader').map((h) => h.textContent);
-  expect(head).toEqual(['Container', 'Status', 'Uptime', 'IP', 'Usage', 'Actions']);
+  expect(head).toEqual(['Details', 'Container', 'State', 'Uptime', 'Ports', 'IP', 'CPU / memory', 'Actions']);
   const [web, old] = within(table).getAllByRole('row').slice(1);
   expect(within(web).getByRole('link', { name: 'web' }).getAttribute('href')).toBe(`/organizations/a/endpoints/ep_1/containers/${id}`);
   expect(web.textContent).toContain('2h 30m');
   expect(web.textContent).toContain('172.17.0.5');
   expect(within(web).getByText('unhealthy')).toBeTruthy();
-  expect(old.querySelectorAll('td')[2].textContent?.replace('Uptime', '').trim()).toBe('—');
-  expect(old.querySelectorAll('td')[3].textContent?.replace('IP', '').trim()).toBe('—');
+  expect(old.querySelectorAll('td')[3].textContent?.trim()).toBe('—');
+  expect(old.querySelectorAll('td')[5].textContent?.trim()).toBe('—');
 });
 
 it.each([['organization_admin', true], ['environment_admin', false], ['operator', false]])('offers Run a container to %s: %s', async (role, want) => {
@@ -401,6 +403,7 @@ it('updates in one click, preserves settings, and keeps the result after filteri
   document.cookie = 'ky_csrf=one-click';
   const fetcher = imageRoutes();
   render(<EndpointPage org="a" endpoint="ep_1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Show details for web' }));
   const update = await screen.findByRole('button', { name: 'Update image' });
   await act(async () => { fireEvent.click(update); fireEvent.click(update); });
   const posts = fetcher.mock.calls.filter(([url]) => String(url).endsWith('/recreate'));
@@ -426,11 +429,13 @@ it('updates in one click, preserves settings, and keeps the result after filteri
 it('locks a lost update response across row unmounts instead of resubmitting', async () => {
   const fetcher = imageRoutes({ losePost: true });
   render(<EndpointPage org="a" endpoint="ep_1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Show details for web' }));
   const update = await screen.findByRole('button', { name: 'Update image' });
   await act(async () => { fireEvent.click(update); });
   expect(screen.getByRole('alert').textContent).toContain('may have been sent');
   fireEvent.change(screen.getByLabelText('Find containers'), { target: { value: 'missing' } });
   fireEvent.change(screen.getByLabelText('Find containers'), { target: { value: '' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Show details for web' }));
   const button = screen.getByRole('button', { name: 'Update image' });
   expect((button as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(button);
@@ -443,6 +448,7 @@ it.each([
 ])('refuses an unavailable or incomplete configuration without sending an update', async (configuration, text) => {
   const fetcher = imageRoutes({ configuration });
   render(<EndpointPage org="a" endpoint="ep_1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Show details for web' }));
   const update = await screen.findByRole('button', { name: 'Update image' });
   await act(async () => { fireEvent.click(update); });
   expect(screen.getByRole('alert').textContent).toContain(text);

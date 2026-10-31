@@ -84,8 +84,9 @@ export function useContainerUpdateChecker(base: string): CheckUpdate {
 }
 
 // UpdateBadge checks when identity changes (unless auto is off) or on demand and offers the update;
-// a managed answer offers none, because the application's own flow owns those images.
-export function UpdateBadge({ label, identity, active, org, check: checkUpdate, onUpdate, updateDisabled = false, updateTitle = 'Pull the latest image and update using current settings', auto = true }: { label: string; identity: string; active: boolean; org: string; check: (signal: AbortSignal, fresh: boolean) => Promise<Verdict | null>; onUpdate: () => void; updateDisabled?: boolean; updateTitle?: string; auto?: boolean }) {
+// a managed answer offers none, because the application's own flow owns those images. compact shows
+// only an available update, for a table row whose detail drawer holds the full controls.
+export function UpdateBadge({ label, identity, active, org, check: checkUpdate, onUpdate, updateDisabled = false, updateTitle = 'Pull the latest image and update using current settings', auto = true, compact = false }: { label: string; identity: string; active: boolean; org: string; check: (signal: AbortSignal, fresh: boolean) => Promise<Verdict | null>; onUpdate: () => void; updateDisabled?: boolean; updateTitle?: string; auto?: boolean; compact?: boolean }) {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [busy, setBusy] = useState(false);
   const request = useRef<AbortController | null>(null);
@@ -107,10 +108,11 @@ export function UpdateBadge({ label, identity, active, org, check: checkUpdate, 
   }, [active, auto, check]);
   // An active auto row has a check about to start until its first verdict: it is never offline.
   const text = busy || (active && auto && !verdict) ? 'Checking…' : verdict ? VERDICTS[verdict] : active ? 'Not checked' : 'Endpoint offline';
+  if (compact) return verdict === 'update_available' ? <span className="badge badge-warning">Update available</span> : null;
   return <span className="ky-image-update"><span role="status" className={`badge ${verdict === 'update_available' ? 'badge-warning' : 'badge-secondary'}`}>{text}</span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/access#registries-heading`} title="Add a registry entry for this image's host, or allow anonymous pulls, in Access → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${label}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && verdict !== 'managed' && <button type="button" className="btn-secondary" disabled={updateDisabled} onClick={onUpdate} title={updateTitle}>Update image</button>}</span>;
 }
 
-export function ContainerUpdate({ container, active, org, checkUpdate, onUpdate, updateDisabled = false }: { container: Container; active: boolean; org: string; endpoint: string; checkUpdate: CheckUpdate; onUpdate: () => void; updateDisabled?: boolean }) {
-  return <UpdateBadge label={container.name} identity={JSON.stringify([container.id, container.image_id, container.image, container.created_at])} active={active} org={org}
+export function ContainerUpdate({ container, active, org, checkUpdate, onUpdate, updateDisabled = false, compact = false }: { container: Container; active: boolean; org: string; endpoint: string; checkUpdate: CheckUpdate; onUpdate: () => void; updateDisabled?: boolean; compact?: boolean }) {
+  return <UpdateBadge label={container.name} identity={JSON.stringify([container.id, container.image_id, container.image, container.created_at])} active={active} org={org} compact={compact}
     check={(signal, fresh) => checkUpdate(container, signal, fresh)} onUpdate={onUpdate} updateDisabled={updateDisabled} updateTitle="Pull the latest image and recreate using current settings" />;
 }

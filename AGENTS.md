@@ -82,12 +82,12 @@ Default section order:
 
 - Automatically check image updates for visible Docker container rows when opening the list; keep checks bounded and show specific registry failures.
 - Keep container lists paginated and bounded. Normal installation workflows must not require organization management; preserve authorization scope internally and explicit switching for existing multi-membership accounts.
-- Container rows use icon action buttons, never a menu that reflows the table; every container has its own page with Overview, Configuration, Logs, Terminal and Activity tabs; lists show uptime, IP and health.
+- Container rows are one compact line (name and image, state and health, uptime, ports, IP, CPU/memory). Image update, registry configuration, port detail and usage open in the row's detail drawer; row actions sit in a ⋯ popover menu that overlays and never reflows the table. Every container has its own page with Overview, Configuration, Logs, Terminal and Activity tabs, where the actions stay icon buttons.
 - Keep the interface coherent across the whole site: clear operational navigation, consistent Ky design patterns, readable forms and tables, and reachable controls on mobile. Prioritize interface corrections over adding more UI clutter.
 - The local Docker host connects automatically in the standard installation, without an enrollment command, separate agent container or fingerprint approval. Additional hosts retain explicit enrollment.
 - Remote-host setup is one image-pulling Docker run command with an enrollment link; do not require inspecting a server container or running a separate enrollment container.
 - Home and Endpoints are the primary navigation. Home leads with fleet summaries; native containers and workloads live on their endpoint pages. Administration stays in Settings.
-- Use the KyPost/KyDNS fifteen-palette swatch picker in Settings and browser-local theme preferences. Remove upper-right theme dropdowns from the header and login.
+- Appearance is a direct navigation page with the ky-ui palette pairs (Match system / Light / Dark per pair), saved browser-locally under `kyyard-theme`. The sign-in screen carries the suite's compact theme picker top-right; the app header has none.
 - Support configurable OAuth 2 / OIDC providers including KyIdentity; preserve local sign-in. SCIM and phone pairing are retired from the product.
 - Existing local accounts connect SSO explicitly by proving the current KyYard password, the original session and the provider identity. Preserve the account ID, local credentials and tenant permissions; never link automatically by username or email.
 - The default one-container SQLite installation uses Docker's existing `bridge`; optional database and container-proxy profiles follow their documented network contracts.

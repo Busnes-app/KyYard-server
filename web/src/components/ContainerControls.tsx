@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { Play, RotateCw, ScrollText, Square, Terminal, Trash2 } from 'lucide-react';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { Ellipsis, Play, RotateCw, ScrollText, Square, Terminal, Trash2 } from 'lucide-react';
 import { Link } from './Link';
 import { containerPath } from '../router';
 import { secureFetch } from '../api';
@@ -40,7 +40,8 @@ export function useCommand(base: string, sent: Command | null, onSettled?: (comm
   }, [base, id, waiting]);
   return { command: current.command, error: current.error };
 }
-export function ContainerControls({ base, container, active, scope, onRefresh, canExec, org, endpoint, onStatus }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void; canExec: boolean; org: string; endpoint: string; onStatus?: (text: string) => void }) {
+// menu puts the actions in a ⋯ popover for table rows; the container page keeps the icon row.
+export function ContainerControls({ base, container, active, scope, onRefresh, canExec, org, endpoint, onStatus, menu = false }: { base: string; container: Container; active: boolean; scope: string; onRefresh: () => void; canExec: boolean; org: string; endpoint: string; onStatus?: (text: string) => void; menu?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [inline, setInline] = useState('');
   const [sent, setSent] = useState<Command | null>(null);
@@ -74,18 +75,62 @@ export function ContainerControls({ base, container, active, scope, onRefresh, c
   const disabled = busy || !active || (command !== null && !command.outcome);
   const name = container.name;
   const icon = 16;
+  const actions = [
+    container.state !== 'running' && { key: 'start', label: 'Start', icon: Play, run: () => void act('start') },
+    container.state === 'running' && { key: 'stop', label: 'Stop', icon: Square, run: () => void act('stop') },
+    container.state === 'running' && { key: 'restart', label: 'Restart', icon: RotateCw, run: () => void act('restart') },
+    { key: 'logs', label: 'View logs', icon: ScrollText, to: containerPath(org, endpoint, container.id, 'logs') },
+    canExec && { key: 'terminal', label: 'Open terminal', icon: Terminal, to: containerPath(org, endpoint, container.id, 'terminal') },
+    { key: 'remove', label: 'Remove', icon: Trash2, run: () => void act('remove'), off: ['running', 'paused', 'restarting'].includes(container.state) },
+  ].filter((a) => !!a);
+  const label = (verb: string) => verb.includes(' ') ? `${verb} for ${name}` : `${verb} ${name}`;
   return <>
-    <div className="ky-container-actions" role="group" aria-label={`Actions for ${name}`}>
-      {container.state !== 'running' && <button type="button" className="btn-secondary ky-icon-button" aria-label={`Start ${name}`} title="Start" disabled={disabled} onClick={() => void act('start')}><Play size={icon} aria-hidden /></button>}
-      {container.state === 'running' && <>
-        <button type="button" className="btn-secondary ky-icon-button" aria-label={`Stop ${name}`} title="Stop" disabled={disabled} onClick={() => void act('stop')}><Square size={icon} aria-hidden /></button>
-        <button type="button" className="btn-secondary ky-icon-button" aria-label={`Restart ${name}`} title="Restart" disabled={disabled} onClick={() => void act('restart')}><RotateCw size={icon} aria-hidden /></button>
-      </>}
-      <Link className="btn btn-secondary ky-icon-button" aria-label={`Logs for ${name}`} title="Logs" to={containerPath(org, endpoint, container.id, 'logs')}><ScrollText size={icon} aria-hidden /></Link>
-      {canExec && <Link className="btn btn-secondary ky-icon-button" aria-label={`Terminal for ${name}`} title="Terminal" to={containerPath(org, endpoint, container.id, 'terminal')}><Terminal size={icon} aria-hidden /></Link>}
-      <button type="button" className="btn-secondary ky-icon-button" aria-label={`Remove ${name}`} title="Remove" disabled={disabled || ['running', 'paused', 'restarting'].includes(container.state)} onClick={() => void act('remove')}><Trash2 size={icon} aria-hidden /></button>
-    </div>
+    {menu ? <RowMenu name={name}>{(close) => actions.map(({ key, label: verb, icon: Icon, run, to, off }) => to
+      ? <Link key={key} className="ky-menu-item" role="menuitem" aria-label={label(verb)} to={to} onClick={close}><Icon size={icon} aria-hidden />{verb}</Link>
+      : <button key={key} type="button" className={key === 'remove' ? 'ky-menu-item ky-menu-separated' : 'ky-menu-item'} role="menuitem" aria-label={label(verb)} disabled={disabled || off} onClick={() => { close(); run?.(); }}><Icon size={icon} aria-hidden />{verb}</button>)}</RowMenu>
+    : <div className="ky-container-actions" role="group" aria-label={`Actions for ${name}`}>
+      {actions.map(({ key, label: verb, icon: Icon, run, to, off }) => to
+        ? <Link key={key} className="btn btn-secondary ky-icon-button" aria-label={label(verb)} title={verb} to={to}><Icon size={icon} aria-hidden /></Link>
+        : <button key={key} type="button" className="btn-secondary ky-icon-button" aria-label={label(verb)} title={verb} disabled={disabled || off} onClick={run}><Icon size={icon} aria-hidden /></button>)}
+    </div>}
     {!onStatus && inline && <p role="status">{inline}</p>}
+  </>;
+}
+
+// RowMenu is a ⋯ button and a native popover positioned under it; it overlays and never reflows
+// the table. Escape and an outside click close it; scrolling closes it so it never detaches.
+export function RowMenu({ name, children }: { name: string; children: (close: () => void) => React.ReactNode }) {
+  const menu = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const id = `row-menu-${useId().replace(/:/g, '')}`;
+  const close = () => menu.current?.hidePopover?.();
+  useEffect(() => {
+    const el = menu.current;
+    if (!el) return;
+    const onScroll = () => close();
+    const toggled = (event: Event) => {
+      const open = (event as ToggleEvent).newState === 'open';
+      trigger.current?.setAttribute('aria-expanded', String(open));
+      if (!open) { window.removeEventListener('scroll', onScroll, true); return; }
+      const at = trigger.current!.getBoundingClientRect();
+      const below = at.bottom + 4 + el.offsetHeight <= window.innerHeight;
+      el.style.top = `${below ? at.bottom + 4 : Math.max(8, at.top - 4 - el.offsetHeight)}px`;
+      el.style.left = `${Math.max(8, at.right - el.offsetWidth)}px`;
+      el.querySelector<HTMLElement>('.ky-menu-item:not(:disabled)')?.focus();
+      window.addEventListener('scroll', onScroll, true);
+    };
+    el.addEventListener('toggle', toggled);
+    return () => { el.removeEventListener('toggle', toggled); window.removeEventListener('scroll', onScroll, true); };
+  }, []);
+  return <>
+    <button ref={trigger} type="button" className="ky-menu-trigger" popoverTarget={id} aria-haspopup="menu" aria-expanded="false" aria-label={`Show actions for ${name}`} title="Actions"><Ellipsis size={18} aria-hidden /></button>
+    <div ref={menu} id={id} popover="auto" className="ky-menu" role="menu" aria-label={`Actions for ${name}`} onKeyDown={(event) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      const items = [...event.currentTarget.querySelectorAll<HTMLElement>('.ky-menu-item:not(:disabled)')];
+      const at = items.indexOf(document.activeElement as HTMLElement);
+      items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
+    }}>{children(close)}</div>
   </>;
 }
 
