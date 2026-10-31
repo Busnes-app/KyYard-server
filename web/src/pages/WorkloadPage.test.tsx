@@ -285,6 +285,7 @@ it('offers Update image to an admin on an unmanaged workload and shows the sent 
   const requests = stub();
   page();
   const button = await screen.findByRole('button', { name: 'Update image' });
+  await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false)); // offered once the check answers
   await act(async () => { fireEvent.click(button); });
   const apply = requests.find((r) => r.url === `${base}/workloads/shop/deployment/web/apply`);
   expect(JSON.parse(String(apply?.init?.body)).pull).toEqual(['web']);

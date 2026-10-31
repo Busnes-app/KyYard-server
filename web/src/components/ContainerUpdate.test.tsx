@@ -89,3 +89,13 @@ it('does not contact an offline endpoint', () => {
   expect(screen.getByText('Endpoint offline')).toBeTruthy();
   expect(fetcher).not.toHaveBeenCalled();
 });
+it('offers Update image only once the check has answered', async () => {
+  let answer: (r: Response) => void = () => {};
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { answer = resolve; })));
+  render(<Rows />);
+  await act(async () => {});
+  expect(screen.getByText('Checking…')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Update image' }) as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => { answer(reply()); });
+  expect((screen.getByRole('button', { name: 'Update image' }) as HTMLButtonElement).disabled).toBe(false);
+});

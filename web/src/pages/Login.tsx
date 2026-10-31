@@ -113,7 +113,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
         <div className="ky-auth-brand">
           <img className="ky-mark" src="/app-icon.png" width={56} height={56} alt="" />
           <h1>{appName || 'KyYard'}</h1>
-          <p>The simple control plane for your container fleet.</p>
+          <p>The control plane for your container fleet.</p>
         </div>
 
         <div className="ky-auth-card">

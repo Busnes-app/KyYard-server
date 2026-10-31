@@ -19,7 +19,7 @@ export const uptime = (startedAt: string | undefined, now: number): string => {
   return `${d}d ${h % 24}h`;
 };
 
-const healthClasses: Record<string, string> = { healthy: 'badge-success', unhealthy: 'badge-danger', starting: 'badge-accent' };
+const healthClasses: Record<string, string> = { healthy: 'badge-success', unhealthy: 'badge-danger', starting: 'badge-warning' };
 export const healthBadge = (health: string | undefined): { text: string; className: string } | null => health && Object.hasOwn(healthClasses, health) ? { text: health, className: healthClasses[health] } : null;
 
 export const stateBadge = (state: string): string => `badge ${state === 'running' ? 'badge-success' : state === 'exited' || state === 'dead' ? 'badge-danger' : 'badge-secondary'}`;

@@ -19,6 +19,9 @@ const navItems = [
 ];
 export function AppHeader({ appName, version, route, user, onLogout }: AppHeaderProps) {
   const org = 'org' in route ? route.org : undefined;
+  const role = user.role === 'admin' ? 'Administrator' : 'Everyday account';
+  // A display name that repeats the role line says nothing; show the username instead.
+  const name = user.display_name && user.display_name !== role ? user.display_name : user.username;
   return <header className="ky-header">
     <Link to="/" className="ky-brand"><img className="ky-mark" src="/app-icon.png" width={28} height={28} alt="" /><span>{appName || 'KyYard'}</span></Link>
     <nav aria-label="Primary" className="ky-nav">
@@ -31,8 +34,8 @@ export function AppHeader({ appName, version, route, user, onLogout }: AppHeader
       {org && <div className="ky-sidebar-scope"><OrganizationSelect current={org} /></div>}
       <div className="ky-sidebar-user"><div className="ky-user">
         <div className="ky-user-copy">
-          <p className="ky-user-name">{user.display_name || user.username}</p>
-          <p className="ky-user-role">{user.role === 'admin' ? 'Administrator' : 'Everyday account'}</p>
+          <p className="ky-user-name">{name}</p>
+          <p className="ky-user-role">{role}</p>
         </div>
         <button type="button" className="ky-user-signout" onClick={onLogout}><LogOut size={16} aria-hidden="true" />Sign out</button>
       </div></div>

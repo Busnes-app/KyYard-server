@@ -185,7 +185,7 @@ button:disabled, .btn:disabled {
 
 input, select, textarea {
   font-family: var(--font-sans);
-  background: var(--bg);
+  background: var(--panel);
   color: var(--ink-strong);
   border: 1px solid var(--ky-field-border);
   border-radius: var(--ky-control-radius);
@@ -601,7 +601,7 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-config-disclosure[open] > summary { margin-bottom:1rem; }
 
 
-.badge-warning { color:var(--accent); background:var(--accent-soft); border:1px solid var(--accent); }
+.badge-warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); }
 
 /* Fleet context and endpoint summaries remain scoped to existing permissions. */
 
@@ -612,8 +612,6 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-sidebar-foot { margin-top: auto; display: grid; gap: var(--ky-space-3); min-width: 0; }
 .ky-sidebar-scope { padding-inline: var(--ky-space-3) var(--ky-space-2); font-size: 13px; }
 .ky-page-head > .ky-page-actions { flex: 0 0 auto; }
-/* The product's global button rule centres content; the shell's Sign out row is start-aligned. */
-.ky-sidebar-user .ky-user-signout { justify-content: flex-start; }
 .ky-stack { display: grid; gap: var(--ky-space-3); }
 .ky-state-cell { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .ky-table-compact .ky-state-cell { flex-wrap: nowrap; }
@@ -747,4 +745,19 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 }
 @media (max-width: 520px) {
   .ky-nav-link { flex-direction: column; gap: 4px; padding: 7px 4px; font-size: 12px; }
+}
+
+/* Endpoint page: the inventory line shares the search row; the container count rides on its tab. */
+.ky-endpoint-page { gap: var(--ky-space-3); }
+.ky-crumb-current { color: var(--ink-strong); }
+.ky-tab-count { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--panel-hover); color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ky-containers-toolbar input[type="search"] { flex: 0 1 26rem; }
+.ky-inventory-line { margin-left: auto; font-size: var(--ky-type-meta); }
+@media (max-width: 760px) {
+  .ky-inventory-line { margin-left: 0; }
+}
+/* In an edge-to-edge table the drawer lines up with the name column. */
+.ky-table-flush .ky-table .ky-detail-row > td { padding-left: 60px; }
+@media (max-width: 760px) {
+  .ky-table-flush .ky-table .ky-detail-row > td { padding-left: 0; }
 }

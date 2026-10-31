@@ -25,7 +25,7 @@ it('maps health to a badge and hides unknown health', () => {
   expect(healthBadge('none')).toBeNull();
   expect(healthBadge('healthy')).toEqual({ text: 'healthy', className: 'badge-success' });
   expect(healthBadge('unhealthy')).toEqual({ text: 'unhealthy', className: 'badge-danger' });
-  expect(healthBadge('starting')).toEqual({ text: 'starting', className: 'badge-accent' });
+  expect(healthBadge('starting')).toEqual({ text: 'starting', className: 'badge-warning' });
   expect(healthBadge('weird')).toBeNull();
   expect(healthBadge('toString')).toBeNull();
   expect(healthBadge('__proto__')).toBeNull();

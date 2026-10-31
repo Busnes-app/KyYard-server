@@ -71,11 +71,17 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const usage = (c: { id: string; state: string }, withRestarts = false) => {
     const s = latest.get(c.id);
     if (!s) return c.state === 'running' ? 'no data' : '—';
-    const cpu = s.cpu_percent < 0 ? 'cpu —' : `cpu ${s.cpu_percent.toFixed(1)}%`;
+    const cpu = s.cpu_percent < 0 ? '' : `cpu ${s.cpu_percent.toFixed(1)}% · `;
     // A runtime that did not answer reports -1, and a server too old to send the field at all
     // reports nothing; neither is a container that has never restarted, so both stay silent.
     const restarts = withRestarts && typeof s.restart_count === 'number' && s.restart_count >= 0 ? ` · ${s.restart_count} restarts` : '';
-    return `${cpu} · mem ${bytes(s.memory_bytes)}${restarts}`;
+    return `${cpu}mem ${bytes(s.memory_bytes)}${restarts}`;
+  };
+  // The row's compact form: memory, with CPU only once an interval exists.
+  const usageShort = (c: { id: string; state: string }) => {
+    const s = latest.get(c.id);
+    if (!s) return c.state === 'running' ? 'no data' : '—';
+    return s.cpu_percent < 0 ? bytes(s.memory_bytes) : `${s.cpu_percent.toFixed(1)}% · ${bytes(s.memory_bytes)}`;
   };
   const e = details.data;
   const inv = inventory.data;
@@ -89,9 +95,17 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
   const skew = inv ? Math.abs(new Date(inv.received_at).getTime() - new Date(inv.observed_at).getTime()) > 5 * 60 * 1000 : false;
   const stale = inv ? Date.now() - new Date(inv.received_at).getTime() > 3 * 60 * 1000 : false;
 
+  const statusLine = inv ? (
+      <p role="status" className="ky-inventory-line" style={{ color: stale ? 'var(--danger)' : 'var(--ink)' }}>
+        Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
+        {inventory.refreshFailed || samples.refreshFailed ? ' Last refresh failed; showing the previous report.' : ''}
+        {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
+      </p>
+  ) : null;
+
   return (
     <div className="ky-page ky-endpoint-page">
-      <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link>{e && <><span>/</span><Link to={envPath(org, e.environment_id)}>Environment</Link></>}</nav>
+      <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link>{e && <><span aria-hidden="true">/</span><Link to={envPath(org, e.environment_id)}>Environment</Link><span aria-hidden="true">/</span><span aria-current="page" className="ky-crumb-current">{e.name}</span></>}</nav>
       <header className="ky-page-head">
         <div>
           <h1 className="ky-page-title ky-title-row"><span>{e?.name ?? endpoint}</span>{e && <span className={`badge ${e.state === 'active' ? 'badge-success' : e.state === 'pending' ? 'badge-accent' : 'badge-danger'}`}>{e.state}</span>}</h1>
@@ -116,7 +130,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
           : <p role="status">Updating image; waiting for the host. Do not retry while its outcome is unknown.</p>}
       </section>}
       <nav aria-label="Host resources" className="ky-resource-tabs">
-        {tabs.map((item) => <button type="button" key={item} aria-pressed={shown === item} onClick={() => setView(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}
+        {tabs.map((item) => <button type="button" key={item} aria-pressed={shown === item} onClick={() => setView(item)}>{item[0].toUpperCase() + item.slice(1)}{item === 'containers' && inv && <span className="ky-tab-count">{inv.snapshot.containers.length}</span>}</button>)}
       </nav>
       <StateNotice state={details.state} onRetry={() => { details.reload(); inventory.reload(); }} />
       {shown === 'details' && details.state === 'ready' && e && (
@@ -139,11 +153,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
       {inventory.state !== 'notfound' && <StateNotice state={inventory.state} onRetry={inventory.reload} />}
       {inventory.state === 'ready' && inv && (
         <>
-          <p role="status" style={{ color: stale ? 'var(--danger)' : 'var(--ink)', fontSize: 13 }}>
-            Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
-            {inventory.refreshFailed || samples.refreshFailed ? ' Last refresh failed; showing the previous report.' : ''}
-            {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
-          </p>
+          {shown !== 'containers' && statusLine}
           {cluster && shown === 'cluster' && e && status && <p role="status">{status}</p>}
           {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} role={role} onStatus={setStatus} onRefresh={() => { inventory.reload(); commands.reload(); }} checkUpdate={checkWorkload} imageUpdate={workloadUpdate} workloadPending={workloadPending} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
           {shown === 'projects' && <><StateNotice state={ownership.state} onRetry={ownership.reload} /><ComposeProjects ownership={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
@@ -151,13 +161,13 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
             requestAnimationFrame(() => document.getElementById('endpoint-containers')?.focus());
           }} /></>}
           {shown === 'containers' && <div id="endpoint-containers" className="ky-stack" tabIndex={-1}>
-          <div className="ky-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+          <div className="ky-toolbar ky-containers-toolbar"><input type="search" aria-label="Find containers" placeholder="Search containers or images" value={search} onChange={(event) => setSearch(event.target.value)} />{statusLine}</div>
           {selectedProject !== null && <p>Showing containers for <strong style={{ overflowWrap: 'anywhere' }}><bdi>{selectedProject}</bdi></strong>. <button className="btn-secondary" onClick={() => setProjectFilter(null)}>Show all containers</button></p>}
           {status && <p role="status">{status}</p>}
-          <ResourceTable key={JSON.stringify([base, search, selectedProject])} title="Containers" compact rows={visibleContainers} rowKey={(c) => c.id} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'State', 'Uptime', 'Ports', 'IP', 'CPU / memory', 'Actions']}
+          <ResourceTable key={JSON.stringify([base, search, selectedProject])} title="Containers" compact bare rows={visibleContainers} rowKey={(c) => c.id} empty={search ? "No matching containers." : "No containers on this host."} head={['Container', 'State', 'Uptime', 'Ports', 'IP', 'CPU / memory', 'Actions']}
             render={(c) => [
               <div className="ky-resource-name ky-resource-line"><strong><Link to={containerPath(org, endpoint, c.id)}>{displayName(c.name)}</Link>{canConfigure(role) && <ContainerUpdate key={`${c.id}/${c.image_id}`} compact checkUpdate={checkUpdate} onUpdate={() => void imageUpdate.update(c)} container={c} active={e?.state === 'active'} org={org} endpoint={endpoint} />}</strong><span title={c.image}>{displayName(c.image)}</span></div>,
-              <StateCell c={c} />, uptime(c.started_at, now) || '—', <PortSummary ports={c.ports} />, <IPCell c={c} />, usage(c),
+              <StateCell c={c} merged />, uptime(c.started_at, now) || '—', <PortSummary ports={c.ports} />, <IPCell c={c} />, <span title={usage(c, true)}>{usageShort(c)}</span>,
               <ContainerControls key={c.id} menu base={base} container={c} active={e?.state === 'active'} scope={`Host ${displayName(e?.name ?? endpoint)} · Endpoint ${endpoint}`} onRefresh={() => { inventory.reload(); samples.reload(); commands.reload(); }} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} />]}
             detail={{ label: (c) => displayName(c.name), render: (c) => <div className="ky-drawer">
               <dl className="ky-facts">

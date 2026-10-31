@@ -20,7 +20,7 @@ it('renders a fresh snapshot and flags staleness and truncation', async () => {
   const snapshot = { generation: 7, observed_at: old, engine: { runtime: 'docker', version: '29.7.2', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 8, memory_bytes: 2 ** 31, hostname: 'h1' }, containers: [{ id: 'c1', name: 'web', image: 'nginx:1', image_id: 'i', state: 'running', status: 'Up', created_at: '', ports: [{ host: 8080, container: 80, protocol: 'tcp' }], labels: {}, networks: [], compose_project: 'shop' }], images: [], networks: [], volumes: [], truncated: ['images'] };
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 7, observed_at: old, received_at: old, snapshot }) : String(input).endsWith('/samples') ? json([{ container_id: 'c1', observed_at: old, cpu_percent: 12.34, memory_bytes: 3 * 2 ** 20, memory_limit: 0, rx_bytes: 0, tx_bytes: 0, pids: 1, restart_count: 3 }]) : json(endpoint)));
   render(<EndpointPage org="a" endpoint="ep_1" />);
-  expect(await screen.findByText('cpu 12.3% · mem 3 MiB')).toBeTruthy();
+  expect(await screen.findByText('12.3% · 3 MiB')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Show details for web' }));
   expect(screen.getByText('cpu 12.3% · mem 3 MiB · 3 restarts')).toBeTruthy();
   const status = await screen.findByText(/^Inventory generation/);
@@ -40,7 +40,7 @@ it('tells no data from zero usage', async () => {
   render(<EndpointPage org="a" endpoint="ep_1" />);
   expect(await screen.findByText('no data')).toBeTruthy(); // running, never sampled
   expect(screen.getAllByText('—').length).toBeGreaterThan(0); // exited container shows a dash
-  expect(screen.getByText('cpu — · mem 0 B')).toBeTruthy(); // first sample: no interval yet, memory really zero
+  expect(screen.getByText('0 B')).toBeTruthy(); // first sample: no interval yet (no CPU shown), memory really zero
 });
 
 it('says nothing about restarts when the runtime would not say', async () => {
@@ -49,7 +49,7 @@ it('says nothing about restarts when the runtime would not say', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/inventory') ? json({ endpoint_id: 'ep_1', state: 'active', generation: 2, observed_at: now, received_at: now, snapshot }) : String(input).endsWith('/samples') ? json([{ container_id: 'c1', observed_at: now, cpu_percent: 5, memory_bytes: 2 ** 20, memory_limit: 0, rx_bytes: 0, tx_bytes: 0, pids: 1, restart_count: -1 }]) : json({ id: 'ep_1', name: 'h', state: 'active', environment_id: 'env', runtime: 'docker', fingerprint: 'f', alerts: [], capabilities: [] })));
   render(<EndpointPage org="a" endpoint="ep_1" />);
   // A count of zero would be a claim; -1 is the runtime declining to answer.
-  expect(await screen.findByText('cpu 5.0% · mem 1 MiB')).toBeTruthy();
+  expect(await screen.findByText('5.0% · 1 MiB')).toBeTruthy();
 });
 
 it('discovers unmanaged projects, filters existing controls, and resets scope on navigation', async () => {
@@ -482,6 +482,7 @@ it('offers one-click Update image on an unmanaged cluster Deployment and none on
   expect(buttons).toHaveLength(1);
   expect(screen.getByRole('button', { name: 'Check image update for shop/web' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Check image update for shop/managed' })).toBeNull();
+  await waitFor(() => expect((buttons[0] as HTMLButtonElement).disabled).toBe(false)); // offered once the check answers
   await act(async () => { fireEvent.click(buttons[0]!); });
   const apply = calls.find(([url]) => url.endsWith('/apply'));
   const urls = calls.map(([url]) => url);
@@ -548,6 +549,7 @@ it('explains a pending workload update, locks every Update button and reports th
   clusterRoutes('organization_admin', ['kubernetes.inventory', 'kubernetes.workloads'], settled);
   render(<EndpointPage org="a" endpoint="ep_1" />);
   const update = await screen.findByRole('button', { name: 'Update image' });
+  await waitFor(() => expect((update as HTMLButtonElement).disabled).toBe(false));
   await act(async () => { fireEvent.click(update); });
   expect(screen.getAllByRole('status').some((s) => s.textContent === 'Updating shop/web; waiting for the cluster agent. Do not retry while its outcome is unknown.')).toBe(true);
   for (const b of screen.getAllByRole('button', { name: 'Update image' })) expect((b as HTMLButtonElement).disabled).toBe(true);

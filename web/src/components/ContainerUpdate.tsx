@@ -107,9 +107,11 @@ export function UpdateBadge({ label, identity, active, org, check: checkUpdate, 
     return () => request.current?.abort();
   }, [active, auto, check]);
   // An active auto row has a check about to start until its first verdict: it is never offline.
-  const text = busy || (active && auto && !verdict) ? 'Checking…' : verdict ? VERDICTS[verdict] : active ? 'Not checked' : 'Endpoint offline';
+  // Update waits for the check: offering it mid-check would act on an unknown verdict.
+  const checking = busy || (active && auto && !verdict);
+  const text = checking ? 'Checking…' : verdict ? VERDICTS[verdict] : active ? 'Not checked' : 'Endpoint offline';
   if (compact) return verdict === 'update_available' ? <span className="badge badge-warning">Update available</span> : null;
-  return <span className="ky-image-update"><span role="status" className={`badge ${verdict === 'update_available' ? 'badge-warning' : 'badge-secondary'}`}>{text}</span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/access#registries-heading`} title="Add a registry entry for this image's host, or allow anonymous pulls, in Access → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${label}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && verdict !== 'managed' && <button type="button" className="btn-secondary" disabled={updateDisabled} onClick={onUpdate} title={updateTitle}>Update image</button>}</span>;
+  return <span className="ky-image-update"><span role="status" className={`badge ${verdict === 'update_available' ? 'badge-warning' : 'badge-secondary'}`}>{text}</span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/access#registries-heading`} title="Add a registry entry for this image's host, or allow anonymous pulls, in Access → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${label}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && verdict !== 'managed' && <button type="button" className="btn-secondary" disabled={updateDisabled || checking} onClick={onUpdate} title={updateTitle}>Update image</button>}</span>;
 }
 
 export function ContainerUpdate({ container, active, org, checkUpdate, onUpdate, updateDisabled = false, compact = false }: { container: Container; active: boolean; org: string; endpoint: string; checkUpdate: CheckUpdate; onUpdate: () => void; updateDisabled?: boolean; compact?: boolean }) {
