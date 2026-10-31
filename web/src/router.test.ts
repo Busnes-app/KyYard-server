@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { containerPath, matchRoute, runPath, workloadPath, workloadRunPath } from './router';
+import { containerPath, matchRoute, movedPath, runPath, workloadPath, workloadRunPath } from './router';
 
 it('maps paths to routes and rejects unsafe segments', () => {
   expect(matchRoute('/')).toEqual({ name: 'dashboard' });
@@ -62,4 +62,25 @@ it('routes the run a workload page', () => {
   expect(matchRoute('/organizations/a/endpoints/ep_k/workloads/new')).toEqual({ name: 'workload-new', org: 'a', endpoint: 'ep_k' });
   expect(workloadRunPath('a', 'ep k')).toBe('/organizations/a/endpoints/ep%20k/workloads/new');
   expect(matchRoute('/organizations/a/endpoints/ep_k/workloads/newer').name).toBe('notfound');
+});
+
+it('routes Settings tabs and sends moved routes to their tab', () => {
+  expect(matchRoute('/settings/account')).toEqual({ name: 'settings', section: 'account' });
+  expect(matchRoute('/settings/administration')).toEqual({ name: 'settings', section: 'administration' });
+  for (const bad of ['/settings', '/appearance', '/settings/nope', '/settings/account/x']) expect(matchRoute(bad).name).toBe('notfound');
+  expect(movedPath('/appearance', '', 'user')).toBe('/settings/appearance');
+  expect(movedPath('/settings', '', 'admin')).toBe('/settings/account');
+  expect(movedPath('/settings', '?section=security', 'admin')).toBe('/settings/account');
+  expect(movedPath('/settings', '?section=sign-in', 'admin')).toBe('/settings/sign-in');
+  expect(movedPath('/settings', '?section=sign-in', 'user')).toBe('/settings/account');
+  expect(movedPath('/settings', '?section=storage', 'user')).toBe('/settings/storage');
+  expect(movedPath('/settings', '?section=administration', 'user')).toBe('/settings/account');
+  expect(movedPath('/settings', '?section=bogus', 'admin')).toBe('/settings/account');
+  // The SSO link's redirect keeps its status flag on the Account tab.
+  expect(movedPath('/settings', '?sso=linked', 'user')).toBe('/settings/account?sso=linked');
+  expect(movedPath('/settings/suite', '', 'user')).toBe('/settings/account');
+  expect(movedPath('/settings/nope', '', 'admin')).toBe('/settings/account');
+  expect(movedPath('/settings/suite', '', 'admin')).toBeNull();
+  expect(movedPath('/settings/account', '?sso=linked', 'user')).toBeNull();
+  expect(movedPath('/endpoints', '', 'admin')).toBeNull();
 });

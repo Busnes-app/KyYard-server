@@ -2,12 +2,29 @@ import { useEffect, useState } from 'react';
 
 // Routes are plain paths so deep links, reloads and browser history work without state.
 export type Route =
-  | { name: 'dashboard' | 'endpoints' | 'backup' | 'suite' | 'settings' | 'appearance' | 'notfound' }
+  | { name: 'dashboard' | 'endpoints' | 'backup' | 'suite' | 'notfound' }
+  | { name: 'settings'; section: SettingsSection }
   | { name: 'organization' | 'members' | 'access' | 'audit'; org: string }
   | { name: 'environment'; org: string; env: string }
   | { name: 'endpoint' | 'container-new' | 'workload-new'; org: string; endpoint: string }
   | { name: 'workload'; org: string; endpoint: string; namespace: string; kind: string; workload: string }
   | { name: 'container'; org: string; endpoint: string; container: string };
+
+// Settings tabs in order: the personal ones, then the app's. KyYard has no app passwords or
+// devices, so there is no Phones & apps tab. Sign-in (provider configuration), Suite and
+// Administration are platform administrators'.
+export type SettingsSection = 'account' | 'appearance' | 'sign-in' | 'recovery' | 'storage' | 'suite' | 'administration';
+const SETTINGS_SECTIONS: { id: SettingsSection; label: string; admin?: true }[] = [
+  { id: 'account', label: 'Account' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'sign-in', label: 'Sign-in', admin: true },
+  { id: 'recovery', label: 'Recovery' },
+  { id: 'storage', label: 'Storage' },
+  { id: 'suite', label: 'Suite', admin: true },
+  { id: 'administration', label: 'Administration', admin: true },
+];
+export const settingsSections = (role?: string) => SETTINGS_SECTIONS.filter((s) => !s.admin || role === 'admin');
+export const settingsPath = (section: SettingsSection) => `/settings/${section}`;
 
 const NAV_EVENT = 'ky:navigate';
 // At least one non-dot character, so a segment can never be `.` or `..`.
@@ -31,7 +48,8 @@ export function matchRoute(pathname: string): Route {
   const parts = decodeSegments(pathname);
   if (parts === null) return { name: 'notfound' };
   if (parts.length === 0) return { name: 'dashboard' };
-  if (parts.length === 1 && (parts[0] === 'endpoints' || parts[0] === 'backup' || parts[0] === 'suite' || parts[0] === 'settings' || parts[0] === 'appearance')) return { name: parts[0] };
+  if (parts.length === 1 && (parts[0] === 'endpoints' || parts[0] === 'backup' || parts[0] === 'suite')) return { name: parts[0] };
+  if (parts.length === 2 && parts[0] === 'settings' && SETTINGS_SECTIONS.some((s) => s.id === parts[1])) return { name: 'settings', section: parts[1] as SettingsSection };
   if (parts[0] === 'organizations' && parts.length >= 2 && segment.test(parts[1])) {
     const org = parts[1];
     if (parts.length === 2) return { name: 'organization', org };
@@ -44,6 +62,33 @@ export function matchRoute(pathname: string): Route {
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && containerID.test(parts[5])) return { name: 'container', org, endpoint: parts[3], container: parts[5] };
   }
   return { name: 'notfound' };
+}
+
+// movedPath is where a route that moved into Settings lives now (null: it did not move). The old
+// Appearance page, bare /settings and its ?section= links open a tab; a tab the role cannot see
+// opens Account. Other query parameters (the SSO link's ?sso=linked) are kept.
+export function movedPath(pathname: string, search: string, role?: string): string | null {
+  const query = new URLSearchParams(search);
+  let section: string;
+  if (pathname === '/appearance') section = 'appearance';
+  else if (pathname === '/settings') {
+    const old = query.get('section') ?? (query.get('sso') === 'linked' ? 'account' : '');
+    query.delete('section');
+    // Security and the personal half of Sign-in are Account now.
+    section = old === 'security' || (old === 'sign-in' && role !== 'admin') ? 'account' : old;
+  } else if (pathname.startsWith('/settings/')) section = pathname.slice('/settings/'.length);
+  else return null;
+  const allowed = settingsSections(role).some((s) => s.id === section);
+  const path = settingsPath(allowed ? (section as SettingsSection) : 'account');
+  const rest = query.toString();
+  const to = path + (rest ? `?${rest}` : '');
+  return to === pathname + search ? null : to;
+}
+
+// replace swaps the current history entry, so Back skips a moved route.
+export function replace(path: string): void {
+  window.history.replaceState(null, '', path);
+  window.dispatchEvent(new Event(NAV_EVENT));
 }
 
 export function navigate(path: string): void {

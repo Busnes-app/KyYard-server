@@ -73,7 +73,7 @@ it('shows scope and role-aware navigation, and clears a search without losing en
 it('points a platform administrator without an organization at Administration', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json([])));
   render(<Dashboard platformAdmin />);
-  expect((await screen.findByRole('link', { name: 'create one in Settings → Administration' })).getAttribute('href')).toBe('/settings?section=administration');
+  expect((await screen.findByRole('link', { name: 'create one in Settings → Administration' })).getAttribute('href')).toBe('/settings/administration');
   cleanup();
   render(<Dashboard />);
   expect(await screen.findByText('No host access yet. Ask an administrator to add your account.')).toBeTruthy();

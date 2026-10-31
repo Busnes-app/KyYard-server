@@ -11,13 +11,9 @@ export function Appearance() {
     window.addEventListener('ky:theme', sync);
     return () => window.removeEventListener('ky:theme', sync);
   }, []);
-  return <div className="ky-page">
-    <header className="ky-page-head">
-      <div>
-        <h1 className="ky-page-title">Appearance</h1>
-        <p className="ky-page-lede">Pick a palette and how it handles light and dark. Match system switches with your device’s setting; Light or Dark keeps one. Your choice applies straight away and is saved in this browser only.</p>
-      </div>
-    </header>
+  // A Settings tab: the Settings page head sits above, so the description is the tab's intro.
+  return <>
+    <p className="settings-intro">Pick a palette and how it handles light and dark. Match system switches with your device’s setting; Light or Dark keeps one. Your choice applies straight away and is saved in this browser only.</p>
     <fieldset className="ky-appearance">
       <legend className="ky-appearance-legend">Theme</legend>
       <div className="ky-appearance-grid appearance-pairs">
@@ -42,5 +38,5 @@ export function Appearance() {
         ))}
       </div>
     </fieldset>
-  </div>;
+  </>;
 }

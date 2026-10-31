@@ -32,11 +32,11 @@ const secret = (status: number, code: string) => json({ error: '<b>secret server
 
 it('shows the Administration section only to a platform admin', async () => {
   serve(() => json({}));
-  const { unmount } = render(<Settings settings={null} role="user" />);
-  expect(screen.queryByRole('button', { name: 'Administration' })).toBeNull();
+  const { unmount } = render(<Settings section="administration" settings={null} role="user" />);
+  expect(screen.queryByRole('link', { name: 'Administration' })).toBeNull();
   unmount();
-  render(<Settings settings={null} role="admin" />);
-  fireEvent.click(screen.getByRole('button', { name: 'Administration' }));
+  render(<Settings section="administration" settings={null} role="admin" />);
+  expect(screen.getByRole('link', { name: 'Administration' }).getAttribute('aria-current')).toBe('page');
   expect(await screen.findByText('Acme')).toBeTruthy();
 });
 
