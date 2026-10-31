@@ -190,6 +190,7 @@
   font: inherit;
   font-size: var(--ky-type-nav);
   font-weight: 500;
+  justify-content: flex-start;
   text-align: start;
   cursor: pointer;
 }
@@ -269,7 +270,7 @@
   font-family: var(--ky-font-mono);
   font-size: 0.78rem;
   line-height: 1.4;
-  white-space: pre;
+  white-space: pre-wrap;
   resize: vertical;
 }
 
@@ -310,6 +311,8 @@
   outline: 2px solid var(--accent, var(--ky-accent));
   outline-offset: 2px;
 }
+/* Fields already draw a border: put the ring on it, not 2px outside, so it reads as one ring. */
+.ky-auth-field > input:focus-visible { outline-offset: -1px; }
 @media (prefers-reduced-motion: no-preference) {
   :is(.ky-auth-submit, .ky-page-action, .ky-auth-sso, .ky-about-close, .ky-user-signout, .ky-auth-field > input) {
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
