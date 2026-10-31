@@ -41,6 +41,22 @@ describe('Backup', () => {
     expect(screen.getByText(/KY_BACKUP_DIR not set/)).toBeTruthy();
   });
 
+  it('says what a schedule waits for instead of a next run it cannot make', async () => {
+    mockStatus({ key_pinned: false, paired: false, interval_sec: 86400, next_run_at: '2026-10-31T12:00:00Z', database_driver: 'sqlite', members: [] });
+    render(<Backup />);
+    expect(await screen.findByText('Waiting for recovery key')).toBeTruthy();
+    expect(screen.queryByText(/^Next /)).toBeNull();
+    cleanup();
+    mockStatus({ ...PAIRED, paired: false, next_run_at: '2026-10-31T12:00:00Z' });
+    render(<Backup />);
+    expect(await screen.findByText('Waiting for a destination')).toBeTruthy();
+    expect(screen.queryByText(/^Next /)).toBeNull();
+    cleanup();
+    mockStatus({ ...PAIRED, next_run_at: '2026-10-31T12:00:00Z' });
+    render(<Backup />);
+    expect(await screen.findByText(/^Next /)).toBeTruthy();
+  });
+
   it('never renders the token', async () => {
     mockStatus({
       key_pinned: true,
