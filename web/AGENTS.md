@@ -45,7 +45,7 @@ Owns user interface components, service worker caching, PWA installation manifes
 - Container logs support bounded reads, search, timestamps, download and SSE follow. Browser display retains 256 KiB; follow closes on error without automatic reconnection, and unmount/filter changes cancel the reader. Server notices are separate from container output during follow.
 - A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion.
 - Login passes a stable `onToken` to `CaptchaWidget` and remounts it (`key`) after a refused login: the server accepts each solved challenge once. The widget compares raw digest bytes.
-- Login shows local setup/SSH/TLS guidance for HTTP installations and offers SSO only when enabled. One provider renders "Continue with Single Sign On"; several keep "Continue with {provider name}" so they stay distinguishable. No heading repeats the phrase.
+- Login shows local setup/SSH/TLS guidance for HTTP installations (a disclosure in the shared `.ky-auth-help` line under the card) and offers SSO only when enabled. One provider renders "Continue with single sign-on"; several keep "Continue with {provider name}" so they stay distinguishable. No heading repeats the phrase.
 - Site branding uses Lucide’s shipping-container outline in the header, login, favicon and install icons; retain its rounded line-art style and theme color inheritance inside the app. Static icon assets carry the Lucide license and are rasterized from the same geometry.
 - Product title, PWA name, and pre-settings fallback name are `KyYard`.
 - Strict TypeScript type safety without unused imports.
@@ -86,7 +86,7 @@ Owns user interface components, service worker caching, PWA installation manifes
 
 - `src/ky-ui/` is generated from Busnes-app/ky-ui, pinned by `VERSION` file hashes. Change shared colors, navigation states and storage helpers upstream, then run its consumer sync with an explicit worktree map; do not hand-edit vendored files.
 - Products own layout, routes, saved choice keys and named palettes. Busnes aliases consume shared tokens; mark primary navigation with `ky-nav-item` while preserving current-page semantics.
-- `src/ky-ui/shell.css` owns the sign-in screen, sidebar user block, licence line, About dialog and page head; render the markup in ky-ui's README `## Shell` and keep product CSS off those classes (layout wrappers such as `.ky-sidebar-user` are the product's).
+- `src/ky-ui/shell.css` owns the app frame (`.ky-app`, `.ky-sidebar`, `.ky-brand`, `.ky-nav`, `.ky-sidebar-foot`, `.ky-content`, the phone `.ky-mobile-head` and `.ky-content-foot`), the sign-in screen, sidebar user block, licence line, About dialog and page head; render the markup in ky-ui's README `## Shell` and keep product CSS off those classes (layout wrappers such as `.ky-sidebar-user` are the product's; the one exception draws the phone tab focus ring inside the clipped row). Current nav icons keep the label colour. Phones get the brand and an icon-only Sign out, one row of icon-beside-label tabs and the licence line at the page end; `../tests/browser/core.spec.mjs` "the shell follows the suite frame" checks it.
 - Verify vendored files with `node src/ky-ui/check-vendor.mjs` from this document's directory. Builds/CI run that check. Rendered evidence and capture limitations are recorded in the repository-root `UI-VERIFICATION.md`.
 
 ## Child DOX Index

@@ -304,28 +304,9 @@ input:focus, select:focus, textarea:focus {
 .dr-field { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 13px; color: var(--ink); }
 .dr-narrow { flex: 0 0 6rem; }
 
-/* ---------- Routed shell ---------- */
-.ky-header {
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-  padding: 8px 20px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 24px;
-  position: sticky;
-  top: 0;
-  z-index: 100;
-}
-.ky-nav { display: flex; gap: 4px; overflow-x: auto; max-width: 100%; }
-.ky-nav-link {
-  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
-  padding: 6px 12px; font-size: 13px; border-radius: 6px;
-  color: var(--ink); border: 1px solid transparent; text-decoration: none;
-}
-.ky-nav-link:focus-visible, .ky-subnav a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.ky-page { max-width: 1080px; margin: 0 auto; padding: 24px 20px; display: flex; flex-direction: column; gap: 16px; }
+/* ---------- Routed shell: the frame, brand, nav and phone header are ky-ui shell.css ---------- */
+.ky-subnav a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ky-page { display: flex; flex-direction: column; gap: 16px; }
 .ky-subnav { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; }
 .ky-subnav a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
 .ky-list { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
@@ -384,19 +365,9 @@ label:has(input[type="radio"]) > input { margin-top: 0; }
 .panel h2 + p { margin-top: 8px; }
 summary { cursor: pointer; font-weight: 600; padding-block: 4px; }
 details[open] > summary { margin-bottom: 16px; }
-.ky-shell { min-height: 100dvh; display: grid; grid-template-columns: var(--ky-sidebar-size) minmax(0, 1fr); }
-.ky-header { position: sticky; top: 0; align-self: start; height: 100dvh; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; flex-wrap: nowrap; gap: 24px; padding: 24px 16px 16px; border-bottom: 0; border-right: 1px solid var(--line); background: linear-gradient(180deg, var(--sidebar-start, var(--panel)), var(--sidebar-end, var(--panel))); }
-.ky-brand { display: flex; gap: 10px; align-items: center; text-decoration: none; font-weight: 700; font-size: 20px; color: var(--ink-strong); padding: 4px 12px; }
-.ky-brand svg { color: var(--accent); flex-shrink: 0; }
-.ky-nav { display: flex; flex-direction: column; gap: 4px; overflow: visible; }
-.ky-nav-link { min-height: var(--ky-control-size); padding: 8px 12px; gap: 10px; font-size: var(--ky-type-nav); color: var(--ink); border-radius: 8px; }
-.ky-nav-link:hover { background: var(--panel-hover); }
-/* Selected navigation state is supplied by ky-ui/navigation.css. */
-.ky-nav-link.active svg { color: var(--accent); }
-.ky-main { min-width: 0; }
 .ky-skip { position: fixed; left: 12px; top: -100px; z-index: 3000; background: var(--panel); padding: 12px; }
 .ky-skip:focus { top: 12px; }
-.ky-page, .dr-page { width: 100%; max-width: 1480px; margin: 0 auto; padding: 32px; gap: 24px; }
+.ky-page, .dr-page { width: 100%; gap: 24px; }
 .ky-page > .panel { margin-top: 0; }
 .ky-page > p { margin: 0; color: var(--ink); max-width: 75ch; }
 .ky-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
@@ -434,18 +405,10 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .dr-header { gap: 12px; flex-wrap: wrap; }
 .dr-copies li { flex-wrap: wrap; overflow-wrap: anywhere; }
 @media (max-width: 1100px) {
- .ky-shell { grid-template-columns: 180px minmax(0, 1fr); }
- .ky-header { padding-inline: 10px; }
- .ky-page, .dr-page { padding: 24px; }
  .ky-table td { padding: 12px 8px; }
 }
 @media (max-width: 760px) {
- .ky-shell { display: block; }
- .ky-header { position: relative; height: auto; display: grid; grid-template-columns: 1fr auto; gap: 14px 10px; padding: 16px; border-right: 0; border-bottom: 1px solid var(--line); }
- .ky-brand { padding: 0; font-size: 19px; }
- .ky-nav { grid-column: 1 / -1; grid-row: 2; flex-direction: row; justify-content: stretch; }
- .ky-nav-link { flex: 1; justify-content: center; padding: 9px 8px; min-height: 42px; font-size: 13px; }
- .ky-page, .dr-page { padding: 20px 16px; gap: 20px; }
+ .ky-page, .dr-page { gap: 20px; }
  .panel { padding: 16px; }
  .ky-page-heading { align-items: flex-start; }
  .ky-page-heading h1 { font-size: 24px !important; overflow-wrap: anywhere; }
@@ -472,13 +435,11 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-enrollment pre { background: var(--bg); padding: 14px; border-radius: 8px; overflow-x: auto; }
 .ky-enrollment > button { margin-right: 8px; }
 .ky-state-notice { flex-wrap: wrap; }
-@media (max-width: 380px) {
- .ky-nav-link { flex-direction: column; gap: 4px; padding: 7px 6px; font-size: 12px; }
-}
 
 /* Keep native keyboard behavior; older browsers retain their native picker. */
 @supports (appearance: base-select) {
- select:not([multiple]):not([size]), select:not([multiple]):not([size])::picker(select) { appearance: base-select; }
+ /* The sign-in theme picker is ky-ui's, with its own caret. */
+ select:not([multiple]):not([size]):not(.ky-auth-theme select), select:not([multiple]):not([size]):not(.ky-auth-theme select)::picker(select) { appearance: base-select; }
  select:not([multiple]):not([size])::picker(select) { background: var(--panel); color: var(--ink-strong); border: 1px solid var(--line-strong); border-radius: 6px; padding: 4px; }
  select:not([multiple]):not([size]) option { width: 100%; padding: 8px 12px; border-radius: 3px; overflow-wrap: anywhere; }
  select:not([multiple]):not([size]) option:checked { background: var(--accent-soft); color: var(--ink-strong); }
@@ -581,13 +542,6 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 }
 }
 
-.theme-selector {
-  font: inherit; font-size: 0.875rem; width: auto; max-width: 100%; min-height: 36px;
-  padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px;
-  background: var(--panel); color: var(--ink-strong);
-}
-.theme-selector:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-
 @media (min-width: 761px) {
  .ky-table th, .ky-table td[data-label="IP"], .ky-table td[data-label="Uptime"], .ky-table td[data-label="Kind"], .ky-table td[data-label="Phase"], .ky-table td[data-label="Ready"], .ky-table td[data-label="Restarts"], .ky-table td[data-label="State"] { white-space: nowrap; }
 }
@@ -605,11 +559,12 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 
 /* Fleet context and endpoint summaries remain scoped to existing permissions. */
 
-/* ---------- Suite shell (ky-ui shell.css owns the ky-auth/ky-user/ky-about/ky-page-head parts) ---------- */
+/* ---------- Suite shell (ky-ui shell.css owns the frame, sign-in, user block, About and page head) ---------- */
+/* The tab row clips overflow: draw the focus ring inside the tab so none of it is cut off. */
+@media (max-width: 720px) { .ky-nav > .ky-nav-item:focus-visible { outline-offset: -2px; } }
 .ky-mark { border-radius: var(--ky-control-radius); flex: none; }
 /* The mark is a dark tile; dark schemes get the shell's inverted tile (light tile, dark mark). */
 :root[data-scheme="dark"] .ky-mark { filter: invert(1) hue-rotate(180deg); }
-.ky-sidebar-foot { margin-top: auto; display: grid; gap: var(--ky-space-3); min-width: 0; }
 .ky-sidebar-scope { padding-inline: var(--ky-space-3) var(--ky-space-2); font-size: 13px; }
 .ky-page-head > .ky-page-actions { flex: 0 0 auto; }
 .ky-stack { display: grid; gap: var(--ky-space-3); }
@@ -620,21 +575,20 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-page-actions p[role="status"] { margin-top: 6px; font-size: var(--ky-type-meta); color: var(--ink); max-width: 28ch; }
 .ky-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; overflow-wrap: anywhere; }
 .ky-title-row .badge { font-size: 12px; }
-.ky-page > .ky-page-head { margin-bottom: 0; }
+/* With the page's 24px gap the head sits 32px above the content, as in KyCalendar. */
+.ky-page > .ky-page-head { margin-bottom: var(--ky-space-2); }
 .ky-muted { color: var(--ink); }
 .ky-num { font-variant-numeric: tabular-nums; }
 
 /* Sign-in extras */
-.theme-selector { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--ky-control-radius); background: var(--panel); color: var(--ink-strong); font: inherit; font-size: var(--ky-type-meta); }
 .ky-auth-error { display: flex; align-items: flex-start; gap: 8px; color: var(--danger); font-size: var(--ky-type-meta); }
 .ky-auth-error svg { flex: none; margin-top: 2px; }
 .ky-auth-note { color: var(--ink); font-size: var(--ky-type-meta); }
 .ky-auth-field > input.ky-code-input { font-family: var(--font-mono); font-size: 18px; letter-spacing: 2px; text-align: center; }
 .ky-auth-check .animate-spin { color: var(--accent); }
-.ky-setup-guide { margin-top: var(--ky-space-3); text-align: center; }
 .ky-setup-guide > summary { display: inline-block; list-style: none; }
 .ky-setup-guide > summary::-webkit-details-marker { display: none; }
-.ky-setup-guide p { margin-top: 10px; color: var(--ink); font-size: var(--ky-type-meta); line-height: 1.55; text-align: left; }
+.ky-setup-guide p { margin-top: 10px; text-align: left; }
 .ky-setup-guide code { font-size: 12px; color: var(--ink-strong); }
 
 /* Appearance: six pairs, each with Match system / Light / Dark (KyCalendar reference). */
@@ -718,14 +672,6 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
   .ky-drawer { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
-  .ky-header { grid-template-columns: 1fr auto; }
-  .ky-sidebar-foot { display: contents; }
-  .ky-sidebar-scope { display: none; }
-  .ky-sidebar-user { grid-column: 2; grid-row: 1; }
-  .ky-sidebar-user .ky-user { padding: 0; border: 0; }
-  .ky-sidebar-user .ky-user-copy { display: none; }
-  .ky-license { grid-column: 1 / -1; grid-row: 3; }
-  .ky-license .ky-license-link { margin-left: 0; }
   .ky-page-actions { width: 100%; }
   .ky-fleet-toolbar input[type="search"] { flex-basis: 100%; }
   .ky-fleet-toolbar > button { margin-left: 0; }
@@ -742,9 +688,6 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
   .ky-responsive-table td.ky-row-actions { right: 36px; }
   .ky-table-compact tr.ky-detail-row { display: block; padding-top: 0; }
   .ky-detail-row > td { padding: 4px 0 16px; }
-}
-@media (max-width: 520px) {
-  .ky-nav-link { flex-direction: column; gap: 4px; padding: 7px 4px; font-size: 12px; }
 }
 
 /* Endpoint page: the inventory line shares the search row; the container count rides on its tab. */
