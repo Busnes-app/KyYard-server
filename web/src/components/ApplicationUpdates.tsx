@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import { tenantWrite, useTenantResource, type UpdateCheck } from '../tenant';
 import { secureFetch } from '../api';
 import { StateNotice } from './StateNotice';
+import { Status, type Tone } from './Status';
 import { knownBlockers, messages } from './ApplicationPreflight';
 
 const verdictText: Record<string, string> = { current: 'Up to date', update_available: 'Update available', pinned: 'Pinned', unknown_local: 'Unknown on host', registry_error: 'Registry error' };
+const verdictTone: Record<string, Tone> = { current: 'success', update_available: 'warning', registry_error: 'danger' };
 export const detailText: Record<string, string> = {
   not_configured: 'No registry entry for this host and anonymous pulls are off.',
   unauthorized: 'The registry refused the credentials.',
@@ -96,7 +98,7 @@ function UpdatesView({ base, instanceID, project, latestRevision, onPlanned }: P
       <tbody>{rows.map((r) => <tr key={r.service}>
         <td>{r.service}</td>
         <td>{r.reference}</td>
-        <td><span className="badge">{fixed(verdictText, r.verdict)}</span>{r.verdict === 'registry_error' && fixed(detailText, r.detail) && <div>{fixed(detailText, r.detail)}</div>}</td>
+        <td><Status tone={Object.hasOwn(verdictTone, r.verdict) ? verdictTone[r.verdict] : undefined}>{fixed(verdictText, r.verdict)}</Status>{r.verdict === 'registry_error' && fixed(detailText, r.detail) && <div>{fixed(detailText, r.detail)}</div>}</td>
         <td><code>{short(r.local_digest)}</code></td>
         <td><code>{short(r.remote_digest)}</code></td>
         <td>{new Date(r.checked_at).toLocaleString()}</td>

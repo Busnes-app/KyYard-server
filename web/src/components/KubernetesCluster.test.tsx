@@ -10,7 +10,7 @@ const view = (inventory: KubernetesInventory, e: Endpoint = endpoint) => <Kubern
 it('shows a cluster that reports no nodes as unknown, not healthy', () => {
   render(view(empty));
   const health = screen.getByRole('region', { name: 'Cluster health' });
-  expect(health.textContent).toContain('unknown');
+  expect(health.textContent).toContain('Unknown');
   expect(health.textContent).toContain('0 of 0 nodes ready.');
   expect(screen.getByText('No nodes reported.')).toBeTruthy();
 });

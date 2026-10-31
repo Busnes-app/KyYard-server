@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react';
 import { secureFetch } from '../api';
 import type { Container } from '../tenant';
 import { Link } from './Link';
+import { Status } from './Status';
 
 export const VERDICTS = {
   up_to_date: 'Up to date', update_available: 'Update available', pinned: 'Digest pinned', unknown: 'Image version unknown',
@@ -110,8 +111,8 @@ export function UpdateBadge({ label, identity, active, org, check: checkUpdate, 
   // Update waits for the check: offering it mid-check would act on an unknown verdict.
   const checking = busy || (active && auto && !verdict);
   const text = checking ? 'Checking…' : verdict ? VERDICTS[verdict] : active ? 'Not checked' : 'Endpoint offline';
-  if (compact) return verdict === 'update_available' ? <span className="badge badge-warning">Update available</span> : null;
-  return <span className="ky-image-update"><span role="status" className={`badge ${verdict === 'update_available' ? 'badge-warning' : 'badge-secondary'}`}>{text}</span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/access#registries-heading`} title="Add a registry entry for this image's host, or allow anonymous pulls, in Access → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${label}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && verdict !== 'managed' && <button type="button" className="btn-secondary" disabled={updateDisabled || checking} onClick={onUpdate} title={updateTitle}>Update image</button>}</span>;
+  if (compact) return verdict === 'update_available' ? <Status tone="warning">Update available</Status> : null;
+  return <span className="ky-image-update"><span role="status"><Status tone={verdict === 'update_available' ? 'warning' : undefined}>{text}</Status></span>{verdict === 'registry_policy' && <Link to={`/organizations/${encodeURIComponent(org)}/access#registries-heading`} title="Add a registry entry for this image's host, or allow anonymous pulls, in Access → Registries.">Configure registry access</Link>}<button type="button" className="btn-secondary ky-icon-button" aria-label={`Check image update for ${label}`} title="Check image update" disabled={!active || busy} onClick={() => void check(true)}><RefreshCw size={15} /></button>{active && verdict !== 'managed' && <button type="button" className="btn-secondary" disabled={updateDisabled || checking} onClick={onUpdate} title={updateTitle}>Update image</button>}</span>;
 }
 
 export function ContainerUpdate({ container, active, org, checkUpdate, onUpdate, updateDisabled = false, compact = false }: { container: Container; active: boolean; org: string; endpoint: string; checkUpdate: CheckUpdate; onUpdate: () => void; updateDisabled?: boolean; compact?: boolean }) {

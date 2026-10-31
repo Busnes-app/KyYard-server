@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useTenantResource, type AuditRecord } from '../tenant';
 import { EmptyNotice, StateNotice } from './StateNotice';
+import { Status } from './Status';
 
 const PAGE = 50;
 
@@ -22,7 +23,7 @@ export const AuditList: React.FC<{ url: string }> = ({ url }) => {
                   <td data-label="Actor" className="font-mono">{r.user_id}</td>
                   <td data-label="Action" className="font-mono">{r.action}</td>
                   <td data-label="Target" className="font-mono">{r.resource}</td>
-                  <td data-label="Result"><span className={`badge ${r.result === 'success' ? 'badge-success' : r.result === 'denied' || r.result === 'failure' ? 'badge-danger' : ''}`}>{r.result}</span></td>
+                  <td data-label="Result"><Status tone={r.result === 'success' ? 'success' : r.result === 'denied' || r.result === 'failure' ? 'danger' : undefined}>{r.result}</Status></td>
                   <td data-label="Request" className="font-mono" style={{ fontSize: 11 }}>{r.correlation_id}</td>
                 </tr>
               ))}

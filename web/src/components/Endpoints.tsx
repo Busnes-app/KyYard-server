@@ -4,12 +4,15 @@ import { NAMESPACE_RULE, parseNamespaces, tenantWrite, useTenantResource, validN
 import { EmptyNotice, StateNotice } from './StateNotice';
 import { Link } from './Link';
 import { endpointPath } from '../router';
+import { Status, type Tone } from './Status';
 
 const terminal = (s: string) => s === 'revoked' || s === 'expired';
 const FOLLOW_EVERY_MS = 3000;
 const FOLLOW_FOR_MS = 60_000;
-// healthBadge colours a cluster_health; anything else (unknown) is secondary.
-export const healthBadge: Record<string, string> = { healthy: 'badge-success', degraded: 'badge-danger' };
+// A cluster_health tone; anything else (unknown) is neutral.
+export const healthTone: Record<string, Tone> = { healthy: 'success', degraded: 'warning' };
+// Revoked, expired and approved-but-silent endpoints are neutral: nothing is failing.
+export const endpointTone = (state: string): Tone => state === 'active' ? 'success' : state === 'offline' ? 'danger' : state === 'pending' ? 'warning' : undefined;
 
 // Fixed texts for the refusals a cluster enrollment can meet.
 const mintRefusals: Record<string, string> = {
@@ -156,14 +159,14 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
             <tbody>
               {endpoints.data.map((e) => (
                 <tr key={e.id}>
-                  <td data-label="Name"><Link to={endpointPath(org, e.id)}>{displayName(e.name)}</Link> <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span>{e.cluster_health && <> <span className={`badge ${healthBadge[e.cluster_health] ?? 'badge-secondary'}`}>{e.cluster_health}</span></>}</td>
-                  <td data-label="State"><span className={`badge ${e.state === 'pending' ? 'badge-accent' : e.state === 'active' ? 'badge-success' : 'badge-danger'}`}>{e.state}</span></td>
+                  <td data-label="Name"><Link to={endpointPath(org, e.id)}>{displayName(e.name)}</Link> <span className="font-mono" style={{ fontSize: 11, color: 'var(--ink)' }}>{e.runtime}</span>{e.cluster_health && <> <Status tone={healthTone[e.cluster_health]}>{e.cluster_health}</Status></>}</td>
+                  <td data-label="State"><Status tone={endpointTone(e.state)}>{e.state}</Status></td>
                   <td data-label="Host">{e.runtime === 'kubernetes' ? `${e.facts.node_count ?? '?'} ${e.facts.node_count === '1' ? 'node' : 'nodes'}` : e.facts.hostname ?? ''} <span style={{ fontSize: 11, color: 'var(--ink)' }}>{e.facts.runtime_version ?? e.facts.server_version ?? ''}</span></td>
                   <td data-label="Fingerprint" className="font-mono" style={{ fontSize: 11 }}>
                     <span title={e.fingerprint}>{e.fingerprint ? e.fingerprint.slice(0, 16) + '…' : '—'}</span>
-                    {e.pending_fingerprint && <div><span className="badge badge-accent">rotation pending</span> <span title={e.pending_fingerprint}>{e.pending_fingerprint.slice(0, 16)}…</span></div>}
+                    {e.pending_fingerprint && <div><Status tone="warning">rotation pending</Status> <span title={e.pending_fingerprint}>{e.pending_fingerprint.slice(0, 16)}…</span></div>}
                     {e.alerts.filter((a) => a.kind !== 'rotation_pending').map((a) => (
-                      <div key={a.id} role="alert"><span className="badge badge-danger">{a.kind}</span> {a.details}{' '}
+                      <div key={a.id} role="alert"><Status tone="danger">{a.kind.replaceAll('_', ' ')}</Status> {a.details}{' '}
                         <button className="btn-secondary" disabled={busy} onClick={() => void clearAlert(e, a.id)}>Clear</button>
                       </div>
                     ))}

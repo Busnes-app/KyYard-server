@@ -254,9 +254,9 @@ it('renders a Kubernetes cluster, its mapped applications, filters by namespace 
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show });
   render(<EndpointPage org="a" endpoint="ep_1" />);
   const health = await screen.findByRole('region', { name: 'Cluster health' });
-  expect(health.textContent).toContain('degraded');
+  expect(health.textContent).toContain('Degraded');
   expect(health.textContent).toContain('1 of 2 nodes ready');
-  expect(screen.getByText('cordoned')).toBeTruthy();
+  expect(screen.getByText('Cordoned')).toBeTruthy();
   expect(screen.getByText(/^Inventory generation/).textContent).toContain('truncated: pods');
   // No Docker resource or control is rendered for a cluster.
   for (const name of ['Containers', 'Images', 'Networks', 'Volumes', 'Projects']) expect(screen.queryByRole('button', { name })).toBeNull();
@@ -282,7 +282,7 @@ it('renders a Kubernetes cluster, its mapped applications, filters by namespace 
   Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
 });
 
-it('lists uptime, IP and health and links each container to its page', async () => {
+it('lists uptime, IP and health, puts failing containers first and collapses the rest', async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date('2026-09-29T10:00:00Z'));
   const now = '2026-09-29T09:59:00Z';
@@ -294,16 +294,23 @@ it('lists uptime, IP and health and links each container to its page', async () 
   const fetcher = vi.fn(async (input: RequestInfo | URL) => { const url = String(input); if (url === '/api/organizations') return json([{ id: 'a', name: 'Team', role: 'operator' }]); if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot: { generation: 1, observed_at: now, engine: { runtime: 'docker', version: '29', api_version: '1.55', os: 'linux', arch: 'x86_64', kernel: '7', cpus: 1, memory_bytes: 1, hostname: 'h' }, containers, images: [], networks: [], volumes: [] } }); return url.endsWith('/samples') || url.includes('/commands') || url.endsWith('/applications') ? json([]) : json(endpoint); });
   vi.stubGlobal('fetch', fetcher);
   render(<EndpointPage org="a" endpoint="ep_1" />);
-  const table = await screen.findByRole('table');
-  const head = within(table).getAllByRole('columnheader').map((h) => h.textContent);
+  const [attention, rest] = await screen.findAllByRole('table');
+  expect(screen.getByRole('heading', { name: 'Needs attention (1)' })).toBeTruthy();
+  const head = within(attention).getAllByRole('columnheader').map((h) => h.textContent);
   expect(head).toEqual(['Details', 'Container', 'State', 'Uptime', 'Ports', 'IP', 'CPU / memory', 'Actions']);
-  const [web, old] = within(table).getAllByRole('row').slice(1);
+  const [web] = within(attention).getAllByRole('row').slice(1);
+  const [old] = within(rest).getAllByRole('row').slice(1);
   expect(within(web).getByRole('link', { name: 'web' }).getAttribute('href')).toBe(`/organizations/a/endpoints/ep_1/containers/${id}`);
   expect(web.textContent).toContain('2h 30m');
   expect(web.textContent).toContain('172.17.0.5');
-  expect(within(web).getByText('unhealthy')).toBeTruthy();
+  expect(within(web).getByText('Unhealthy').getAttribute('data-ky-status')).toBe('danger');
   expect(old.querySelectorAll('td')[3].textContent?.trim()).toBe('—');
   expect(old.querySelectorAll('td')[5].textContent?.trim()).toBe('—');
+  const toggle = screen.getByRole('button', { name: 'Other containers (1)' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(screen.getAllByRole('table')).toEqual([attention]);
 });
 
 it.each([['organization_admin', true], ['environment_admin', false], ['operator', false]])('offers Run a container to %s: %s', async (role, want) => {

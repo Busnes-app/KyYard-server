@@ -1,6 +1,7 @@
 import type { ApplicationInstance } from './ApplicationAdoption';
 import type { Container } from '../tenant';
 import { displayName } from './Endpoints';
+import { Status } from './Status';
 
 // Discovery is an observation from one endpoint snapshot, never an ownership claim.
 export function ComposeProjects({ containers, truncated, onSelect, ownership }: {
@@ -25,7 +26,7 @@ export function ComposeProjects({ containers, truncated, onSelect, ownership }: 
       {[...projects].sort(([a], [b]) => a.localeCompare(b)).map(([name, members]) => (
         <details key={name} style={{ marginBlock: 12 }}>
           <summary style={{ cursor: 'pointer', overflowWrap: 'anywhere' }}>
-            <strong title={name}><bdi>{name}</bdi></strong> · {members.filter((c) => c.state === 'running').length}/{members.length} containers running · <span className="badge">{ownership === null ? 'Ownership unavailable' : ownership?.some((i) => i.project === name) ? 'Adopted snapshot' : 'Unmanaged'}</span>
+            <strong title={name}><bdi>{name}</bdi></strong> · {members.filter((c) => c.state === 'running').length}/{members.length} containers running · <Status>{ownership === null ? 'Ownership unavailable' : ownership?.some((i) => i.project === name) ? 'Adopted snapshot' : 'Unmanaged'}</Status>
           </summary>
           <ul className="ky-list">
             {members.map((c) => <li key={c.id} style={{ overflowWrap: 'anywhere' }}>

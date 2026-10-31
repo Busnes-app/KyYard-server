@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { secureFetch } from '../api';
 import { useTenantResource, type Endpoint, type PolicyRun, type UpdatePolicy } from '../tenant';
 import { StateNotice } from './StateNotice';
+import { Status } from './Status';
 import { detailText, planBlockers } from './ApplicationUpdates';
 import { ValidationLine, pauseText } from './ApplicationValidation';
 
@@ -169,7 +170,7 @@ function RunList({ runs, zone }: { runs: PolicyRun[]; zone: string }) {
     <thead><tr><th>Window</th><th>Outcome</th><th>Detail</th><th>Deployment</th><th>Validation</th></tr></thead>
     <tbody>{runs.map((r) => <tr key={r.id}>
       <td>{formatIn(r.occurrence, zone)}</td>
-      <td><span className="badge">{Object.hasOwn(RUN_OUTCOMES, r.outcome) ? RUN_OUTCOMES[r.outcome] : 'Unrecognised outcome'}</span></td>
+      <td><Status>{Object.hasOwn(RUN_OUTCOMES, r.outcome) ? RUN_OUTCOMES[r.outcome] : 'Unrecognised outcome'}</Status></td>
       <td>{runDetail(r)}</td>
       <td>{/^[0-9a-f-]{36}$/.test(r.deployment_id) ? <code title={r.deployment_id}>{r.deployment_id.slice(0, 8)}</code> : '—'}</td>
       <td>{r.validation ? <ValidationLine v={r.validation} /> : '—'}</td>

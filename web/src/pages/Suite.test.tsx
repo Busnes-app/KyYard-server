@@ -62,7 +62,7 @@ it('lists installed apps with the newest version and the catalog apps not instal
   expect(installed.getByText('kynotes')).toBeTruthy();
   expect(installed.getByText('1.4.0')).toBeTruthy();
   expect(await installed.findByText('1.5.0')).toBeTruthy();
-  expect(installed.getByText('healthy')).toBeTruthy();
+  expect(installed.getByText('Healthy')).toBeTruthy();
   expect(installed.getByRole('button', { name: 'Uninstall kynotes' })).toBeTruthy();
   expect(installed.getByRole('button', { name: 'Unmanage kynotes' })).toBeTruthy();
   const available = within(screen.getByText('Available').closest('section')!);

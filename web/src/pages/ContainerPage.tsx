@@ -7,7 +7,8 @@ import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { ContainerControls, ContainerLogs, useCommand } from '../components/ContainerControls';
 import { displayName } from '../components/Endpoints';
 import { ContainerPorts } from '../components/ContainerPorts';
-import { ago, attachments, bytes, healthBadge, stateBadge, uptime, useNow } from '../components/containerFacts';
+import { ago, attachments, bytes, healthBadge, stateTone, uptime, useNow } from '../components/containerFacts';
+import { Status } from '../components/Status';
 import { parseInspection, type Inspection } from '../components/ApplicationInspection';
 import { CommandResult, ContainerConfigurationForm, newContainer } from '../components/ContainerConfigurationForm';
 import { parseConfiguration } from '../components/containerConfiguration';
@@ -80,8 +81,8 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
     <nav aria-label="Breadcrumb" className="ky-subnav"><Link to="/endpoints">Endpoints</Link><span>/</span><Link to={endpointPath(org, endpoint)}>{e?.name ?? endpoint}</Link></nav>
     <div className="ky-page-heading">
       <h1 style={{ fontSize: 24 }}><Box size={24} style={{ color: 'var(--accent)' }} /><span>{c ? displayName(c.name) : container.slice(0, 12)}</span>
-        {c && <span className={stateBadge(c.state)} title={c.status}>{displayName(c.state)}</span>}
-        {health && <span className={`badge ${health.className}`}>{health.text}</span>}
+        {c && <Status tone={stateTone(c.state)} title={c.status}>{displayName(c.state)}</Status>}
+        {health && <Status tone={health.tone}>{health.text}</Status>}
       </h1>
       {c && <ContainerControls key={c.id} base={base} container={c} active={active} scope={scope} onRefresh={inventory.reload} canExec={exec} org={org} endpoint={endpoint} onStatus={setStatus} />}
     </div>

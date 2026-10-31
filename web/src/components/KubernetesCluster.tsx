@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ContainerLogs } from './ContainerControls';
-import { displayName, healthBadge } from './Endpoints';
+import { displayName, healthTone } from './Endpoints';
+import { Status, type Tone } from './Status';
 import { ResourceTable } from './ResourceTable';
 import { ManifestRegeneration } from './KubernetesManifest';
 import { uptime, useNow } from './containerFacts';
@@ -13,7 +14,7 @@ import { PAGE_KINDS, PodControls } from './PodControls';
 import { dnsLabel, workloadPath, workloadRunPath } from '../router';
 import { canConfigure, canOperate, type Endpoint, type KubernetesInventory, type Pod, type PodContainer } from '../tenant';
 
-const stateBadge: Record<string, string> = { running: 'badge-success', terminated: 'badge-danger' };
+const stateTone: Record<string, Tone> = { running: 'success', terminated: 'danger' };
 
 // A Kubernetes endpoint shows health, nodes, workloads, pods with their logs, services, claims
 // and the applications mapped to it. No Docker control is rendered, and none would be accepted.
@@ -41,12 +42,12 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
   const page = (namespace: string, kind: string, name: string, text: string) => Object.hasOwn(PAGE_KINDS, kind) && dnsLabel.test(namespace) && dnsLabel.test(name) ? <Link to={workloadPath(org, endpoint.id, namespace, PAGE_KINDS[kind] ?? '', name)}>{text}</Link> : text;
   return <>
     <section className="panel" aria-label="Cluster health">
-      <h2 style={{ fontSize: 16 }}>Cluster health <span className={`badge ${healthBadge[health] ?? 'badge-secondary'}`}>{health}</span></h2>
+      <h2 style={{ fontSize: 16 }}>Cluster health <Status tone={healthTone[health]}>{health}</Status></h2>
       <p>{ready} of {inventory.nodes.length} nodes ready.</p>
     </section>
     <ResourceTable title="Nodes" rows={inventory.nodes} rowKey={(n) => n.name} empty="No nodes reported." head={['Node', 'Ready', 'Roles', 'Version', 'Platform']} render={(n) => [
-      <>{displayName(n.name)}{n.unschedulable && <> <span className="badge badge-secondary">cordoned</span></>}</>,
-      <span className={`badge ${n.ready ? 'badge-success' : 'badge-danger'}`}>{n.ready ? 'ready' : 'not ready'}</span>,
+      <>{displayName(n.name)}{n.unschedulable && <> <Status>cordoned</Status></>}</>,
+      <Status tone={n.ready ? 'success' : 'danger'}>{n.ready ? 'ready' : 'not ready'}</Status>,
       n.roles.map(displayName).join(', ') || '—', displayName(n.kubelet_version), `${displayName(n.os)}/${displayName(n.arch)}`,
     ]} />
     <div className="ky-toolbar">
@@ -65,7 +66,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
       <div className="ky-resource-name"><strong>{qualified(p)}</strong>{p.owner_kind && <small>{page(p.namespace, p.owner_kind, p.owner_name, `${displayName(p.owner_kind)} ${displayName(p.owner_name)}`)}</small>}</div>,
       displayName(p.phase), uptime(p.started_at, now) || '—', displayName(p.node) || '—', p.containers.reduce((sum, c) => sum + c.restart_count, 0),
       <ul className="ky-list">{p.containers.map((c) => <li key={c.name}>
-        {displayName(c.name)} <span className={`badge ${stateBadge[c.state] ?? 'badge-secondary'}`} title={c.image}>{displayName(c.state)}</span>{c.reason && ` ${displayName(c.reason)}`}{' '}
+        {displayName(c.name)} <Status tone={Object.hasOwn(stateTone, c.state) ? stateTone[c.state] : undefined} title={c.image}>{displayName(c.state)}</Status>{c.reason && ` ${displayName(c.reason)}`}{' '}
         <button className="btn-secondary" disabled={!active} aria-label={`Logs for ${p.namespace}/${p.name}/${c.name}`} onClick={() => setLogs({ pod: p, container: c })}>Logs</button>
       </li>)}</ul>,
       ...(tools ? [<PodControls key={`${p.namespace}/${p.name}`} {...toolProps} pod={p} onStatus={tools} />] : []),
