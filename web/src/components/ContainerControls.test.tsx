@@ -27,8 +27,8 @@ it('renders every action as a labelled icon control and adds no expandable conte
   render(<ContainerControls {...props} canExec />);
   const group = screen.getByRole('group', { name: 'Actions for web' });
   for (const name of ['Stop web', 'Restart web', 'Remove web']) expect(screen.getByRole('button', { name })).toBeTruthy();
-  expect(screen.getByRole('link', { name: 'Logs for web' }).getAttribute('href')).toBe(`/organizations/org/endpoints/endpoint/containers/${id}?tab=logs`);
-  expect(screen.getByRole('link', { name: 'Terminal for web' }).getAttribute('href')).toBe(`/organizations/org/endpoints/endpoint/containers/${id}?tab=terminal`);
+  expect(screen.getByRole('link', { name: 'View logs for web' }).getAttribute('href')).toBe(`/organizations/org/endpoints/endpoint/containers/${id}?tab=logs`);
+  expect(screen.getByRole('link', { name: 'Open terminal for web' }).getAttribute('href')).toBe(`/organizations/org/endpoints/endpoint/containers/${id}?tab=terminal`);
   expect(screen.queryByRole('button', { name: 'Start web' })).toBeNull();
   expect(group.querySelector('details, dialog')).toBeNull();
   expect(screen.queryByText('Actions')).toBeNull();
@@ -46,8 +46,8 @@ it('shows Start for a stopped container and disables Remove while running', () =
 
 it.each([false, true])('offers the Terminal link only when the role may exec (%s)', (canExec) => {
   render(<ContainerControls {...props} canExec={canExec} />);
-  expect(screen.queryByRole('link', { name: 'Terminal for web' }) !== null).toBe(canExec);
-  expect(screen.getByRole('link', { name: 'Logs for web' })).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'Open terminal for web' }) !== null).toBe(canExec);
+  expect(screen.getByRole('link', { name: 'View logs for web' })).toBeTruthy();
 });
 
 it('reports status through onStatus instead of inline when given', async () => {

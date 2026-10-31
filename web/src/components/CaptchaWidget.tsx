@@ -79,33 +79,10 @@ export const CaptchaWidget: React.FC<CaptchaProps> = ({ onToken }) => {
   }, [onToken]);
 
   return (
-    <div
-      style={{
-        background: 'var(--panel)',
-        border: '1px solid var(--line)',
-        borderRadius: '6px',
-        padding: '12px',
-        margin: '12px 0',
-      }}
-    >
-      {status === 'working' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--ink)' }}>
-          <Loader2 size={16} className="animate-spin" style={{ color: 'var(--accent)' }} />
-          <span>Verifying security check ({progress}%)...</span>
-        </div>
-      )}
-      {status === 'done' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--success)' }}>
-          <ShieldCheck size={16} />
-          <span>Security check verified.</span>
-        </div>
-      )}
-      {status === 'failed' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--danger)' }}>
-          <AlertCircle size={16} />
-          <span>{errorMsg}</span>
-        </div>
-      )}
-    </div>
+    <p className="ky-auth-check" data-ky-state={status === 'done' ? 'passed' : status === 'failed' ? 'failed' : undefined} aria-live="polite">
+      {status === 'working' && <><Loader2 className="animate-spin" aria-hidden="true" /><span>Verifying security check ({progress}%)...</span></>}
+      {status === 'done' && <><ShieldCheck aria-hidden="true" /><span>Security check verified.</span></>}
+      {status === 'failed' && <><AlertCircle aria-hidden="true" /><span>{errorMsg}</span></>}
+    </p>
   );
 };

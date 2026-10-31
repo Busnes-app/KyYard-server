@@ -86,6 +86,7 @@ Owns user interface components, service worker caching, PWA installation manifes
 
 - `src/ky-ui/` is generated from Busnes-app/ky-ui, pinned by `VERSION` file hashes. Change shared colors, navigation states and storage helpers upstream, then run its consumer sync with an explicit worktree map; do not hand-edit vendored files.
 - Products own layout, routes, saved choice keys and named palettes. Busnes aliases consume shared tokens; mark primary navigation with `ky-nav-item` while preserving current-page semantics.
+- `src/ky-ui/shell.css` owns the sign-in screen, sidebar user block, licence line, About dialog and page head; render the markup in ky-ui's README `## Shell` and keep product CSS off those classes (layout wrappers such as `.ky-sidebar-user` are the product's).
 - Verify vendored files with `node src/ky-ui/check-vendor.mjs` from this document's directory. Builds/CI run that check. Rendered evidence and capture limitations are recorded in the repository-root `UI-VERIFICATION.md`.
 
 ## Child DOX Index

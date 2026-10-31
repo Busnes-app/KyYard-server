@@ -16,10 +16,11 @@ it('lands on native endpoint summaries and direct run links, without stale local
   const fetcher = fleet(); render(<Dashboard />);
   expect(await screen.findByText('16.0 GiB')).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Home' })).toBeTruthy();
+  expect(screen.getByText('1 exited')).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Run a container on Kubernetes' }).getAttribute('href')).toBe('/organizations/a/endpoints/cluster/workloads/new');
   expect(screen.getByRole('link', { name: 'Run a container' }).getAttribute('href')).toBe('/organizations/a/endpoints/docker/containers/new');
   expect(fetcher.mock.calls.some(([url]) => url.includes('/old/inventory'))).toBe(false);
-  expect(screen.queryByRole('table')).toBeNull();
+  expect(screen.queryByRole('columnheader', { name: 'Container' })).toBeNull();
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'K80' } });
   expect(screen.queryByRole('link', { name: 'docker.example.com' })).toBeNull();
   expect(screen.getByRole('link', { name: 'K80 & K81' })).toBeTruthy();
@@ -30,7 +31,7 @@ it('hides run actions from an operator', async () => {
 });
 it('reports stale inventory without claiming current running counts', async () => {
   fleet('organization_admin', new Date(Date.now() - 240000).toISOString()); render(<Dashboard />);
-  expect((await screen.findAllByText(/Inventory is stale/)).length).toBe(2);
+  expect((await screen.findAllByText('Stale')).length).toBe(2);
   expect(screen.queryByText('16.0 GiB')).toBeNull();
 });
 it('distinguishes denied organization access from an empty fleet', async () => {
@@ -57,7 +58,7 @@ it('keeps endpoint discovery bounded at 20 per page', async () => {
 it('shows scope and role-aware navigation, and clears a search without losing endpoints', async () => {
   fleet('operator'); render(<Dashboard />);
   await screen.findByText('16.0 GiB');
-  expect(screen.getByText('Your organization role')).toBeTruthy();
+  expect(screen.getByText('Your role')).toBeTruthy();
   expect(screen.getByRole('link', { name: 'View environments' })).toBeTruthy();
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'no such host' } });
   expect(screen.getByText(/No endpoints match/)).toBeTruthy();

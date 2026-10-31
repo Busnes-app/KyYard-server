@@ -4,8 +4,8 @@ export function SetupGuide({ appURL }: { appURL: string }) {
   // advice that names a port nothing listens on tells someone to protect the wrong thing.
   const port = portOf(appURL);
   return (
-    <details className="panel" style={{ marginTop: 16, fontSize: 14 }}>
-      <summary style={{ cursor: 'pointer' }}>Local setup and remote access</summary>
+    <details className="ky-setup-guide">
+      <summary className="ky-auth-link">Local setup and remote access</summary>
       <p>Open <a href={appURL}>{appURL}</a> on the Docker host. First sign-in: use
         <code> admin</code> and the temporary password in <code>docker compose logs kyyard</code>,
         then replace it.</p>

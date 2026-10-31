@@ -387,9 +387,12 @@ export const Backup: React.FC = () => {
         <div className="dr-fact">
           <div className="dr-fact-label">
             <span>Schedule</span>
-            <Badge tone={scheduleOn ? 'success' : 'danger'}>{every(status?.interval_sec)}</Badge>
+            <Badge tone={!scheduleOn ? 'danger' : canBackUp ? 'success' : 'muted'}>{every(status?.interval_sec)}</Badge>
           </div>
-          <div className="dr-fact-value">{scheduleOn && status?.next_run_at ? `Next ${when(status.next_run_at)}` : 'Manual only'}</div>
+          <div className="dr-fact-value">
+            {!scheduleOn ? 'Manual only' : !keyPinned ? 'Waiting for recovery key' : !canBackUp ? 'Waiting for a destination'
+              : status?.next_run_at ? `Next ${when(status.next_run_at)}` : 'Next run not scheduled'}
+          </div>
           <div className="dr-fact-note">Counts from the last attempt, successful or not</div>
         </div>
       </div>

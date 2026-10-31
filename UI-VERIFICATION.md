@@ -115,3 +115,13 @@ This is executable browser regression evidence, separate from visual approval,
 HTTPS-cookie, Docker/Kubernetes, human acceptance and 24-hour soak qualification.
 The suite adds no whole-product coverage or OpenSSF Passing claim. See
 [CONTRIBUTING](CONTRIBUTING.md#browser-regressions) for prerequisites and failure traces.
+
+## Suite design pass, 2026-10-31
+
+ky-ui 0.6.0 (shell and palette pairs) vendored. Sign-in, sidebar user block, About dialog and
+page heads use the shared shell; Appearance is its own page with the six pairs; the containers
+table is one 48px row per container with a detail drawer and a ⋯ menu; Home lists endpoints as
+table rows with unhealthy/exited counts. Captured at 1440×900 (light, dark) and 390×844 (light)
+against a disposable SQLite server whose local Docker endpoint is a read-only fake Engine
+(12 synthetic containers); no real host containers were read or changed. Before and after images
+are in `docs/ui-suite-2026-10-31/screenshots/`.

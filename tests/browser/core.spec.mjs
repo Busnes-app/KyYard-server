@@ -59,19 +59,20 @@ test('real environment form persists a CSRF-protected tenant write', async ({ pa
 
 test('Appearance follows system, persists a choice and synchronizes tabs', async ({ page, context }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
-  await enter(page, '/settings');
-  const system = page.getByRole('radio', { name: /match system/i });
-  await expect(system).toBeChecked();
+  await enter(page, '/appearance');
+  const busnes = page.getByRole('group', { name: 'Busnes', exact: true });
+  await expect(busnes.getByRole('radio', { name: 'Match system' })).toBeChecked();
   await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
-  await page.getByRole('radio', { name: /^Busnes Light/ }).check();
+  await busnes.getByRole('radio', { name: 'Light' }).check();
   await page.reload();
-  await expect(page.getByRole('radio', { name: /^Busnes Light/ })).toBeChecked();
+  await expect(page.getByRole('group', { name: 'Busnes', exact: true }).getByRole('radio', { name: 'Light' })).toBeChecked();
   await expect(page.locator('html')).toHaveCSS('color-scheme', 'light');
   const other = await context.newPage();
-  await other.goto('/settings');
-  await expect(other.getByRole('radio', { name: /^Busnes Light/ })).toBeChecked();
-  await other.getByRole('radio', { name: /^Busnes Dark/ }).check();
-  await expect(page.getByRole('radio', { name: /^Busnes Dark/ })).toBeChecked();
+  await other.goto('/appearance');
+  const otherBusnes = other.getByRole('group', { name: 'Busnes', exact: true });
+  await expect(otherBusnes.getByRole('radio', { name: 'Light' })).toBeChecked();
+  await otherBusnes.getByRole('radio', { name: 'Dark' }).check();
+  await expect(page.getByRole('group', { name: 'Busnes', exact: true }).getByRole('radio', { name: 'Dark' })).toBeChecked();
   await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
 });
 
@@ -137,6 +138,8 @@ test('keyboard navigation and Settings fit the viewport', async ({ page }) => {
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/endpoints$/);
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Appearance', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible();
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(width).toBeLessThanOrEqual(page.viewportSize().width + 1);

@@ -8,6 +8,8 @@ interface Me { user?: { sso_provider?: string; totp_enabled?: boolean } }
 interface Enrolment { secret: string; otpauth_uri: string }
 
 const formStyle = { display: 'grid', gap: 12, maxWidth: 640 };
+// Submit buttons size to their label, like the other panel actions.
+const submitStyle = { justifySelf: 'start' } as const;
 
 async function failure(response: Response): Promise<string> {
   if (response.status === 401) return 'Check your current password and code.';
@@ -113,7 +115,7 @@ export function AccountSecurity() {
             <h3>Replace recovery codes</h3>
             <p>Your current recovery codes stop working.</p>
             {codeInput('Authenticator code')}
-            <button disabled={busy}>Replace recovery codes</button>
+            <button disabled={busy} style={submitStyle}>Replace recovery codes</button>
           </form>
           <form onSubmit={submit('/api/account/mfa/disable', ['password', 'code'], async () => { setMessage('Two-factor authentication is off.'); me.reload(); })} style={formStyle} aria-label="Turn off two-factor authentication">
             <h3>Turn off two-factor authentication</h3>
@@ -135,7 +137,7 @@ export function AccountSecurity() {
         <label>New password<input name="new_password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024} disabled={busy} /></label>
         <label>Confirm new password<input name="confirm_password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024} disabled={busy} /></label>
         {enabled && codeInput('Authenticator code')}
-        <button disabled={busy}>Change password</button>
+        <button disabled={busy} style={submitStyle}>Change password</button>
       </form>
     </section>
   </>;
