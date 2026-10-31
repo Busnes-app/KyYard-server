@@ -22,12 +22,15 @@ export function AppHeader({ appName, version, route, user, onLogout }: AppHeader
   const role = user.role === 'admin' ? 'Administrator' : 'Everyday account';
   // A display name that repeats the role line says nothing; show the username instead.
   const name = user.display_name && user.display_name !== role ? user.display_name : user.username;
-  return <header className="ky-header">
-    <Link to="/" className="ky-brand"><img className="ky-mark" src="/app-icon.png" width={28} height={28} alt="" /><span>{appName || 'KyYard'}</span></Link>
+  return <header className="ky-sidebar">
+    <div className="ky-mobile-head">
+      <div className="ky-brand"><img className="ky-mark" src="/app-icon.png" width={28} height={28} alt="" /><span>{appName || 'KyYard'}</span></div>
+      <button type="button" className="ky-mobile-signout" aria-label="Sign out" onClick={onLogout}><LogOut aria-hidden="true" /></button>
+    </div>
     <nav aria-label="Primary" className="ky-nav">
       {navItems.map(({ name, to, label, icon: Icon }) => {
         const active = route.name === name || (name === 'endpoints' && ['endpoint', 'environment', 'organization'].includes(route.name)) || (name === 'settings' && ['backup', 'suite', 'members', 'audit'].includes(route.name));
-        return <Link key={name} to={to} current={active} className={active ? 'ky-nav-item ky-nav-link active' : 'ky-nav-item ky-nav-link'}><Icon size={16} aria-hidden="true" /><span>{label}</span></Link>;
+        return <Link key={name} to={to} current={active} className="ky-nav-item"><Icon size={16} aria-hidden="true" /><span>{label}</span></Link>;
       })}
     </nav>
     <div className="ky-sidebar-foot">

@@ -164,7 +164,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
                 <hr className="ky-auth-divider" />
                 {providers.map((provider) => <a key={provider.id} href={provider.login_url} className="ky-auth-sso">
                   <Key aria-hidden="true" />
-                  <span>Continue with {providers.length === 1 ? 'Single Sign On' : provider.name}</span>
+                  <span>Continue with {providers.length === 1 ? 'single sign-on' : provider.name}</span>
                 </a>)}
               </>}
             </form>
