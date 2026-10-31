@@ -59,7 +59,7 @@ export { expect };
 export async function signIn(page, password) {
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: 'Sign In', exact: true }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 }
 
 export async function replacePassword(page) {

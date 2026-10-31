@@ -2,15 +2,16 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Settings } from './Settings';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-it('keeps administration separate from the theme picker and loads providers only on demand', async () => {
+it('has no theme picker (Appearance is its own page) and loads providers only on demand', async () => {
  const fetcher = vi.fn(async () => new Response('[]', { headers: { 'Content-Type': 'application/json' } }));
  vi.stubGlobal('fetch', fetcher);
+ window.history.replaceState(null, '', '/settings?section=recovery');
  render(<Settings settings={{ db_driver: 'sqlite' }} role="admin" />);
- expect(screen.getByRole('radio', { name: /^Ocean/ })).toBeTruthy();
- expect(fetcher).not.toHaveBeenCalled();
- fireEvent.click(screen.getByRole('button', { name: 'Recovery' }));
+ window.history.replaceState(null, '', '/');
+ expect(screen.queryByRole('radio')).toBeNull();
+ expect(screen.queryByRole('button', { name: 'Appearance' })).toBeNull();
  expect(screen.getByRole('link', { name: 'Open backup & recovery' })).toBeTruthy();
- expect(screen.queryByRole('radio', { name: /^Ocean/ })).toBeNull();
+ expect(fetcher).not.toHaveBeenCalled();
  fireEvent.click(screen.getByRole('button', { name: 'Sign-in' }));
  await screen.findByText('Add sign-in provider');
  expect(fetcher).toHaveBeenCalledTimes(2);

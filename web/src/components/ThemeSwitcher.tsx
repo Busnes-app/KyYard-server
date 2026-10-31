@@ -1,25 +1,20 @@
 import { useEffect, useState } from 'react';
-import { applyTheme, getStoredTheme, themes } from '../theme';
+import { THEME_CHOICES, applyTheme, storedTheme } from '../theme';
 
-const mode = (scheme: string) => scheme === 'system' ? 'Follows device' : scheme === 'light' ? 'Light' : 'Dark';
-
-/** The shared ky-ui Appearance cards: native radios, applied and saved on change. */
+/** The sign-in screen's compact picker; Appearance offers the same choices as cards. */
 export function ThemeSwitcher() {
-  const [selected, setSelected] = useState(getStoredTheme);
+  const [theme, setTheme] = useState(storedTheme);
   useEffect(() => {
-    const update = () => setSelected(getStoredTheme());
-    window.addEventListener('ky:theme', update);
-    return () => window.removeEventListener('ky:theme', update);
+    const sync = () => setTheme(storedTheme());
+    window.addEventListener('ky:theme', sync);
+    return () => window.removeEventListener('ky:theme', sync);
   }, []);
-  return <fieldset className="ky-appearance">
-    <legend className="ky-appearance-legend">Theme</legend>
-    <div className="ky-appearance-grid">
-      {themes.map((theme) => <label key={theme.id} className="ky-appearance-option">
-        <input className="ky-appearance-radio" type="radio" name="kyyard-theme" value={theme.id} checked={theme.id === selected.id} onChange={() => { setSelected(theme); applyTheme(theme); }} />
-        <span className="ky-appearance-preview" aria-hidden="true" data-ky-preview={theme.id} />
-        <span className="ky-appearance-name">{theme.name}</span>
-        <small className="ky-appearance-mode">{mode(theme.scheme)}</small>
-      </label>)}
-    </div>
-  </fieldset>;
+  return <select className="theme-selector" aria-label="Color theme" value={theme} onChange={(event) => {
+    setTheme(event.target.value);
+    applyTheme(event.target.value, true);
+  }}>{THEME_CHOICES.map(({ pair, choices }) => (
+    <optgroup key={pair.id} label={pair.name}>
+      {choices.map(({ mode, label, value }) => <option key={mode} value={value}>{pair.name} · {label}</option>)}
+    </optgroup>
+  ))}</select>;
 }

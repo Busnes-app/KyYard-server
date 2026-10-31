@@ -12,7 +12,7 @@ it('keeps the SSO MFA challenge through StrictMode and clears browser history', 
   vi.stubGlobal('fetch', request);
   const success = vi.fn();
   render(<StrictMode><Login appName="KyYard" onSuccess={success} /></StrictMode>);
-  expect(screen.getByText('Two-Factor Verification')).toBeTruthy();
+  expect(screen.getByText('Two-factor verification')).toBeTruthy();
   expect(window.location.hash).toBe('');
   fireEvent.change(screen.getByPlaceholderText('123456'), { target: { value: '123456' } });
   fireEvent.submit(screen.getByPlaceholderText('123456').closest('form')!);

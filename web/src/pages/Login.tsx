@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Key, AlertCircle, LogIn } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget';
 import { SetupGuide } from '../components/SetupGuide';
+import { ThemeSwitcher } from '../components/ThemeSwitcher';
 
 interface LoginProps {
   onSuccess: (user: any) => void;
@@ -106,147 +107,71 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName, appURL = '', p
   };
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '20px',
-        background: 'var(--bg)',
-      }}
-    >
-      <div style={{ width: '100%', maxWidth: '420px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-          <div
-            style={{
-              display: 'inline-flex',
-              padding: '12px',
-              background: 'var(--accent-soft)',
-              borderRadius: '12px',
-              color: 'var(--accent)',
-              marginBottom: '12px',
-            }}
-          >
-            <img src="/app-icon.png" width={56} height={56} alt="" />
-          </div>
-          <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>{appName || 'KyYard'}</h1>
-          <p style={{ color: 'var(--ink)', fontSize: '14px', marginTop: '4px' }}>The simple control plane for your container fleet.</p>
+    <main className="ky-auth">
+      <div className="ky-auth-theme"><ThemeSwitcher /></div>
+      <div className="ky-auth-body">
+        <div className="ky-auth-brand">
+          <img className="ky-mark" src="/app-icon.png" width={56} height={56} alt="" />
+          <h1>{appName || 'KyYard'}</h1>
+          <p>The simple control plane for your container fleet.</p>
         </div>
 
-        <div className="panel">
-          {error && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                background: 'rgba(239, 68, 68, 0.1)',
-                border: '1px solid var(--danger)',
-                borderRadius: '6px',
-                padding: '10px',
-                color: 'var(--danger)',
-                fontSize: '13px',
-                marginBottom: '16px',
-              }}
-            >
-              <AlertCircle size={16} />
-              <span>{error}</span>
-            </div>
-          )}
+        <div className="ky-auth-card">
+          {error && <p role="alert" className="ky-auth-error"><AlertCircle size={16} aria-hidden="true" /><span>{error}</span></p>}
 
           {mfaChallenge ? (
             <form onSubmit={handleMFASubmit}>
-              <h2 style={{ fontSize: '18px', marginBottom: '8px' }}>Two-Factor Verification</h2>
-              <p style={{ color: 'var(--ink)', fontSize: '13px', marginBottom: '16px' }}>
-                {isRecoveryCode ? 'Enter one of your single-use recovery codes.' : 'Enter the 6-digit code from your authenticator app.'}
-              </p>
-
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }}>
-                  {isRecoveryCode ? 'Recovery Code' : 'Authenticator Code'}
-                </label>
+              <h2>Two-factor verification</h2>
+              <p className="ky-auth-note">{isRecoveryCode ? 'Enter one of your single-use recovery codes.' : 'Enter the 6-digit code from your authenticator app.'}</p>
+              <div className="ky-auth-field">
+                <label htmlFor="mfa-code">{isRecoveryCode ? 'Recovery code' : 'Authenticator code'}</label>
                 <input
-                  id="username"
-                  autoComplete="username"
+                  id="mfa-code"
+                  className="ky-code-input"
                   type="text"
+                  inputMode={isRecoveryCode ? 'text' : 'numeric'}
+                  autoComplete="one-time-code"
                   autoFocus
                   value={mfaCode}
                   onChange={(e) => setMfaCode(e.target.value)}
                   placeholder={isRecoveryCode ? 'XXXX-XXXX' : '123456'}
-                  style={{ fontFamily: 'var(--font-mono)', fontSize: '18px', letterSpacing: '2px', textAlign: 'center' }}
                   required
                 />
               </div>
-
-              <button type="submit" style={{ width: '100%', justifyContent: 'center' }} disabled={loading}>
-                {loading ? 'Verifying...' : 'Verify & Sign In'}
+              <button type="submit" className="ky-auth-submit" disabled={loading}>{loading ? 'Verifying…' : 'Verify and sign in'}</button>
+              <button type="button" className="ky-auth-link" onClick={() => setIsRecoveryCode(!isRecoveryCode)}>
+                {isRecoveryCode ? 'Use your authenticator app' : 'Use a recovery code'}
               </button>
-
-              <div style={{ textAlign: 'center', marginTop: '16px' }}>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  style={{ background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: '12px' }}
-                  onClick={() => setIsRecoveryCode(!isRecoveryCode)}
-                >
-                  {isRecoveryCode ? 'Use Authenticator App' : 'Use a Recovery Code'}
-                </button>
-              </div>
             </form>
           ) : (
             <form onSubmit={handleLogin}>
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }} htmlFor="username">Username</label>
-                <input
-                  id="username"
-                  autoComplete="username"
-                  type="text"
-                  autoFocus
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="admin"
-                  required
-                />
+              <div className="ky-auth-field">
+                <label htmlFor="login-username">Username</label>
+                <input id="login-username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} autoFocus
+                  value={username} onChange={(e) => setUsername(e.target.value)} required />
               </div>
-
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }} htmlFor="password">Password</label>
-                <input
-                  id="password"
-                  autoComplete="current-password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••••••"
-                  required
-                />
+              <div className="ky-auth-field">
+                <label htmlFor="login-password">Password</label>
+                <input id="login-password" type="password" autoComplete="current-password"
+                  value={password} onChange={(e) => setPassword(e.target.value)} required />
               </div>
-
               <CaptchaWidget key={captchaRound} onToken={setCaptchaToken} />
-
-              <button type="submit" style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }} disabled={loading}>
-                <LogIn size={16} />
-                <span>{loading ? 'Signing in...' : 'Sign In'}</span>
+              <button type="submit" className="ky-auth-submit" disabled={loading}>
+                <LogIn aria-hidden="true" />
+                <span>{loading ? 'Signing in…' : 'Sign in'}</span>
               </button>
-
-              {providers.length > 0 && <div style={{ marginTop: '20px', borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
-                {providers.map((provider) => <a
-                  key={provider.id}
-                  href={provider.login_url}
-                  className="btn btn-secondary"
-                  style={{ width: '100%', justifyContent: 'center', textDecoration: 'none' }}
-                >
-                  <Key size={16} style={{ color: 'var(--accent)' }} />
+              {providers.length > 0 && <>
+                <hr className="ky-auth-divider" />
+                {providers.map((provider) => <a key={provider.id} href={provider.login_url} className="ky-auth-sso">
+                  <Key aria-hidden="true" />
                   <span>Continue with {providers.length === 1 ? 'Single Sign On' : provider.name}</span>
                 </a>)}
-              </div>}
+              </>}
             </form>
           )}
         </div>
         <SetupGuide appURL={appURL} />
       </div>
-    </div>
+    </main>
   );
 };
