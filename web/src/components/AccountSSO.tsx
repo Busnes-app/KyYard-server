@@ -36,7 +36,7 @@ export function AccountSSO() {
     {providers.state === 'ready' && (choices.length ? <form onSubmit={link} style={{ display: 'grid', gap: 12, maxWidth: 640 }}>
       <label>Sign-in provider<select name="provider" required disabled={busy}>{choices.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
       <label>Current KyYard password<input name="password" type="password" autoComplete="current-password" required disabled={busy} /></label>
-      <button disabled={busy}>Connect single sign-on</button>
+      <button className="btn-secondary" disabled={busy}>Connect single sign-on</button>
     </form> : <p>No enabled sign-in providers are available.</p>)}
     {message && <p role="status">{message}</p>}
   </section>;
