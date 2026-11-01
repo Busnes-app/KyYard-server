@@ -7,7 +7,6 @@ import { ChangePassword } from './pages/ChangePassword';
 import { Backup } from './pages/Backup';
 import { Suite } from './pages/Suite';
 import { Settings } from './pages/Settings';
-import { Appearance } from './pages/Appearance';
 import { Organization } from './pages/Organization';
 import { Members } from './pages/Members';
 import { Access } from './pages/Access';
@@ -24,7 +23,7 @@ import './ky-ui/navigation.css';
 import './ky-ui/appearance.css';
 import './ky-ui/appearance-themes.css';
 import { secureFetch } from './api';
-import { useRoute, type Route } from './router';
+import { movedPath, replace, useRoute, type Route } from './router';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
@@ -63,6 +62,14 @@ export const App: React.FC = () => {
       setSettings(s);
     }
   };
+
+  // Routes that moved into Settings are rewritten in place once signed in, so old links,
+  // bookmarks and the SSO link's redirect land on their tab and Back skips them.
+  const role = user && !user.must_change_password ? user.role : null;
+  const moved = role === null ? null : movedPath(window.location.pathname, window.location.search, role);
+  useEffect(() => {
+    if (moved) replace(moved);
+  }, [moved]);
 
   const handleLogout = async () => {
     await secureFetch('/api/auth/logout', { method: 'POST' });
@@ -110,7 +117,8 @@ export const App: React.FC = () => {
       <AppHeader appName={settings?.app_name || 'KyYard'} version={typeof settings?.version === 'string' ? settings.version : undefined} route={route} user={user} onLogout={handleLogout} />
       {/* Keying on the organization discards every tenant screen's state when the context changes. */}
       <main id="main-content" className="ky-content" tabIndex={-1} key={org ?? ''}>
-        <Screen route={route} settings={settings} user={user} />
+        {/* Nothing (not "Page not found") for the moment a moved route is rewritten. */}
+        {!moved && <Screen route={route} settings={settings} user={user} />}
         <LicenseFooter appName={settings?.app_name || 'KyYard'} version={typeof settings?.version === 'string' ? settings.version : undefined} className="ky-content-foot" />
       </main>
     </div>
@@ -123,8 +131,7 @@ const Screen: React.FC<{ route: Route; settings: any; user: any }> = ({ route, s
     case 'endpoints': return <Dashboard mode="endpoints" platformAdmin={user?.role === 'admin'} />;
     case 'backup': return <Backup />;
     case 'suite': return <Suite totp={user?.totp_enabled === true} />;
-    case 'settings': return <Settings settings={settings} role={user?.role} />;
-    case 'appearance': return <Appearance />;
+    case 'settings': return <Settings section={route.section} settings={settings} role={user?.role} />;
     case 'organization': return <Organization org={route.org} />;
     case 'members': return <Members org={route.org} />;
     case 'access': return <Access org={route.org} />;

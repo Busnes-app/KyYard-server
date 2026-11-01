@@ -23,7 +23,9 @@ test('bootstrap requires a password replacement and revokes the old login', asyn
 });
 
 test('authenticated deep links and logout use real session cookies', async ({ page, context }) => {
+  // The old ?section= link opens its Settings tab, replacing the history entry.
   await enter(page, '/settings?section=storage');
+  await expect(page).toHaveURL(/\/settings\/storage$/);
   await expect(page.getByRole('heading', { name: 'Storage', exact: true })).toBeVisible();
   const cookies = await context.cookies();
   expect(cookies.find(cookie => cookie.name === 'ky_session')).toMatchObject({ httpOnly: true, sameSite: 'Lax' });
@@ -59,7 +61,9 @@ test('real environment form persists a CSRF-protected tenant write', async ({ pa
 
 test('Appearance follows system, persists a choice and synchronizes tabs', async ({ page, context }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
+  // The old Appearance page opens its Settings tab.
   await enter(page, '/appearance');
+  await expect(page).toHaveURL(/\/settings\/appearance$/);
   const busnes = page.getByRole('group', { name: 'Busnes', exact: true });
   await expect(busnes.getByRole('radio', { name: 'Match system' })).toBeChecked();
   await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
@@ -68,7 +72,7 @@ test('Appearance follows system, persists a choice and synchronizes tabs', async
   await expect(page.getByRole('group', { name: 'Busnes', exact: true }).getByRole('radio', { name: 'Light' })).toBeChecked();
   await expect(page.locator('html')).toHaveCSS('color-scheme', 'light');
   const other = await context.newPage();
-  await other.goto('/appearance');
+  await other.goto('/settings/appearance');
   const otherBusnes = other.getByRole('group', { name: 'Busnes', exact: true });
   await expect(otherBusnes.getByRole('radio', { name: 'Light' })).toBeChecked();
   await otherBusnes.getByRole('radio', { name: 'Dark' }).check();
@@ -137,10 +141,20 @@ test('keyboard navigation and Settings fit the viewport', async ({ page }) => {
   await endpoints.focus();
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/endpoints$/);
-  await page.getByRole('link', { name: 'Settings', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Settings', exact: true }).click();
+  await expect(page).toHaveURL(/\/settings\/account$/);
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  await page.getByRole('link', { name: 'Appearance', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible();
+  // Appearance is a Settings tab, not a navigation row; Back returns to the tab before.
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Appearance' })).toHaveCount(0);
+  const tabs = page.getByRole('navigation', { name: 'Settings sections' });
+  await expect(tabs.getByRole('link')).toHaveText(['Account', 'Appearance', 'Sign-in', 'Recovery', 'Storage', 'Suite', 'Administration']);
+  await tabs.getByRole('link', { name: 'Appearance', exact: true }).click();
+  await expect(page).toHaveURL(/\/settings\/appearance$/);
+  await expect(tabs.locator('[aria-current="page"]')).toHaveText('Appearance');
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Settings', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('group', { name: 'Theme' })).toBeVisible();
+  await page.goBack();
+  await expect(tabs.locator('[aria-current="page"]')).toHaveText('Account');
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(width).toBeLessThanOrEqual(page.viewportSize().width + 1);
 });
@@ -166,7 +180,12 @@ test('the shell follows the suite frame', async ({ page }, testInfo) => {
     expect(new Set(tabs.map(tab => tab.top)).size).toBe(1);
     expect(tabs.every(tab => tab.beside)).toBe(true);
   } else {
-    await expect(page.locator('.ky-mobile-signout')).toBeHidden();
+    await expect(page.locator('.ky-mobile-head .ky-icon-button')).toBeHidden();
+    // The footer: name over role, then Sign out as an icon button, never the written words.
+    const signOut = page.locator('.ky-user-actions').getByRole('button', { name: 'Sign out', exact: true });
+    await expect(signOut).toHaveAttribute('title', 'Sign out');
+    await expect(signOut).toHaveText('');
+    await expect(page.locator('.ky-sidebar')).not.toContainText('Sign out');
     // Content starts the shared inset from the sidebar (x=272).
     expect((await page.locator('main h1').first().boundingBox()).x).toBe(272);
   }

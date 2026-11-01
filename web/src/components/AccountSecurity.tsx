@@ -137,7 +137,7 @@ export function AccountSecurity() {
         <label>New password<input name="new_password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024} disabled={busy} /></label>
         <label>Confirm new password<input name="confirm_password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024} disabled={busy} /></label>
         {enabled && codeInput('Authenticator code')}
-        <button disabled={busy} style={submitStyle}>Change password</button>
+        <button className="btn-secondary" disabled={busy} style={submitStyle}>Change password</button>
       </form>
     </section>
   </>;

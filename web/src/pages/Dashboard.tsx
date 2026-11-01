@@ -27,7 +27,7 @@ export function Dashboard({ mode = 'home', platformAdmin = false }: { mode?: 'ho
     </header>
     <StateNotice state={organizations.state} onRetry={organizations.reload} />
     {organizations.state === 'ready' && !org && (platformAdmin
-      ? <EmptyNotice>No organization yet. Hosts and clusters belong to an organization: <Link to="/settings?section=administration">create one in Settings → Administration</Link> and name yourself its first administrator.</EmptyNotice>
+      ? <EmptyNotice>No organization yet. Hosts and clusters belong to an organization: <Link to="/settings/administration">create one in Settings → Administration</Link> and name yourself its first administrator.</EmptyNotice>
       : <EmptyNotice>No host access yet. Ask an administrator to add your account.</EmptyNotice>)}
     {org && <Fleet key={`${org.id}-${mode}`} org={org.id} mode={mode} configure={canConfigure(org.role)} enroll={canEnroll(org.role)} />}
   </div>;
