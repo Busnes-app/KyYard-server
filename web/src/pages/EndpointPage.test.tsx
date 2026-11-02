@@ -528,7 +528,7 @@ it('auto-checks only workloads in granted namespaces; others check on demand', a
   expect(urls.filter((u) => u.endsWith('/coredns/updates/check'))).toHaveLength(1);
 });
 
-function clusterRoutes(role: string, capabilities: string[], settled: { done: boolean } = { done: false }) {
+function clusterRoutes(role: string, capabilities: string[], settled: { done: boolean } = { done: false }, read: Promise<void> = Promise.resolve()) {
   const now = new Date().toISOString();
   const cluster = { ...endpoint, runtime: 'kubernetes', capabilities, deploy_namespaces: ['shop'] };
   const kubernetes = { nodes: [], namespaces: ['shop'], workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web', desired: 1, ready: 1, updated: 1, images: ['ghcr.io/acme/web:2'], paused: false }], pods: [], services: [], claims: [] };
@@ -540,7 +540,7 @@ function clusterRoutes(role: string, capabilities: string[], settled: { done: bo
     const url = String(input);
     urls.push(url);
     if (url.endsWith('/updates/check')) return json({ workload: 'shop/deployment/web', verdict: 'update_available' });
-    if (url.endsWith('/configuration')) return json(configuration);
+    if (url.endsWith('/configuration')) { await read; return json(configuration); }
     if (url.endsWith('/apply')) return json({ id: 'w1', action: 'workload.apply', outcome: '' }, 202);
     if (url.endsWith('/commands/w1')) return json({ id: 'w1', action: 'workload.apply', outcome: settled.done ? 'succeeded' : '' });
     if (url.endsWith('/inventory')) return json({ endpoint_id: 'ep_1', state: 'active', generation: 1, observed_at: now, received_at: now, snapshot });
@@ -550,19 +550,28 @@ function clusterRoutes(role: string, capabilities: string[], settled: { done: bo
   }));
   return urls;
 }
-it('explains a pending workload update, locks every Update button and reports the settled command', async () => {
+it('explains a pending workload update in its row, locks every Update button and reports the settled command there', async () => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
   const settled = { done: false };
-  clusterRoutes('organization_admin', ['kubernetes.inventory', 'kubernetes.workloads'], settled);
+  let release = () => {};
+  clusterRoutes('organization_admin', ['kubernetes.inventory', 'kubernetes.workloads'], settled, new Promise<void>((resolve) => { release = resolve; }));
   render(<EndpointPage org="a" endpoint="ep_1" />);
   const update = await screen.findByRole('button', { name: 'Update image' });
   await waitFor(() => expect((update as HTMLButtonElement).disabled).toBe(false));
+  // #143: progress and outcome sit in the row that started them, as a word-and-dot status.
+  const row = update.closest('tr') as HTMLElement;
+  const line = () => within(row).getAllByRole('status').find((s) => s.classList.contains('ky-row-status'));
   await act(async () => { fireEvent.click(update); });
-  expect(screen.getAllByRole('status').some((s) => s.textContent === 'Updating shop/web; waiting for the cluster agent. Do not retry while its outcome is unknown.')).toBe(true);
+  expect(line()?.textContent).toBe('In progress Reading current settings and submitting the workload image update…');
+  expect(line()?.querySelector('.ky-status')?.getAttribute('data-ky-status')).toBe('warning');
+  await act(async () => { release(); });
+  await waitFor(() => expect(line()?.textContent).toBe('In progress Updating shop/web; waiting for the cluster agent. Do not retry while its outcome is unknown.'));
   for (const b of screen.getAllByRole('button', { name: 'Update image' })) expect((b as HTMLButtonElement).disabled).toBe(true);
   settled.done = true;
   await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-  expect(screen.getAllByRole('status').some((s) => s.textContent === 'shop/web · Apply done.')).toBe(true);
+  expect(line()?.textContent).toBe('Updated shop/web · Apply done.');
+  expect(line()?.querySelector('.ky-status')?.getAttribute('data-ky-status')).toBe('success');
+  expect(screen.getAllByRole('status').filter((s) => s.textContent?.includes('shop/web'))).toEqual([line()]);
 });
 it.each([['viewer', ['kubernetes.inventory', 'kubernetes.workloads']], ['organization_admin', ['kubernetes.inventory']]])('shows no Update column and checks nothing for %s with %j', async (role, capabilities) => {
   const urls = clusterRoutes(role, capabilities);

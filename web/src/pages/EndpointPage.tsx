@@ -17,12 +17,16 @@ import { EmptyNotice, StateNotice } from '../components/StateNotice';
 import { containerPath, envPath, runPath } from '../router';
 import { canConfigure, canEnroll, canRunContainers, canExec, useTenantResource, type Container, type DirectCommand, type Endpoint, type Inventory, type MemberOrganization, type Sample, type Workload } from '../tenant';
 import { displayName, endpointTone } from '../components/Endpoints';
-import { Status } from '../components/Status';
+import { Status, type Tone } from '../components/Status';
 import { IPCell, PortSummary, StateCell } from '../components/ContainerCells';
 import { KubernetesCluster } from '../components/KubernetesCluster';
 import { commandLine } from '../components/workloadTexts';
 import { ago, attachments, bytes, containerStatus, needsAttention, uptime, useNow } from '../components/containerFacts';
 
+
+const ref = (w: Workload) => `${w.namespace}/${w.kind}/${w.name}`;
+const OUTCOME_TONES: Record<string, Tone> = { succeeded: 'success', failed: 'danger', denied: 'danger' };
+const OUTCOME_WORDS: Record<string, string> = { succeeded: 'Updated', failed: 'Failed', denied: 'Refused', timed_out: 'No answer' };
 
 // Freshness is shown from received_at (server clock); observed_at is the agent's clock and is
 // flagged when it disagrees by more than five minutes.
@@ -50,12 +54,24 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
 
   const [workloadSent, setWorkloadSent] = useState<{ base: string; workload: Workload; command: DirectCommand } | null>(null);
   const lastWorkload = workloadSent?.base === base ? workloadSent : null;
-  const { command: workloadCommand, error: workloadPollError } = useCommand(base, lastWorkload?.command ?? null, (done) => {
-    inventory.reload(); commands.reload();
-    if (lastWorkload) setStatus(`${displayName(lastWorkload.workload.namespace)}/${displayName(lastWorkload.workload.name)} · ${commandLine(done)}`);
-  });
+  const { command: workloadCommand, error: workloadPollError } = useCommand(base, lastWorkload?.command ?? null, () => { inventory.reload(); commands.reload(); });
   const workloadUpdate = useWorkloadImageUpdate(base, (command, workload) => setWorkloadSent({ base, workload, command }));
   const workloadPending = workloadUpdate.busy || workloadUpdate.lost || (!!workloadCommand && (!workloadCommand.outcome || workloadCommand.outcome === 'unknown'));
+  // The row whose Update image button started the update shows its progress and outcome (#143);
+  // failures that need attention before a retry stay page alerts.
+  const [workloadStarted, setWorkloadStarted] = useState<{ base: string; workload: Workload } | null>(null);
+  const startedWorkload = workloadStarted?.base === base ? workloadStarted.workload : null;
+  const startWorkloadUpdate = { ...workloadUpdate, update: (w: Workload) => { setWorkloadStarted({ base, workload: w }); setWorkloadSent(null); return workloadUpdate.update(w); } };
+  const workloadLine = (w: Workload) => {
+    if (!startedWorkload || ref(startedWorkload) !== ref(w)) return null;
+    const name = `${displayName(w.namespace)}/${displayName(w.name)}`;
+    const sent = !!lastWorkload && ref(lastWorkload.workload) === ref(w) && workloadCommand;
+    const line = workloadUpdate.busy ? <><Status tone="warning">In progress</Status> Reading current settings and submitting the workload image update…</>
+      : sent && workloadCommand.outcome ? <><Status tone={OUTCOME_TONES[workloadCommand.outcome] ?? 'warning'}>{OUTCOME_WORDS[workloadCommand.outcome] ?? 'Unknown'}</Status> {name} · {commandLine(workloadCommand)}</>
+      : sent && !workloadPollError ? <><Status tone="warning">In progress</Status> Updating {name}; waiting for the cluster agent. Do not retry while its outcome is unknown.</>
+      : null;
+    return <p role="status" className="ky-row-status">{line}</p>;
+  };
 
   // The agent reports on its own schedule; poll while the page is mounted and visible so the
   // status line and usage column follow newer generations, and a host with no report yet fills
@@ -143,11 +159,8 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
       </header>
       {imageUpdate.busy && <p role="status">Reading current settings and submitting the image update…</p>}
       {imageUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{imageUpdate.error}</p>}
-      {workloadUpdate.busy && <p role="status">Reading current settings and submitting the workload image update…</p>}
       {workloadUpdate.error && <p role="alert" className="dr-alert dr-alert-error">{workloadUpdate.error}</p>}
-      {workloadCommand && lastWorkload && !workloadCommand.outcome && (workloadPollError
-        ? <p role="alert" className="dr-alert dr-alert-error">Could not read the command result. Check the cluster's Activity tab before trying again.</p>
-        : <p role="status">Updating {displayName(lastWorkload.workload.namespace)}/{displayName(lastWorkload.workload.name)}; waiting for the cluster agent. Do not retry while its outcome is unknown.</p>)}
+      {workloadCommand && lastWorkload && !workloadCommand.outcome && workloadPollError && <p role="alert" className="dr-alert dr-alert-error">Could not read the command result. Check the cluster's Activity tab before trying again.</p>}
       {imageCommand && lastImage && <section className="panel" aria-label="Last image update">
         <h2>Image update · {displayName(lastImage.container.name)}</h2>
         {imageCommand.outcome ? <CommandResult command={imageCommand} org={org} endpoint={endpoint} current={lastImage.container.id} />
@@ -180,7 +193,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
         <>
           {shown !== 'containers' && statusLine}
           {cluster && shown === 'cluster' && e && status && <p role="status">{status}</p>}
-          {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} role={role} onStatus={setStatus} onRefresh={() => { inventory.reload(); commands.reload(); }} checkUpdate={checkWorkload} imageUpdate={workloadUpdate} workloadPending={workloadPending} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
+          {cluster && shown === 'cluster' && e && (inv.snapshot.kubernetes ? <KubernetesCluster key={base} org={org} base={base} endpoint={e} inventory={inv.snapshot.kubernetes} instances={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} admin={canEnroll(role)} onChanged={details.reload} role={role} onStatus={setStatus} onRefresh={() => { inventory.reload(); commands.reload(); }} checkUpdate={checkWorkload} imageUpdate={startWorkloadUpdate} workloadPending={workloadPending} workloadLine={workloadLine} /> : <EmptyNotice>The agent has not reported the cluster yet.</EmptyNotice>)}
           {shown === 'projects' && <><StateNotice state={ownership.state} onRetry={ownership.reload} /><ComposeProjects ownership={ownership.state === 'ready' && Array.isArray(ownership.data) ? ownership.data : null} containers={inv.snapshot.containers} truncated={inv.snapshot.truncated?.includes('containers') ?? false} onSelect={(name) => {
             setProjectFilter({ base, name }); setView('containers');
             requestAnimationFrame(() => document.getElementById('endpoint-containers')?.focus());
