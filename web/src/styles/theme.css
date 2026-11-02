@@ -653,6 +653,9 @@ dialog::backdrop { background: rgb(0 0 0 / .65); }
 .ky-drawer-update h3 { margin-bottom: 8px; color: var(--ink); font-size: var(--ky-type-meta); font-weight: 600; }
 .ky-drawer > .btn { justify-self: start; }
 .ky-image-update { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ky-row-status { margin: 8px 0 0; max-width: 34ch; font-size: 13px; line-height: 1.45; }
+.ky-row-status:empty { display: none; }
+.ky-row-status > .ky-status { margin-right: 6px; vertical-align: middle; }
 .ky-row-actions { width: 1%; text-align: right; }
 .ky-menu-trigger { min-height: 32px; width: 32px; padding: 0; background: transparent; color: var(--ink); border: 1px solid transparent; border-radius: 6px; }
 .ky-menu-trigger:hover, .ky-menu-trigger[aria-expanded="true"] { background: var(--panel-hover); border-color: var(--line); color: var(--ink-strong); opacity: 1; }
