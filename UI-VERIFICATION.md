@@ -125,3 +125,8 @@ table rows with unhealthy/exited counts. Captured at 1440×900 (light, dark) and
 against a disposable SQLite server whose local Docker endpoint is a read-only fake Engine
 (12 synthetic containers); no real host containers were read or changed. Before and after images
 are in `docs/ui-suite-2026-10-31/screenshots/`.
+
+## Stale tab after an upgrade — 2026-11-02
+
+The ky-ui update notice ("<app> was updated. Reload to use the new version.", Reload and Dismiss) is started from `web/src/main.tsx`; the entry document is never reused from a cache. Not captured in this repository: the notice is the shared ky-ui component, captured end to end (a real server upgrade under an open tab, 1440×900, Busnes Light and Dark) in KyIdentity and KyPost (`docs/ui-stale-tab-2026-11-02/`), and checked by ky-ui's `browser/update.spec.js` under a strict CSP at 390 and 1280 px. `check-vendor.mjs` passes and the web tests and build pass with Node 26.12.1.
+

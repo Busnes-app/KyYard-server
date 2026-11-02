@@ -190,3 +190,15 @@ test('the shell follows the suite frame', async ({ page }, testInfo) => {
     expect((await page.locator('main h1').first().boundingBox()).x).toBe(272);
   }
 });
+
+test('the service worker lets the update check of the shell reach the server', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  // ky-ui's update notice re-reads "/" with cache: 'no-store'. A cached shell would keep the Date
+  // it was cached with and hide a deploy; the server's answer carries the current Date.
+  const served = () => page.evaluate(async () => (await fetch('/', { cache: 'no-store' })).headers.get('date'));
+  const first = await served();
+  await expect.poll(served, { timeout: 5000 }).not.toBe(first);
+});
