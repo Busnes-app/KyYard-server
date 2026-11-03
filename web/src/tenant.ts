@@ -56,6 +56,10 @@ export interface AgentTokenIssue { token: string; agent_token: AgentToken; discl
 // Mirrors permissions.Allows(role, AgentTokensManage): an operator-scope token acts unattended,
 // so only the organization administrator hands one out.
 export const canManageAgentTokens = (role: string | undefined) => role === 'organization_admin';
+export interface StatusFeed { id: string; organization_id: string; name: string; created_by: string; created_at: string; last_used_at?: string; last_ip?: string }
+export interface StatusFeedIssue { url: string; status_feed: StatusFeed; disclosure: string }
+// Mirrors permissions.Allows(role, StatusFeedsManage): a feed URL is a bearer anyone can paste.
+export const canManageStatusFeeds = (role: string | undefined) => role === 'organization_admin';
 
 export interface Registry { id: string; host: string; name: string; username: string; has_credential: boolean; allow_private: boolean }
 // private_registries_enabled is the operator's KY_REGISTRY_ALLOW_PRIVATE, read-only here.

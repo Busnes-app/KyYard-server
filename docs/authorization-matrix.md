@@ -95,6 +95,14 @@ A service token authenticates as `service:<id>` with the fixed role `pulse_reade
 
 An agent token is a service token whose `scope` is `mcp:read` or `mcp:operate`; kyPulse tokens are `pulse`. It authenticates only at `/mcp` (never `/api`, and a kyPulse token never at `/mcp`) as `service:<id>`, and `run` reads its role from the scope inside every transaction (`agent_reader`, `agent_operator`). The MCP tools are narrower than the role: no tool stops, removes, scales, executes, configures or plans, and `apply_update` takes only a live plan that pulls a new image at the instance's running revision and drops no mount. Operations write the store's own success rows plus an `mcp.<tool>` row; every log read writes `mcp.logs_read`; other reads join the hourly `service_token.reads` summary; refusals write `denied`. A token unused for 90 days is refused and revoked at lookup (`agent_token.expired`), and an hourly sweep revokes the rest.
 
+### Status feeds (*implemented*)
+
+| Action | OA | EA | Op | Dev | RO | Secret | Audit |
+|---|---|---|---|---|---|---|---|
+| `organization.status_feeds.manage` | ✓ | – | – | – | – | the feed URL, once, in the create response | `status_feed.create` / `status_feed.revoke`, success/denied/failure, target = feed id |
+
+A status feed is its own credential (`status_feeds`, `kyy_feed_` + 64 hex, stored as SHA-256), never a service token: it authenticates only at `GET /api/feeds/{token}/down.rss`, and no session, kyPulse or agent token reads that route. The token is the whole authorization and reaches exactly one thing: the organization, environment, endpoint, container and node names and down conditions of that organization's offline endpoints, unhealthy, restarting, dead or exited containers and not-ready nodes; never an image, address, port, label, mount or status text. It holds no tenant role, so no other route accepts it. Reads are not audited; `last_used_at` and `last_ip` are stamped at most once a minute. Management needs a person's session: no service role holds the action, so a kyPulse token is refused.
+
 ### Containers, images, networks, volumes (M4–M5)
 
 | Action | OA | EA | Op | Dev | RO | Secret | Audit |

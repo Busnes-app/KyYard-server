@@ -20,6 +20,7 @@ it('hides the service tokens panel from an operator', async () => {
   render(<Access org="a" />);
   expect(await screen.findByRole('heading', { name: 'Access' })).toBeTruthy();
   expect(screen.queryByRole('heading', { name: 'Service tokens' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Status feeds (RSS)' })).toBeNull();
 });
 
 // Pair kyPulse and registry access live here, not under Members (people only).
@@ -28,5 +29,6 @@ it('shows service tokens with Pair kyPulse to an organization administrator', as
   render(<Access org="a" />);
   expect(await screen.findByRole('heading', { name: 'Service tokens' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Pair kyPulse' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Status feeds (RSS)' })).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Members' }).getAttribute('href')).toBe('/organizations/a/members');
 });

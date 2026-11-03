@@ -15,6 +15,36 @@ token here stops it immediately, but that is only one side: unpair it in kyPulse
 each product's own admin makes their own half of the change. `GET /healthz` reports the suite
 health contract (`ky.health/1`) for external monitors, unrelated to a kyPulse pairing.
 
+### Down-monitoring RSS feed
+
+An organization administrator can create a status feed on the organization's **Access** page
+under **Status feeds (RSS)**. Each feed is a secret RSS 2.0 URL that needs no sign-in, shown once:
+
+```text
+https://<your host>/api/feeds/kyy_feed_<64 hex>/down.rss
+```
+
+It has one item for each thing that is down now in that organization, across all environments:
+
+- an endpoint that is offline (it had connected, and its agent stopped answering);
+- a Docker container that is unhealthy, restarting or dead, or that exited although its restart
+  policy is `always` or `unless-stopped` (a container you stopped on purpose with that policy
+  shows too);
+- a Kubernetes node that is not ready.
+
+Only a connected endpoint's containers and nodes are read; an offline endpoint is one item.
+Pending, never-connected and revoked endpoints are not monitored. An item's `guid` stays the
+same while the same thing is down in the same way, so a reader notifies once per incident; its
+link opens the endpoint in KyYard. An empty feed means nothing is down. If the URL cannot be
+fetched at all, KyYard itself is down. One read covers 200 endpoints and 200 items; past that the
+channel description says so.
+
+Anyone with the URL sees the organization, environment, endpoint, container and node names and
+what is down, so give it only to your monitoring. The feed never carries images, addresses,
+ports, labels or log text. Revoking a feed stops its URL immediately. A wrong or revoked URL answers 404, and
+reads are limited to 60 a minute per address and 30 a minute per feed. The **Access** page shows
+when each feed was last read and from where.
+
 ### Connect an AI agent
 
 KyYard serves MCP (Streamable HTTP, stateless) at `https://<your host>/mcp` for AI agents such as

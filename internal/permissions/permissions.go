@@ -67,6 +67,10 @@ const (
 	// tokens. An operator-scope token restarts containers and applies updates unattended, so
 	// only the organization administrator hands one out.
 	AgentTokensManage Action = "organization.agent_tokens.manage"
+	// StatusFeedsManage creates, lists and revokes the organization's status feeds: secret
+	// URLs that anyone holding one reads the names of down endpoints, containers and nodes
+	// from, so only the organization administrator hands one out.
+	StatusFeedsManage Action = "organization.status_feeds.manage"
 	// SuiteRead reads the suite runner's status, catalog, plan and operations.
 	SuiteRead Action = "suite.read"
 	// SuiteManage installs, uninstalls, unmanages and upgrades suite apps through the runner.
@@ -94,7 +98,7 @@ func Allows(role string, action Action) bool {
 	switch role {
 	case "organization_admin":
 		switch action {
-		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, ContainerConfigure, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage, ServiceTokensManage, AgentTokensManage:
+		case ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, ApplicationDeploy, ApplicationPolicy, ApplicationMigrate, ContainerExec, ContainerConfigure, OrganizationRead, MembersManage, EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy, ImagePull, ImageDestroy, ContainerLogs, RegistryRead, RegistryManage, ServiceTokensManage, AgentTokensManage, StatusFeedsManage:
 			return true
 		}
 	case "environment_admin":

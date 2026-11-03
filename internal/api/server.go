@@ -438,6 +438,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/organizations/{organization}/agent-tokens", s.tenantRoute(s.handleCreateAgentToken))
 	s.mux.HandleFunc("PATCH /api/organizations/{organization}/agent-tokens/{token}", s.tenantRoute(s.handleSetAgentTokenScope))
 	s.mux.HandleFunc("DELETE /api/organizations/{organization}/agent-tokens/{token}", s.tenantRoute(s.handleRevokeAgentToken))
+	s.mux.HandleFunc("GET /api/organizations/{organization}/status-feeds", s.tenantRoute(s.handleStatusFeeds))
+	s.mux.HandleFunc("POST /api/organizations/{organization}/status-feeds", s.tenantRoute(s.handleCreateStatusFeed))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/status-feeds/{feed}", s.tenantRoute(s.handleRevokeStatusFeed))
+	// Public: the token in the path is the credential (status_feed_handlers.go).
+	s.mux.HandleFunc("GET /api/feeds/{token}/down.rss", s.handleStatusFeed)
 	// MCP for AI agents (mcp.go): agent tokens only, never a browser; the skill is public.
 	s.mux.Handle("/mcp", s.newMCPHandler())
 	s.mux.HandleFunc("GET /agent/skills/kyyard/SKILL.md", s.handleAgentSkill)

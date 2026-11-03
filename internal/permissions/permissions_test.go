@@ -160,7 +160,7 @@ func TestAgentRolesHoldExactlyTheirActions(t *testing.T) {
 	all := []Action{ApplicationAdopt, ApplicationRelease, SecretReveal, ApplicationRead, ApplicationImport, ApplicationEdit, ApplicationDestroy, PlatformAdmin, OrganizationRead, MembersManage,
 		EnvironmentRead, EnvironmentCreate, EnvironmentUpdate, EnvironmentDelete, AuditRead, EndpointRead, EndpointEnroll, EndpointUpdate, EndpointRevoke, ContainerOperate, ContainerDestroy,
 		ImagePull, ImageDestroy, ContainerLogs, ContainerExec, ContainerConfigure, ApplicationDeploy, RegistryRead, RegistryManage, ApplicationPolicy, ApplicationMigrate,
-		ServiceTokensManage, AgentTokensManage, SuiteRead, SuiteManage}
+		ServiceTokensManage, AgentTokensManage, StatusFeedsManage, SuiteRead, SuiteManage}
 	reader := []Action{OrganizationRead, EnvironmentRead, EndpointRead, ContainerLogs, ApplicationRead}
 	want := map[string][]Action{
 		RoleAgentReader:   reader,
@@ -175,5 +175,15 @@ func TestAgentRolesHoldExactlyTheirActions(t *testing.T) {
 	}
 	if !Allows("organization_admin", AgentTokensManage) || Allows("environment_admin", AgentTokensManage) || Allows("operator", AgentTokensManage) || Allows(RolePulseReader, AgentTokensManage) {
 		t.Fatal("agent tokens are managed by organization administrators only")
+	}
+}
+
+// A status feed URL is a bearer anyone can paste into a reader, so only the organization
+// administrator mints one, and no service principal holds the action.
+func TestStatusFeedsAreManagedByOrganizationAdministratorsOnly(t *testing.T) {
+	for _, role := range []string{"organization_admin", "environment_admin", "operator", "developer", "read_only", RolePulseReader, RoleAgentReader, RoleAgentOperator} {
+		if got := Allows(role, StatusFeedsManage); got != (role == "organization_admin") {
+			t.Errorf("Allows(%s, StatusFeedsManage) = %t", role, got)
+		}
 	}
 }
