@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 const (
 	// feedPerIP is checked before the token is looked up, so guessing costs the guesser;
-	// feedPerToken bounds what one leaked URL can make the server decode.
+	// feedPerToken bounds what one leaked URL can make the server decode. It is checked after
+	// a successful lookup and keyed on the feed ID, so caller input never mints a window.
 	feedPerIP     = 60
 	feedPerToken  = 30
 	feedWindow    = time.Minute
@@ -118,13 +118,18 @@ func (s *Server) handleStatusFeed(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if !s.allowAttempt("status-feed-token:"+crypto.SHA256Hex([]byte(token)), feedPerToken, feedWindow) {
-		s.writeError(w, http.StatusTooManyRequests, "Too many feed reads; wait a minute")
-		return
+	// The per-feed window lives with the account-keyed ones: feeds are bounded per
+	// organization, so it cannot crowd out other routes' per-address windows.
+	allow := func(feedID string) bool {
+		return s.allowAccountAttempt("status-feed-id:"+feedID, feedPerToken, feedWindow)
 	}
-	report, err := s.store.Tenancy().ReadStatusFeed(r.Context(), token, s.requestIP(r))
+	report, err := s.store.Tenancy().ReadStatusFeed(r.Context(), token, s.requestIP(r), allow)
 	if errors.Is(err, store.ErrForbidden) {
 		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, store.ErrStatusFeedThrottled) {
+		s.writeError(w, http.StatusTooManyRequests, "Too many feed reads; wait a minute")
 		return
 	}
 	if err != nil {

@@ -33,7 +33,7 @@ It has one item for each thing that is down now in that organization, across all
 - a Kubernetes node that is not ready.
 
 Only a connected endpoint's containers and nodes are read; an offline endpoint is one item.
-Pending, never-connected and revoked endpoints are not monitored. An item's `guid` stays the
+Pending, never-connected and revoked endpoints are not monitored. An item's `guid` is opaque and stays the
 same while the same thing is down in the same way, so a reader notifies once per incident; its
 link opens the endpoint in KyYard. An empty feed means nothing is down. If the URL cannot be
 fetched at all, KyYard itself is down. One read covers 200 endpoints and 200 items; past that the
