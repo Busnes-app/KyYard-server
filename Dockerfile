@@ -3,7 +3,7 @@
 # Stage 1: Go binaries. The frontend is the committed web/dist that CI rebuilds and checks
 # against source, embedded as is, so the image ships exactly the checked bytes. The tag must
 # match go.mod's toolchain line (CI checks); only what the build reads enters this stage.
-FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS backend-builder
+FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS backend-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
