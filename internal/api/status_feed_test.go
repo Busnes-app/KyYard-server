@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -186,7 +187,7 @@ func TestStatusFeedShowsOnlyEscapedNames(t *testing.T) {
 	hostile := []string{`]]><evil/>`, `a&b"c'd<e>`, "<![CDATA[x]]>"}
 	var containers []protocol.Container
 	for i, name := range hostile {
-		containers = append(containers, protocol.Container{ID: fmt.Sprintf("c%d", i), Name: "/" + name, State: "dead",
+		containers = append(containers, protocol.Container{ID: fmt.Sprintf("%063x%d", 0xc0ffee, i), CreatedAt: time.Date(2026, 9, 14, 7, 30, 0, 0, time.UTC), Name: "/" + name, State: "dead",
 			Image: "10.9.8.7:5000/private/app:SECRET-TAG", Status: "Exited STATUS-TEXT", Labels: map[string]string{"password": "LABEL-SECRET"},
 			Ports: []protocol.Port{{HostIP: "192.168.77.5", Host: 8443, Container: 443, Protocol: "tcp"}}, Networks: []string{"backnet"},
 			NetworkAttachments: []protocol.NetworkAttachment{{Name: "backnet", IP: "172.31.4.4"}}, Mounts: []protocol.Mount{{Kind: protocol.MountBind, Source: "/srv/MOUNT-SECRET", Target: "/data"}}})
@@ -205,7 +206,7 @@ func TestStatusFeedShowsOnlyEscapedNames(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("feed: %d %s", rec.Code, body)
 	}
-	for _, leak := range []string{"10.9.8.7", "SECRET-TAG", "private/app", "STATUS-TEXT", "LABEL-SECRET", "password", "192.168.77.5", "8443", "172.31.4.4", "backnet", "MOUNT-SECRET", "<evil", "<![CDATA[x"} {
+	for _, leak := range []string{fmt.Sprintf("%x", 0xc0ffee), "2026-09-14", "07:30:00", "10.9.8.7", "SECRET-TAG", "private/app", "STATUS-TEXT", "LABEL-SECRET", "password", "192.168.77.5", "8443", "172.31.4.4", "backnet", "MOUNT-SECRET", "<evil", "<![CDATA[x"} {
 		if strings.Contains(body, leak) {
 			t.Errorf("feed carries %q:\n%s", leak, body)
 		}
@@ -258,17 +259,29 @@ func TestServiceTokenCannotManageStatusFeeds(t *testing.T) {
 	}
 }
 
-// One address is limited across guesses, so the endpoint is no token oracle; one URL is
-// limited across addresses, so a leaked URL bounds what it costs the server.
+// One address is limited across guesses, so the endpoint is no token oracle; one feed is
+// limited across addresses, so a leaked URL bounds what it costs the server. The per-feed
+// window is keyed on the feed found, never on caller input: a case variant of the token is
+// the same 404 as a guess, not a second budget, and guesses add no per-token window.
 func TestStatusFeedReadsAreRateLimited(t *testing.T) {
-	srv, _, _, _, _ := tenantAdminFixture(t)
+	srv, _, cookie, csrf, org := tenantAdminFixture(t)
+	w := adminRequest(srv, cookie, csrf, "POST", "/api/organizations/"+org+"/status-feeds", map[string]string{"name": "monitor"})
+	var created struct{ URL string }
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body)
+	}
+	u, _ := url.Parse(created.URL)
+	secret := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/api/feeds/kyy_feed_"), "/down.rss")
+	read := func(path, addr string) int {
+		req := httptest.NewRequest("GET", path, nil)
+		req.RemoteAddr = addr
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
 	limitedAfter := func(path func(int) string, addr func(int) string) int {
 		for i := 0; i < 100; i++ {
-			req := httptest.NewRequest("GET", path(i), nil)
-			req.RemoteAddr = addr(i)
-			w := httptest.NewRecorder()
-			srv.ServeHTTP(w, req)
-			if w.Code == http.StatusTooManyRequests {
+			if read(path(i), addr(i)) == http.StatusTooManyRequests {
 				return i
 			}
 		}
@@ -278,8 +291,28 @@ func TestStatusFeedReadsAreRateLimited(t *testing.T) {
 	if n := limitedAfter(guess, func(int) string { return "198.51.100.7:1000" }); n != 60 {
 		t.Fatalf("guesses from one address limited after %d, want 60", n)
 	}
-	one := func(int) string { return guess(1 << 20) }
-	if n := limitedAfter(one, func(i int) string { return fmt.Sprintf("203.0.113.%d:1000", i) }); n != 30 {
-		t.Fatalf("one URL from many addresses limited after %d, want 30", n)
+	// Guesses from many addresses are 404s and leave no per-token window behind.
+	for i := 0; i < 50; i++ {
+		if code := read(guess(1<<20+i), fmt.Sprintf("192.0.2.%d:1000", i)); code != http.StatusNotFound {
+			t.Fatalf("guess %d: %d, want 404", i, code)
+		}
+	}
+	for _, k := range api.AttemptKeysForTest(srv) {
+		if strings.HasPrefix(k, "status-feed-token:") {
+			t.Fatalf("a guess created limiter key %q", k)
+		}
+	}
+	upper := "/api/feeds/kyy_feed_" + strings.ToUpper(secret) + "/down.rss"
+	if code := read(upper, "203.0.113.200:1000"); code != http.StatusNotFound {
+		t.Fatalf("upper-case variant of the token: %d, want 404", code)
+	}
+	if n := limitedAfter(func(int) string { return u.Path }, func(i int) string { return fmt.Sprintf("203.0.113.%d:1000", i) }); n != 30 {
+		t.Fatalf("one feed from many addresses limited after %d, want 30", n)
+	}
+	if code := read(upper, "203.0.113.201:1000"); code != http.StatusNotFound {
+		t.Fatalf("upper-case variant once the feed is limited: %d, want 404", code)
+	}
+	if feedKeys := slices.DeleteFunc(api.AccountKeysForTest(srv), func(k string) bool { return !strings.HasPrefix(k, "status-feed-id:feed_") }); len(feedKeys) != 1 {
+		t.Fatalf("per-feed windows: %q, want one keyed on the feed ID", feedKeys)
 	}
 }

@@ -334,7 +334,7 @@ type TenancyStore interface {
 	CreateStatusFeed(ctx context.Context, access TenantAccess, name string) (*StatusFeedIssue, error)
 	ListStatusFeeds(ctx context.Context, access TenantAccess) ([]StatusFeed, error)
 	RevokeStatusFeed(ctx context.Context, access TenantAccess, id string) error
-	ReadStatusFeed(ctx context.Context, token, ip string) (*StatusReport, error)
+	ReadStatusFeed(ctx context.Context, token, ip string, allow func(feedID string) bool) (*StatusReport, error)
 	ListRegistries(ctx context.Context, access TenantAccess) ([]Registry, error)
 	PutRegistry(ctx context.Context, access TenantAccess, in RegistryInput, key []byte, privateAllowed bool) (*Registry, error)
 	DeleteRegistry(ctx context.Context, access TenantAccess, id string) error

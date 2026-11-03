@@ -71,15 +71,30 @@ func TestStatusFeedLifecycle(t *testing.T) {
 		t.Fatal("a denied revoke was not audited")
 	}
 
-	report, err := ts.ReadStatusFeed(ctx, issue.Token, "10.0.0.9")
+	// allow sees the found feed's ID, never caller input; a refusal reads and stamps nothing.
+	var asked []string
+	refuse := func(id string) bool { asked = append(asked, id); return false }
+	if _, err := ts.ReadStatusFeed(ctx, issue.Token, "10.0.0.8", refuse); !errors.Is(err, ErrStatusFeedThrottled) || len(asked) != 1 || asked[0] != issue.ID {
+		t.Fatalf("refused read: %v, allow asked %q", err, asked)
+	}
+	if list, _ := ts.ListStatusFeeds(ctx, org); list[0].LastUsedAt != nil {
+		t.Fatalf("a refused read was stamped: %+v", list[0])
+	}
+	if _, err := ts.ReadStatusFeed(ctx, strings.ToUpper(issue.Token), "", refuse); !errors.Is(err, ErrForbidden) || len(asked) != 1 {
+		t.Fatalf("a bad token reached allow: %v %q", err, asked)
+	}
+	report, err := ts.ReadStatusFeed(ctx, issue.Token, "10.0.0.9", func(string) bool { return true })
 	if err != nil || len(report.Items) != 0 || report.OrganizationID != a.OrganizationID {
 		t.Fatalf("empty organization: %+v %v", report, err)
 	}
 	if list, _ := ts.ListStatusFeeds(ctx, org); list[0].LastUsedAt == nil || list[0].LastIP != "10.0.0.9" {
 		t.Fatalf("read not stamped: %+v", list[0])
 	}
-	for _, bad := range []string{"", issue.Token[len(StatusFeedPrefix):], issue.Token + "00", StatusFeedPrefix + strings.Repeat("0", 64)} {
-		if _, err := ts.ReadStatusFeed(ctx, bad, ""); !errors.Is(err, ErrForbidden) {
+	// Hex decoding takes either case, so a case variant of the token would name the same feed;
+	// only the canonical lowercase form opens it.
+	secret := issue.Token[len(StatusFeedPrefix):]
+	for _, bad := range []string{"", secret, issue.Token + "00", StatusFeedPrefix + strings.Repeat("0", 64), StatusFeedPrefix + strings.ToUpper(secret), StatusFeedPrefix + upperFirstLetter(secret), strings.ToUpper(issue.Token)} {
+		if _, err := ts.ReadStatusFeed(ctx, bad, "", nil); !errors.Is(err, ErrForbidden) {
 			t.Errorf("ReadStatusFeed(%q) = %v, want ErrForbidden", bad, err)
 		}
 	}
@@ -89,7 +104,7 @@ func TestStatusFeedLifecycle(t *testing.T) {
 	if !audited(t, st, AuditStatusFeedRevoke, issue.ID, "success", issue.Token) {
 		t.Fatal("feed revocation was not audited")
 	}
-	if _, err := ts.ReadStatusFeed(ctx, issue.Token, ""); !errors.Is(err, ErrForbidden) {
+	if _, err := ts.ReadStatusFeed(ctx, issue.Token, "", nil); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("a revoked feed still reads: %v", err)
 	}
 	if err := ts.RevokeStatusFeed(ctx, org, issue.ID); !errors.Is(err, ErrNotFound) {
@@ -142,7 +157,7 @@ func TestStatusFeedReportsWhatIsDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := ts.ReadStatusFeed(ctx, issue.Token, "")
+	report, err := ts.ReadStatusFeed(ctx, issue.Token, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,10 +182,35 @@ func TestStatusFeedReportsWhatIsDown(t *testing.T) {
 	}
 
 	// The key is stable across reads, so a reader notifies once per incident.
-	again, _ := ts.ReadStatusFeed(ctx, issue.Token, "")
+	again, _ := ts.ReadStatusFeed(ctx, issue.Token, "", nil)
 	for i := range again.Items {
 		if again.Items[i].Key != report.Items[i].Key {
 			t.Fatalf("keys changed between reads: %q %q", again.Items[i].Key, report.Items[i].Key)
+		}
+	}
+	// The key is opaque: no endpoint or container ID, no creation time, and distinct per item.
+	// Another feed of the same organization keys the same incidents differently.
+	other, err := ts.CreateStatusFeed(ctx, org, "second monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ts.ReadStatusFeed(ctx, other.Token, "", nil)
+	if err != nil || len(second.Items) != len(report.Items) {
+		t.Fatalf("second feed: %+v %v", second, err)
+	}
+	keys := map[string]bool{}
+	for i, it := range report.Items {
+		for _, leak := range []string{live, offline, "c-", created.Format(time.RFC3339), "2026-10-30T12:00:00Z"} {
+			if strings.Contains(it.Key, leak) {
+				t.Errorf("key %q carries %q", it.Key, leak)
+			}
+		}
+		if keys[it.Key] || it.Key == "" {
+			t.Errorf("key %q empty or repeated", it.Key)
+		}
+		keys[it.Key] = true
+		if second.Items[i].Key == it.Key {
+			t.Errorf("two feeds share key %q", it.Key)
 		}
 	}
 
@@ -203,7 +243,7 @@ func TestStatusFeedTenantIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []struct{ token, org, want, never string }{{feedA.Token, a.OrganizationID, "only-in-a", "only-in-b"}, {feedB.Token, "org_b", "only-in-b", "only-in-a"}} {
-		r, err := ts.ReadStatusFeed(ctx, c.token, "")
+		r, err := ts.ReadStatusFeed(ctx, c.token, "", nil)
 		if err != nil || r.OrganizationID != c.org || len(r.Items) != 1 || r.Items[0].Subject != c.want {
 			t.Fatalf("feed of %s: %+v %v", c.org, r, err)
 		}
@@ -226,7 +266,7 @@ func TestStatusFeedTenantIsolation(t *testing.T) {
 	if list, _ := ts.ListStatusFeeds(ctx, orgB); len(list) != 1 || list[0].ID != feedB.ID {
 		t.Fatalf("B lists: %+v", list)
 	}
-	if _, err := ts.ReadStatusFeed(ctx, feedA.Token, ""); err != nil {
+	if _, err := ts.ReadStatusFeed(ctx, feedA.Token, "", nil); err != nil {
 		t.Fatalf("A's feed after B's attempts: %v", err)
 	}
 }
@@ -269,4 +309,13 @@ func newOrgFor(t *testing.T, st *SQLStore, id string) TenantAccess {
 		t.Fatal(err)
 	}
 	return TenantAccess{ActorID: user, OrganizationID: id}
+}
+
+// upperFirstLetter upper-cases the first a-f in hex, a one-character case variant.
+func upperFirstLetter(hex string) string {
+	i := strings.IndexAny(hex, "abcdef")
+	if i < 0 {
+		return strings.ToUpper(hex)
+	}
+	return hex[:i] + strings.ToUpper(hex[i:i+1]) + hex[i+1:]
 }

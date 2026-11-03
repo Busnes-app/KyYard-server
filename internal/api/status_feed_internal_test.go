@@ -10,7 +10,7 @@ import (
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
-// Each down item becomes one RSS item whose guid is its stable key and whose link opens the
+// Each down item becomes one RSS item whose guid is its stable (opaque) key and whose link opens the
 // endpoint; names a host chose are escaped, never markup.
 func TestRSSOfDownItems(t *testing.T) {
 	s := &Server{config: &config.Config{}}

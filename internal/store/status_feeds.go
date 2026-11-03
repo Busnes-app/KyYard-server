@@ -36,6 +36,9 @@ const (
 // ErrStatusFeedLimit refuses a feed past maxStatusFeeds live ones.
 var ErrStatusFeedLimit = errors.New("too many status feeds")
 
+// ErrStatusFeedThrottled is a valid feed read that the caller's allow func refused.
+var ErrStatusFeedThrottled = errors.New("status feed read throttled")
+
 // StatusFeed is an organization's down-monitoring feed. The token is never stored:
 // token_hash is its SHA-256.
 type StatusFeed struct {
@@ -62,7 +65,9 @@ const (
 )
 
 // DownItem is one thing a status feed reports as down. Key is stable for as long as the same
-// thing stays down in the same way, so a reader notifies once per incident.
+// thing stays down in the same way, so a reader notifies once per incident. ReadStatusFeed
+// returns it opaque: a SHA-256 of the feed ID and the incident, so it carries no endpoint or
+// container ID or time, and two feeds key the same incident differently.
 type DownItem struct {
 	Kind        string
 	Key         string
@@ -165,11 +170,16 @@ func (t *tenancyStore) RevokeStatusFeed(ctx context.Context, a TenantAccess, id 
 
 // ReadStatusFeed resolves a feed token and reports what is down in its organization. The token
 // is the whole authorization: it reads one organization's down list and nothing else. A
-// malformed, unknown or revoked token is ErrForbidden alike. last_used_at and last_ip are
-// stamped at most once per lastUsedEvery; reads are not audited.
-func (t *tenancyStore) ReadStatusFeed(ctx context.Context, token, ip string) (*StatusReport, error) {
-	raw, err := hex.DecodeString(strings.TrimPrefix(token, StatusFeedPrefix))
-	if !strings.HasPrefix(token, StatusFeedPrefix) || err != nil || len(raw) != serviceTokenBytes {
+// malformed, non-canonical (any upper-case hex), unknown or revoked token is ErrForbidden
+// alike. A found feed is then passed to allow, when set, before anything is stamped or
+// decoded; a refusal is ErrStatusFeedThrottled. last_used_at and last_ip are stamped at most
+// once per lastUsedEvery; reads are not audited.
+func (t *tenancyStore) ReadStatusFeed(ctx context.Context, token, ip string, allow func(feedID string) bool) (*StatusReport, error) {
+	secret, ok := strings.CutPrefix(token, StatusFeedPrefix)
+	raw, err := hex.DecodeString(secret)
+	// hex.DecodeString takes either case; only the form CreateStatusFeed issued opens a feed, so
+	// case variants are not extra names for it.
+	if !ok || err != nil || len(raw) != serviceTokenBytes || hex.EncodeToString(raw) != secret {
 		return nil, ErrForbidden
 	}
 	var id, org, orgName string
@@ -180,6 +190,9 @@ func (t *tenancyStore) ReadStatusFeed(ctx context.Context, token, ip string) (*S
 	}
 	if err != nil {
 		return nil, err
+	}
+	if allow != nil && !allow(id) {
+		return nil, ErrStatusFeedThrottled
 	}
 	now := time.Now().UTC()
 	if !lastUsed.Valid || now.Sub(lastUsed.Time) > lastUsedEvery {
@@ -227,6 +240,9 @@ func (t *tenancyStore) ReadStatusFeed(ctx context.Context, token, ip string) (*S
 	}
 	if len(report.Items) > maxFeedItems {
 		report.Items, report.Truncated = report.Items[:maxFeedItems], true
+	}
+	for i := range report.Items {
+		report.Items[i].Key = crypto.SHA256Hex([]byte(id + "\x00" + report.Items[i].Key))
 	}
 	return report, nil
 }
