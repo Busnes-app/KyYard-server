@@ -49,6 +49,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // A request that opts out of caches (ky-ui's update check re-reads "/" this way) goes to the
+  // network, or a cached shell would hide a deploy.
+  if (event.request.cache === 'no-store') {
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then((cached) => {
       return (
