@@ -4,8 +4,9 @@ import { Link } from '../components/Link';
 import { Registries } from '../components/Registries';
 import { ServiceTokens } from '../components/ServiceTokens';
 import { AgentTokens } from '../components/AgentTokens';
+import { StatusFeeds } from '../components/StatusFeeds';
 import { orgPath } from '../router';
-import { canManageAgentTokens, canManageServiceTokens, useTenantResource, type MemberOrganization } from '../tenant';
+import { canManageAgentTokens, canManageServiceTokens, canManageStatusFeeds, useTenantResource, type MemberOrganization } from '../tenant';
 
 // Access holds what the organization lets software do, beside Members for people: the service
 // tokens other Ky apps read with (Pair kyPulse), agent tokens, and the registries update checks
@@ -22,6 +23,7 @@ export const Access: React.FC<{ org: string }> = ({ org }) => {
       <p>Integrations and registries for this organization: tokens other apps use to read it, and the registries update checks may query.</p>
       {canManageServiceTokens(callerRole) && <ServiceTokens org={org} />}
       {canManageAgentTokens(callerRole) && <AgentTokens org={org} />}
+      {canManageStatusFeeds(callerRole) && <StatusFeeds org={org} />}
       <Registries org={org} />
     </div>
   );

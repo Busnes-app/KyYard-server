@@ -1040,7 +1040,24 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// Sessions and MFA transactions from before it carry no provider login, so no logout could
 	// reach them: those that may have come from a provider are ended here, once, on upgrade.
 	{Version: 46, Name: "backchannel_logout", SQLite: backchannelLogout, Postgres: strings.ReplaceAll(backchannelLogout, "DATETIME", "TIMESTAMPTZ")},
+	// A status feed is its own credential, not a service_tokens scope: agent-token queries
+	// treat every non-pulse scope as an agent token.
+	{Version: 47, Name: "status_feeds", SQLite: statusFeeds, Postgres: strings.ReplaceAll(statusFeeds, "DATETIME", "TIMESTAMPTZ")},
 }
+
+const statusFeeds = `CREATE TABLE status_feeds (
+ id TEXT PRIMARY KEY,
+ organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 64),
+ token_hash TEXT NOT NULL UNIQUE,
+ created_by TEXT NOT NULL DEFAULT '',
+ created_at DATETIME NOT NULL,
+ last_used_at DATETIME,
+ last_ip TEXT NOT NULL DEFAULT '',
+ revoked_at DATETIME,
+ revoked_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_status_feeds_org ON status_feeds(organization_id);`
 
 // A linked local account's password session is indistinguishable from its provider session,
 // so it signs in again too. A pending MFA transaction lives five minutes; all of them go.

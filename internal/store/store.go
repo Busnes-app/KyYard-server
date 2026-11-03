@@ -330,6 +330,11 @@ type TenancyStore interface {
 	AuthenticateAgentToken(ctx context.Context, token, ip string, now time.Time) (*ServiceToken, error)
 	ExpireIdleAgentTokens(ctx context.Context, now time.Time, id string) ([]ServiceToken, error)
 	RecordAgentAction(ctx context.Context, access TenantAccess, action, resource, details string) error
+	// Status feeds: secret down-monitoring feed URLs (status_feeds.go).
+	CreateStatusFeed(ctx context.Context, access TenantAccess, name string) (*StatusFeedIssue, error)
+	ListStatusFeeds(ctx context.Context, access TenantAccess) ([]StatusFeed, error)
+	RevokeStatusFeed(ctx context.Context, access TenantAccess, id string) error
+	ReadStatusFeed(ctx context.Context, token, ip string) (*StatusReport, error)
 	ListRegistries(ctx context.Context, access TenantAccess) ([]Registry, error)
 	PutRegistry(ctx context.Context, access TenantAccess, in RegistryInput, key []byte, privateAllowed bool) (*Registry, error)
 	DeleteRegistry(ctx context.Context, access TenantAccess, id string) error
