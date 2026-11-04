@@ -366,3 +366,25 @@ func TestKubernetesRemovalBeforeAnyApply(t *testing.T) {
 		t.Fatalf("instances after removal %+v %v", instances, err)
 	}
 }
+
+// An application mapped to a cluster and planned but never applied runs nothing, so its first
+// deployment is not an image update an operate-scope agent token may apply.
+func TestMCPApplyUpdateRefusesAFirstClusterDeployment(t *testing.T) {
+	h := newClusterHost(t, clusterCapabilities...)
+	app := h.importApp(t, "shop", "services: {web: {image: ghcr.io/org/web:1}}")
+	h.do(t, "PUT", app+"/mapping", `{"endpoint_id":"`+h.ag.id+`","namespace":"shop"}`, 204)
+	var mapped store.ApplicationMapping
+	_ = json.Unmarshal([]byte(h.do(t, "GET", app+"/mapping", "", 200)), &mapped)
+	planBody, _ := json.Marshal(store.PlanRequest{InstanceID: mapped.InstanceID, MappingVersion: mapped.Version, Revision: 1, Confirm: "shop"})
+	var planned store.Deployment
+	if err := json.Unmarshal([]byte(h.do(t, "POST", app+"/deployments", string(planBody), 201)), &planned); err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Plan.Services) == 0 || planned.Plan.Services[0].PullDigest == "" {
+		t.Fatalf("the fixture plan pulls nothing: %+v", planned.Plan)
+	}
+	a := store.TenantAccess{ActorID: "usr_deployer", OrganizationID: "a", EnvironmentID: "env-a"}
+	if reason, err := api.UpdateRefusalForTest(h.ctx, h.s, a, &planned); err != nil || reason == "" {
+		t.Fatalf("a first deployment passed as an image update: %q %v", reason, err)
+	}
+}
