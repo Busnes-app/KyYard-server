@@ -136,7 +136,9 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 	if len(s.seen) >= 1024 {
 		return errors.New("inspection grant limit reached")
 	}
-	s.seen[req.Request] = req.Expires
+	// Remembered one grant lifetime past the later of its expiry and now, so a replay of a grant
+	// refused because it had already expired still ends the session.
+	s.seen[req.Request] = later(req.Expires, time.Now()).Add(s.frames.lifetime)
 	status := ""
 	if expiry != nil || !s.frames.ready {
 		status = "unavailable"

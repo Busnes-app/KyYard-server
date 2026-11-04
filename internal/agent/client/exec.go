@@ -82,6 +82,13 @@ func (s *execStreams) runtime() string {
 	return protocol.RuntimeDocker
 }
 
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
 var errExecProtocol = errors.New("invalid exec frame")
 var errExecCapacity = errors.New("exec stream limit reached")
 var errExecUnavailable = errors.New("this agent has no exec runtime; not started")
@@ -122,7 +129,9 @@ func (s *execStreams) handle(f protocol.Envelope, active bool) error {
 		if len(s.seen) >= 1024 {
 			return errExecCapacity
 		}
-		s.seen[req.Stream] = req.Expires
+		// Remembered one grant lifetime past the later of its expiry and now, so a replay of a
+		// grant refused because it had already expired still ends the session.
+		s.seen[req.Stream] = later(req.Expires, now).Add(protocol.ExecGrantLifetime)
 		if invalid != nil {
 			return errExecClock
 		}

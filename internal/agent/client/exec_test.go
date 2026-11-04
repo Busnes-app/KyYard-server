@@ -164,8 +164,7 @@ func TestExecGrantRefusalBeforeRuntime(t *testing.T) {
 			if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); !errors.Is(err, errExecClock) {
 				t.Fatal(err)
 			}
-			// A grant past its expiry is pruned from the replay set, so only the long-lived one replays.
-			if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); expires > 0 && !errors.Is(err, errExecProtocol) {
+			if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); !errors.Is(err, errExecProtocol) {
 				t.Fatal("replayed expiry refusal not a protocol violation", err)
 			}
 			req.Stream, req.Endpoint = "other-stream", "other"

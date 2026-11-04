@@ -66,14 +66,8 @@ func TestInspectionTransportRedactionAndGrantChecks(t *testing.T) {
 		if reply := nextExecFrame(t, out, protocol.TypeInspectionResult).Payload.(protocol.InspectionResult); reply.Request != skewed.Request || reply.Status != "unavailable" || read {
 			t.Fatalf("expiry refusal: %+v read=%v", reply, read)
 		}
-		// A grant past its expiry is pruned from the replay set, so only the long-lived one replays.
-		if expires > 0 {
-			if err := s.handle(execFrame(protocol.TypeInspectionOpen, skewed), true); err == nil {
-				t.Fatal("replayed expiry refusal accepted")
-			}
-		} else {
-			_ = s.handle(execFrame(protocol.TypeInspectionOpen, skewed), true)
-			nextExecFrame(t, out, protocol.TypeInspectionResult)
+		if err := s.handle(execFrame(protocol.TypeInspectionOpen, skewed), true); err == nil {
+			t.Fatal("replayed expiry refusal accepted")
 		}
 		skewed.Request, skewed.Endpoint = "other-request", "other"
 		if err := s.handle(execFrame(protocol.TypeInspectionOpen, skewed), true); err == nil {
