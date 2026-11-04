@@ -82,17 +82,9 @@ func (s *execStreams) runtime() string {
 	return protocol.RuntimeDocker
 }
 
-func later(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
-}
-
 var errExecProtocol = errors.New("invalid exec frame")
 var errExecCapacity = errors.New("exec stream limit reached")
 var errExecUnavailable = errors.New("this agent has no exec runtime; not started")
-var errExecClock = protocol.ErrExecClock
 
 // handle runs on the socket loop. Runtime I/O runs only in workers; full input
 // queues cancel the attachment instead of delaying heartbeat or revocation frames.
@@ -103,13 +95,7 @@ func (s *execStreams) handle(f protocol.Envelope, active bool) error {
 	switch f.Type {
 	case protocol.TypeExecOpen:
 		var req protocol.ExecOpen
-		if json.Unmarshal(f.Payload, &req) != nil {
-			return errExecProtocol
-		}
-		// A grant refused only for its expiry is a clock disagreement, not an attack: it is
-		// consumed and answered with exec.close, and the session stays.
-		invalid := req.Validate(time.Now())
-		if (invalid != nil && !errors.Is(invalid, protocol.ErrGrantExpiry)) || req.Spec.ValidateFor(s.runtime()) != nil || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
+		if json.Unmarshal(f.Payload, &req) != nil || req.Validate(time.Now()) != nil || req.Spec.ValidateFor(s.runtime()) != nil || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
 			return errExecProtocol
 		}
 		s.mu.Lock()
@@ -129,12 +115,7 @@ func (s *execStreams) handle(f protocol.Envelope, active bool) error {
 		if len(s.seen) >= 1024 {
 			return errExecCapacity
 		}
-		// Remembered one grant lifetime past the later of its expiry and now, so a replay of a
-		// grant refused because it had already expired still ends the session.
-		s.seen[req.Stream] = later(req.Expires, now).Add(protocol.ExecGrantLifetime)
-		if invalid != nil {
-			return errExecClock
-		}
+		s.seen[req.Stream] = req.Expires
 		if s.opts.Exec == nil {
 			return errExecUnavailable
 		}

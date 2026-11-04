@@ -114,13 +114,7 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 		return nil
 	}
 	var req protocol.InspectionOpen
-	if json.Unmarshal(f.Payload, &req) != nil {
-		return invalid
-	}
-	// A grant refused only for its expiry is a clock disagreement: it is consumed and answered
-	// unavailable, and the session stays.
-	expiry := req.ValidateWithin(time.Now(), s.frames.lifetime, s.runtime())
-	if (expiry != nil && !errors.Is(expiry, protocol.ErrGrantExpiry)) || !active || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
+	if json.Unmarshal(f.Payload, &req) != nil || req.ValidateWithin(time.Now(), s.frames.lifetime, s.runtime()) != nil || !active || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
 		return invalid
 	}
 	s.mu.Lock()
@@ -136,11 +130,9 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 	if len(s.seen) >= 1024 {
 		return errors.New("inspection grant limit reached")
 	}
-	// Remembered one grant lifetime past the later of its expiry and now, so a replay of a grant
-	// refused because it had already expired still ends the session.
-	s.seen[req.Request] = later(req.Expires, time.Now()).Add(s.frames.lifetime)
+	s.seen[req.Request] = req.Expires
 	status := ""
-	if expiry != nil || !s.frames.ready {
+	if !s.frames.ready {
 		status = "unavailable"
 	} else {
 		select {

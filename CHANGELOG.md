@@ -18,7 +18,5 @@
 
 ### Fixed
 
-- An agent whose clock disagrees with the server's no longer drops its session when a container
-  page or terminal opens; the terminal says to turn on time sync.
 - Kubernetes workloads and pods with dotted or long (up to 253 characters) names have their
   pages and controls. An older cluster agent refuses them until it is upgraded.

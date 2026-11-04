@@ -545,7 +545,7 @@ func TestPodExecOpenCloseAndUIDMismatch(t *testing.T) {
 // text is replaced by the fixed notice.
 func TestPodExecCloseReasonPassesOnlyFixedRefusals(t *testing.T) {
 	f := newWorkloadFleet(t, workloadCaps...)
-	for reason, want := range map[string]string{"forbidden": "forbidden", "pod_security": "pod_security", "clock_skew": "clock_skew", "token=secret": "terminal attachment ended; process state may be unknown"} {
+	for reason, want := range map[string]string{"forbidden": "forbidden", "pod_security": "pod_security", "token=secret": "terminal attachment ended; process state may be unknown"} {
 		c, res := f.dialPodPath(t, f.org, "/pods/shop/web-7c9/exec")
 		if c == nil {
 			t.Fatalf("dial: %+v", res)

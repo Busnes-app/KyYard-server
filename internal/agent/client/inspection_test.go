@@ -37,7 +37,7 @@ func TestInspectionTransportRedactionAndGrantChecks(t *testing.T) {
 	if err := s.handle(execFrame(protocol.TypeInspectionOpen, req), true); err == nil {
 		t.Fatal("replay accepted")
 	}
-	for _, mutate := range []func(*protocol.InspectionOpen){func(r *protocol.InspectionOpen) { r.Endpoint = "other" }, func(r *protocol.InspectionOpen) { r.Connection = []byte("wrong") }, func(r *protocol.InspectionOpen) { r.Target.ContainerID = "name" }} {
+	for _, mutate := range []func(*protocol.InspectionOpen){func(r *protocol.InspectionOpen) { r.Endpoint = "other" }, func(r *protocol.InspectionOpen) { r.Connection = []byte("wrong") }, func(r *protocol.InspectionOpen) { r.Expires = time.Now().Add(-time.Second) }, func(r *protocol.InspectionOpen) { r.Target.ContainerID = "name" }} {
 		bad := inspectionRequest()
 		mutate(&bad)
 		s := newInspections(context.Background(), req.Endpoint, req.Connection, opts, out)
@@ -48,31 +48,6 @@ func TestInspectionTransportRedactionAndGrantChecks(t *testing.T) {
 	s = newInspections(context.Background(), req.Endpoint, req.Connection, opts, out)
 	if err := s.handle(execFrame(protocol.TypeInspectionOpen, req), false); err == nil {
 		t.Fatal("pending agent read runtime")
-	}
-	// A grant refused only for its expiry (the agent's clock disagrees) is answered
-	// unavailable and keeps the session; a replay of it, or a wrong scope, still ends it.
-	for _, expires := range []time.Duration{-time.Second, time.Hour} {
-		read := false
-		clockOpts := &Options{inspectionSlots: make(chan struct{}, 2), Inspect: func(context.Context, protocol.InspectionTarget) (*protocol.ContainerInspection, error) {
-			read = true
-			return nil, errors.New("must not read")
-		}}
-		s := newInspections(context.Background(), req.Endpoint, req.Connection, clockOpts, out)
-		skewed := inspectionRequest()
-		skewed.Expires = time.Now().Add(expires)
-		if err := s.handle(execFrame(protocol.TypeInspectionOpen, skewed), true); err != nil {
-			t.Fatal("expiry refusal ended the session", err)
-		}
-		if reply := nextExecFrame(t, out, protocol.TypeInspectionResult).Payload.(protocol.InspectionResult); reply.Request != skewed.Request || reply.Status != "unavailable" || read {
-			t.Fatalf("expiry refusal: %+v read=%v", reply, read)
-		}
-		if err := s.handle(execFrame(protocol.TypeInspectionOpen, skewed), true); err == nil {
-			t.Fatal("replayed expiry refusal accepted")
-		}
-		skewed.Request, skewed.Endpoint = "other-request", "other"
-		if err := s.handle(execFrame(protocol.TypeInspectionOpen, skewed), true); err == nil {
-			t.Fatal("expired grant with a wrong scope accepted")
-		}
 	}
 }
 func TestInspectionTransportCancellationKeepsAdmissionAcrossReconnect(t *testing.T) {

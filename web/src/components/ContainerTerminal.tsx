@@ -13,7 +13,6 @@ const maxQueued = 256 * 1024;
 const CLOSE_REASONS: Record<string, string> = {
   forbidden: "The agent's role does not allow a terminal here. Regenerate and apply the cluster manifest, then retry.",
   pod_security: 'This pod or its namespace does not meet Pod Security baseline, so terminals are refused.',
-  clock_skew: "The agent's clock disagrees with the server's, so it refused the terminal. Turn on time sync (NTP) on the agent's host, then retry.",
 };
 
 export function ContainerTerminal({ base, container, scope }: { base: string; container: Container; scope: string }) {
