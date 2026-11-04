@@ -228,9 +228,15 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request, limitKey s
 			// the loser's unwind must not do it, because by then the successor's own readers
 			// would go with them.
 			s.logs.closeEndpointStreams(c.endpointID, "the endpoint reconnected")
+			evicted := time.Now().UTC()
 			if s.agents.replace(incumbent, c) {
 				incumbent.close(protocol.CloseTimeout)
 				_ = s.store.Tenancy().RecordAgentConnect(ctx, &identity.Endpoint, incumbent.ip, "failure", "evicted: unanswering socket displaced by "+s.requestIP(r))
+				// The evicted socket's unwind sees the successor and settles nothing: its
+				// unanswered commands are settled here, or they stay in flight for good.
+				if n, err := s.store.Tenancy().AbandonCommandsDispatchedBefore(ctx, c.endpointID, evicted); err == nil && n > 0 {
+					log.Printf("agent %s: %d commands left unknown when the evicted connection ended", c.endpointID, n)
+				}
 				goto admitted
 			}
 		}

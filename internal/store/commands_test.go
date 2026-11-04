@@ -206,3 +206,42 @@ func TestSettleCommandKeepsALongMultiByteDetail(t *testing.T) {
 		t.Fatalf("settled %q with %d bytes %q...", got[0].Outcome, len(d), d[:min(len(d), 20)])
 	}
 }
+
+// An evicted socket's unanswered commands are settled unknown at the eviction; a command
+// dispatched to the successor after it, or never dispatched, stays in flight.
+func TestAbandonCommandsDispatchedBeforeTheEviction(t *testing.T) {
+	st, a := tenantAtomicStore(t)
+	ctx := context.Background()
+	ts := st.Tenancy()
+	endpointID := activeEndpointWith(t, ts, a, nil, nil)
+	create := func(name string, dispatch bool) string {
+		cmd, err := ts.CreateCommand(ctx, a, endpointID, protocol.ActionRestart, name, "", protocol.Expectation{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dispatch {
+			if err := ts.MarkCommandDispatched(ctx, cmd.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return cmd.ID
+	}
+	old, queued := create("old", true), create("queued", false)
+	time.Sleep(10 * time.Millisecond)
+	evicted := time.Now()
+	time.Sleep(10 * time.Millisecond)
+	successor := create("successor", true)
+	if n, err := ts.AbandonCommandsDispatchedBefore(ctx, endpointID, evicted); err != nil || n != 1 {
+		t.Fatalf("abandoned %d: %v", n, err)
+	}
+	got, err := ts.ListCommands(ctx, a, endpointID, "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{old: protocol.OutcomeUnknown, queued: "", successor: ""}
+	for _, c := range got {
+		if c.Outcome != want[c.ID] {
+			t.Errorf("%s: outcome %q, want %q", c.ContainerID, c.Outcome, want[c.ID])
+		}
+	}
+}
