@@ -39,6 +39,15 @@ func extraGrace(grace int) time.Duration {
 	return time.Duration(max(0, grace-stopGrace)) * time.Second
 }
 
+// fitGrace cuts a grace longer than Docker's default so its extra time fits room: honoured as far
+// as a run's deadline allows, and never shorter than the default.
+func fitGrace(grace int, room time.Duration) int {
+	if grace <= stopGrace {
+		return grace
+	}
+	return min(grace, stopGrace+max(0, int(room/time.Second)))
+}
+
 // Operate runs one lifecycle action against one container, after checking that the container
 // is still what the operator was looking at. Docker has no universal resource version, so the
 // precondition is operation-specific identity read immediately before acting: the same image

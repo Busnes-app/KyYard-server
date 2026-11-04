@@ -81,8 +81,8 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 	for _, s := range req.Services {
 		ready = append(ready, r.prepare(ctx, s))
 	}
-	for _, p := range ready {
-		r.replace(ctx, p)
+	for i, p := range ready {
+		r.replace(ctx, p, len(ready)-1-i)
 	}
 	if r.res.Outcome == "" {
 		r.res.Outcome = protocol.OutcomeSucceeded
@@ -596,7 +596,8 @@ func (r *deployRun) image(ctx context.Context, s *protocol.DeploymentService) {
 	}
 }
 
-func (r *deployRun) replace(ctx context.Context, p prepared) {
+// later is the number of services after this one, whose budgets a long stop grace must leave.
+func (r *deployRun) replace(ctx context.Context, p prepared, later int) {
 	s, old := p.s, url.PathEscape(p.s.Replaces.ContainerID)
 	if run(r.req, s) {
 		created := r.create(ctx, p)
@@ -609,8 +610,8 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	// The old container's state at the recheck, the last read before stop: a rollback pauses it
 	// again, and an unanswered stop is checked only if it was running.
 	paused, wasRunning := false, false
-	// The old container's own stop grace, as Stop honours it: a recreate must not kill a container
-	// that needs longer to shut down cleanly.
+	// The old container's own stop grace, as Stop honours it, as far as the deadline allows: a
+	// recreate must not kill a container that needs longer to shut down cleanly.
 	grace := stopGrace
 	// The pull window can be minutes: re-read the container right before touching it.
 	r.step(s.Name, protocol.StepRecheck, func() (string, string, string) {
@@ -643,10 +644,7 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		paused = state.State != nil && state.State.Paused
 		wasRunning = state.State != nil && state.State.Running
 		if state.Config != nil {
-			grace = graceOf(state.Config.StopTimeout)
-		}
-		if time.Until(r.req.Deadline) < budget+extraGrace(grace) {
-			return protocol.OutcomeTimedOut, "deadline", ""
+			grace = fitGrace(graceOf(state.Config.StopTimeout), time.Until(r.req.Deadline)-time.Duration(1+later)*budget)
 		}
 		return succeeded()
 	})

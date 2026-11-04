@@ -2323,8 +2323,8 @@ func TestDeployRollbackRevivesWhenTheNameIsNotGivenBack(t *testing.T) {
 	}
 }
 
-// A recreate stops the old container with the grace it asked for, as Stop does, and one whose
-// grace the deadline cannot hold is refused at the recheck, before anything is touched.
+// A recreate stops the old container with the grace it asked for, as Stop does, cut to what the
+// deadline leaves but never below Docker's default.
 func TestDeployStopsWithTheContainersOwnGrace(t *testing.T) {
 	f := newFakeDeployEngine(t)
 	f.newStates = []string{healthy}
@@ -2336,13 +2336,12 @@ func TestDeployStopsWithTheContainersOwnGrace(t *testing.T) {
 	}
 
 	f = newFakeDeployEngine(t)
-	f.oldContainer["Config"].(map[string]any)["StopTimeout"] = 3600
+	f.newStates = []string{healthy}
+	f.oldContainer["Config"].(map[string]any)["StopTimeout"] = -1 // forever
 	res = f.client().Deploy(context.Background(), request(webService()), func() {})
-	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Step == protocol.StepRecheck })
-	if i < 0 || res.Steps[i].Outcome != protocol.OutcomeTimedOut || res.Steps[i].Code != "deadline" {
-		t.Fatalf("steps %+v", res.Steps)
-	}
-	if _, renamed := f.call("POST", "/containers/"+oldID+"/rename"); renamed {
-		t.Fatal("a recreate that cannot wait out the grace touched the container")
+	stop, _ = f.call("POST", "/containers/"+oldID+"/stop")
+	grace, err := strconv.Atoi(strings.TrimPrefix(stop.Query, "t="))
+	if res.Outcome != protocol.OutcomeSucceeded || err != nil || grace <= 10 || grace >= 300 {
+		t.Fatalf("outcome %+v, stop %+v: want the grace cut to the five-minute deadline", res, stop)
 	}
 }
