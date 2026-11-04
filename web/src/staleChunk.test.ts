@@ -20,13 +20,13 @@ describe('reloadOnStaleChunk', () => {
     expect(reload).toHaveBeenCalledTimes(2);
   });
 
-  it('still reloads when storage is blocked', () => {
+  it('neither reloads nor throws when storage is blocked', () => {
     const target = new EventTarget();
     const reload = vi.fn();
     reloadOnStaleChunk(target, reload, () => { throw new DOMException('denied', 'SecurityError'); });
     const e = new Event('vite:preloadError', { cancelable: true });
     target.dispatchEvent(e);
-    expect(e.defaultPrevented).toBe(true);
-    expect(reload).toHaveBeenCalledTimes(1);
+    expect(e.defaultPrevented).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
   });
 });
