@@ -51,7 +51,12 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   and checks what `JoinDatabase` writes from them; the `restore` command joins them into
   `data/ky_server.db` and deletes them. `JoinDatabase` lists `data/` literally (never a glob of the target path). Parts must be numbered from 000 without a gap and never
   sit beside a whole database. Single-member capsules stay valid. `Collect` logs a warning once
-  the payload reaches 80% of `capsule.MaxExpandedBytes` (256 MiB).
+  the payload reaches 80% of `capsule.MaxExpandedBytes` (256 MiB). `BudgetFits(cfg, interval)`
+  refuses a SQLite `KY_RETENTION_DISK_BUDGET` above that while backups are on (the effective
+  schedule, saved or default, or `KY_BACKUP_DIR`): `cmd/server` startup fails on it and
+  `PUT /api/backup/schedule` answers 409 rather than turn a schedule on (owner decision Q6 A).
+  Backup status reports `database_bytes` and `capsule_limit_bytes` for the Backup page, and
+  `api.BackupOutcome` audits an oversized run with `recoveryclient.TooLargeMessage` (Q6 C).
 - `Collect` pins `schema_version: migrations.Latest()` in the recipe. `Checks` requires it
   (int, or an integral JSON number, at least 1) and, right after the integrity check for
   `data/ky_server.db`, adds `Schema Version: data/ky_server.db`: `MAX(version)` from the

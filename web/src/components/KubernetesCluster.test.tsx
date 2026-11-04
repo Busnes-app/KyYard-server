@@ -66,6 +66,19 @@ it('links configurable workloads to their page and renders toolbars by role and 
   expect(screen.queryByText('Actions')).toBeNull();
 });
 
+it('gives a dotted or long-named workload and its pods their page and controls', () => {
+  const owner = 'api.prod-' + 'a'.repeat(50);
+  const podName = `${owner}-7d9f8c6b5-x2x4z`;
+  const inventory: KubernetesInventory = { ...empty, namespaces: ['shop'],
+    workloads: [{ kind: 'Deployment', namespace: 'shop', name: owner, desired: 1, ready: 1, updated: 1, images: [], paused: false }],
+    pods: [{ uid: 'u', namespace: 'shop', name: podName, phase: 'Running', node: 'n1', owner_kind: 'Deployment', owner_name: owner, started_at: '', containers: [] }] };
+  const capable = { ...endpoint, capabilities: ['kubernetes.inventory', 'kubernetes.workloads'] };
+  render(<KubernetesCluster org="a" base="/api/x" endpoint={capable} inventory={inventory} instances={[]} admin={false} role="environment_admin" onStatus={vi.fn()} onChanged={vi.fn()} />);
+  expect(screen.getByRole('link', { name: `shop/${owner}` }).getAttribute('href')).toBe(`/organizations/a/endpoints/ep_k/workloads/shop/deployment/${owner}`);
+  expect(screen.getByRole('button', { name: `Restart shop/${owner}` })).toBeTruthy();
+  expect(screen.getByRole('button', { name: `Delete shop/${podName}` })).toBeTruthy();
+});
+
 it('gives an ownerless pod Delete but no group Logs button; per-container Logs stay', () => {
   const show = vi.fn(function (this: HTMLDialogElement) { this.open = true; });
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show });
@@ -82,13 +95,13 @@ it('gives an ownerless pod Delete but no group Logs button; per-container Logs s
   Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
 });
 
-it('renders a dotted workload name as plain text with no controls', () => {
-  const inventory: KubernetesInventory = { ...empty, namespaces: ['shop'], workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web.v2', desired: 1, ready: 1, updated: 1, images: [], paused: false }] };
+it('renders a workload name that is not a DNS subdomain as plain text with no controls', () => {
+  const inventory: KubernetesInventory = { ...empty, namespaces: ['shop'], workloads: [{ kind: 'Deployment', namespace: 'shop', name: 'web..v2', desired: 1, ready: 1, updated: 1, images: [], paused: false }] };
   const capable = { ...endpoint, capabilities: ['kubernetes.inventory', 'kubernetes.workloads'] };
   render(<KubernetesCluster org="a" base="/api/x" endpoint={capable} inventory={inventory} instances={[]} admin={false} role="organization_admin" onStatus={vi.fn()} onChanged={vi.fn()} />);
-  expect(screen.getByText('shop/web.v2')).toBeTruthy();
-  expect(screen.queryByRole('link', { name: 'shop/web.v2' })).toBeNull();
-  expect(screen.queryByRole('group', { name: 'Actions for shop/web.v2' })).toBeNull();
+  expect(screen.getByText('shop/web..v2')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'shop/web..v2' })).toBeNull();
+  expect(screen.queryByRole('group', { name: 'Actions for shop/web..v2' })).toBeNull();
 });
 
 it('reloads the inventory when a cluster toolbar command settles', async () => {

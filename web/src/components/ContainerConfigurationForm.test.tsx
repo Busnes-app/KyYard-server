@@ -386,6 +386,16 @@ it('accepts -1 for the PIDs limit', () => {
   expect(save().disabled).toBe(false);
 });
 
+it('keeps the trailing empty arguments the read carried and drops only typed blank lines', () => {
+  const read = config({ command: ['sh', '-c', 'test "$#" -eq 2', 'kyyard', 'kept', ''], healthcheck: { test: ['CMD', 'probe', ''], interval_seconds: 1, timeout_seconds: 2, start_period_seconds: 3, retries: 4 } });
+  const untouched = buildSpec(read, [], read);
+  expect(untouched.command).toEqual(['sh', '-c', 'test "$#" -eq 2', 'kyyard', 'kept', '']);
+  expect(untouched.healthcheck?.test).toEqual(['CMD', 'probe', '']);
+  const typed = buildSpec({ ...read, command: [...read.command, '', ''] }, [], read);
+  expect(typed.command).toEqual(read.command);
+  expect(buildSpec({ ...read, command: ['echo', ''] }, [], config({ command: ['echo'] })).command).toEqual(['echo']);
+});
+
 it('builds the canonical spec from a draft', () => {
   const draft = config({
     name: ' web ', image: { reference: ' nginx:2 ', digest: '' }, command: ['nginx', '', ''], entrypoint: [''],

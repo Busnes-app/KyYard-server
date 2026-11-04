@@ -437,7 +437,7 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if user.SSOProvider == "local" && user.TOTPEnabled {
-		token, err := s.beginMFA(ctx, user, p.ID, claims.SessionID, claims.IssuedAt)
+		token, err := s.beginMFA(ctx, user, p.ID, claims.Subject, claims.SessionID, claims.IssuedAt)
 		if err != nil {
 			s.writeError(w, 403, "Account unavailable")
 			return
@@ -448,7 +448,7 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/#sso-mfa="+token, http.StatusFound)
 		return
 	}
-	if _, _, err = s.sessions.IssueSSOSession(ctx, w, r, user, p.ID, claims.SessionID, claims.IssuedAt); errors.Is(err, store.ErrSSOSessionEnded) {
+	if _, _, err = s.sessions.IssueSSOSession(ctx, w, r, user, p.ID, claims.Subject, claims.SessionID, claims.IssuedAt); errors.Is(err, store.ErrSSOSessionEnded) {
 		s.writeError(w, 401, "Sign-in already ended at the provider; sign in again")
 		return
 	} else if err != nil {
@@ -524,4 +524,68 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "sso.provider.update", Resource: id})
 	s.writeJSON(w, 200, map[string]bool{"updated": true})
+}
+
+// handleAccountSSO lists the provider identities that sign in to the caller's local account,
+// so its owner sees a link they did not make. A removed provider's identity is listed by ID.
+func (s *Server) handleAccountSSO(w http.ResponseWriter, r *http.Request) {
+	user, _, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		s.writeError(w, 401, "Authentication required")
+		return
+	}
+	if user.SSOProvider != "local" || user.PasswordHash == "" {
+		s.writeError(w, 403, "Linked sign-in applies to local accounts")
+		return
+	}
+	ids, err := s.store.Users().ListSSOIdentities(r.Context(), user.ID)
+	if err != nil {
+		s.writeError(w, 500, "Could not load linked sign-in")
+		return
+	}
+	providers, err := s.providers(r.Context())
+	if err != nil {
+		s.writeError(w, 500, "Could not load providers")
+		return
+	}
+	names := map[string]string{}
+	for _, p := range providers {
+		names[p.ID] = p.Name
+	}
+	type identity struct {
+		store.SSOIdentity
+		Name string `json:"name"`
+	}
+	out := make([]identity, 0, len(ids))
+	for _, id := range ids {
+		name := names[id.Provider]
+		if name == "" {
+			name = id.Provider
+		}
+		out = append(out, identity{id, name})
+	}
+	s.writeJSON(w, 200, out)
+}
+
+// handleUnlinkSSO removes one linked identity after the same step-up as a password change,
+// and ends the sessions it signed in.
+func (s *Server) handleUnlinkSSO(w http.ResponseWriter, r *http.Request) {
+	user, req, ok := s.accountUser(w, r, "sso-unlink:", 5, time.Minute)
+	if !ok {
+		return
+	}
+	if status, code, msg := s.stepUp(r.Context(), user, req.Password, req.Code); status != 0 {
+		s.writeJSON(w, status, map[string]string{"error": msg, "code": code})
+		return
+	}
+	err := s.store.Users().UnlinkSSO(r.Context(), user.ID, user.PasswordHash, r.PathValue("provider"), s.requestIP(r))
+	if errors.Is(err, store.ErrNotFound) {
+		s.writeError(w, 404, "That sign-in is not linked to your account")
+		return
+	}
+	if err != nil {
+		s.writeError(w, 500, "Could not unlink sign-in")
+		return
+	}
+	s.writeJSON(w, 200, map[string]bool{"unlinked": true})
 }

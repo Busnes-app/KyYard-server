@@ -57,6 +57,22 @@ describe('Backup', () => {
     expect(await screen.findByText(/^Next /)).toBeTruthy();
   });
 
+  it('warns from 80% of a capsule and says backups fail past it', async () => {
+    const limit = 256 * 2 ** 20;
+    mockStatus({ ...PAIRED, database_bytes: limit * 0.5, capsule_limit_bytes: limit });
+    render(<Backup />);
+    expect((await screen.findAllByText(/recovery\.example/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/one backup capsule holds/)).toBeNull();
+    cleanup();
+    mockStatus({ ...PAIRED, database_bytes: limit * 0.9, capsule_limit_bytes: limit });
+    render(<Backup />);
+    expect(await screen.findByText(/about 230 MiB, over 80% of the 256 MiB one backup capsule holds/)).toBeTruthy();
+    cleanup();
+    mockStatus({ ...PAIRED, database_bytes: limit + 1, capsule_limit_bytes: limit });
+    render(<Backup />);
+    expect(await screen.findByText(/^Backups fail: the database is about 256 MiB/)).toBeTruthy();
+  });
+
   it('never renders the token', async () => {
     mockStatus({
       key_pinned: true,

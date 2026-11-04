@@ -47,6 +47,12 @@ type ServerConfig struct {
 // who means "no limit" has 0 for that.
 const maxDiskBudget = 1 << 50
 
+// DefaultSQLiteDiskBudget is the SQLite retention budget: below the 256 MiB one backup capsule
+// holds, so a database kept to it can still be backed up (owner decision, Q6 A; the refusal of a
+// larger budget while backups are on is backup.BudgetFits, which needs the saved schedule).
+// PostgreSQL is not in capsules and keeps the 2 GiB default.
+const DefaultSQLiteDiskBudget = 192 << 20
+
 // DatabaseConfig holds connection settings for pluggable storage (SQLite, PostgreSQL, MySQL).
 type DatabaseConfig struct {
 	Driver  string `json:"driver"` // "sqlite", "postgres", "mysql"
@@ -238,7 +244,11 @@ func LoadFromEnv() (*Config, error) {
 		driver = "postgres"
 		defaultDSN = "postgres://postgres:postgres@localhost:5432/ky_server?sslmode=disable"
 	}
-	diskBudget := int64(getEnvInt("KY_RETENTION_DISK_BUDGET", 2<<30))
+	defaultBudget := 2 << 30
+	if driver == "sqlite" {
+		defaultBudget = DefaultSQLiteDiskBudget
+	}
+	diskBudget := int64(getEnvInt("KY_RETENTION_DISK_BUDGET", defaultBudget))
 	// A negative budget would disable the control as quietly as zero does, and zero is the
 	// documented way to say so. An absurd one would only ever be a typo.
 	if diskBudget < 0 {

@@ -2,7 +2,7 @@ import { ScrollText, Terminal, Trash2 } from 'lucide-react';
 import { Link } from './Link';
 import { useClusterCommand } from './WorkloadControls';
 import { POD_NOT_FOUND } from './workloadTexts';
-import { dnsLabel, workloadPath } from '../router';
+import { dnsLabel, dnsSubdomain, workloadPath } from '../router';
 import { canDestroy, canExec, type Pod } from '../tenant';
 
 // Kinds with a workload page, as the route names them.
@@ -18,8 +18,8 @@ export function PodControls({ base, org, endpoint, pod, active, role, capabiliti
   const destroy = capabilities.includes('kubernetes.workloads') && canDestroy(role);
   const terminal = capabilities.includes('pod.exec') && canExec(role);
   // A pod whose owner the route cannot name keeps Delete and loses the page links.
-  const kind = Object.hasOwn(PAGE_KINDS, pod.owner_kind) && dnsLabel.test(pod.owner_name) ? PAGE_KINDS[pod.owner_kind] ?? '' : '';
-  if (!dnsLabel.test(pod.namespace) || !dnsLabel.test(pod.name)) return null;
+  const kind = Object.hasOwn(PAGE_KINDS, pod.owner_kind) && dnsSubdomain.test(pod.owner_name) ? PAGE_KINDS[pod.owner_kind] ?? '' : '';
+  if (!dnsLabel.test(pod.namespace) || !dnsSubdomain.test(pod.name)) return null;
   if (!destroy && !kind) return null;
   const page = (tab: string) => `${workloadPath(org, endpoint, pod.namespace, kind, pod.owner_name, tab)}&pod=${encodeURIComponent(pod.name)}`;
   const remove = () => {

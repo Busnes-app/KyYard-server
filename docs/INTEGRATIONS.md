@@ -32,12 +32,16 @@ It has one item for each thing that is down now in that organization, across all
 - a Docker container that is unhealthy, restarting or dead, or that exited although its restart
   policy is `always` or `unless-stopped` (a container you stopped on purpose with that policy
   shows too);
-- a Kubernetes node that is not ready.
+- a Kubernetes node that is not ready, or a cluster whose agent cannot list its nodes (a timeout,
+  or a role without `list nodes`), so their readiness is unknown.
 
 Only a connected endpoint's containers and nodes are read; an offline endpoint is one item.
 Pending, never-connected and revoked endpoints are not monitored. An item's `guid` is opaque and stays the
-same while the same thing is down in the same way, so a reader notifies once per incident; its
-link opens the endpoint in KyYard. An empty feed means nothing is down. If the URL cannot be
+same while the same thing is down in the same way; its link opens the endpoint in KyYard. The
+`guid` does not change between outages: a container that goes down, recovers and goes down again
+in the same way keeps the `guid` it had the first time (until it is recreated), and so does a
+node, so a reader that de-duplicates by `guid` shows each such condition once per container or
+node lifetime. Read the feed's current items, not only new ones, to see a repeat outage. An empty feed means nothing is down. If the URL cannot be
 fetched at all, KyYard itself is down. One read covers 200 endpoints and 200 items; past that the
 channel description says so.
 

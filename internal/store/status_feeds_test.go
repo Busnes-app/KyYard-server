@@ -325,6 +325,17 @@ func TestStatusFeedReportsAnUnreadableRuntime(t *testing.T) {
 	if items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw); len(items) != 0 {
 		t.Fatalf("a read cluster without nodes: %+v", items)
 	}
+	// The version read, but the node list failed (a timeout, a role without list nodes): the agent
+	// reports it empty and truncated, and the feed must not read as all clear.
+	raw, _ = json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "v1.33.0"}, Truncated: []string{"nodes"}, Kubernetes: &protocol.KubernetesInventory{Workloads: []protocol.Workload{{Namespace: "shop", Kind: "deployment", Name: "web"}}}})
+	if items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw); len(items) != 1 || items[0].Kind != DownRuntimeUnreachable || items[0].Condition != "nodes_unreadable" {
+		t.Fatalf("an unreadable node list: %+v", items)
+	}
+	// A node list cut for size still lists nodes: those are reported as they are.
+	raw, _ = json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "v1.33.0"}, Truncated: []string{"nodes"}, Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "worker-1", Ready: true}}}})
+	if items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw); len(items) != 0 {
+		t.Fatalf("a node list cut for size: %+v", items)
+	}
 }
 
 func newOrgFor(t *testing.T, st *SQLStore, id string) TenantAccess {

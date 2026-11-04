@@ -593,6 +593,9 @@ func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string
 
 func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expectedPasswordHash string) error {
 	err := s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, false, func(tx *sql.Tx) error {
+		if err := s.stillSignsIn(ctx, tx, sess.UserID, sess.SSOProvider, sess.SSOSubject); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_provider, sso_sid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOProvider, sess.SSOSID)
 		return err
 	})
@@ -767,9 +770,37 @@ func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {
 	return err
 }
 
+// stillSignsIn checks, under the user-row lock UnlinkSSO and LinkSSO also take, that a provider
+// sign-in resolved earlier still names this account by the exact provider identity it proved. A
+// provider sign-in without a subject gets nothing. A sign-in resolved before an unlink, or before
+// an unlink and a new link, gets nothing after it.
+func (s *sessionStore) stillSignsIn(ctx context.Context, tx *sql.Tx, userID, provider, subject string) error {
+	if provider == "" {
+		return nil
+	}
+	if subject == "" {
+		return ErrNotFound
+	}
+	var linked int
+	err := tx.QueryRowContext(ctx, s.store.rebind(`SELECT COUNT(*) FROM users u WHERE u.id = ? AND (
+ (u.sso_provider = ? AND u.sso_subject = ?)
+ OR EXISTS (SELECT 1 FROM user_sso_identities i WHERE i.user_id = u.id AND i.provider = ? AND i.subject = ?))`),
+		userID, provider, subject, provider, subject).Scan(&linked)
+	if err != nil {
+		return err
+	}
+	if linked == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *sessionStore) CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error {
 	return s.store.withPassword(ctx, challenge.UserID, expectedPasswordHash, false, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at, password_hash, sso_provider, sso_sid, sso_issued_at) VALUES (?, ?, ?, ?, ?, ?, ?)"), challenge.TokenHash, challenge.UserID, challenge.ExpiresAt, expectedPasswordHash, challenge.SSOProvider, challenge.SSOSID, sql.NullTime{Time: challenge.SSOIssuedAt.UTC(), Valid: !challenge.SSOIssuedAt.IsZero()})
+		if err := s.stillSignsIn(ctx, tx, challenge.UserID, challenge.SSOProvider, challenge.SSOSubject); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at, password_hash, sso_provider, sso_sid, sso_issued_at, sso_subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"), challenge.TokenHash, challenge.UserID, challenge.ExpiresAt, expectedPasswordHash, challenge.SSOProvider, challenge.SSOSID, sql.NullTime{Time: challenge.SSOIssuedAt.UTC(), Valid: !challenge.SSOIssuedAt.IsZero()}, challenge.SSOSubject)
 		return err
 	})
 }
@@ -780,10 +811,10 @@ func (s *sessionStore) ConsumeMFAChallenge(ctx context.Context, tokenHash string
 		return nil, err
 	}
 	defer tx.Rollback()
-	q := s.store.rebind("SELECT user_id, expires_at, password_hash, sso_provider, sso_sid, sso_issued_at FROM mfa_challenges WHERE token_hash = ?")
+	q := s.store.rebind("SELECT user_id, expires_at, password_hash, sso_provider, sso_sid, sso_issued_at, sso_subject FROM mfa_challenges WHERE token_hash = ?")
 	c := MFAChallenge{TokenHash: tokenHash}
 	var issuedAt sql.NullTime
-	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&c.UserID, &c.ExpiresAt, &c.PasswordHash, &c.SSOProvider, &c.SSOSID, &issuedAt); err != nil {
+	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&c.UserID, &c.ExpiresAt, &c.PasswordHash, &c.SSOProvider, &c.SSOSID, &issuedAt, &c.SSOSubject); err != nil {
 		if errorsIs(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}

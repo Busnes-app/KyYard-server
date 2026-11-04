@@ -138,6 +138,17 @@ func runServer() {
 	}
 	defer st.Close()
 	st.SetAllowPrivileged(cfg.Container.AllowPrivileged)
+	// The saved schedule is read only when the budget could be refused: an unreadable schedule
+	// row must not stop a server whose budget fits a capsule anyway.
+	if backup.BudgetFits(cfg, time.Hour) != nil {
+		interval, err := recoveryclient.Interval(cfg.Backup.DepositInterval, backup.Settings(ctx, st.Settings()))
+		if err != nil {
+			log.Fatalf("Backup schedule unreadable: %v", err)
+		}
+		if err := backup.BudgetFits(cfg, interval); err != nil {
+			log.Fatalf("%v", err)
+		}
+	}
 
 	if err := bootstrapAdmin(ctx, st, cfg.Database.DataDir, os.Getenv("KY_ADMIN_PASSWORD")); err != nil {
 		log.Fatalf("Bootstrap admin: %v", err)
@@ -347,8 +358,7 @@ func backupLoop(ctx context.Context, cfg *config.Config, st store.Store, done ch
 
 // recordRun audits one run the same way the admin route does, under the actor that started it.
 func recordRun(ctx context.Context, st store.Store, actor string, res recoveryclient.Result, err error) {
-	action, outcome, details := recoveryclient.Outcome(res, err)
-	details["outcome"] = outcome
+	action, _, details := api.BackupOutcome(res, err)
 	_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: actor, Action: action,
 		Resource: res.Manifest.CapsuleID, Details: api.AuditDetails(details)})
 	if err != nil {

@@ -1,6 +1,7 @@
 import { useContainerImageUpdate } from '../components/useContainerImageUpdate';
 import { RunYAML } from '../components/RunYAML';
 import React, { lazy, Suspense, useEffect, useState } from 'react';
+import { ChunkBoundary } from '../components/ChunkBoundary';
 import { Box } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
@@ -103,7 +104,7 @@ export const ContainerPage: React.FC<{ org: string; endpoint: string; container:
         : canConfigure(role) ? <EditConfiguration key={`${c.id}/${c.image_id}/${c.created_at}`} base={base} org={org} endpoint={e} container={c} onUpdateImage={() => void imageUpdate.update(c)} pending={imageUpdate.busy || imageUpdate.lost || (!!command && (!command.outcome || command.outcome === 'unknown' || command.outcome === 'succeeded'))} onSent={(cmd) => { record(cmd); if (cmd.outcome) inventory.reload(); }} />
         : <Configuration base={base} container={c} capable={e.capabilities.includes('container.inspect')} />)}
       {tab === 'logs' && <section className="panel" aria-label="Logs"><ContainerLogs key={c.id} url={`${base}/containers/${encodeURIComponent(c.id)}/logs`} name={c.name} /></section>}
-      {tab === 'terminal' && exec && <section className="panel" aria-label="Terminal">{c.state === 'running' && active ? <Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${c.id}/${c.image_id}`} base={base} container={c} scope={scope} /></Suspense> : <EmptyNotice>The terminal needs a running container on an active host.</EmptyNotice>}</section>}
+      {tab === 'terminal' && exec && <section className="panel" aria-label="Terminal">{c.state === 'running' && active ? <ChunkBoundary what="terminal"><Suspense fallback={<p role="status">Loading terminal…</p>}><ContainerTerminal key={`${base}/${c.id}/${c.image_id}`} base={base} container={c} scope={scope} /></Suspense></ChunkBoundary> : <EmptyNotice>The terminal needs a running container on an active host.</EmptyNotice>}</section>}
       {tab === 'activity' && <Activity base={base} container={c.id} />}
     </>}
   </div>;

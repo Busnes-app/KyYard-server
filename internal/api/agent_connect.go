@@ -45,8 +45,64 @@ type agentConn struct {
 	closeOnce      sync.Once
 	reason         string
 	lastFrame      atomic.Int64 // unix nanoseconds of the last frame the reader delivered
-	lastMetrics    time.Time    // last metrics frame handed to the store; loop goroutine only
-	skewRaised     bool         // generation_rejected raised this session; loop goroutine only
+	carriedMu      sync.Mutex
+	carried        map[string]struct{} // command IDs this socket took and has not answered
+	lastMetrics    time.Time           // last metrics frame handed to the store; loop goroutine only
+	skewRaised     bool                // generation_rejected raised this session; loop goroutine only
+}
+
+func (c *agentConn) carry(id string) {
+	c.carriedMu.Lock()
+	defer c.carriedMu.Unlock()
+	if c.carried == nil {
+		c.carried = map[string]struct{}{}
+	}
+	c.carried[id] = struct{}{}
+}
+
+func (c *agentConn) answered(id string) {
+	c.carriedMu.Lock()
+	defer c.carriedMu.Unlock()
+	delete(c.carried, id)
+}
+
+// unanswered takes the commands this socket carried and never answered.
+func (c *agentConn) unanswered() []string {
+	c.carriedMu.Lock()
+	defer c.carriedMu.Unlock()
+	ids := make([]string, 0, len(c.carried))
+	for id := range c.carried {
+		ids = append(ids, id)
+	}
+	c.carried = nil
+	return ids
+}
+
+// carriedRetry is how long a socket's end waits before settling its unanswered commands again.
+var carriedRetry = 10 * time.Second
+
+// retryWait sleeps carriedRetry, waking early and reporting false once the server is stopping.
+func (s *Server) retryWait() bool {
+	for until := time.Now().Add(carriedRetry); time.Now().Before(until); {
+		if s.stopping.Load() {
+			return false
+		}
+		time.Sleep(min(100*time.Millisecond, time.Until(until)))
+	}
+	return !s.stopping.Load()
+}
+
+// settleCarried settles ids unknown, each within frameBudget, and returns those the store refused.
+func (s *Server) settleCarried(ctx context.Context, endpointID string, ids []string) []string {
+	var left []string
+	for _, id := range ids {
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), frameBudget)
+		if err := s.store.Tenancy().SettleCommand(wctx, endpointID, id, protocol.OutcomeUnknown, "the connection ended before a result arrived"); err != nil {
+			left = append(left, id)
+		}
+		cancel()
+	}
+	return left
 }
 
 // alive pings the socket with a short deadline; a peer that cannot answer is not a competitor.
@@ -148,6 +204,29 @@ func (r *agentRegistry) deliver(id string, e protocol.Envelope) bool {
 	case c.send <- e:
 		return true
 	default:
+		return false
+	}
+}
+
+// deliverCommand is deliver for a command frame. The command is recorded on the socket that
+// takes it while the registry lock is held, the lock replace and remove take too, so whichever
+// socket carried it settles it when that socket ends, even with a successor holding the
+// endpoint by then and whether or not the dispatch mark was written.
+func (r *agentRegistry) deliverCommand(endpoint, id string, e protocol.Envelope) bool {
+	r.mu.Lock()
+	c := r.conns[endpoint]
+	if c != nil {
+		c.carry(id)
+	}
+	r.mu.Unlock()
+	if c == nil {
+		return false
+	}
+	select {
+	case c.send <- e:
+		return true
+	default:
+		c.answered(id)
 		return false
 	}
 }
@@ -380,6 +459,22 @@ func (s *Server) serveAgent(ctx context.Context, c *agentConn, pending bool) {
 // detached context is bounded.
 func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 	s.agents.remove(c)
+	// What this socket carried and never answered cannot be answered by a successor, which never
+	// heard of it: settle it unknown here, before the early return below.
+	if ids := c.unanswered(); len(ids) > 0 {
+		if left := s.settleCarried(ctx, c.endpointID, ids); len(left) > 0 && !s.stopping.Load() {
+			// The store refused: keep trying, so a slow database cannot leave them in flight
+			// while a successor holds the endpoint. The worker is detached work WaitDetached
+			// joins, and it stops at shutdown; a restart reconciles whatever is left.
+			s.detached.add()
+			go func() {
+				defer s.detached.done()
+				for len(left) > 0 && s.retryWait() {
+					left = s.settleCarried(ctx, c.endpointID, left)
+				}
+			}()
+		}
+	}
 	if s.Connected(c.endpointID) {
 		// A successor already holds the endpoint -- an evicted socket unwinding, which is an
 		// ordinary flow -- so nothing here has been lost, and the readers attached to the
@@ -512,7 +607,11 @@ func (s *Server) handleAgentFrame(ctx context.Context, ts store.TenancyStore, c 
 		}
 		// The first answer wins, and an answer for a command this endpoint was never given
 		// changes nothing: the update is scoped to both.
-		if err := ts.SettleCommand(fctx, c.endpointID, res.ID, res.Outcome, res.Detail); err != nil {
+		// The command stays this socket's until its answer is written, so a failed write is
+		// still settled unknown when the socket ends.
+		if err := ts.SettleCommand(fctx, c.endpointID, res.ID, res.Outcome, res.Detail); err == nil {
+			c.answered(res.ID)
+		} else {
 			// The identifier is server-minted, so anything else is the agent's invention and
 			// none of it reaches the line: an agent does not get to write the operator's log.
 			id := "an unrecognised id"

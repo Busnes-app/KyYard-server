@@ -39,6 +39,8 @@ export interface BackupStatus {
   allow_private_recovery: boolean;
   database_driver: string;
   members: string[];
+  database_bytes?: number;
+  capsule_limit_bytes?: number;
   recovery_url?: string;
   recovery_key_id?: string;
   recovery_key_error?: string;
@@ -120,6 +122,17 @@ async function call<T>(path: string, init: RequestInit, fallback: string): Promi
   if (!res.ok) throw await apiError(res, fallback);
   return (await res.json()) as T;
 }
+
+const mib = (n: number) => Math.round(n / 2 ** 20);
+
+/** Warns from 80% of what one capsule holds, and says backups fail past it (owner decision Q6 C). */
+const CapsuleSize: React.FC<{ used: number; limit: number }> = ({ used, limit }) => {
+  if (used * 5 < limit * 4) return null;
+  const lower = 'Lower KY_RETENTION_DISK_BUDGET or shorten retention so older history is pruned.';
+  return used >= limit
+    ? <Alert kind="error">Backups fail: the database is about {mib(used)} MiB and one capsule holds {mib(limit)} MiB. {lower}</Alert>
+    : <Alert kind="warn">The database is about {mib(used)} MiB, over 80% of the {mib(limit)} MiB one backup capsule holds. Backups fail once it outgrows that. {lower}</Alert>;
+};
 
 const errorText = (err: unknown, fallback: string): string => (err instanceof Error && err.message ? err.message : fallback);
 
@@ -350,6 +363,7 @@ export const Backup: React.FC = () => {
           with pg_dump on its own schedule.
         </Alert>
       )}
+      {status?.database_bytes !== undefined && status.capsule_limit_bytes ? <CapsuleSize used={status.database_bytes} limit={status.capsule_limit_bytes} /> : null}
       {status && !keyPinned && <Alert kind="warn">No backups are being made. Pair with KyRecovery or pin the suite recovery key below.</Alert>}
       {status && keyPinned && !paired && !hasLocal && (
         <Alert kind="warn">A key is pinned but capsules have nowhere to go. Pair with KyRecovery, or set KY_BACKUP_DIR to keep copies on this host.</Alert>

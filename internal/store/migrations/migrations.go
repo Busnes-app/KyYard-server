@@ -1043,7 +1043,14 @@ CREATE UNIQUE INDEX idx_deployment_validations_rollback ON deployment_validation
 	// A status feed is its own credential, not a service_tokens scope: agent-token queries
 	// treat every non-pulse scope as an agent token.
 	{Version: 47, Name: "status_feeds", SQLite: statusFeeds, Postgres: strings.ReplaceAll(statusFeeds, "DATETIME", "TIMESTAMPTZ")},
+	// A provider MFA transaction carries the subject it proved, so the session it completes is
+	// checked against that identity, not any link at the provider. Pending provider transactions
+	// (five minutes) from before it carry none and are ended once.
+	{Version: 48, Name: "mfa_challenge_subject", SQLite: mfaChallengeSubject, Postgres: mfaChallengeSubject},
 }
+
+const mfaChallengeSubject = `DELETE FROM mfa_challenges WHERE sso_provider <> '';
+ALTER TABLE mfa_challenges ADD COLUMN sso_subject TEXT NOT NULL DEFAULT '';`
 
 const statusFeeds = `CREATE TABLE status_feeds (
  id TEXT PRIMARY KEY,

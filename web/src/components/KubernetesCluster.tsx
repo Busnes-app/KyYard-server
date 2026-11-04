@@ -11,7 +11,7 @@ import { WorkloadControls } from './WorkloadControls';
 import { WorkloadUpdate, type CheckWorkload } from './WorkloadUpdate';
 import type { useWorkloadImageUpdate } from './useWorkloadImageUpdate';
 import { PAGE_KINDS, PodControls } from './PodControls';
-import { dnsLabel, workloadPath, workloadRunPath } from '../router';
+import { dnsLabel, dnsSubdomain, workloadPath, workloadRunPath } from '../router';
 import { canConfigure, canOperate, type Endpoint, type KubernetesInventory, type Pod, type PodContainer, type Workload } from '../tenant';
 
 const stateTone: Record<string, Tone> = { running: 'success', terminated: 'danger' };
@@ -39,7 +39,7 @@ export function KubernetesCluster({ org, base, endpoint, inventory, instances, a
   const tools = onStatus && endpoint.capabilities.includes('kubernetes.workloads') && canOperate(role) ? onStatus : null;
   const updates = !!checkUpdate && canConfigure(role) && endpoint.capabilities.includes('kubernetes.workloads');
   const toolProps = { base, org, endpoint: endpoint.id, active, role, capabilities: endpoint.capabilities, scope: `Cluster ${displayName(endpoint.name)} · Endpoint ${endpoint.id}`, onRefresh };
-  const page = (namespace: string, kind: string, name: string, text: string) => Object.hasOwn(PAGE_KINDS, kind) && dnsLabel.test(namespace) && dnsLabel.test(name) ? <Link to={workloadPath(org, endpoint.id, namespace, PAGE_KINDS[kind] ?? '', name)}>{text}</Link> : text;
+  const page = (namespace: string, kind: string, name: string, text: string) => Object.hasOwn(PAGE_KINDS, kind) && dnsLabel.test(namespace) && dnsSubdomain.test(name) ? <Link to={workloadPath(org, endpoint.id, namespace, PAGE_KINDS[kind] ?? '', name)}>{text}</Link> : text;
   return <>
     <section className="panel" aria-label="Cluster health">
       <h2 style={{ fontSize: 16 }}>Cluster health <Status tone={healthTone[health]}>{health}</Status></h2>

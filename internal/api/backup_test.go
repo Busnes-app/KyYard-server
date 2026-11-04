@@ -228,6 +228,19 @@ func TestUnpairKeepsPin(t *testing.T) {
 	}
 }
 
+// A schedule is not turned on for a SQLite database retention may grow past one capsule.
+func TestScheduleRefusedForABudgetPastACapsule(t *testing.T) {
+	srv, st, cfg := setupSQLiteServer(t)
+	cfg.Database.DiskBudget = capsule.MaxExpandedBytes + 1
+	session := loginAs(t, srv, st, "alice", "admin")
+	if w := adminDo(t, srv, session, "PUT", "/api/backup/schedule", map[string]int64{"interval_sec": 900}); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "more than one backup capsule holds") {
+		t.Fatalf("schedule on past a capsule: %d %s", w.Code, w.Body.String())
+	}
+	if w := adminDo(t, srv, session, "PUT", "/api/backup/schedule", map[string]int64{"interval_sec": 0}); w.Code != http.StatusOK {
+		t.Fatalf("schedule off: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestScheduleBounds(t *testing.T) {
 	srv, st, _ := setupSQLiteServer(t)
 	session := loginAs(t, srv, st, "alice", "admin")
@@ -269,6 +282,18 @@ func TestStatusNeverCarriesToken(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &status)
 	if status["paired"] != true || status["key_pinned"] != true {
 		t.Errorf("status %v", status)
+	}
+	// The screen warns before the database outgrows the capsule (owner decision Q6 C).
+	if used, ok := status["database_bytes"].(float64); !ok || used <= 0 || status["capsule_limit_bytes"] != float64(capsule.MaxExpandedBytes) {
+		t.Errorf("no database size against the capsule limit: %v", status)
+	}
+}
+
+// A backup that outgrew its capsule is audited in the words the operator is shown.
+func TestBackupOutcomeNamesACapsuleTooLarge(t *testing.T) {
+	_, outcome, details := api.BackupOutcome(recoveryclient.Result{}, fmt.Errorf("seal: %w", capsule.ErrCapsuleTooLarge))
+	if outcome != "failure" || details["error"] != recoveryclient.TooLargeMessage || details["outcome"] != "failure" {
+		t.Fatalf("%s %v", outcome, details)
 	}
 }
 

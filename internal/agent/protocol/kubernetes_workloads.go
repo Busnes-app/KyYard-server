@@ -23,6 +23,11 @@ const (
 	CapabilityKubernetesManifestsRun = "kubernetes.manifests.run"
 	// CapabilityPodExec marks a cluster agent that opens an exec session in a pod container.
 	CapabilityPodExec = "pod.exec"
+	// CapabilityKubernetesSubdomainNames marks a cluster agent that accepts a workload or pod
+	// named as a DNS-1123 subdomain (dots, up to 253 characters); agents from before it refuse
+	// any name that is not a DNS label, and refuse a configuration grant naming one by ending
+	// the session, so the server gates those reads on it.
+	CapabilityKubernetesSubdomainNames = "kubernetes.names.subdomain"
 
 	TypeWorkloadApply     = "workload.apply"
 	MaxWorkloadApplyBytes = 128 << 10
@@ -65,10 +70,15 @@ var (
 	envFrom = regexp.MustCompile(`^(secret|configmap)/[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$`)
 )
 
-// validObject is the object shape: a known kind, a namespace and name as DNS-1123 labels, no UID.
+// validObject is the object shape: a known kind, a namespace as a DNS-1123 label and a name as a
+// DNS-1123 subdomain (Kubernetes names Deployments, StatefulSets, DaemonSets and pods so), no UID.
 func (w WorkloadRef) validObject() bool {
-	return workloadKinds[w.Kind] && w.UID == "" && ValidDNSLabel(w.Namespace) && ValidDNSLabel(w.Name)
+	return workloadKinds[w.Kind] && w.UID == "" && ValidDNSLabel(w.Namespace) && ValidDNSSubdomain(w.Name)
 }
+
+// NeedsSubdomainNames reports a name only an agent advertising CapabilityKubernetesSubdomainNames
+// accepts.
+func (w WorkloadRef) NeedsSubdomainNames() bool { return !ValidDNSLabel(w.Name) }
 
 // ParseWorkloadRef reads "<namespace>/<kind>/<name>", the form a command's Reference carries.
 func ParseWorkloadRef(reference string) (WorkloadRef, error) {
@@ -78,7 +88,7 @@ func ParseWorkloadRef(reference string) (WorkloadRef, error) {
 	}
 	r := WorkloadRef{Namespace: parts[0], Kind: parts[1], Name: parts[2]}
 	if !r.validObject() {
-		return WorkloadRef{}, errors.New("a workload reference names a namespace, a known lower-case kind and a name, in Kubernetes label syntax")
+		return WorkloadRef{}, errors.New("a workload reference names a namespace (a Kubernetes label), a known lower-case kind and a name (a Kubernetes subdomain)")
 	}
 	return r, nil
 }
@@ -312,6 +322,10 @@ func (a WorkloadApply) Validate(now time.Time) error {
 	}
 	if a.Create && (a.Target.Kind != WorkloadDeployment || a.Spec.Paused || len(a.Spec.InitContainers) > 0 || len(a.Spec.EnvFrom) > 0) {
 		return errors.New("a workload create carries a Deployment's containers only")
+	}
+	// A run's name is also its label values, so it stays a DNS label.
+	if a.Create && !ValidDNSLabel(a.Target.Name) {
+		return errors.New("a workload create names its Deployment with a DNS label")
 	}
 	if err := a.Spec.validSpec(a.Create); err != nil {
 		return err

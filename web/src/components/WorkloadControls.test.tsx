@@ -172,7 +172,7 @@ it('hides Delete for an application-managed workload', () => {
 
 it('renders no controls for a name the route rejects', () => {
   posts();
-  controls({ workload: { ...web, name: 'web.v2' } });
+  controls({ workload: { ...web, name: 'web..v2' } });
   expect(screen.queryByRole('group')).toBeNull();
 });
 
@@ -208,9 +208,9 @@ it('frees the controls after a failed poll', async () => {
   expect(restart.disabled).toBe(false);
 });
 
-it('keeps Delete for a pod whose owner name is not a DNS label', () => {
+it('keeps Delete for a pod whose owner name is not a DNS subdomain', () => {
   posts();
-  render(<PodControls base={base} org="a" endpoint="ep_k" pod={{ ...pod, owner_kind: 'StatefulSet', owner_name: 'db.v2' }} active role="organization_admin" capabilities={caps} scope="Cluster prod" onStatus={vi.fn()} />);
+  render(<PodControls base={base} org="a" endpoint="ep_k" pod={{ ...pod, owner_kind: 'StatefulSet', owner_name: 'db..v2' }} active role="organization_admin" capabilities={caps} scope="Cluster prod" onStatus={vi.fn()} />);
   expect(screen.getByRole('button', { name: 'Delete shop/web-7c9' })).toBeTruthy();
   expect(screen.queryByRole('link', { name: /for shop\/web-7c9/ })).toBeNull();
 });

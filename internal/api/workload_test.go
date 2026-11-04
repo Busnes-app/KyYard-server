@@ -23,7 +23,7 @@ const (
 	podUID           = "11111111-2222-4333-8444-555555555555"
 )
 
-var workloadCaps = []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesWorkloads, protocol.CapabilityKubernetesWorkloadsRun, protocol.CapabilityPodExec}
+var workloadCaps = []string{protocol.CapabilityKubernetesInventory, protocol.CapabilityKubernetesWorkloads, protocol.CapabilityKubernetesWorkloadsRun, protocol.CapabilityPodExec, protocol.CapabilityKubernetesSubdomainNames}
 
 // workloadFleet is a cluster granted namespace shop and a Docker host, with a member per role.
 type workloadFleet struct {
@@ -381,6 +381,14 @@ func TestWorkloadRefusals(t *testing.T) {
 	if w := tenantRequest(f.s, f.org, "POST", f.clusterPath+"/workloads", workloadRunBody(t, "shop", "fresh", "fresh"), true); w.Code != 501 || !strings.Contains(w.Body.String(), "Upgrade the cluster agent to run workloads") {
 		t.Errorf("run beside a parity-era agent: %d %s", w.Code, w.Body.String())
 	}
+	// A workload named as a subdomain is read only through an agent that accepts such names: an
+	// older one would end its session over the grant.
+	dotted := f.clusterPath + "/workloads/shop/deployment/api.prod"
+	if w := tenantRequest(f.s, f.org, "GET", dotted+"/configuration", "", false); w.Code != 501 || !strings.Contains(w.Body.String(), "dots or is longer than 63") {
+		t.Errorf("subdomain read beside an older agent: %d %s", w.Code, w.Body.String())
+	}
+	f.connect(t, workloadCaps...)
+	code(tenantRequest(f.s, f.org, "GET", dotted+"/configuration", "", false), 404, "")
 	f.sync(t)
 }
 

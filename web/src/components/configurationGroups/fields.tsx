@@ -30,6 +30,16 @@ export function Check({ label, checked, onChange }: { label: string; checked: bo
 
 // Lines edits a list one entry per line; the split is lossless while typing and the form drops
 // blank entries when it builds the spec.
+// argv drops the empty lines a textarea leaves at the end of an argument list, but never the
+// trailing empty arguments the read itself carried: an empty argument means something to a command.
+export const argv = (items: string[], read: readonly string[] = []) => {
+  let keep = 0;
+  while (keep < read.length && read[read.length - 1 - keep] === '') keep++;
+  let trailing = 0;
+  while (trailing < items.length && items[items.length - 1 - trailing] === '') trailing++;
+  return items.slice(0, items.length - Math.max(0, trailing - keep));
+};
+
 export function Lines({ label, value, onChange }: { label: string; value: string[]; onChange: (v: string[]) => void }) {
   return <label>{label}<textarea rows={Math.min(Math.max(value.length, 2), 8)} value={value.join('\n')} onChange={(e) => onChange(e.target.value === '' ? [] : e.target.value.split('\n'))} /></label>;
 }

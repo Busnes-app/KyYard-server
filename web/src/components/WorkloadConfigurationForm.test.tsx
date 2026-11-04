@@ -25,6 +25,21 @@ it('round-trips the read with no changes and keeps Save disabled', () => {
   expect(screen.getByLabelText('Arguments of web')).toHaveProperty('value', '--port\n80');
 });
 
+it("applies a container's trailing empty argument as read when another field changes", async () => {
+  const bodies: { spec: { containers: { args: string[] }[] } }[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => { bodies.push(JSON.parse(String(init?.body))); return json({ id: 'k8', action: 'workload.apply', outcome: '' }, 202); }));
+  const read = configuration();
+  const args = ['-c', 'test "$#" -eq 2', 'kept', ''];
+  const onSent = form(configuration({ containers: [{ ...read.containers[0]!, args }] }));
+  expect(screen.getByText('No changes.')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Replicas'), { target: { value: '4' } });
+  expect(screen.getByText('Changes: replicas')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Type the workload name web to confirm'), { target: { value: 'web' } });
+  fireEvent.click(save());
+  await waitFor(() => expect(onSent).toHaveBeenCalled());
+  expect(bodies[0]?.spec.containers[0]?.args).toEqual(args);
+});
+
 it('keeps a literal value out of the DOM until revealed and shows references read-only', () => {
   const { container } = render(<WorkloadConfigurationForm base={base} initial={configuration()} onSent={vi.fn()} />);
   expect(container.innerHTML).not.toContain(SECRET);

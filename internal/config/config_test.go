@@ -235,10 +235,12 @@ func TestDiskBudgetRejectsNonsense(t *testing.T) {
 		name, value string
 		want        int64
 		wantErr     bool
+		env         map[string]string
 	}{
-		{name: "default when unset", value: "", want: 2 << 30},
+		{name: "SQLite default fits a capsule", value: "", want: 192 << 20},
+		{name: "PostgreSQL default", value: "", want: 2 << 30, env: map[string]string{"KY_DB_DRIVER": "postgres"}},
 		{name: "zero disables", value: "0", want: 0},
-		{name: "documented default", value: "2147483648", want: 2 << 30},
+		{name: "documented PostgreSQL value", value: "2147483648", want: 2 << 30, env: map[string]string{"KY_DB_DRIVER": "postgres"}},
 		{name: "negative is refused", value: "-1", wantErr: true},
 		{name: "absurd is refused", value: "9223372036854775807", wantErr: true},
 	} {
@@ -247,6 +249,9 @@ func TestDiskBudgetRejectsNonsense(t *testing.T) {
 			t.Setenv("KY_APP_URL", "http://localhost:8080")
 			if tc.value != "" {
 				t.Setenv("KY_RETENTION_DISK_BUDGET", tc.value)
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
 			}
 			cfg, err := config.LoadFromEnv()
 			if tc.wantErr {
