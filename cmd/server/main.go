@@ -123,6 +123,12 @@ func runServer() {
 		log.Printf("[CONTAINER] KY_CONTAINER_ALLOW_PRIVILEGED is on: organization admins may recreate or run containers with host-level settings, which is root on the host")
 	}
 
+	lock, err := lockDataDir(cfg.Database.DataDir)
+	if err != nil {
+		log.Fatalf("Data directory: %v", err)
+	}
+	defer lock.Close()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

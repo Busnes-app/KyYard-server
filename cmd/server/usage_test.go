@@ -47,3 +47,21 @@ func TestUnknownCommandStartsNothing(t *testing.T) {
 		})
 	}
 }
+
+// A second server on a data directory a running one holds is refused before it opens the store.
+func TestDataDirLockRefusesASecondServer(t *testing.T) {
+	dir := t.TempDir()
+	first, err := lockDataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockDataDir(dir); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second lock: %v", err)
+	}
+	_ = first.Close()
+	again, err := lockDataDir(dir)
+	if err != nil {
+		t.Fatalf("lock after the first server ended: %v", err)
+	}
+	_ = again.Close()
+}
