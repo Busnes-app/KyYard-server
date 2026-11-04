@@ -5,7 +5,7 @@ import { Members } from './Members';
 import { Environment } from './Environment';
 import { App } from '../App';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.cookie = 'ky_csrf=; Max-Age=0'; window.history.replaceState(null, '', '/'); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); document.cookie = 'ky_csrf=; Max-Age=0'; window.history.replaceState(null, '', '/'); });
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -59,6 +59,7 @@ it('surfaces the last-administrator refusal on the members screen', async () => 
     return json([{ user_id: 'usr_admin', username: 'admin', role: 'organization_admin', status: 'active' }]);
   }));
   document.cookie = 'ky_csrf=csrf-test';
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   render(<Members org="a" />);
   fireEvent.change(await screen.findByLabelText('Role for admin'), { target: { value: 'read_only' } });
   expect((await screen.findByRole('alert')).textContent).toContain('At least one active administrator');

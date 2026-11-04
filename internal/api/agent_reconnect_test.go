@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,8 +43,10 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	s := NewServer(cfg, st)
 	ts := st.Tenancy()
+	flaky := &flakySettle{TenancyStore: ts}
+	s := NewServer(cfg, flakyStore{Store: st, tenancy: flaky})
+	defer s.stopping.Store(true)
 	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
 	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
 	_ = st.Users().CreateUser(ctx, &store.User{ID: "admin", Username: "admin", Role: "user", SSOProvider: "local", Status: "active"})
@@ -279,8 +282,10 @@ func TestDuplicateConnectionEventIsRecordedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	s := NewServer(cfg, st)
 	ts := st.Tenancy()
+	flaky := &flakySettle{TenancyStore: ts}
+	s := NewServer(cfg, flakyStore{Store: st, tenancy: flaky})
+	defer s.stopping.Store(true)
 	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
 	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
 	_ = st.Users().CreateUser(ctx, &store.User{ID: "admin", Username: "admin", Role: "user", SSOProvider: "local", Status: "active"})
@@ -337,5 +342,100 @@ func TestDuplicateConnectionEventIsRecordedOnce(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("%d duplicate_connection alerts after %d parallel refusals: %+v", count, n, view.Alerts)
+	}
+}
+
+// flakySettle refuses its first n SettleCommand calls, standing in for a locked database.
+type flakySettle struct {
+	store.TenancyStore
+	n atomic.Int32
+}
+
+func (f *flakySettle) SettleCommand(ctx context.Context, endpointID, id, outcome, detail string) error {
+	if f.n.Add(-1) >= 0 {
+		return errors.New("database is locked")
+	}
+	return f.TenancyStore.SettleCommand(ctx, endpointID, id, outcome, detail)
+}
+
+type flakyStore struct {
+	store.Store
+	tenancy *flakySettle
+}
+
+func (f flakyStore) Tenancy() store.TenancyStore { return f.tenancy }
+
+// A socket's end keeps settling its unanswered commands while the store refuses, so a slow
+// database cannot leave them in flight beside a successor.
+func TestEvictedSocketCommandsSettleAfterAStoreRefusal(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbCfg := testdb.Config(t)
+	dbCfg.DataDir = cfg.Database.DataDir
+	cfg.Database = dbCfg
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := st.Tenancy()
+	flaky := &flakySettle{TenancyStore: ts}
+	s := NewServer(cfg, flakyStore{Store: st, tenancy: flaky})
+	defer s.stopping.Store(true)
+	_ = ts.CreateOrganization(ctx, &store.Organization{ID: "a", Name: "A"})
+	_ = ts.CreateEnvironment(ctx, &store.Environment{ID: "env-a", OrganizationID: "a", Name: "Prod"})
+	_ = st.Users().CreateUser(ctx, &store.User{ID: "admin", Username: "admin", Role: "user", SSOProvider: "local", Status: "active"})
+	_ = ts.SetMembership(ctx, &store.OrganizationMembership{OrganizationID: "a", UserID: "admin", Role: store.RoleOrganizationAdmin, Status: "active"})
+	tok, err := ts.CreateEnrollmentToken(ctx, store.TenantAccess{ActorID: "admin", OrganizationID: "a", EnvironmentID: "env-a"}, "docker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	e, err := ts.Enroll(ctx, store.EnrollmentRequest{Token: tok.Secret, PublicKey: pub, Proof: ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, tok.Secret)), Name: "host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	org := store.TenantAccess{ActorID: "admin", OrganizationID: "a"}
+	if err := ts.ApproveEndpoint(ctx, org, e.ID, e.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := ts.AcceptInventory(ctx, e.ID, uint64(time.Now().Unix()), time.Now(), []byte(`{"engine":{"version":"27.0"}}`)); err != nil || !ok {
+		t.Fatalf("inventory: %v %v", ok, err)
+	}
+	cmd, err := ts.CreateCommand(ctx, org, e.ID, protocol.ActionImagePull, "docker.io/library/alpine:3.24", "", protocol.Expectation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := &agentConn{endpointID: e.ID, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	s.agents.add(gone)
+	if !s.agents.deliverCommand(e.ID, cmd.ID, envelope(protocol.TypeCommand, protocol.Command{ID: cmd.ID})) {
+		t.Fatal("the socket did not take the command")
+	}
+	successor := &agentConn{endpointID: e.ID, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	if !s.agents.replace(gone, successor) {
+		t.Fatal("replace")
+	}
+	old := carriedRetry
+	carriedRetry = 20 * time.Millisecond
+	t.Cleanup(func() { carriedRetry = old })
+	flaky.n.Store(3)
+	s.markOffline(ctx, gone)
+	for {
+		got, err := ts.ReadCommand(ctx, org, e.ID, cmd.ID)
+		if err == nil && got.Outcome == protocol.OutcomeUnknown {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the evicted socket's command stayed in flight after the store refused: %+v %v", got, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if flaky.n.Load() >= 0 {
+		t.Fatal("the store never refused, so the retry was not exercised")
 	}
 }
