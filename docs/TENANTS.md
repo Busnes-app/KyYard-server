@@ -23,8 +23,9 @@ history under `/organizations/{organization}`. Links are deep-linkable and survi
 
 The first platform administrator is the bootstrap `admin` from first start, or one made with
 `kyyard-server init-admin [-username name]` (which also resets an existing local account's
-password, clears its MFA and makes it a platform administrator). It reads the password from stdin, never argv: `docker compose exec -T kyyard
-/app/kyyard-server init-admin < password-file`, or type it at the hidden prompt. Everything
+password, clears its MFA and makes it a platform administrator). It reads the password from stdin, never argv: `docker compose exec -T --user kyyard kyyard
+/app/kyyard-server init-admin < password-file`, or type it at the hidden prompt. Run it as the
+server user: as root it cannot read the server's keys. Everything
 after that is in the UI: **Settings → Administration**, shown to platform administrators only.
 
 - **Create user** makes a local account with platform role User or Platform administrator. The
