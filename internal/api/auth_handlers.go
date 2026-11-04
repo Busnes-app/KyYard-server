@@ -316,6 +316,12 @@ func (s *Server) issueMFASession(w http.ResponseWriter, r *http.Request, user *s
 	issuedAt := time.Now()
 	if challenge.SSOProvider != "" {
 		issuedAt = challenge.SSOIssuedAt
+		ok := s.lockEnabledProvider(r.Context(), challenge.SSOProvider)
+		defer s.providersMu.Unlock()
+		if !ok {
+			s.writeError(w, http.StatusUnauthorized, "Sign-in provider unavailable; sign in again")
+			return false
+		}
 	}
 	_, _, err := s.sessions.IssueSSOSession(r.Context(), w, r, user, challenge.SSOProvider, challenge.SSOSID, issuedAt)
 	if errors.Is(err, store.ErrSSOSessionEnded) {

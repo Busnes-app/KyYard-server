@@ -184,16 +184,30 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, 200, map[string]bool{"removed": true})
 }
 func (s *Server) provider(r *http.Request) (sso.Provider, bool) {
-	all, err := s.providers(r.Context())
+	return s.enabledProvider(r.Context(), r.PathValue("provider"))
+}
+
+func (s *Server) enabledProvider(ctx context.Context, id string) (sso.Provider, bool) {
+	all, err := s.providers(ctx)
 	if err != nil {
 		return sso.Provider{}, false
 	}
 	for _, p := range all {
-		if p.ID == r.PathValue("provider") && p.Enabled {
+		if p.ID == id && p.Enabled {
 			return p, true
 		}
 	}
 	return sso.Provider{}, false
+}
+
+// lockEnabledProvider takes providersMu and reports whether provider id is still configured and
+// enabled; the caller unlocks. A sign-in issues its session or MFA challenge under it, so one
+// whose token exchange straddled the provider's removal or disabling cannot outlive the
+// EndSSOProvider purge, which runs under the same lock.
+func (s *Server) lockEnabledProvider(ctx context.Context, id string) bool {
+	s.providersMu.Lock()
+	_, ok := s.enabledProvider(ctx, id)
+	return ok
 }
 func (s *Server) handleProviderLogin(w http.ResponseWriter, r *http.Request) {
 	s.startProviderLogin(w, r, nil)
@@ -415,6 +429,12 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 			s.writeError(w, 403, "Application role no longer matches the assigned identity")
 			return
 		}
+	}
+	ok = s.lockEnabledProvider(ctx, p.ID)
+	defer s.providersMu.Unlock()
+	if !ok {
+		s.writeError(w, 404, "Sign-in provider unavailable")
+		return
 	}
 	if user.SSOProvider == "local" && user.TOTPEnabled {
 		token, err := s.beginMFA(ctx, user, p.ID, claims.SessionID, claims.IssuedAt)
