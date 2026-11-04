@@ -6,7 +6,7 @@ import { watchForUpdate } from './ky-ui/update.js';
 import { reloadOnStaleChunk } from './staleChunk';
 
 watchForUpdate({ name: 'KyYard' });
-reloadOnStaleChunk(window, () => window.location.reload(), window.sessionStorage);
+reloadOnStaleChunk(window, () => window.location.reload(), () => window.sessionStorage);
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
