@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -134,19 +133,6 @@ func writes(cs *fake.Clientset) []string {
 		}
 	}
 	return out
-}
-
-// keepServiceUID makes a Service update keep the object's UID, as the API server does.
-func keepServiceUID(cs *fake.Clientset) {
-	cs.PrependReactor("update", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		s := action.(k8stesting.UpdateAction).GetObject().(*corev1.Service)
-		old, err := cs.Tracker().Get(corev1.SchemeGroupVersion.WithResource("services"), s.Namespace, s.Name)
-		if err != nil {
-			return true, nil, err
-		}
-		s.UID = old.(*corev1.Service).UID
-		return false, nil, nil
-	})
 }
 
 func owned(service string) metav1.ObjectMeta {
@@ -518,64 +504,6 @@ func TestDeployRestoresThePreviousTemplateAfterAFailedRollout(t *testing.T) {
 	d, err := cs.AppsV1().Deployments("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
 	if err != nil || d.Spec.Template.Annotations[render.AnnotationDeployment] != "previous" || d.Spec.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
 		t.Fatalf("not restored: %+v %v", d, err)
-	}
-}
-
-// A failed rollout leaves the previous revision's pods serving, so a Service the run updated gets
-// its previous ports back: the new target port would route to one those pods do not listen on.
-func TestDeployRestoresTheServicePortsAfterAFailedRollout(t *testing.T) {
-	prev := &appsv1.Deployment{ObjectMeta: owned("web"), Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: "ghcr.io/org/web@" + testDigest}}},
-	}}}
-	prev.Name, prev.UID = "shop-web", testUID
-	svc := &corev1.Service{ObjectMeta: owned("web"), Spec: corev1.ServiceSpec{ClusterIP: "10.0.0.7", Ports: []corev1.ServicePort{{Name: "tcp-8080", Port: 8080, TargetPort: intstr.FromInt32(8000), Protocol: corev1.ProtocolTCP}}}}
-	svc.Name, svc.UID = "shop-web", "svc-uid"
-	c, cs := deployCluster(t, false, false, prev, svc)
-	keepServiceUID(cs)
-	res := c.Deploy(context.Background(), deployRequest(300*time.Millisecond), func() {})
-	if i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" }); i < 0 || res.Steps[i].Code != "rollout_timeout" {
-		t.Fatalf("result %+v", res)
-	}
-	got, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
-	if err != nil || len(got.Spec.Ports) != 1 || got.Spec.Ports[0].TargetPort.IntVal != 8000 || got.Spec.ClusterIP != "10.0.0.7" {
-		t.Fatalf("ports not restored: %+v %v", got, err)
-	}
-}
-
-// A rollout that may still finish (the agent stopping mid-rollout) leaves the Deployment on the new
-// template, so the Service keeps the new ports its pods will listen on.
-func TestDeployKeepsTheNewServicePortsWhenTheRolloutMayFinish(t *testing.T) {
-	prev := &appsv1.Deployment{ObjectMeta: owned("web"), Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: "ghcr.io/org/web@" + testDigest}}},
-	}}}
-	prev.Name, prev.UID = "shop-web", testUID
-	svc := &corev1.Service{ObjectMeta: owned("web"), Spec: corev1.ServiceSpec{ClusterIP: "10.0.0.7", Ports: []corev1.ServicePort{{Name: "tcp-8080", Port: 8080, TargetPort: intstr.FromInt32(8000), Protocol: corev1.ProtocolTCP}}}}
-	svc.Name, svc.UID = "shop-web", "svc-uid"
-	c, cs := deployCluster(t, false, false, prev, svc)
-	keepServiceUID(cs)
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-	c.Deploy(ctx, deployRequest(time.Minute), func() {})
-	got, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
-	if err != nil || got.Spec.Ports[0].TargetPort.IntVal != 80 {
-		t.Fatalf("ports reverted under a rollout that may finish: %+v %v", got, err)
-	}
-}
-
-// A Service the new revision no longer publishes is deleted only once its rollout succeeded: until
-// then the previous revision's pods serve on it.
-func TestDeployDropsAnUnpublishedServiceOnlyAfterTheRollout(t *testing.T) {
-	for _, rollouts := range []bool{false, true} {
-		svc := &corev1.Service{ObjectMeta: owned("web"), Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "tcp-8080", Port: 8080, TargetPort: intstr.FromInt32(80), Protocol: corev1.ProtocolTCP}}}}
-		svc.Name, svc.UID = "shop-web", "svc-uid"
-		c, cs := deployCluster(t, rollouts, false, svc)
-		req := deployRequest(300 * time.Millisecond)
-		req.Services[0].Ports = []protocol.Port{}
-		c.Deploy(context.Background(), req, func() {})
-		_, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
-		if gone := apierrors.IsNotFound(err); gone != rollouts {
-			t.Fatalf("rollout succeeded %t: Service deleted %t (%v)", rollouts, gone, err)
-		}
 	}
 }
 

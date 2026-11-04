@@ -34,9 +34,6 @@ type recoveryClient interface {
 }
 
 type Server struct {
-	// dispatchMu makes a plain command's delivery and dispatch mark one step against an eviction
-	// of the socket it went to (sendCommand reads, the eviction writes).
-	dispatchMu  sync.RWMutex
 	providersMu sync.Mutex
 	loginMu     sync.Mutex
 	logins      map[string]loginAttempt

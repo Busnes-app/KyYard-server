@@ -231,19 +231,6 @@ func (t *tenancyStore) SettleCommand(ctx context.Context, endpointID, id, outcom
 	return err
 }
 
-// AbandonCommandsDispatchedBefore settles, as AbandonCommands does, the plain commands dispatched
-// to an endpoint before cutoff: when a dead socket is evicted by the agent's own redial, no
-// disconnect follows, and the agent replays only its deployment ledger, so their results are gone.
-// Direct commands are left to that replay and their deadline sweep.
-func (t *tenancyStore) AbandonCommandsDispatchedBefore(ctx context.Context, endpointID string, cutoff time.Time) (int64, error) {
-	result, err := t.store.db.ExecContext(ctx, t.store.rebind(`UPDATE endpoint_commands SET outcome=?, detail=?, settled_at=? WHERE endpoint_id=? AND outcome='' AND dispatched_at IS NOT NULL AND dispatched_at < ? AND action NOT IN `+directIn),
-		append([]any{protocol.OutcomeUnknown, "the connection ended before a result arrived", time.Now().UTC(), endpointID, cutoff.UTC()}, settledByResult...)...)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 // AbandonCommands settles everything still in flight for an endpoint as unknown. The socket
 // going is not evidence that the work did not happen, so the outcome says exactly that rather
 // than guessing at failure, and nothing is retried on its own. A direct command gets its
