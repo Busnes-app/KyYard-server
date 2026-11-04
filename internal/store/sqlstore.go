@@ -669,6 +669,7 @@ func (u *userStore) replacePassword(ctx context.Context, userID, oldHash, newHas
 
 // ResetAdminPassword is the operator recovery path, including disabled local accounts. It
 // clears MFA too: the operator has the host, and a lost authenticator otherwise locks them out.
+// It also unlinks the account's provider identities.
 func (u *userStore) ResetAdminPassword(ctx context.Context, userID, newHash string) error {
 	tx, err := u.store.beginTx(ctx, true)
 	if err != nil {
@@ -687,7 +688,12 @@ func (u *userStore) ResetAdminPassword(ctx context.Context, userID, newHash stri
 	if n != 1 {
 		return ErrNotFound
 	}
-	if err := u.revokePasswordGrants(ctx, tx, userID, "operator reset; sessions and MFA cleared", "", now); err != nil {
+	// A linked provider identity would sign in past the reset: it may be the one that took the
+	// account over, so the owner links it again after recovery.
+	if _, err := tx.ExecContext(ctx, u.store.rebind(`DELETE FROM user_sso_identities WHERE user_id = ?`), userID); err != nil {
+		return err
+	}
+	if err := u.revokePasswordGrants(ctx, tx, userID, "operator reset; sessions, MFA and SSO links cleared", "", now); err != nil {
 		return err
 	}
 	return tx.Commit()
