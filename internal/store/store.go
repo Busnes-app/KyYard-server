@@ -181,6 +181,9 @@ type SessionStore interface {
 	// EndSSOSubject ends the provider subject's sessions from that provider created before
 	// cutoff and fences that subject's earlier logins until fenceUntil.
 	EndSSOSubject(ctx context.Context, provider, subject string, cutoff, fenceUntil time.Time) error
+	// EndSSOProvider ends every session and pending MFA challenge a provider's sign-ins made:
+	// the provider was removed or disabled, and can no longer log them out itself.
+	EndSSOProvider(ctx context.Context, provider string) error
 	CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge, expectedPasswordHash string) error
 	ConsumeMFAChallenge(ctx context.Context, tokenHash string) (*MFAChallenge, error)
 }

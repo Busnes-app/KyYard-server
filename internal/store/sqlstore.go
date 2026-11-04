@@ -640,6 +640,15 @@ ON CONFLICT (provider, subject) DO UPDATE SET cutoff = excluded.cutoff, expires_
 	return err
 }
 
+func (s *sessionStore) EndSSOProvider(ctx context.Context, provider string) error {
+	for _, table := range []string{"mfa_challenges", "sessions"} {
+		if _, err := s.store.db.ExecContext(ctx, s.store.rebind("DELETE FROM "+table+" WHERE sso_provider = ?"), provider); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error {
 	return u.replacePassword(ctx, userID, oldHash, newHash, ip, true, "forced replacement; sessions revoked")
 }

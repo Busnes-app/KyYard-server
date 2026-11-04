@@ -165,8 +165,14 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, 404, "Provider not found")
 		return
 	}
+	// Its sign-ins would otherwise outlive it to their full TTL, beyond its back-channel logout.
+	// Ended first, so a failure leaves the provider in place to remove again.
+	err = s.store.Sessions().EndSSOProvider(r.Context(), id)
 	plain, _ := json.Marshal(saved)
-	blob, err := crypto.EncryptAESGCM(plain, crypto.DeriveKey(s.config.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	var blob string
+	if err == nil {
+		blob, err = crypto.EncryptAESGCM(plain, crypto.DeriveKey(s.config.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	}
 	if err == nil {
 		err = s.store.Settings().SetSetting(r.Context(), providerSetting, blob)
 	}
@@ -489,6 +495,12 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeError(w, 500, "Could not update provider")
 		return
+	}
+	if update.Enabled != nil && !*update.Enabled {
+		if err := s.store.Sessions().EndSSOProvider(r.Context(), id); err != nil {
+			s.writeError(w, 500, "Provider disabled, but its sessions could not be ended; disable it again")
+			return
+		}
 	}
 	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "sso.provider.update", Resource: id})
 	s.writeJSON(w, 200, map[string]bool{"updated": true})
