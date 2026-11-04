@@ -13,7 +13,14 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // Losing administrator authority revokes the agent tokens and status feeds the member created,
+  // and that cannot be undone, so it is never one keystroke away.
+  const REVOKES = 'The AI agent tokens and status feeds they created are revoked now and cannot be restored.';
+  const losesAdmin = (m: Member | undefined, nextRole: string, status: string) =>
+    m?.role === 'organization_admin' && m.status === 'active' && (nextRole !== 'organization_admin' || status !== 'active');
   const put = async (id: string, nextRole: string, status: string) => {
+    const m = members.data?.find((x) => x.user_id === id);
+    if (losesAdmin(m, nextRole, status) && !window.confirm(`${m?.username} stops being an administrator. ${REVOKES}`)) return;
     setBusy(true);
     const err = await tenantWrite(`${base}/${encodeURIComponent(id)}`, 'PUT', { role: nextRole, status });
     setBusy(false);
@@ -21,7 +28,8 @@ export const Members: React.FC<{ org: string }> = ({ org }) => {
     if (!err) { setUserID(''); members.reload(); }
   };
   const remove = async (m: Member) => {
-    if (!window.confirm(`Remove ${m.username} and revoke their access?`)) return;
+    const also = m.role === 'organization_admin' && m.status === 'active' ? ` ${REVOKES}` : '';
+    if (!window.confirm(`Remove ${m.username} and revoke their access?${also}`)) return;
     setBusy(true);
     const err = await tenantWrite(`${base}/${encodeURIComponent(m.user_id)}`, 'DELETE');
     setBusy(false);
