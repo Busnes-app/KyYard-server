@@ -567,6 +567,11 @@ func runBackupDrill(args []string) {
 		fmt.Printf("  [%s] %s: %s\n", status, check.Name, check.Message)
 	}
 	fmt.Println("==================================================")
+	if !result.Passed {
+		// A failed drill is a failed command, so scripts and schedulers see it.
+		st.Close()
+		os.Exit(1)
+	}
 }
 
 func runExportCapsule(args []string) {
