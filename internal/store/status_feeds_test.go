@@ -315,6 +315,11 @@ func TestStatusFeedReportsAnUnreadableRuntime(t *testing.T) {
 			t.Fatalf("%s items: %+v", c.runtime, items)
 		}
 	}
+	// Only the version read failed: the nodes are known, so they are reported, not hidden.
+	raw, _ := json.Marshal(protocol.Snapshot{Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "worker-2", Ready: false}}}})
+	if items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw); len(items) != 1 || items[0].Kind != DownNodeNotReady {
+		t.Fatalf("a cluster without a version: %+v", items)
+	}
 }
 
 func newOrgFor(t *testing.T, st *SQLStore, id string) TenantAccess {

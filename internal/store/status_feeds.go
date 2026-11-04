@@ -266,8 +266,9 @@ func downInSnapshot(endpoint DownItem, runtime string, observed time.Time, raw [
 	if json.Unmarshal(raw, &s) != nil {
 		return nil
 	}
-	if s.Engine.Version == "" {
+	if s.Engine.Version == "" && len(s.Containers) == 0 && (s.Kubernetes == nil || len(s.Kubernetes.Nodes) == 0) {
 		// The agent reported facts only: it could not read the runtime, so nothing below is known.
+		// A cluster whose version read alone failed still lists its nodes, and is read as usual.
 		item := endpoint
 		item.Kind, item.Condition, item.At = DownRuntimeUnreachable, "runtime_unreachable", observed
 		item.Key = DownRuntimeUnreachable + ":" + endpoint.EndpointID
