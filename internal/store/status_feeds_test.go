@@ -320,6 +320,11 @@ func TestStatusFeedReportsAnUnreadableRuntime(t *testing.T) {
 	if items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw); len(items) != 1 || items[0].Kind != DownNodeNotReady {
 		t.Fatalf("a cluster without a version: %+v", items)
 	}
+	// Nodes refused but workloads listed: the cluster was read, so it is not unreachable.
+	raw, _ = json.Marshal(protocol.Snapshot{Kubernetes: &protocol.KubernetesInventory{Workloads: []protocol.Workload{{Namespace: "shop", Kind: "deployment", Name: "web"}}}})
+	if items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw); len(items) != 0 {
+		t.Fatalf("a read cluster without nodes: %+v", items)
+	}
 }
 
 func newOrgFor(t *testing.T, st *SQLStore, id string) TenantAccess {

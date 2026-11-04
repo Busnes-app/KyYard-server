@@ -141,7 +141,7 @@ export const EndpointPage: React.FC<{ org: string; endpoint: string }> = ({ org,
         Inventory generation {inv.generation}, received {ago(inv.received_at)}{stale ? ' (stale: no report for over three minutes)' : ''}{skew ? ' · agent clock differs from the server by more than five minutes' : ''}.
         {inventory.refreshFailed || samples.refreshFailed ? ' Last refresh failed; showing the previous report.' : ''}
         {inv.snapshot.truncated?.length ? ` Lists truncated: ${inv.snapshot.truncated.join(', ')}.` : ''}
-        {!inv.snapshot.engine.version && inv.snapshot.containers.length === 0 && !inv.snapshot.kubernetes?.nodes?.length && <strong style={{ color: 'var(--danger)' }}> The agent cannot read this {cluster ? "cluster's API" : "host's container runtime"}, so the lists below are empty because nothing could be read, not because nothing runs.</strong>}
+        {!inv.snapshot.engine.version && inv.snapshot.containers.length === 0 && !inv.snapshot.kubernetes?.nodes?.length && !inv.snapshot.kubernetes?.workloads?.length && !inv.snapshot.kubernetes?.pods?.length && <strong style={{ color: 'var(--danger)' }}> The agent cannot read this {cluster ? "cluster's API" : "host's container runtime"}, so the lists below are empty because nothing could be read, not because nothing runs.</strong>}
       </p>
   ) : null;
 

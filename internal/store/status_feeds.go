@@ -260,13 +260,15 @@ func downInSnapshot(endpoint DownItem, runtime string, observed time.Time, raw [
 		Engine     protocol.Engine      `json:"engine"`
 		Containers []protocol.Container `json:"containers"`
 		Kubernetes *struct {
-			Nodes []protocol.Node `json:"nodes"`
+			Nodes     []protocol.Node   `json:"nodes"`
+			Workloads []json.RawMessage `json:"workloads"`
+			Pods      []json.RawMessage `json:"pods"`
 		} `json:"kubernetes"`
 	}
 	if json.Unmarshal(raw, &s) != nil {
 		return nil
 	}
-	if s.Engine.Version == "" && len(s.Containers) == 0 && (s.Kubernetes == nil || len(s.Kubernetes.Nodes) == 0) {
+	if s.Engine.Version == "" && len(s.Containers) == 0 && (s.Kubernetes == nil || len(s.Kubernetes.Nodes)+len(s.Kubernetes.Workloads)+len(s.Kubernetes.Pods) == 0) {
 		// The agent reported facts only: it could not read the runtime, so nothing below is known.
 		// A cluster whose version read alone failed still lists its nodes, and is read as usual.
 		item := endpoint
