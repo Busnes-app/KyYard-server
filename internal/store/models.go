@@ -225,14 +225,17 @@ func (a TenantAccess) Principal() string {
 // ServiceToken is another Ky product's read-only credential for one organization. The
 // secret is never stored: token_hash is its SHA-256.
 type ServiceToken struct {
-	ID             string     `json:"id"`
-	OrganizationID string     `json:"organization_id"`
-	Name           string     `json:"name"`
-	CreatedBy      string     `json:"created_by"`
-	CreatedAt      time.Time  `json:"created_at"`
-	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
-	LastIP         string     `json:"last_ip,omitempty"`
-	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	Name           string `json:"name"`
+	CreatedBy      string `json:"created_by"`
+	// CreatedByName is the creator's username in the agent token list, empty elsewhere and
+	// once the account is deleted.
+	CreatedByName string     `json:"created_by_name,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+	LastIP        string     `json:"last_ip,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
 	// Scope is pulse for a kyPulse token, or an agent token's access level (ScopeMCPRead,
 	// ScopeMCPOperate). A token authenticates only where its scope belongs.
 	Scope string `json:"scope"`

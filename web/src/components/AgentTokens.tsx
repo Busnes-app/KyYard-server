@@ -96,11 +96,12 @@ export function AgentTokens({ org }: { org: string }) {
       {tokens.state === 'ready' && tokens.data && (tokens.data.length === 0 ? <p>No agent tokens.</p> : (
         <div style={{ overflowX: 'auto' }}>
           <table className="ky-table ky-responsive-table">
-            <thead><tr><th>Agent</th><th>Access</th><th>Last used</th><th>Revoked if unused by</th><th><span className="sr-only">Actions</span></th></tr></thead>
+            <thead><tr><th>Agent</th><th>Created by</th><th>Access</th><th>Last used</th><th>Revoked if unused by</th><th><span className="sr-only">Actions</span></th></tr></thead>
             <tbody>
               {tokens.data.map((t) => (
                 <tr key={t.id}>
                   <td data-label="Agent">{t.name}</td>
+                  <td data-label="Created by">{t.created_by_name || 'a removed account'}</td>
                   <td data-label="Access">
                     <select aria-label={`Access for ${t.name}`} value={t.scope} disabled={busy} onChange={(e) => void change(t, e.target.value as AgentScope)}>
                       <option value="mcp:read">{scopeText['mcp:read']}</option>

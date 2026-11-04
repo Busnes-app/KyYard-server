@@ -93,7 +93,7 @@ func (t *tenancyStore) CreateAgentToken(ctx context.Context, a TenantAccess, nam
 func (t *tenancyStore) ListAgentTokens(ctx context.Context, a TenantAccess) ([]ServiceToken, error) {
 	out := []ServiceToken{}
 	err := t.readTenant(ctx, a, permissions.AgentTokensManage, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip,scope FROM service_tokens WHERE organization_id=? AND scope<>? AND revoked_at IS NULL ORDER BY created_at DESC, id LIMIT 200`), a.OrganizationID, ScopePulse)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT t.id,t.organization_id,t.name,t.created_by,COALESCE(u.username,''),t.created_at,t.last_used_at,t.last_ip,t.scope FROM service_tokens t LEFT JOIN users u ON u.id=t.created_by WHERE t.organization_id=? AND t.scope<>? AND t.revoked_at IS NULL ORDER BY t.created_at DESC, t.id LIMIT 200`), a.OrganizationID, ScopePulse)
 		if err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ func (t *tenancyStore) ListAgentTokens(ctx context.Context, a TenantAccess) ([]S
 		for rows.Next() {
 			var tok ServiceToken
 			var lastUsed sql.NullTime
-			if err := rows.Scan(&tok.ID, &tok.OrganizationID, &tok.Name, &tok.CreatedBy, &tok.CreatedAt, &lastUsed, &tok.LastIP, &tok.Scope); err != nil {
+			if err := rows.Scan(&tok.ID, &tok.OrganizationID, &tok.Name, &tok.CreatedBy, &tok.CreatedByName, &tok.CreatedAt, &lastUsed, &tok.LastIP, &tok.Scope); err != nil {
 				return err
 			}
 			if lastUsed.Valid {

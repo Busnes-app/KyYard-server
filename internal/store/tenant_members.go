@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/Busnes-app/kyyard-server/internal/permissions"
 )
@@ -66,6 +69,9 @@ func (t *tenancyStore) PutMembership(ctx context.Context, a TenantAccess, userID
 		if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO organization_memberships (organization_id,user_id,role,status) VALUES (?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET role=excluded.role,status=excluded.status`), a.OrganizationID, userID, role, status); err != nil {
 			return err
 		}
+		if err := t.revokeLostAdminCredentials(ctx, tx, a.OrganizationID, userID, a.Principal()); err != nil {
+			return err
+		}
 		return t.requireActiveAdmin(ctx, tx, a.OrganizationID)
 	})
 }
@@ -77,6 +83,9 @@ func (t *tenancyStore) RemoveMembership(ctx context.Context, a TenantAccess, use
 		}
 		result, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM organization_memberships WHERE organization_id=? AND user_id=?`), a.OrganizationID, userID)
 		if err := tenantChangeResult(result, err); err != nil {
+			return err
+		}
+		if err := t.revokeLostAdminCredentials(ctx, tx, a.OrganizationID, userID, a.Principal()); err != nil {
 			return err
 		}
 		return t.requireActiveAdmin(ctx, tx, a.OrganizationID)
@@ -107,6 +116,66 @@ func (t *tenancyStore) requireActiveAdmin(ctx context.Context, tx *sql.Tx, org s
 		return ErrLastAdmin
 	}
 	return nil
+}
+
+// revokeLostAdminCredentials runs inside a membership or account change, holding the audit
+// lock. When userID no longer holds an active organization_admin membership on an active
+// account in org, it revokes the AI agent tokens and status feeds they created there and
+// deletes their unclaimed kyPulse pairing codes, one audit row each (actor is who made the
+// change), as update policies already pause when their creator loses authority.
+func (t *tenancyStore) revokeLostAdminCredentials(ctx context.Context, tx *sql.Tx, org, userID, actor string) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT COUNT(*) FROM organization_memberships m JOIN users u ON u.id=m.user_id WHERE m.organization_id=? AND m.user_id=? AND m.role='organization_admin' AND m.status='active' AND u.status='active'`), org, userID).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	details := "creator " + userID + " is no longer an organization administrator"
+	revoke := func(table string) string {
+		return `UPDATE ` + table + ` SET revoked_at=?, revoked_by=? WHERE id=? AND revoked_at IS NULL`
+	}
+	for _, c := range []struct{ query, write, action string }{
+		{`SELECT id FROM service_tokens WHERE organization_id=? AND created_by=? AND scope<>'` + ScopePulse + `' AND revoked_at IS NULL`, revoke("service_tokens"), "agent_token.revoke"},
+		{`SELECT id FROM status_feeds WHERE organization_id=? AND created_by=? AND revoked_at IS NULL`, revoke("status_feeds"), AuditStatusFeedRevoke},
+		{`SELECT id FROM service_token_pairings WHERE organization_id=? AND created_by=? AND consumed_at IS NULL`, `DELETE FROM service_token_pairings WHERE id=? AND consumed_at IS NULL`, "service_token.pairing_revoke"},
+	} {
+		ids, err := t.collectIDs(ctx, tx, c.query, org, userID)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			args := []any{now, actor, id}
+			if c.action == "service_token.pairing_revoke" {
+				args = []any{id}
+			}
+			if _, err := tx.ExecContext(ctx, t.store.rebind(c.write), args...); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, t.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,ip_address,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?,?)`), actor, c.action, id, details, "", now, "organization", org, "", uuid.NewString(), "success"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (t *tenancyStore) collectIDs(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, t.store.rebind(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (t *tenancyStore) ListMemberOrganizations(ctx context.Context, userID string) ([]MemberOrganization, error) {

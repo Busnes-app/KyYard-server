@@ -42,13 +42,15 @@ var ErrStatusFeedThrottled = errors.New("status feed read throttled")
 // StatusFeed is an organization's down-monitoring feed. The token is never stored:
 // token_hash is its SHA-256.
 type StatusFeed struct {
-	ID             string     `json:"id"`
-	OrganizationID string     `json:"organization_id"`
-	Name           string     `json:"name"`
-	CreatedBy      string     `json:"created_by"`
-	CreatedAt      time.Time  `json:"created_at"`
-	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
-	LastIP         string     `json:"last_ip,omitempty"`
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	Name           string `json:"name"`
+	CreatedBy      string `json:"created_by"`
+	// CreatedByName is the creator's username in the list, empty once the account is deleted.
+	CreatedByName string     `json:"created_by_name,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+	LastIP        string     `json:"last_ip,omitempty"`
 }
 
 // StatusFeedIssue is a created feed: the token, once.
@@ -129,7 +131,7 @@ func (t *tenancyStore) CreateStatusFeed(ctx context.Context, a TenantAccess, nam
 func (t *tenancyStore) ListStatusFeeds(ctx context.Context, a TenantAccess) ([]StatusFeed, error) {
 	out := []StatusFeed{}
 	err := t.readTenant(ctx, a, permissions.StatusFeedsManage, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip FROM status_feeds WHERE organization_id=? AND revoked_at IS NULL ORDER BY created_at DESC, id LIMIT 200`), a.OrganizationID)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT f.id,f.organization_id,f.name,f.created_by,COALESCE(u.username,''),f.created_at,f.last_used_at,f.last_ip FROM status_feeds f LEFT JOIN users u ON u.id=f.created_by WHERE f.organization_id=? AND f.revoked_at IS NULL ORDER BY f.created_at DESC, f.id LIMIT 200`), a.OrganizationID)
 		if err != nil {
 			return err
 		}
@@ -137,7 +139,7 @@ func (t *tenancyStore) ListStatusFeeds(ctx context.Context, a TenantAccess) ([]S
 		for rows.Next() {
 			var f StatusFeed
 			var lastUsed sql.NullTime
-			if err := rows.Scan(&f.ID, &f.OrganizationID, &f.Name, &f.CreatedBy, &f.CreatedAt, &lastUsed, &f.LastIP); err != nil {
+			if err := rows.Scan(&f.ID, &f.OrganizationID, &f.Name, &f.CreatedBy, &f.CreatedByName, &f.CreatedAt, &lastUsed, &f.LastIP); err != nil {
 				return err
 			}
 			if lastUsed.Valid {
