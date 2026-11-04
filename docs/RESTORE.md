@@ -339,9 +339,11 @@ the snapshot. Older capsules and external database dumps may still contain them.
 2. Walk the old audit log in `old-data/ky_server.db` from `created_at` to the moment the old
    server was lost (the restored server's log stops at `created_at`), and re-apply what
    happened after the capsule: disabled accounts, rotated passwords, removed devices, reset
-   MFA, and every revoked or expired AI agent token, kyPulse token and status feed
-   (`agent_token.revoke`, `agent_token.expired`, `status_feed.revoke`, kyPulse revocations):
-   each comes back working, so revoke it again under Access.
+   MFA, and every revoked or expired AI agent token, kyPulse token and status feed: each comes
+   back working, so revoke it again under Access. Their rows are `organization.agent_tokens.manage`
+   and `organization.service_tokens.manage` (these also record creations and scope changes;
+   the resource is the token ID), `agent_token.expired` and `status_feed.revoke`. If in doubt,
+   revoke and re-issue them all.
 3. Re-check endpoints. The audit walk lists every `endpoint.revoke` after `created_at`:
    a capsule from before a revocation brings that agent identity back, so revoke it again on
    the environment screen (Hosts, Revoke). Hosts enrolled after `created_at` are unknown to

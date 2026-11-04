@@ -3,9 +3,11 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyyard-server/internal/permissions"
 	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
@@ -76,10 +78,10 @@ func TestLosingOrganizationAdminRevokesWhatTheyCreated(t *testing.T) {
 			if _, err := st.Tenancy().LookupAgentToken(ctx, other.Token, now); change != "delete account" && err != nil {
 				t.Fatalf("another organization's token was revoked: %v", err)
 			}
-			for action, id := range map[string]string{"agent_token.revoke": token.ID, store.AuditStatusFeedRevoke: feed.ID, "service_token.pairing_revoke": pairing.ID} {
+			for action, id := range map[string]string{string(permissions.AgentTokensManage): token.ID, store.AuditStatusFeedRevoke: feed.ID, string(permissions.ServiceTokensManage): pairing.ID} {
 				var rows []store.AuditRecord
 				for _, r := range auditRows(t, st, action) {
-					if r.OrganizationID == "org_a" {
+					if r.OrganizationID == "org_a" && strings.HasPrefix(r.Details, "revoked: creator") {
 						rows = append(rows, r)
 					}
 				}

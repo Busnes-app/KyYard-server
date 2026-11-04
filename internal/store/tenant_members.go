@@ -132,14 +132,15 @@ func (t *tenancyStore) revokeLostAdminCredentials(ctx context.Context, tx *sql.T
 		return nil
 	}
 	now := time.Now().UTC()
-	details := "creator " + userID + " is no longer an organization administrator"
+	// The same action names a person's revocation in the UI writes, so one filter finds both.
+	details := "revoked: creator " + userID + " is no longer an organization administrator"
 	revoke := func(table string) string {
 		return `UPDATE ` + table + ` SET revoked_at=?, revoked_by=? WHERE id=? AND revoked_at IS NULL`
 	}
 	for _, c := range []struct{ query, write, action string }{
-		{`SELECT id FROM service_tokens WHERE organization_id=? AND created_by=? AND scope<>'` + ScopePulse + `' AND revoked_at IS NULL`, revoke("service_tokens"), "agent_token.revoke"},
+		{`SELECT id FROM service_tokens WHERE organization_id=? AND created_by=? AND scope<>'` + ScopePulse + `' AND revoked_at IS NULL`, revoke("service_tokens"), string(permissions.AgentTokensManage)},
 		{`SELECT id FROM status_feeds WHERE organization_id=? AND created_by=? AND revoked_at IS NULL`, revoke("status_feeds"), AuditStatusFeedRevoke},
-		{`SELECT id FROM service_token_pairings WHERE organization_id=? AND created_by=? AND consumed_at IS NULL`, `DELETE FROM service_token_pairings WHERE id=? AND consumed_at IS NULL`, "service_token.pairing_revoke"},
+		{`SELECT id FROM service_token_pairings WHERE organization_id=? AND created_by=? AND consumed_at IS NULL`, `DELETE FROM service_token_pairings WHERE id=? AND consumed_at IS NULL`, string(permissions.ServiceTokensManage)},
 	} {
 		ids, err := t.collectIDs(ctx, tx, c.query, org, userID)
 		if err != nil {
@@ -147,7 +148,7 @@ func (t *tenancyStore) revokeLostAdminCredentials(ctx context.Context, tx *sql.T
 		}
 		for _, id := range ids {
 			args := []any{now, actor, id}
-			if c.action == "service_token.pairing_revoke" {
+			if c.action == string(permissions.ServiceTokensManage) {
 				args = []any{id}
 			}
 			if _, err := tx.ExecContext(ctx, t.store.rebind(c.write), args...); err != nil {
