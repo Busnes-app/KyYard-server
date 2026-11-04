@@ -610,7 +610,7 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		Endpoint: cmd.EndpointID, Deadline: cmd.Deadline, Action: cmd.Action,
 		Container: cmd.ContainerID, Reference: cmd.Reference, Expects: cmd.Expects,
 	})
-	if !s.agents.deliver(id, frame) {
+	if !s.agents.deliverCommand(id, cmd.ID, frame) {
 		// Never sent, so nothing needs reconciling: say so plainly rather than leaving a row
 		// in flight that an operator would have to chase.
 		_ = s.store.Tenancy().SettleCommand(r.Context(), id, cmd.ID, protocol.OutcomeFailed, "the endpoint was not connected")

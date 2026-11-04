@@ -98,6 +98,20 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 	}
 	defer s.logs.release(orphan)
 
+	// A command the incumbent took and never answered. The successor never hears of it, so the
+	// incumbent's end must settle it, even though a successor holds the endpoint by then and
+	// whether or not the dispatch mark was written (it is not, here).
+	if ok, err := ts.AcceptInventory(ctx, e.ID, uint64(time.Now().Unix()), time.Now(), []byte(`{"engine":{"version":"27.0"}}`)); err != nil || !ok {
+		t.Fatalf("inventory: %v %v", ok, err)
+	}
+	carried, err := ts.CreateCommand(ctx, org, e.ID, protocol.ActionImagePull, "docker.io/library/alpine:3.24", "", protocol.Expectation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.agents.deliverCommand(e.ID, carried.ID, envelope(protocol.TypeCommand, protocol.Command{ID: carried.ID})) {
+		t.Fatal("the incumbent did not take the command")
+	}
+
 	// Silent: the last frame is old and the ping goes unanswered. The newcomer is admitted,
 	// the eviction is audited against the evicted address, and no alarm is raised.
 	incumbent.lastFrame.Store(0)
@@ -139,7 +153,21 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 		t.Fatalf("opening a stream on the successor: %s", refusal)
 	}
 	defer s.logs.release(fresh)
+	// A command the successor carries is the live session's and survives the loser's unwind.
+	live, err := ts.CreateCommand(ctx, org, e.ID, protocol.ActionImagePull, "docker.io/library/alpine:3.23", "", protocol.Expectation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.agents.deliverCommand(e.ID, live.ID, envelope(protocol.TypeCommand, protocol.Command{ID: live.ID})) {
+		t.Fatal("the successor did not take the command")
+	}
 	s.markOffline(ctx, incumbent)
+	if got, err := ts.ReadCommand(ctx, org, e.ID, carried.ID); err != nil || got.Outcome != protocol.OutcomeUnknown {
+		t.Fatalf("the evicted socket's command was left in flight: %+v %v", got, err)
+	}
+	if got, err := ts.ReadCommand(ctx, org, e.ID, live.ID); err != nil || got.Outcome != "" {
+		t.Fatalf("the successor's command was settled by the loser's unwind: %+v %v", got, err)
+	}
 	select {
 	case <-fresh.done:
 		t.Fatal("the displaced socket's unwind closed the successor's reader")
