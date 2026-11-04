@@ -67,6 +67,12 @@ func (f *oauthFlow) discover(ctx context.Context) (*oidc.Provider, error) {
 	}
 	ctx = strongOIDCContext(ctx)
 	provider, err := oidc.NewProvider(ctx, f.issuer)
+	// f.issuer has its trailing slash trimmed, but go-oidc compares issuers exactly: one that
+	// names itself with the slash (Auth0 does) is discovered again under that exact name.
+	var mismatch *oidc.IssuerMismatchError
+	if errors.As(err, &mismatch) && mismatch.Discovered == f.issuer+"/" {
+		provider, err = oidc.NewProvider(ctx, mismatch.Discovered)
+	}
 	if err != nil {
 		return nil, err
 	}
