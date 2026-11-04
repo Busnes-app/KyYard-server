@@ -551,6 +551,8 @@ func TestDeployRestoresTheServicePortsAfterARefusedDeploymentWrite(t *testing.T)
 	}{
 		{apierrors.NewInvalid(schema.GroupKind{Group: "apps", Kind: "Deployment"}, "shop-web", nil), true},
 		{apierrors.NewInternalError(errors.New("etcd timeout")), false},
+		// A 403 whose access review then fails is still a refused write.
+		{apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "shop-web", errors.New("admission")), true},
 	} {
 		prev := &appsv1.Deployment{ObjectMeta: owned("web"), Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
 			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: "ghcr.io/org/web@" + testDigest}}},
@@ -561,6 +563,16 @@ func TestDeployRestoresTheServicePortsAfterARefusedDeploymentWrite(t *testing.T)
 		cl, cs := deployCluster(t, false, false, prev, svc)
 		keepServiceUID(cs)
 		cs.PrependReactor("update", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, c.err })
+		if apierrors.IsForbidden(c.err) {
+			// The access review that tells forbidden from admission_denied then fails.
+			cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+				if review.Spec.ResourceAttributes.Verb == "update" {
+					return true, nil, apierrors.NewInternalError(errors.New("review unavailable"))
+				}
+				return false, nil, nil
+			})
+		}
 		cl.Deploy(context.Background(), deployRequest(300*time.Millisecond), func() {})
 		got, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
 		if err != nil || (got.Spec.Ports[0].TargetPort.IntVal == 8000) != c.restored {

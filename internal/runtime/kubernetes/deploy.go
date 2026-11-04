@@ -306,6 +306,30 @@ type objectAPI[T any] interface {
 	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
 }
 
+// answered is an objectAPI that remembers whether the API server answered its last write with
+// a 4xx: a definite refusal that wrote nothing, however the refusal is reported afterwards.
+type answered[T any] struct {
+	objectAPI[T]
+	refused bool
+}
+
+func (a *answered[T]) Create(ctx context.Context, obj T, opts metav1.CreateOptions) (T, error) {
+	got, err := a.objectAPI.Create(ctx, obj, opts)
+	a.refused = clientError(err)
+	return got, err
+}
+
+func (a *answered[T]) Update(ctx context.Context, obj T, opts metav1.UpdateOptions) (T, error) {
+	got, err := a.objectAPI.Update(ctx, obj, opts)
+	a.refused = clientError(err)
+	return got, err
+}
+
+func clientError(err error) bool {
+	var status apierrors.APIStatus
+	return errors.As(err, &status) && status.Status().Code >= 400 && status.Status().Code < 500
+}
+
 // get reads one object by name: found false when it does not exist.
 func get[T metav1.Object](ctx context.Context, api objectAPI[T], name string) (T, bool, error) {
 	o, err := api.Get(ctx, name, metav1.GetOptions{})
@@ -425,13 +449,14 @@ func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.De
 			return nil, o, code, detail
 		}
 	}
-	d, o, code, detail := upsert(ctx, r, "Deployment", apps.Deployments(r.namespace), set.Deployment, e.deployment, nil)
+	deployments := &answered[*appsv1.Deployment]{objectAPI: apps.Deployments(r.namespace)}
+	d, o, code, detail := upsert(ctx, r, "Deployment", deployments, set.Deployment, e.deployment, nil)
 	if o != protocol.OutcomeSucceeded {
-		// A refusal (denied, a lost conflict, or any 4xx answer such as 422 Invalid) wrote
-		// nothing. Anything else (a 5xx, a timeout, no answer) may have taken effect: a non-nil
-		// Deployment tells the caller not to put the Service's previous ports back.
-		refused := o == protocol.OutcomeDenied || code == "conflict" || (code == "runtime_status" && strings.HasPrefix(detail, "4"))
-		if !refused {
+		// A refusal (denied, or the write answered with any 4xx such as 403, 409 or 422, even
+		// when the access review after a 403 fails) wrote nothing. Anything else (a 5xx, a
+		// timeout, no answer) may have taken effect: a non-nil Deployment tells the caller not
+		// to put the Service's previous ports back.
+		if o != protocol.OutcomeDenied && !deployments.refused {
 			return set.Deployment, o, code, detail
 		}
 		return nil, o, code, detail
