@@ -450,6 +450,13 @@ func (s *Server) handleSetSchedule(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	actor := s.actorID(r)
 	settings := backup.Settings(ctx, s.store.Settings())
+	// A schedule cannot be turned on for a database retention may grow past one capsule.
+	if req.IntervalSec > 0 {
+		if err := backup.BudgetFits(s.config, time.Duration(req.IntervalSec)*time.Second); err != nil {
+			s.writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
 	if err := recoveryclient.SetInterval(settings, req.IntervalSec); err != nil {
 		if errors.Is(err, recoveryclient.ErrBadInterval) {
 			s.writeError(w, http.StatusBadRequest, err.Error())

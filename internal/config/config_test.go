@@ -240,11 +240,7 @@ func TestDiskBudgetRejectsNonsense(t *testing.T) {
 		{name: "SQLite default fits a capsule", value: "", want: 192 << 20},
 		{name: "PostgreSQL default", value: "", want: 2 << 30, env: map[string]string{"KY_DB_DRIVER": "postgres"}},
 		{name: "zero disables", value: "0", want: 0},
-		{name: "a capsule's worth", value: "268435456", want: 256 << 20},
-		{name: "past a capsule while backups are on is refused", value: "268435457", wantErr: true},
-		{name: "past a capsule with local copies on is refused", value: "2147483648", wantErr: true, env: map[string]string{"KY_BACKUP_DEPOSIT_INTERVAL": "0", "KY_BACKUP_DIR": "/backups"}},
-		{name: "past a capsule with backups off", value: "2147483648", want: 2 << 30, env: map[string]string{"KY_BACKUP_DEPOSIT_INTERVAL": "0"}},
-		{name: "past a capsule on PostgreSQL", value: "2147483648", want: 2 << 30, env: map[string]string{"KY_DB_DRIVER": "postgres"}},
+		{name: "documented PostgreSQL value", value: "2147483648", want: 2 << 30, env: map[string]string{"KY_DB_DRIVER": "postgres"}},
 		{name: "negative is refused", value: "-1", wantErr: true},
 		{name: "absurd is refused", value: "9223372036854775807", wantErr: true},
 	} {

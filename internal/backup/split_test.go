@@ -6,8 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/kyyard-server/internal/backup"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 )
 
 // A database larger than one capsule member travels as ordered parts and the drill checks the
@@ -78,6 +81,30 @@ func TestJoinDatabase(t *testing.T) {
 		write(dir, files)
 		if _, err := backup.JoinDatabase(dir, true); err == nil {
 			t.Fatalf("joined %v", files)
+		}
+	}
+}
+
+// A SQLite budget past one capsule is refused while backups are on, by the effective schedule or
+// local copies; PostgreSQL, a budget that fits, 0, and backups off are all accepted.
+func TestBudgetFitsACapsule(t *testing.T) {
+	over := int64(capsule.MaxExpandedBytes) + 1
+	for _, c := range []struct {
+		name, driver, dir string
+		budget            int64
+		interval          time.Duration
+		refused           bool
+	}{
+		{"schedule on", "sqlite", "", over, time.Hour, true},
+		{"local copies on", "sqlite", "/backups", over, 0, true},
+		{"backups off", "sqlite", "", over, 0, false},
+		{"fits", "sqlite", "/backups", capsule.MaxExpandedBytes, time.Hour, false},
+		{"check disabled", "sqlite", "", 0, time.Hour, false},
+		{"postgres", "postgres", "/backups", over, time.Hour, false},
+	} {
+		cfg := &config.Config{Database: config.DatabaseConfig{Driver: c.driver, DiskBudget: c.budget}, Backup: config.BackupConfig{Dir: c.dir}}
+		if err := backup.BudgetFits(cfg, c.interval); (err != nil) != c.refused {
+			t.Errorf("%s: %v", c.name, err)
 		}
 	}
 }

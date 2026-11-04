@@ -9,7 +9,8 @@
   installs that did not set `KY_RETENTION_DISK_BUDGET` prune older history on upgrade: metrics
   fall back to the shorter window the budget allows. PostgreSQL keeps 2 GiB.
 - **A SQLite `KY_RETENTION_DISK_BUDGET` above 256 MiB refuses startup while backups are on.**
-  Lower it, or turn backups off (`KY_BACKUP_DEPOSIT_INTERVAL=0` and no `KY_BACKUP_DIR`). The
+  Lower it, or turn backups off (the schedule off on the Backup page or by
+  `KY_BACKUP_DEPOSIT_INTERVAL=0`, and no `KY_BACKUP_DIR`). The
   Backup page warns from 80 % of a capsule and says when backups fail; a failed backup's audit
   row names the size limit.
 - **Upgrade the server before cluster agents.** A cluster agent from this release advertises

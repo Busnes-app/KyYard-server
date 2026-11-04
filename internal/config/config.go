@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/kyyard-server/internal/crypto"
 	"github.com/Busnes-app/kyyard-server/internal/suite"
 )
@@ -48,8 +47,9 @@ type ServerConfig struct {
 // who means "no limit" has 0 for that.
 const maxDiskBudget = 1 << 50
 
-// DefaultSQLiteDiskBudget is the SQLite retention budget: below the capsule.MaxExpandedBytes one
-// backup capsule holds, so a database kept to it can still be backed up (owner decision, Q6 A).
+// DefaultSQLiteDiskBudget is the SQLite retention budget: below the 256 MiB one backup capsule
+// holds, so a database kept to it can still be backed up (owner decision, Q6 A; the refusal of a
+// larger budget while backups are on is backup.BudgetFits, which needs the saved schedule).
 // PostgreSQL is not in capsules and keeps the 2 GiB default.
 const DefaultSQLiteDiskBudget = 192 << 20
 
@@ -281,12 +281,6 @@ func LoadFromEnv() (*Config, error) {
 	}
 	if depositInterval != 0 && depositInterval < MinDepositInterval {
 		return nil, fmt.Errorf("KY_BACKUP_DEPOSIT_INTERVAL: %s is below the %s minimum (0 disables)", depositInterval, MinDepositInterval)
-	}
-	// A SQLite database retention lets grow past one capsule could never be backed up again.
-	// Backups are on unless both the default schedule and local copies are off.
-	backupsOn := depositInterval != 0 || getEnv("KY_BACKUP_DIR", "") != ""
-	if driver == "sqlite" && backupsOn && diskBudget > capsule.MaxExpandedBytes {
-		return nil, fmt.Errorf("KY_RETENTION_DISK_BUDGET: %d MiB is more than one backup capsule holds (%d MiB), so backups would fail once the database grows to it; lower it (default %d MiB), or turn backups off with KY_BACKUP_DEPOSIT_INTERVAL=0 and no KY_BACKUP_DIR", diskBudget>>20, capsule.MaxExpandedBytes>>20, DefaultSQLiteDiskBudget>>20)
 	}
 
 	// Only "pow" is verified; any other name would silently mean no challenge at all.

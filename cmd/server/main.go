@@ -138,6 +138,13 @@ func runServer() {
 	}
 	defer st.Close()
 	st.SetAllowPrivileged(cfg.Container.AllowPrivileged)
+	interval, err := recoveryclient.Interval(cfg.Backup.DepositInterval, backup.Settings(ctx, st.Settings()))
+	if err != nil {
+		log.Fatalf("Backup schedule unreadable: %v", err)
+	}
+	if err := backup.BudgetFits(cfg, interval); err != nil {
+		log.Fatalf("%v", err)
+	}
 
 	if err := bootstrapAdmin(ctx, st, cfg.Database.DataDir, os.Getenv("KY_ADMIN_PASSWORD")); err != nil {
 		log.Fatalf("Bootstrap admin: %v", err)

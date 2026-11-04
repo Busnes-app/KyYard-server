@@ -228,6 +228,19 @@ func TestUnpairKeepsPin(t *testing.T) {
 	}
 }
 
+// A schedule is not turned on for a SQLite database retention may grow past one capsule.
+func TestScheduleRefusedForABudgetPastACapsule(t *testing.T) {
+	srv, st, cfg := setupSQLiteServer(t)
+	cfg.Database.DiskBudget = capsule.MaxExpandedBytes + 1
+	session := loginAs(t, srv, st, "alice", "admin")
+	if w := adminDo(t, srv, session, "PUT", "/api/backup/schedule", map[string]int64{"interval_sec": 900}); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "more than one backup capsule holds") {
+		t.Fatalf("schedule on past a capsule: %d %s", w.Code, w.Body.String())
+	}
+	if w := adminDo(t, srv, session, "PUT", "/api/backup/schedule", map[string]int64{"interval_sec": 0}); w.Code != http.StatusOK {
+		t.Fatalf("schedule off: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestScheduleBounds(t *testing.T) {
 	srv, st, _ := setupSQLiteServer(t)
 	session := loginAs(t, srv, st, "alice", "admin")

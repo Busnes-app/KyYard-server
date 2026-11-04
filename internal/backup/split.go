@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/kyyard-server/internal/config"
 )
 
 // dbPath is the database member. A snapshot larger than one capsule member travels as ordered
@@ -38,6 +40,18 @@ func databaseMembers(db []byte) []recoveryclient.File {
 		db = db[n:]
 	}
 	return parts
+}
+
+// BudgetFits refuses a SQLite retention budget larger than one capsule holds while backups are on:
+// a database retention lets grow to it could never be backed up again (owner decision, Q6 A).
+// interval is the effective schedule (the saved one, else KY_BACKUP_DEPOSIT_INTERVAL); local
+// copies (KY_BACKUP_DIR) count as on too. A budget of 0 disables the check, as documented.
+func BudgetFits(cfg *config.Config, interval time.Duration) error {
+	budget := cfg.Database.DiskBudget
+	if strings.ToLower(cfg.Database.Driver) != "sqlite" || budget <= capsule.MaxExpandedBytes || (interval == 0 && cfg.Backup.Dir == "") {
+		return nil
+	}
+	return fmt.Errorf("KY_RETENTION_DISK_BUDGET: %d MiB is more than one backup capsule holds (%d MiB), so backups would fail once the database grows to it; lower it (default %d MiB), or turn scheduled backups off and leave KY_BACKUP_DIR unset", budget>>20, capsule.MaxExpandedBytes>>20, config.DefaultSQLiteDiskBudget>>20)
 }
 
 // warnNearCapsuleLimit logs once a payload reaches 80% of what one capsule can expand to, so an
