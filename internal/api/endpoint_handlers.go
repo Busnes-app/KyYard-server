@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -610,7 +611,7 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		Endpoint: cmd.EndpointID, Deadline: cmd.Deadline, Action: cmd.Action,
 		Container: cmd.ContainerID, Reference: cmd.Reference, Expects: cmd.Expects,
 	})
-	if !s.agents.deliver(id, frame) {
+	if !s.sendCommand(r.Context(), id, cmd.ID, frame) {
 		// Never sent, so nothing needs reconciling: say so plainly rather than leaving a row
 		// in flight that an operator would have to chase.
 		_ = s.store.Tenancy().SettleCommand(r.Context(), id, cmd.ID, protocol.OutcomeFailed, "the endpoint was not connected")
@@ -619,10 +620,31 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.writeJSON(w, http.StatusConflict, cmd)
 		return
 	}
-	if err := s.store.Tenancy().MarkCommandDispatched(r.Context(), cmd.ID); err != nil {
-		log.Printf("command %s: marking dispatched: %v", cmd.ID, err)
-	}
 	s.writeJSON(w, http.StatusAccepted, cmd)
+}
+
+// dispatchLock is the endpoint's dispatch lock; endpoints are registered rows, so the map stays
+// bounded.
+func (s *Server) dispatchLock(endpoint string) *sync.RWMutex {
+	lock, _ := s.dispatchLocks.LoadOrStore(endpoint, &sync.RWMutex{})
+	return lock.(*sync.RWMutex)
+}
+
+// sendCommand delivers a plain command and marks it dispatched under the endpoint's dispatch read
+// lock, so an eviction (the write lock) sees it either delivered and marked before its cutoff, or
+// sent to the successor and marked after. The mark outlives the request: a caller that goes away
+// after the frame left must not leave a delivered command unmarked, where no sweep finds it.
+func (s *Server) sendCommand(ctx context.Context, endpoint, id string, frame protocol.Envelope) bool {
+	lock := s.dispatchLock(endpoint)
+	lock.RLock()
+	defer lock.RUnlock()
+	if !s.agents.deliver(endpoint, frame) {
+		return false
+	}
+	if err := s.store.Tenancy().MarkCommandDispatched(context.WithoutCancel(ctx), id); err != nil {
+		log.Printf("command %s: marking dispatched: %v", id, err)
+	}
+	return true
 }
 
 func (s *Server) handleReadCommand(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {

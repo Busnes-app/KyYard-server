@@ -34,18 +34,22 @@ type recoveryClient interface {
 }
 
 type Server struct {
-	providersMu sync.Mutex
-	loginMu     sync.Mutex
-	logins      map[string]loginAttempt
-	config      *config.Config
-	store       store.Store
-	sessions    *auth.SessionManager
-	kysignon    *sso.KySignOnClient
-	saml        *sso.SAMLServiceProvider
-	recovery    recoveryClient
-	mux         *http.ServeMux
-	attemptsMu  sync.Mutex
-	attempts    map[string]attemptWindow
+	// dispatchLocks holds one *sync.RWMutex per endpoint ID (dispatchLock): it makes a plain
+	// command's delivery and dispatch mark one step against an eviction of the socket it went to
+	// (sendCommand reads, the eviction writes), without one endpoint's slow mark holding another's.
+	dispatchLocks sync.Map
+	providersMu   sync.Mutex
+	loginMu       sync.Mutex
+	logins        map[string]loginAttempt
+	config        *config.Config
+	store         store.Store
+	sessions      *auth.SessionManager
+	kysignon      *sso.KySignOnClient
+	saml          *sso.SAMLServiceProvider
+	recovery      recoveryClient
+	mux           *http.ServeMux
+	attemptsMu    sync.Mutex
+	attempts      map[string]attemptWindow
 	// accounts holds windows keyed on a known account, apart from attempts, so flooding
 	// client keys cannot evict them. loginBackoff is keyed on the typed username (and device); both are
 	// guarded by attemptsMu.

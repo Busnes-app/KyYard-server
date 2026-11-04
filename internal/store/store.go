@@ -415,6 +415,9 @@ type TenancyStore interface {
 	CheckWorkloadFrame(ctx context.Context, access TenantAccess, endpointID string, w WorkloadApply, create bool) error
 	FailDirectCommand(ctx context.Context, endpointID, id, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
+	// AbandonCommandsDispatchedBefore settles as unknown the plain commands an evicted socket
+	// carried: dispatched to the endpoint before cutoff and unanswered.
+	AbandonCommandsDispatchedBefore(ctx context.Context, endpointID string, cutoff time.Time) (int64, error)
 	// ReconcileAfterStart settles every in-flight command as unknown, fails every open policy run
 	// and settles validations the previous process left; startup only.
 	ReconcileAfterStart(ctx context.Context) (int64, error)
