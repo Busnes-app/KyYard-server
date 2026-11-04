@@ -138,12 +138,16 @@ func runServer() {
 	}
 	defer st.Close()
 	st.SetAllowPrivileged(cfg.Container.AllowPrivileged)
-	interval, err := recoveryclient.Interval(cfg.Backup.DepositInterval, backup.Settings(ctx, st.Settings()))
-	if err != nil {
-		log.Fatalf("Backup schedule unreadable: %v", err)
-	}
-	if err := backup.BudgetFits(cfg, interval); err != nil {
-		log.Fatalf("%v", err)
+	// The saved schedule is read only when the budget could be refused: an unreadable schedule
+	// row must not stop a server whose budget fits a capsule anyway.
+	if backup.BudgetFits(cfg, time.Hour) != nil {
+		interval, err := recoveryclient.Interval(cfg.Backup.DepositInterval, backup.Settings(ctx, st.Settings()))
+		if err != nil {
+			log.Fatalf("Backup schedule unreadable: %v", err)
+		}
+		if err := backup.BudgetFits(cfg, interval); err != nil {
+			log.Fatalf("%v", err)
+		}
 	}
 
 	if err := bootstrapAdmin(ctx, st, cfg.Database.DataDir, os.Getenv("KY_ADMIN_PASSWORD")); err != nil {
