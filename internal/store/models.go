@@ -39,6 +39,8 @@ type Session struct {
 	// The provider ID and its ID token sid for an SSO sign-in; empty for a local one.
 	SSOProvider string `json:"-"`
 	SSOSID      string `json:"-"`
+	// SSOSubject is the provider subject the sign-in proved; checked at the write, not stored.
+	SSOSubject string `json:"-"`
 }
 
 type MFAChallenge struct {
@@ -51,6 +53,9 @@ type MFAChallenge struct {
 	SSOProvider string
 	SSOSID      string
 	SSOIssuedAt time.Time
+	// SSOSubject is the provider subject the sign-in proved: checked at creation, stored, and
+	// checked again when the completed challenge issues its session.
+	SSOSubject string
 }
 
 // DevicePairing represents a 90-second ephemeral session to link mobile/PWA wrappers.

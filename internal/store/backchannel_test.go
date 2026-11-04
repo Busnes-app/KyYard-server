@@ -20,12 +20,15 @@ func TestSSOLogoutEndsPendingMFAChallenges(t *testing.T) {
 	if _, err := st.db.ExecContext(ctx, st.rebind(`INSERT INTO user_sso_identities (provider, subject, user_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`), "idp_a", "sub-1", "ext"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.db.ExecContext(ctx, st.rebind(`INSERT INTO user_sso_identities (provider, subject, user_id) VALUES (?, ?, ?)`), "idp_b", "sub-b", "ext"); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	for _, c := range []MFAChallenge{
-		{TokenHash: "by-sid", SSOProvider: "idp_a", SSOSID: "sid-1", SSOIssuedAt: now.Add(-time.Minute)},
-		{TokenHash: "by-subject", SSOProvider: "idp_a", SSOSID: "sid-2", SSOIssuedAt: now.Add(-time.Minute)},
-		{TokenHash: "later", SSOProvider: "idp_a", SSOSID: "sid-3", SSOIssuedAt: now.Add(time.Minute)},
-		{TokenHash: "other-provider", SSOProvider: "idp_b", SSOSID: "sid-1", SSOIssuedAt: now.Add(-time.Minute)},
+		{TokenHash: "by-sid", SSOProvider: "idp_a", SSOSID: "sid-1", SSOIssuedAt: now.Add(-time.Minute), SSOSubject: "sub-1"},
+		{TokenHash: "by-subject", SSOProvider: "idp_a", SSOSID: "sid-2", SSOIssuedAt: now.Add(-time.Minute), SSOSubject: "sub-1"},
+		{TokenHash: "later", SSOProvider: "idp_a", SSOSID: "sid-3", SSOIssuedAt: now.Add(time.Minute), SSOSubject: "sub-1"},
+		{TokenHash: "other-provider", SSOProvider: "idp_b", SSOSID: "sid-1", SSOIssuedAt: now.Add(-time.Minute), SSOSubject: "sub-b"},
 	} {
 		c.UserID, c.ExpiresAt = "ext", now.Add(5*time.Minute)
 		if err := st.Sessions().CreateMFAChallenge(ctx, &c, ""); err != nil {
@@ -116,7 +119,7 @@ func TestBackchannelMigrationEndsUnboundSSOSessions(t *testing.T) {
 		}
 	}
 	// A later start migrates nothing, so a bound session from after the upgrade survives it.
-	if err := st.Sessions().CreateSession(ctx, &Session{TokenHash: "bound", UserID: "ext", CreatedAt: now, ExpiresAt: now.Add(time.Hour), SSOProvider: "idp_a", SSOSID: "sid-1"}, ""); err != nil {
+	if err := st.Sessions().CreateSession(ctx, &Session{TokenHash: "bound", UserID: "ext", CreatedAt: now, ExpiresAt: now.Add(time.Hour), SSOProvider: "idp_a", SSOSID: "sid-1", SSOSubject: "sub-1"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrations.Run(ctx, st.db, st.Driver()); err != nil {

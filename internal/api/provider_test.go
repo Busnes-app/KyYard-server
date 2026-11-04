@@ -143,7 +143,7 @@ func TestRemovingAProviderEndsItsSessions(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
 	ctx := context.Background()
 	admin := loginAs(t, srv, st, "provideradmin", "admin")
-	loginAs(t, srv, st, "ssouser", "user")
+	ssoLocal := loginAs(t, srv, st, "ssouser", "user")
 	send := func(method, path, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.AddCookie(admin)
@@ -165,8 +165,12 @@ func TestRemovingAProviderEndsItsSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The provider signs this account in only once it is linked to it.
+	if err := st.Users().LinkSSO(ctx, u.ID, crypto.SHA256Hex([]byte(ssoLocal.Value)), u.PasswordHash, id, "ssouser-sub", ""); err != nil {
+		t.Fatal(err)
+	}
 	signIn := func(token string) {
-		if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: token, UserID: u.ID, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour), SSOProvider: id, SSOSID: token}, u.PasswordHash); err != nil {
+		if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: token, UserID: u.ID, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour), SSOProvider: id, SSOSID: token, SSOSubject: "ssouser-sub"}, u.PasswordHash); err != nil {
 			t.Fatal(err)
 		}
 	}

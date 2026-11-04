@@ -80,3 +80,79 @@ func TestSSOIdentityHasOneOwnerAcrossConcurrentLinks(t *testing.T) {
 		t.Fatalf("%d links won", successes)
 	}
 }
+
+// A provider sign-in that resolved the account before an unlink cannot get a session after it:
+// the session write rechecks the link under the same user-row lock as UnlinkSSO.
+func TestNoProviderSessionAfterUnlink(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	u := &store.User{ID: "local", Username: "carol", PasswordHash: "hash", Role: "user", Status: "active", SSOProvider: "local"}
+	if err := st.Users().CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: "local", UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().LinkSSO(ctx, u.ID, "local", "hash", "idp_test", "intruder", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	via := func(token string) error {
+		return st.Sessions().CreateSession(ctx, &store.Session{TokenHash: token, UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), SSOProvider: "idp_test", SSOSID: token, SSOSubject: "intruder"}, "hash")
+	}
+	if err := via("before"); err != nil {
+		t.Fatalf("a linked provider's session: %v", err)
+	}
+	if err := st.Users().UnlinkSSO(ctx, u.ID, "hash", "idp_test", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := via("after"); err == nil {
+		t.Fatal("an unlinked provider issued a session")
+	}
+	// Unlinked, then another identity at the same provider linked: a sign-in that proved the old
+	// subject still gets neither a session nor an MFA challenge.
+	if err := st.Users().LinkSSO(ctx, u.ID, "local", "hash", "idp_test", "owner", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	as := func(token, subject string) error {
+		return st.Sessions().CreateSession(ctx, &store.Session{TokenHash: token, UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), SSOProvider: "idp_test", SSOSID: token, SSOSubject: subject}, "hash")
+	}
+	if err := as("stale-subject", "intruder"); err == nil {
+		t.Fatal("the unlinked subject issued a session after a new link")
+	}
+	if err := st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{TokenHash: "stale-mfa", UserID: u.ID, ExpiresAt: now.Add(time.Minute), SSOProvider: "idp_test", SSOSubject: "intruder"}, "hash"); err == nil {
+		t.Fatal("the unlinked subject started an MFA challenge after a new link")
+	}
+	if err := as("linked-subject", "owner"); err != nil {
+		t.Fatalf("the linked subject: %v", err)
+	}
+	if err := as("no-subject", ""); err == nil {
+		t.Fatal("a provider session that names no subject was issued")
+	}
+	// An MFA challenge consumed for one subject, then an unlink and a new link at the same
+	// provider before the session write: the challenge carries its subject, so it gets nothing.
+	if err := st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{TokenHash: "mfa-owner", UserID: u.ID, ExpiresAt: now.Add(time.Minute), SSOProvider: "idp_test", SSOSubject: "owner"}, "hash"); err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := st.Sessions().ConsumeMFAChallenge(ctx, "mfa-owner")
+	if err != nil || consumed.SSOSubject != "owner" {
+		t.Fatalf("the consumed challenge lost its subject: %+v %v", consumed, err)
+	}
+	if err := st.Users().UnlinkSSO(ctx, u.ID, "hash", "idp_test", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().LinkSSO(ctx, u.ID, "local", "hash", "idp_test", "replacement", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := as("after-consume", consumed.SSOSubject); err == nil {
+		t.Fatal("a consumed challenge for an unlinked subject issued a session after a new link")
+	}
+	// The account's own provider needs no link row: a provisioned account still signs in.
+	p := &store.User{ID: "fed", Username: "dave", Role: "user", Status: "active", SSOProvider: "idp_test", SSOSubject: "dave"}
+	if err := st.Users().CreateUser(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: "fed", UserID: p.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), SSOProvider: "idp_test", SSOSubject: "dave"}, ""); err != nil {
+		t.Fatalf("a provisioned account's provider session: %v", err)
+	}
+}
