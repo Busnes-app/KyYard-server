@@ -2322,3 +2322,27 @@ func TestDeployRollbackRevivesWhenTheNameIsNotGivenBack(t *testing.T) {
 		t.Fatalf("stop calls:\n got %s\nwant suffix %s", calls, tail)
 	}
 }
+
+// A recreate stops the old container with the grace it asked for, as Stop does, and one whose
+// grace the deadline cannot hold is refused at the recheck, before anything is touched.
+func TestDeployStopsWithTheContainersOwnGrace(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.newStates = []string{healthy}
+	f.oldContainer["Config"].(map[string]any)["StopTimeout"] = 60
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
+	stop, ok := f.call("POST", "/containers/"+oldID+"/stop")
+	if res.Outcome != protocol.OutcomeSucceeded || !ok || stop.Query != "t=60" {
+		t.Fatalf("outcome %+v, stop %+v", res, stop)
+	}
+
+	f = newFakeDeployEngine(t)
+	f.oldContainer["Config"].(map[string]any)["StopTimeout"] = 3600
+	res = f.client().Deploy(context.Background(), request(webService()), func() {})
+	i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Step == protocol.StepRecheck })
+	if i < 0 || res.Steps[i].Outcome != protocol.OutcomeTimedOut || res.Steps[i].Code != "deadline" {
+		t.Fatalf("steps %+v", res.Steps)
+	}
+	if _, renamed := f.call("POST", "/containers/"+oldID+"/rename"); renamed {
+		t.Fatal("a recreate that cannot wait out the grace touched the container")
+	}
+}

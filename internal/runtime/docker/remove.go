@@ -33,6 +33,7 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, sta
 func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, deadline time.Time) {
 	id := url.PathEscape(t.Target.ContainerID)
 	gone := false
+	grace := stopGrace // the container's own, as Stop honours it
 	r.step(t.Service, protocol.StepPrecondition, func() (string, string, string) {
 		if r.c.isSelf(t.Target.ContainerID) {
 			return deny(ErrSelfProtected.Error())
@@ -40,7 +41,10 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var in struct {
-			Config  struct{ Labels map[string]string }
+			Config struct {
+				Labels      map[string]string
+				StopTimeout *int
+			}
 			ID      string `json:"Id"`
 			Image   string
 			Created time.Time
@@ -58,6 +62,7 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		if installerManaged(in.Config.Labels) {
 			return deny("application_managed")
 		}
+		grace = graceOf(in.Config.StopTimeout)
 		return succeeded()
 	})
 	if gone {
@@ -67,13 +72,13 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		return
 	}
 	r.step(t.Service, protocol.StepStop, func() (string, string, string) {
-		if time.Until(deadline) < operationBudget+2*callBudget {
+		if time.Until(deadline) < operationBudget+extraGrace(grace)+2*callBudget {
 			return protocol.OutcomeTimedOut, "deadline", ""
 		}
 		r.begin()
-		cctx, cancel := context.WithTimeout(ctx, operationBudget)
+		cctx, cancel := context.WithTimeout(ctx, operationBudget+extraGrace(grace))
 		defer cancel()
-		status, err := r.c.post(cctx, "/containers/"+id+"/stop?t="+strconv.Itoa(stopGrace))
+		status, err := r.c.post(cctx, "/containers/"+id+"/stop?t="+strconv.Itoa(grace))
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
 			return r.outcomeFor(cctx, err, status)
 		}

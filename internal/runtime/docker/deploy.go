@@ -609,6 +609,9 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 	// The old container's state at the recheck, the last read before stop: a rollback pauses it
 	// again, and an unanswered stop is checked only if it was running.
 	paused, wasRunning := false, false
+	// The old container's own stop grace, as Stop honours it: a recreate must not kill a container
+	// that needs longer to shut down cleanly.
+	grace := stopGrace
 	// The pull window can be minutes: re-read the container right before touching it.
 	r.step(s.Name, protocol.StepRecheck, func() (string, string, string) {
 		if time.Until(r.req.Deadline) < budget {
@@ -620,7 +623,8 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		var now inspectedForDeploy
 		var raw rawInspection
 		var state struct {
-			State *struct{ Running, Paused bool }
+			State  *struct{ Running, Paused bool }
+			Config *struct{ StopTimeout *int }
 		}
 		if err := r.c.get(cctx, "/containers/"+old+"/json", &now, &raw, &state); err != nil {
 			if statusOf(err) == http.StatusNotFound {
@@ -638,6 +642,12 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 		}
 		paused = state.State != nil && state.State.Paused
 		wasRunning = state.State != nil && state.State.Running
+		if state.Config != nil {
+			grace = graceOf(state.Config.StopTimeout)
+		}
+		if time.Until(r.req.Deadline) < budget+extraGrace(grace) {
+			return protocol.OutcomeTimedOut, "deadline", ""
+		}
 		return succeeded()
 	})
 	unparked := true
@@ -673,12 +683,12 @@ func (r *deployRun) replace(ctx context.Context, p prepared) {
 				// An unanswered stop may have stopped it: start it again if a read says so, even
 				// when the undo failed, so it serves under its parked name.
 				undone := r.undo(ctx, p, created, "")
-				restored = (!unanswered(outcome) || !wasRunning || r.reviveIfStopped(ctx, p, paused)) && undone
+				restored = (!unanswered(outcome) || !wasRunning || r.reviveIfStopped(ctx, p, paused, grace)) && undone
 			}
 		}()
-		cctx, cancel := context.WithTimeout(ctx, operationBudget)
+		cctx, cancel := context.WithTimeout(ctx, operationBudget+extraGrace(grace))
 		defer cancel()
-		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(stopGrace))
+		status, err := r.c.post(cctx, "/containers/"+old+"/stop?t="+strconv.Itoa(grace))
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
 			return r.outcomeFor(cctx, err, status)
 		}
@@ -1016,13 +1026,13 @@ func (r *deployRun) reclaim(ctx context.Context, p prepared) bool {
 }
 
 // stopWait bounds the wait for an old container whose stop went unanswered: the daemon may still
-// be inside the stop's grace period, whatever became of the request.
+// be inside the stop's grace period, whatever became of the request. A longer grace adds to it.
 const stopWait = stopGrace*time.Second + callBudget
 
 // reviveIfStopped starts the old container again after an unanswered stop, once it is not
 // running. The wait is cut to leave the restart operationBudget; one still running when it ends,
 // or with no time left to wait, is left running.
-func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool) bool {
+func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool, grace int) bool {
 	rctx, cancel := r.restoring(ctx)
 	defer cancel()
 	cctx, ccancel := context.WithTimeout(rctx, callBudget)
@@ -1033,7 +1043,7 @@ func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool
 	}
 	if now.State.Running {
 		deadline, _ := rctx.Deadline()
-		bound := waitBound(cmp.Or(r.c.stopWait, stopWait), time.Until(deadline), cmp.Or(r.c.restartReserve, operationBudget))
+		bound := waitBound(cmp.Or(r.c.stopWait, stopWait+extraGrace(grace)), time.Until(deadline), cmp.Or(r.c.restartReserve, operationBudget))
 		if bound == 0 {
 			return true
 		}
