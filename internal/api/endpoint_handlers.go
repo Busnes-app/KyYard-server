@@ -630,19 +630,33 @@ func (s *Server) dispatchLock(endpoint string) *sync.RWMutex {
 	return lock.(*sync.RWMutex)
 }
 
+// markBudget bounds a dispatch mark, which holds the endpoint's dispatch lock.
+var markBudget = 10 * time.Second
+
 // sendCommand delivers a plain command and marks it dispatched under the endpoint's dispatch read
 // lock, so an eviction (the write lock) sees it either delivered and marked before its cutoff, or
-// sent to the successor and marked after. The mark outlives the request: a caller that goes away
-// after the frame left must not leave a delivered command unmarked, where no sweep finds it.
+// sent to the successor and marked after. The mark outlives the request, so a caller that goes
+// away after the frame left does not skip it, and is bounded, so a stuck database cannot hold the
+// lock and with it the endpoint's reconnect. A command whose mark failed is settled unknown: no
+// sweep would find it.
 func (s *Server) sendCommand(ctx context.Context, endpoint, id string, frame protocol.Envelope) bool {
 	lock := s.dispatchLock(endpoint)
 	lock.RLock()
-	defer lock.RUnlock()
 	if !s.agents.deliver(endpoint, frame) {
+		lock.RUnlock()
 		return false
 	}
-	if err := s.store.Tenancy().MarkCommandDispatched(context.WithoutCancel(ctx), id); err != nil {
+	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markBudget)
+	err := s.store.Tenancy().MarkCommandDispatched(mctx, id)
+	cancel()
+	lock.RUnlock()
+	if err != nil {
 		log.Printf("command %s: marking dispatched: %v", id, err)
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markBudget)
+		defer cancel()
+		if err := s.store.Tenancy().SettleCommand(sctx, endpoint, id, protocol.OutcomeUnknown, "the server could not record that the command was sent"); err != nil {
+			log.Printf("command %s: settling an unrecorded dispatch: %v", id, err)
+		}
 	}
 	return true
 }
