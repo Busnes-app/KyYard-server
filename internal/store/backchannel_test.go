@@ -20,6 +20,9 @@ func TestSSOLogoutEndsPendingMFAChallenges(t *testing.T) {
 	if _, err := st.db.ExecContext(ctx, st.rebind(`INSERT INTO user_sso_identities (provider, subject, user_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`), "idp_a", "sub-1", "ext"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.db.ExecContext(ctx, st.rebind(`INSERT INTO user_sso_identities (provider, subject, user_id) VALUES (?, ?, ?)`), "idp_b", "sub-b", "ext"); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	for _, c := range []MFAChallenge{
 		{TokenHash: "by-sid", SSOProvider: "idp_a", SSOSID: "sid-1", SSOIssuedAt: now.Add(-time.Minute)},

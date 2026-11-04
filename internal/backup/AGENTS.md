@@ -49,7 +49,7 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   `data/ky_server.db.part-000`, `-001`, ... (`split.go`, owner decision KyNotes Q8 A; the
   library limit is never raised). `Checks` accepts the parts in place of the database member
   and checks what `JoinDatabase` writes from them; the `restore` command joins them into
-  `data/ky_server.db` and deletes them. Parts must be numbered from 000 without a gap and never
+  `data/ky_server.db` and deletes them. `JoinDatabase` lists `data/` literally (never a glob of the target path). Parts must be numbered from 000 without a gap and never
   sit beside a whole database. Single-member capsules stay valid. `Collect` logs a warning once
   the payload reaches 80% of `capsule.MaxExpandedBytes` (256 MiB).
 - `Collect` pins `schema_version: migrations.Latest()` in the recipe. `Checks` requires it

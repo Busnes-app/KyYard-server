@@ -226,22 +226,42 @@ func TestAbandonCommandsDispatchedBeforeTheEviction(t *testing.T) {
 		}
 		return cmd.ID
 	}
-	old, queued := create("old", true), create("queued", false)
+	// lost was sent while its dispatch could not be recorded: unmarked, and past its deadline.
+	pastDeadline := func(id string) {
+		if _, err := st.db.ExecContext(ctx, st.rebind(`UPDATE endpoint_commands SET deadline=? WHERE id=?`), time.Now().UTC().Add(-time.Minute), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old, queued, lost := create("old", true), create("queued", false), create("lost", false)
+	pastDeadline(lost)
 	time.Sleep(10 * time.Millisecond)
 	evicted := time.Now()
 	time.Sleep(10 * time.Millisecond)
 	successor := create("successor", true)
-	if n, err := ts.AbandonCommandsDispatchedBefore(ctx, endpointID, evicted); err != nil || n != 1 {
+	if n, err := ts.AbandonCommandsDispatchedBefore(ctx, endpointID, evicted); err != nil || n != 2 {
 		t.Fatalf("abandoned %d: %v", n, err)
 	}
 	got, err := ts.ListCommands(ctx, a, endpointID, "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{old: protocol.OutcomeUnknown, queued: "", successor: ""}
+	want := map[string]string{old: protocol.OutcomeUnknown, queued: "", lost: protocol.OutcomeUnknown, successor: ""}
 	for _, c := range got {
 		if c.Outcome != want[c.ID] {
 			t.Errorf("%s: outcome %q, want %q", c.ContainerID, c.Outcome, want[c.ID])
+		}
+	}
+	// The session ending settles an unmarked one past its deadline too, and leaves a fresh one.
+	again := create("again", false)
+	pastDeadline(again)
+	if _, err := ts.AbandonCommands(ctx, endpointID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{again, queued} {
+		c, err := ts.ReadCommand(ctx, a, endpointID, id)
+		wantOutcome := map[string]string{again: protocol.OutcomeUnknown, queued: ""}[id]
+		if err != nil || c.Outcome != wantOutcome {
+			t.Fatalf("%s after the session ended: %+v %v", id, c, err)
 		}
 	}
 }

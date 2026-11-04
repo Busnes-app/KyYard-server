@@ -53,9 +53,9 @@ func TestJoinDatabase(t *testing.T) {
 			}
 		}
 	}
-	// A target named relatively and with a trailing slash, as `restore -to ./recovered/` does.
+	// A target named relatively, with a trailing slash and a pattern character in its name.
 	t.Chdir(t.TempDir())
-	dir := "./recovered/"
+	dir := "./recovered[1]/"
 	write(dir, map[string]string{"data/ky_server.db.part-000": "ab", "data/ky_server.db.part-001": "cd", "data/ky_server.db.part-002": "e"})
 	if joined, err := backup.JoinDatabase(dir, true); err != nil || !joined {
 		t.Fatalf("join: %t %v", joined, err)

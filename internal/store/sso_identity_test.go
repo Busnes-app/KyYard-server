@@ -109,6 +109,23 @@ func TestNoProviderSessionAfterUnlink(t *testing.T) {
 	if err := via("after"); err == nil {
 		t.Fatal("an unlinked provider issued a session")
 	}
+	// Unlinked, then another identity at the same provider linked: a sign-in that proved the old
+	// subject still gets neither a session nor an MFA challenge.
+	if err := st.Users().LinkSSO(ctx, u.ID, "local", "hash", "idp_test", "owner", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	as := func(token, subject string) error {
+		return st.Sessions().CreateSession(ctx, &store.Session{TokenHash: token, UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), SSOProvider: "idp_test", SSOSID: token, SSOSubject: subject}, "hash")
+	}
+	if err := as("stale-subject", "intruder"); err == nil {
+		t.Fatal("the unlinked subject issued a session after a new link")
+	}
+	if err := st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{TokenHash: "stale-mfa", UserID: u.ID, ExpiresAt: now.Add(time.Minute), SSOProvider: "idp_test", SSOSubject: "intruder"}, "hash"); err == nil {
+		t.Fatal("the unlinked subject started an MFA challenge after a new link")
+	}
+	if err := as("linked-subject", "owner"); err != nil {
+		t.Fatalf("the linked subject: %v", err)
+	}
 	// The account's own provider needs no link row: a provisioned account still signs in.
 	p := &store.User{ID: "fed", Username: "dave", Role: "user", Status: "active", SSOProvider: "idp_test", SSOSubject: "dave"}
 	if err := st.Users().CreateUser(ctx, p); err != nil {

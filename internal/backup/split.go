@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
@@ -55,9 +56,23 @@ func warnNearCapsuleLimit(files []recoveryclient.File) {
 // order, and reports whether there were any. Parts must be numbered from 000 without a gap, and
 // never sit beside a whole database. remove deletes the parts once the database is written.
 func JoinDatabase(dir string, remove bool) (bool, error) {
-	parts, err := filepath.Glob(filepath.Join(dir, filepath.FromSlash(dbPartPrefix)) + "*")
-	if err != nil || len(parts) == 0 {
+	// The target is listed, never globbed: a directory named like a pattern is still a name.
+	data := filepath.Join(dir, filepath.FromSlash(path.Dir(dbPath)))
+	entries, err := os.ReadDir(data)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
 		return false, err
+	}
+	var parts []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), path.Base(dbPartPrefix)) {
+			parts = append(parts, filepath.Join(data, e.Name()))
+		}
+	}
+	if len(parts) == 0 {
+		return false, nil
 	}
 	slices.Sort(parts)
 	for i, p := range parts {
