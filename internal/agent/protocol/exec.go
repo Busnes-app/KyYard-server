@@ -118,11 +118,18 @@ var (
 	// ErrExecPodSecurity: the pod's namespace does not enforce Pod Security baseline or
 	// restricted, or the pod itself does not meet baseline.
 	ErrExecPodSecurity = errors.New("pod_security")
+	// ErrExecClock closes a stream whose grant was refused only for its expiry: the agent's
+	// clock disagrees with the server's.
+	ErrExecClock = errors.New("clock_skew")
 )
+
+// ErrGrantExpiry is a grant whose scope and target are valid but whose expiry falls outside
+// this agent's clock. The agent answers it with a refusal and keeps the session.
+var ErrGrantExpiry = errors.New("grant expiry outside this agent's clock")
 
 // ExecRefusal is err's fixed close reason, or "" when err is not one of the fixed refusals.
 func ExecRefusal(err error) string {
-	for _, r := range []error{ErrExecForbidden, ErrExecPodSecurity} {
+	for _, r := range []error{ErrExecForbidden, ErrExecPodSecurity, ErrExecClock} {
 		if errors.Is(err, r) {
 			return r.Error()
 		}
@@ -132,7 +139,7 @@ func ExecRefusal(err error) string {
 
 // IsExecRefusal reports whether reason is a fixed refusal's close reason.
 func IsExecRefusal(reason string) bool {
-	return reason == ErrExecForbidden.Error() || reason == ErrExecPodSecurity.Error()
+	return reason == ErrExecForbidden.Error() || reason == ErrExecPodSecurity.Error() || reason == ErrExecClock.Error()
 }
 
 type ExecOpen struct {
@@ -151,13 +158,16 @@ func (r ExecOpen) Validate(now time.Time) error {
 	if !execStreamID.MatchString(r.Stream) || !execStreamID.MatchString(r.Actor) || !execStreamID.MatchString(r.Endpoint) || len(r.Connection) != 32 {
 		return errors.New("invalid exec scope")
 	}
-	if !r.Expires.After(now) || r.Expires.After(now.Add(ExecGrantLifetime)) {
-		return errors.New("invalid exec grant expiry")
-	}
 	if err := r.Spec.Validate(); err != nil {
 		return err
 	}
-	return r.Size.Validate()
+	if err := r.Size.Validate(); err != nil {
+		return err
+	}
+	if !r.Expires.After(now) || r.Expires.After(now.Add(ExecGrantLifetime)) {
+		return ErrGrantExpiry
+	}
+	return nil
 }
 
 // Data uses JSON base64 encoding to preserve arbitrary PTY bytes, including UTF-8

@@ -54,7 +54,6 @@ func TestConfigurationAnswersOnlyValidGrants(t *testing.T) {
 	for name, mutate := range map[string]func(*protocol.ConfigurationOpen){
 		"wrong nonce":    func(r *protocol.ConfigurationOpen) { r.Connection = []byte("wrong") },
 		"wrong endpoint": func(r *protocol.ConfigurationOpen) { r.Endpoint = "other" },
-		"22 s grant":     func(r *protocol.ConfigurationOpen) { r.Expires = time.Now().Add(22 * time.Second) },
 	} {
 		bad := configurationRequest(15 * time.Second)
 		mutate(&bad)
@@ -68,6 +67,15 @@ func TestConfigurationAnswersOnlyValidGrants(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Fatal("ignored grants were answered")
+	}
+	// A grant past the configuration lifetime is a clock disagreement: answered unavailable,
+	// unread, and the session stays.
+	long := configurationRequest(22 * time.Second)
+	if err := newConfigurationsFor(long, opts, out).handle(execFrame(protocol.TypeConfigurationOpen, long), true); err != nil {
+		t.Fatal("22 s grant ended the session", err)
+	}
+	if reply := nextExecFrame(t, out, protocol.TypeConfigurationResult).Payload.(protocol.ConfigurationResult); reply.Status != "unavailable" || reply.Result != nil {
+		t.Fatalf("22 s grant: %+v", reply)
 	}
 }
 

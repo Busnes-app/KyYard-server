@@ -550,6 +550,8 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 					reason := "exec stream limit reached; not started"
 					if errors.Is(err, errExecUnavailable) {
 						reason = errExecUnavailable.Error()
+					} else if errors.Is(err, errExecClock) {
+						reason = errExecClock.Error()
 					} else if !errors.Is(err, errExecCapacity) {
 						return err
 					}

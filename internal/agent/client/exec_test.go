@@ -131,8 +131,6 @@ func TestExecGrantRefusalBeforeRuntime(t *testing.T) {
 	for name, change := range map[string]func(*protocol.ExecOpen){
 		"wrong endpoint":      func(r *protocol.ExecOpen) { r.Endpoint = "other" },
 		"previous connection": func(r *protocol.ExecOpen) { r.Connection = bytes.Repeat([]byte{1}, 32) },
-		"expired":             func(r *protocol.ExecOpen) { r.Expires = time.Now().Add(-time.Second) },
-		"long lived":          func(r *protocol.ExecOpen) { r.Expires = time.Now().Add(time.Hour) },
 		"no actor":            func(r *protocol.ExecOpen) { r.Actor = "" },
 		"no user":             func(r *protocol.ExecOpen) { r.Spec.User = "" },
 		"no image":            func(r *protocol.ExecOpen) { r.Spec.ImageID = "" },
@@ -152,6 +150,27 @@ func TestExecGrantRefusalBeforeRuntime(t *testing.T) {
 			}
 			if calls.Load() != 0 {
 				t.Fatal("runtime called")
+			}
+		})
+	}
+	// A grant refused only for its expiry (the agent's clock disagrees) is consumed and
+	// answered, not a protocol violation that ends the session.
+	for name, expires := range map[string]time.Duration{"expired": -time.Second, "long lived": time.Hour} {
+		t.Run(name, func(t *testing.T) {
+			opts := &Options{Exec: func(context.Context, protocol.ExecSpec) (ExecSession, error) { panic("expired grant executed") }}
+			s := newExecStreams(context.Background(), "endpoint", make([]byte, 32), &execBudget{}, opts, make(chan outFrame, 8))
+			req := execRequest()
+			req.Expires = time.Now().Add(expires)
+			if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); !errors.Is(err, errExecClock) {
+				t.Fatal(err)
+			}
+			// A grant past its expiry is pruned from the replay set, so only the long-lived one replays.
+			if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); expires > 0 && !errors.Is(err, errExecProtocol) {
+				t.Fatal("replayed expiry refusal not a protocol violation", err)
+			}
+			req.Stream, req.Endpoint = "other-stream", "other"
+			if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); !errors.Is(err, errExecProtocol) {
+				t.Fatal("expired grant with a wrong scope not a protocol violation", err)
 			}
 		})
 	}
