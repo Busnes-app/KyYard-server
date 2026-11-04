@@ -180,7 +180,7 @@ func (s *Server) serveExec(w http.ResponseWriter, r *http.Request, a store.Tenan
 	if ctx.Err() != nil || !s.execAllowed(r, a, endpoint) {
 		return
 	}
-	grant := protocol.ExecOpen{Stream: stream.id, Endpoint: endpoint, Actor: a.ActorID, Connection: agent.nonce, Expires: time.Now().UTC().Add(protocol.ExecGrantLifetime), Spec: start.Spec, Size: start.Size}
+	grant := protocol.ExecOpen{Stream: stream.id, Endpoint: endpoint, Actor: a.ActorID, Connection: agent.nonce, Expires: time.Now().UTC().Add(protocol.ExecGrantLifetime - grantSkew), Spec: start.Spec, Size: start.Size}
 	if !stream.send(envelope(protocol.TypeExecOpen, grant)) {
 		return
 	}

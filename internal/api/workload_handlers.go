@@ -90,7 +90,7 @@ func (s *Server) handleWorkloadConfiguration(w http.ResponseWriter, r *http.Requ
 	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(protocol.ConfigurationLifetime + 2*time.Second))
 	target := protocol.InspectionTarget{Workload: ref}
-	answer, err := s.ask(r.Context(), agent, a.Principal(), a.OrganizationID, target, askFrames{&s.configurations, protocol.TypeConfigurationOpen, protocol.TypeConfigurationCancel, protocol.ConfigurationLifetime - 2*time.Second}, func() bool { return s.configurationAllowed(r, a, endpoint) })
+	answer, err := s.ask(r.Context(), agent, a.Principal(), a.OrganizationID, target, askFrames{&s.configurations, protocol.TypeConfigurationOpen, protocol.TypeConfigurationCancel, protocol.ConfigurationLifetime - grantSkew}, func() bool { return s.configurationAllowed(r, a, endpoint) })
 	var result *protocol.WorkloadConfiguration
 	if err == nil {
 		err = errInspectionInvalid

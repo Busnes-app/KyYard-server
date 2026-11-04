@@ -137,11 +137,16 @@ type askFrames struct {
 	lifetime     time.Duration
 }
 
+// grantSkew is taken off every grant's lifetime: an agent refuses a grant that expires past its own
+// clock plus the lifetime, and that refusal ends its session, so an agent clock a little behind the
+// server's must still accept a fresh grant.
+const grantSkew = 2 * time.Second
+
 // inspect asks agent for one validated observation of target on behalf of actor. health is
 // whether the endpoint advertises container.inspect.health, which decides what a valid answer
 // carries.
 func (s *Server) inspect(ctx context.Context, agent *agentConn, actor, org string, target protocol.InspectionTarget, health bool, allowed func() bool) (protocol.ContainerInspection, error) {
-	answer, err := s.ask(ctx, agent, actor, org, target, askFrames{&s.inspections, protocol.TypeInspectionOpen, protocol.TypeInspectionCancel, protocol.InspectionLifetime}, allowed)
+	answer, err := s.ask(ctx, agent, actor, org, target, askFrames{&s.inspections, protocol.TypeInspectionOpen, protocol.TypeInspectionCancel, protocol.InspectionLifetime - grantSkew}, allowed)
 	if err != nil {
 		return protocol.ContainerInspection{}, err
 	}

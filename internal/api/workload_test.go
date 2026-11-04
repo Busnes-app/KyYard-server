@@ -501,7 +501,7 @@ func TestPodExecOpenCloseAndUIDMismatch(t *testing.T) {
 	start(c, podUID)
 	e := readEnvelope(t, f.ctx, f.conn)
 	var grant protocol.ExecOpen
-	if e.Type != protocol.TypeExecOpen || json.Unmarshal(e.Payload, &grant) != nil || grant.Validate(time.Now()) != nil || grant.Spec.ValidateFor(protocol.RuntimeKubernetes) != nil || grant.Spec.Pod.UID != podUID {
+	if e.Type != protocol.TypeExecOpen || json.Unmarshal(e.Payload, &grant) != nil || grant.Validate(time.Now().Add(-time.Second)) != nil || grant.Spec.ValidateFor(protocol.RuntimeKubernetes) != nil || grant.Spec.Pod.UID != podUID {
 		t.Fatalf("grant %s %s", e.Type, e.Payload)
 	}
 	writeEnvelope(t, f.ctx, f.conn, protocol.TypeExecReady, protocol.ExecStream{Stream: grant.Stream})
