@@ -270,6 +270,18 @@ func TestStatusNeverCarriesToken(t *testing.T) {
 	if status["paired"] != true || status["key_pinned"] != true {
 		t.Errorf("status %v", status)
 	}
+	// The screen warns before the database outgrows the capsule (owner decision Q6 C).
+	if used, ok := status["database_bytes"].(float64); !ok || used <= 0 || status["capsule_limit_bytes"] != float64(capsule.MaxExpandedBytes) {
+		t.Errorf("no database size against the capsule limit: %v", status)
+	}
+}
+
+// A backup that outgrew its capsule is audited in the words the operator is shown.
+func TestBackupOutcomeNamesACapsuleTooLarge(t *testing.T) {
+	_, outcome, details := api.BackupOutcome(recoveryclient.Result{}, fmt.Errorf("seal: %w", capsule.ErrCapsuleTooLarge))
+	if outcome != "failure" || details["error"] != recoveryclient.TooLargeMessage || details["outcome"] != "failure" {
+		t.Fatalf("%s %v", outcome, details)
+	}
 }
 
 // A session without the CSRF header stops at the middleware. With no key pinned, the handler

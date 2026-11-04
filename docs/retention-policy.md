@@ -26,7 +26,7 @@
 | Enrollment tokens | 15 minutes unconsumed; consumed tokens deleted after 24 hours | n/a | n/a | expired shown once, then gone |
 | Sessions, MFA challenges, device pairings | inherited from the base | | | |
 
-Disk budget: the operator sees the database size and each store's share on the settings screen. At *proposed* 80 % of a configured budget (default 2 GiB for SQLite) the control plane halves metric retention and warns; at 95 % it stops accepting metrics and events (commands and audit continue) and shows the reason.
+Disk budget: the operator sees the database size and each store's share on the settings screen. At *proposed* 80 % of a configured budget (default 192 MiB for SQLite, so a backup capsule can still hold the database; 2 GiB for PostgreSQL) the control plane halves metric retention and warns; at 95 % it stops accepting metrics and events (commands and audit continue) and shows the reason.
 
 ## Overload behaviour
 
@@ -43,7 +43,7 @@ Disk budget: the operator sees the database size and each store's share on the s
 | Endpoints per instance | 25 |
 | Containers per endpoint | 100 |
 | Concurrent streams | 16 per endpoint, 8 per user, 64 per instance |
-| Retention disk budget | 2 GiB SQLite default |
+| Retention disk budget | 192 MiB SQLite default (one backup capsule holds 256 MiB), 2 GiB PostgreSQL |
 
 The fixture is `cmd/soak` ([docs/soak.md](soak.md)), which asserts these bounds and names what it cannot yet cover. The soak runs it at these targets for 24 hours on SQLite, including sustained denied mutations from a read-only member against freshly generated target identifiers for the whole run while another organization keeps writing (asserting rows stay under the ceiling, each distinct-target denial adds no row past the per-actor budget, and an administrator can still remove that member at exhaustion), verifies the database stays within budget, cleanup keeps up, p95 read latency on list screens stays under 500 ms, and memory stays bounded with slow log clients attached. Numbers that fail are lowered before freeze.
 
@@ -55,7 +55,7 @@ The fixture is `cmd/soak` ([docs/soak.md](soak.md)), which asserts these bounds 
 | Terminal contents | never recorded | required by handoff |
 | Audit retention | 365 days, per-actor denial budget, per-organization ceiling with organization-local refusal that keeps membership management open | proposed |
 | Metrics | 6 h raw at 60 s, 7 d hourly (1 d under disk-budget pressure) | implemented; soak-gated |
-| Disk budget behaviour | degrade metrics, then stop telemetry, never audit | implemented: `KY_RETENTION_DISK_BUDGET` (default 2 GiB, 0 disables; negative or absurd values refuse startup) measured every prune pass over the telemetry relations. The level rises only while usage is over budget **and still growing**, and any prune pass clears it. Release cannot wait for the reading to fall: a delete returns pages to the table rather than the file, a plain PostgreSQL vacuum never shrinks an index, and the reading also counts data retention cannot touch (audit, which is never refused and not yet pruned, and inventory, where a report replaces a row). Once a pass has taken everything retention is owed, holding the level would refuse telemetry for the rest of the server's life for a reason no dropped metric could fix. At the ceiling this throttles rather than stops, and the condition is logged every fifteen minutes while it lasts, because it needs an operator: a larger budget, more disk, or shorter retention. At 95 % metrics are refused with `error retention_pressure` and the raw window closes to one hour; at 100 % inventory is refused too. Heartbeats, endpoint state and audit are never refused |
+| Disk budget behaviour | degrade metrics, then stop telemetry, never audit | implemented: `KY_RETENTION_DISK_BUDGET` (default 192 MiB on SQLite and 2 GiB on PostgreSQL, 0 disables; negative or absurd values refuse startup, and so does a SQLite budget above the 256 MiB one backup capsule holds while backups are on) measured every prune pass over the telemetry relations. The level rises only while usage is over budget **and still growing**, and any prune pass clears it. Release cannot wait for the reading to fall: a delete returns pages to the table rather than the file, a plain PostgreSQL vacuum never shrinks an index, and the reading also counts data retention cannot touch (audit, which is never refused and not yet pruned, and inventory, where a report replaces a row). Once a pass has taken everything retention is owed, holding the level would refuse telemetry for the rest of the server's life for a reason no dropped metric could fix. At the ceiling this throttles rather than stops, and the condition is logged every fifteen minutes while it lasts, because it needs an operator: a larger budget, more disk, or shorter retention. At 95 % metrics are refused with `error retention_pressure` and the raw window closes to one hour; at 100 % inventory is refused too. Heartbeats, endpoint state and audit are never refused |
 
 ## Application revision foundation
 

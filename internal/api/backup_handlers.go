@@ -69,6 +69,17 @@ func auditValue(v any) string {
 	return strings.ReplaceAll(fmt.Sprintf("%q", fmt.Sprint(v)), "=", `\x3d`)
 }
 
+// BackupOutcome is recoveryclient.Outcome with the outcome in the details, and a backup that
+// outgrew its capsule named in the operator's words (owner decision, Q6 C).
+func BackupOutcome(res recoveryclient.Result, err error) (action, outcome string, details map[string]any) {
+	action, outcome, details = recoveryclient.Outcome(res, err)
+	details["outcome"] = outcome
+	if errors.Is(err, capsule.ErrCapsuleTooLarge) {
+		details["error"] = recoveryclient.TooLargeMessage
+	}
+	return action, outcome, details
+}
+
 // auditBackup records a backup event against the acting admin. Details never carry the
 // token or capsule bytes, and both text fields are bounded and printable before they are
 // stored: a resource may be an operator-typed URL and details may quote a remote body.
@@ -291,8 +302,7 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 		return backup.Collect(ctx, s.config, appversion.String())
 	}, s.recovery)
 
-	action, outcome, details := recoveryclient.Outcome(res, err)
-	details["outcome"] = outcome
+	action, _, details := BackupOutcome(res, err)
 	s.auditBackup(ctx, actor, r, action, res.Manifest.CapsuleID, AuditDetails(details))
 
 	if errors.Is(err, recoveryclient.ErrReceiptUnrecorded) {
@@ -486,6 +496,14 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if u, err := s.store.Settings().GetSetting(ctx, "kyrecovery_url"); err == nil {
 		out["recovery_url"] = u
+	}
+	// The snapshot is about the database's used pages, so the screen can warn before a backup
+	// outgrows the one capsule it must fit (owner decision, Q6 C).
+	if s.config.Database.Driver == "sqlite" {
+		if used, err := s.store.Usage(ctx); err == nil {
+			out["database_bytes"] = used
+			out["capsule_limit_bytes"] = capsule.MaxExpandedBytes
+		}
 	}
 	key, err := recoveryclient.LoadRecoveryKey(s.config.Database.DataDir, settings)
 	switch {

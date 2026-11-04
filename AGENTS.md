@@ -216,7 +216,7 @@ The KyRecovery wire contract is `kyrecovery-server/zero_code_pairing_handoff_spe
 
 ## README and topic guides
 
-Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/RUNNING.md`, `docs/TENANTS.md`, `docs/INTEGRATIONS.md`, `docs/CONTAINERS.md`, `docs/AGENTS-AND-KUBERNETES.md`, `docs/RECOVERY.md`, `docs/UPDATES.md`, `docs/VERIFYING-RELEASES.md`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
+Keep `README.md` as the concise product overview and navigation. `CHANGELOG.md` records, under `Unreleased`, what an upgrade changes for an existing install (defaults, refusals, upgrade order) and user-visible fixes. Detailed procedures live in `docs/RUNNING.md`, `docs/TENANTS.md`, `docs/INTEGRATIONS.md`, `docs/CONTAINERS.md`, `docs/AGENTS-AND-KUBERNETES.md`, `docs/RECOVERY.md`, `docs/UPDATES.md`, `docs/VERIFYING-RELEASES.md`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
 
 ## Supported cryptographic configuration
 

@@ -347,8 +347,7 @@ func backupLoop(ctx context.Context, cfg *config.Config, st store.Store, done ch
 
 // recordRun audits one run the same way the admin route does, under the actor that started it.
 func recordRun(ctx context.Context, st store.Store, actor string, res recoveryclient.Result, err error) {
-	action, outcome, details := recoveryclient.Outcome(res, err)
-	details["outcome"] = outcome
+	action, _, details := api.BackupOutcome(res, err)
 	_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: actor, Action: action,
 		Resource: res.Manifest.CapsuleID, Details: api.AuditDetails(details)})
 	if err != nil {
