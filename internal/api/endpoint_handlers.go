@@ -610,7 +610,7 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		Endpoint: cmd.EndpointID, Deadline: cmd.Deadline, Action: cmd.Action,
 		Container: cmd.ContainerID, Reference: cmd.Reference, Expects: cmd.Expects,
 	})
-	if !s.agents.deliver(id, frame) {
+	if !s.sendCommand(r.Context(), id, cmd.ID, frame) {
 		// Never sent, so nothing needs reconciling: say so plainly rather than leaving a row
 		// in flight that an operator would have to chase.
 		_ = s.store.Tenancy().SettleCommand(r.Context(), id, cmd.ID, protocol.OutcomeFailed, "the endpoint was not connected")
@@ -619,10 +619,22 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.writeJSON(w, http.StatusConflict, cmd)
 		return
 	}
-	if err := s.store.Tenancy().MarkCommandDispatched(r.Context(), cmd.ID); err != nil {
-		log.Printf("command %s: marking dispatched: %v", cmd.ID, err)
-	}
 	s.writeJSON(w, http.StatusAccepted, cmd)
+}
+
+// sendCommand delivers a plain command and marks it dispatched under dispatchMu's read lock, so
+// an eviction (the write lock) sees it either delivered and marked before its cutoff, or sent to
+// the successor and marked after.
+func (s *Server) sendCommand(ctx context.Context, endpoint, id string, frame protocol.Envelope) bool {
+	s.dispatchMu.RLock()
+	defer s.dispatchMu.RUnlock()
+	if !s.agents.deliver(endpoint, frame) {
+		return false
+	}
+	if err := s.store.Tenancy().MarkCommandDispatched(ctx, id); err != nil {
+		log.Printf("command %s: marking dispatched: %v", id, err)
+	}
+	return true
 }
 
 func (s *Server) handleReadCommand(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
