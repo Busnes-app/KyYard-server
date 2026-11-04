@@ -67,6 +67,7 @@ export function AccountSSO() {
       </li>)}</ul>
     </>}
     <p>Enter your current KyYard password, then sign in to the provider as the identity you want to connect. Your account, permissions and local sign-in stay the same.</p>
+    {linked.state !== 'loading' && linked.state !== 'denied' && <StateNotice state={linked.state} onRetry={linked.reload} />}
     <StateNotice state={providers.state} onRetry={providers.reload} />
     {providers.state === 'ready' && (choices.length ? <form onSubmit={link} style={{ display: 'grid', gap: 12, maxWidth: 640 }}>
       <label>Sign-in provider<select name="provider" required disabled={busy}>{choices.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>

@@ -50,3 +50,10 @@ it('shows nothing to an account the provider owns', async () => {
   await waitFor(() => expect(fetcher).toHaveBeenCalled());
   await waitFor(() => expect(container.innerHTML).toBe(''));
 });
+
+it('says so when the linked identities cannot be read, rather than hiding them', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/auth/sso' ? new Response(JSON.stringify([{ id: 'idp_test', name: 'KyIdentity' }])) : new Response('{}', { status: 500 })));
+  render(<AccountSSO />);
+  expect((await screen.findByRole('alert')).textContent).toContain('Something went wrong on the server');
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+});

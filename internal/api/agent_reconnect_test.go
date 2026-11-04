@@ -438,4 +438,32 @@ func TestEvictedSocketCommandsSettleAfterAStoreRefusal(t *testing.T) {
 	if flaky.n.Load() >= 0 {
 		t.Fatal("the store never refused, so the retry was not exercised")
 	}
+
+	// A store that keeps refusing: shutdown stops the worker, and WaitDetached joins it before the
+	// store would close, so no settle runs after.
+	stuck, err := ts.CreateCommand(ctx, org, e.ID, protocol.ActionImagePull, "docker.io/library/alpine:3.23", "", protocol.Expectation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := &agentConn{endpointID: e.ID, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})}
+	if !s.agents.replace(successor, second) || !s.agents.deliverCommand(e.ID, stuck.ID, envelope(protocol.TypeCommand, protocol.Command{ID: stuck.ID})) {
+		t.Fatal("the second socket did not take the command")
+	}
+	s.agents.replace(second, &agentConn{endpointID: e.ID, send: make(chan protocol.Envelope, 8), closed: make(chan struct{})})
+	flaky.n.Store(1 << 30)
+	s.markOffline(ctx, second)
+	time.Sleep(3 * carriedRetry)
+	s.stopping.Store(true)
+	joined := make(chan struct{})
+	go func() { s.WaitDetached(); close(joined) }()
+	select {
+	case <-joined:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitDetached did not join the retry worker at shutdown")
+	}
+	calls := flaky.n.Load()
+	time.Sleep(3 * carriedRetry)
+	if flaky.n.Load() != calls {
+		t.Fatal("the retry worker settled after shutdown")
+	}
 }

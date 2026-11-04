@@ -81,6 +81,17 @@ func (c *agentConn) unanswered() []string {
 // carriedRetry is how long a socket's end waits before settling its unanswered commands again.
 var carriedRetry = 10 * time.Second
 
+// retryWait sleeps carriedRetry, waking early and reporting false once the server is stopping.
+func (s *Server) retryWait() bool {
+	for until := time.Now().Add(carriedRetry); time.Now().Before(until); {
+		if s.stopping.Load() {
+			return false
+		}
+		time.Sleep(min(100*time.Millisecond, time.Until(until)))
+	}
+	return !s.stopping.Load()
+}
+
 // settleCarried settles ids unknown, each within frameBudget, and returns those the store refused.
 func (s *Server) settleCarried(ctx context.Context, endpointID string, ids []string) []string {
 	var left []string
@@ -451,12 +462,14 @@ func (s *Server) markOffline(ctx context.Context, c *agentConn) {
 	// What this socket carried and never answered cannot be answered by a successor, which never
 	// heard of it: settle it unknown here, before the early return below.
 	if ids := c.unanswered(); len(ids) > 0 {
-		if left := s.settleCarried(ctx, c.endpointID, ids); len(left) > 0 {
+		if left := s.settleCarried(ctx, c.endpointID, ids); len(left) > 0 && !s.stopping.Load() {
 			// The store refused: keep trying, so a slow database cannot leave them in flight
-			// while a successor holds the endpoint. A restart reconciles whatever is left.
+			// while a successor holds the endpoint. The worker is detached work WaitDetached
+			// joins, and it stops at shutdown; a restart reconciles whatever is left.
+			s.detached.add()
 			go func() {
-				for len(left) > 0 && !s.stopping.Load() {
-					time.Sleep(carriedRetry)
+				defer s.detached.done()
+				for len(left) > 0 && s.retryWait() {
 					left = s.settleCarried(ctx, c.endpointID, left)
 				}
 			}()
