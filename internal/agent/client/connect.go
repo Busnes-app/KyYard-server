@@ -119,7 +119,7 @@ func helloCapabilities(opts *Options) []string {
 			capabilities = append(capabilities, protocol.CapabilityKubernetesInspect)
 		}
 		if opts.Operate != nil && opts.ReadWorkload != nil && opts.ApplyWorkload != nil {
-			capabilities = append(capabilities, protocol.CapabilityKubernetesWorkloads, protocol.CapabilityKubernetesWorkloadsRun, protocol.CapabilityKubernetesManifestsRun)
+			capabilities = append(capabilities, protocol.CapabilityKubernetesWorkloads, protocol.CapabilityKubernetesWorkloadsRun, protocol.CapabilityKubernetesManifestsRun, protocol.CapabilityKubernetesSubdomainNames)
 		}
 		if opts.Exec != nil {
 			capabilities = append(capabilities, protocol.CapabilityPodExec)

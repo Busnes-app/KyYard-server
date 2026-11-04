@@ -19,7 +19,18 @@ func TestParseWorkloadRef(t *testing.T) {
 			t.Error(kind, err)
 		}
 	}
-	for _, bad := range []string{"Shop/Deployment/web", "shop/Deployment/web", "shop/web", "../x", "shop/deployment/../x", "shop/deployment/web/x", "shop/replicaset/web", "/deployment/web", "shop/deployment/", "shop/deployment/web.x", "shop/deployment/" + strings.Repeat("a", 64)} {
+	// Object names are DNS-1123 subdomains, as Kubernetes names them; only namespaces are labels.
+	long := strings.Repeat("a", 64)
+	for _, good := range []string{"shop/deployment/web.x", "shop/deployment/" + long, "shop/pod/" + strings.Repeat("b", 253), "shop/statefulset/api.prod.v2"} {
+		r, err := ParseWorkloadRef(good)
+		if err != nil || !r.NeedsSubdomainNames() {
+			t.Error("refused", good, err)
+		}
+	}
+	if r, _ := ParseWorkloadRef("shop/deployment/web"); r.NeedsSubdomainNames() {
+		t.Error("a label name needs no subdomain capability")
+	}
+	for _, bad := range []string{"Shop/Deployment/web", "shop/Deployment/web", "shop/web", "../x", "shop/deployment/../x", "shop/deployment/web/x", "shop/replicaset/web", "/deployment/web", "shop/deployment/", "shop/deployment/web.", "shop/deployment/.web", "shop/deployment/web..x", "shop/pod/" + strings.Repeat("b", 254), "sh.op/deployment/web", long + "/deployment/web"} {
 		if _, err := ParseWorkloadRef(bad); err == nil {
 			t.Error("accepted", bad)
 		}

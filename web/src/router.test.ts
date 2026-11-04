@@ -43,12 +43,14 @@ it('reads a search parameter and follows in-app navigation', async () => {
   expect(window.history.length).toBe(entries);
 });
 
-it('routes a workload page on DNS-label grammar and encodes its path', () => {
+it('routes a workload page on DNS grammar (namespace a label, name a subdomain) and encodes its path', () => {
   const base = '/organizations/a/endpoints/ep_1/workloads';
   expect(matchRoute(`${base}/default/deployment/web`)).toEqual({ name: 'workload', org: 'a', endpoint: 'ep_1', namespace: 'default', kind: 'deployment', workload: 'web' });
   expect(matchRoute(`${base}/kube-x/statefulset/db-0`).name).toBe('workload');
   expect(matchRoute(`${base}/default/daemonset/agent`).name).toBe('workload');
-  for (const bad of ['Default/deployment/web', '../deployment/web', 'default/deployment/..', 'default/pod/web', 'default/Deployment/web', `default/deployment/${'a'.repeat(64)}`, 'default/deployment', 'default/deployment/web/x', '-a/deployment/web', 'default/deployment/web-']) {
+  expect(matchRoute(`${base}/default/deployment/api.prod`).name).toBe('workload');
+  expect(matchRoute(`${base}/default/deployment/${'a'.repeat(64)}`).name).toBe('workload');
+  for (const bad of ['Default/deployment/web', '../deployment/web', 'default/deployment/..', 'default/pod/web', 'default/Deployment/web', `default/deployment/${'a'.repeat(254)}`, 'default/deployment/web.', 'de.fault/deployment/web', 'default/deployment', 'default/deployment/web/x', '-a/deployment/web', 'default/deployment/web-']) {
     expect(matchRoute(`${base}/${bad}`).name).toBe('notfound');
   }
   expect(matchRoute(`${base}/default/deployment/${'a'.repeat(63)}`).name).toBe('workload');

@@ -65,6 +65,11 @@ func (s *Server) workloadGate(w http.ResponseWriter, r *http.Request, a store.Te
 		s.writeError(w, http.StatusNotImplemented, refusal)
 		return "", ref, false
 	}
+	// An older agent ends the session on a configuration grant naming a subdomain.
+	if named && ref.NeedsSubdomainNames() && !slices.Contains(ep.Capabilities, protocol.CapabilityKubernetesSubdomainNames) {
+		s.writeError(w, http.StatusNotImplemented, "Upgrade the cluster agent to configure a workload whose name has dots or is longer than 63 characters")
+		return "", ref, false
+	}
 	return endpoint, ref, true
 }
 

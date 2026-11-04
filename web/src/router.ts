@@ -31,8 +31,11 @@ const NAV_EVENT = 'ky:navigate';
 const segment = /^(?=.*[A-Za-z0-9_-])[A-Za-z0-9._-]{1,64}$/;
 // A Docker container ID as the inventory reports it: lowercase 64 hex, nothing else.
 const containerID = /^[0-9a-f]{64}$/;
-// Namespace and workload name are Kubernetes DNS labels; kind is one of the configurable three.
+// A namespace is a Kubernetes DNS label; a workload or pod name a DNS subdomain (253
+// characters, dots allowed); kind is one of the configurable three.
 export const dnsLabel = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+const subdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+export const dnsSubdomain = { test: (s: string) => s.length <= 253 && subdomain.test(s) };
 const workloadKinds = ['deployment', 'statefulset', 'daemonset'];
 
 // decodeURIComponent throws on malformed escapes; a bad link must land on not-found, not a blank page.
@@ -58,7 +61,7 @@ export function matchRoute(pathname: string): Route {
     if (parts.length === 4 && parts[2] === 'endpoints' && segment.test(parts[3])) return { name: 'endpoint', org, endpoint: parts[3] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && parts[5] === 'new') return { name: 'container-new', org, endpoint: parts[3] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'workloads' && parts[5] === 'new') return { name: 'workload-new', org, endpoint: parts[3] };
-    if (parts.length === 8 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'workloads' && dnsLabel.test(parts[5]) && workloadKinds.includes(parts[6]) && dnsLabel.test(parts[7])) return { name: 'workload', org, endpoint: parts[3], namespace: parts[5], kind: parts[6], workload: parts[7] };
+    if (parts.length === 8 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'workloads' && dnsLabel.test(parts[5]) && workloadKinds.includes(parts[6]) && dnsSubdomain.test(parts[7])) return { name: 'workload', org, endpoint: parts[3], namespace: parts[5], kind: parts[6], workload: parts[7] };
     if (parts.length === 6 && parts[2] === 'endpoints' && segment.test(parts[3]) && parts[4] === 'containers' && containerID.test(parts[5])) return { name: 'container', org, endpoint: parts[3], container: parts[5] };
   }
   return { name: 'notfound' };
