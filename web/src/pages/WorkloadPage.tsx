@@ -1,6 +1,7 @@
 import { ManifestRegeneration } from '../components/KubernetesManifest';
 import { RunYAML } from '../components/RunYAML';
 import React, { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
+import { ChunkBoundary } from '../components/ChunkBoundary';
 import { Layers } from 'lucide-react';
 import { Link } from '../components/Link';
 import { EmptyNotice, StateNotice } from '../components/StateNotice';
@@ -93,7 +94,7 @@ export const WorkloadPage: React.FC<{ org: string; endpoint: string; namespace: 
       {tab === 'logs' && <section className="panel" aria-label="Logs"><PodPicker pods={pods} initial={podParam}>{(pod) => <ContainerPicker pod={pod}>{(c) => <ContainerLogs key={`${pod.name}/${c}`} url={`${base}/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/logs`} name={`${pod.namespace}/${pod.name}/${c}`} query={{ container: c }} />}</ContainerPicker>}</PodPicker></section>}
       {tab === 'terminal' && exec && <section className="panel" aria-label="Terminal">{!caps.includes('pod.exec') ? <EmptyNotice>{UPGRADE_CLUSTER}</EmptyNotice>
         : <PodPicker pods={pods} initial={podParam}>{(pod) => pod.phase === 'Running' && active
-          ? <Suspense fallback={<p role="status">Loading terminal…</p>}><PodTerminal key={`${pod.name}/${pod.uid ?? ''}`} base={base} pod={pod} scope={scope} /></Suspense>
+          ? <ChunkBoundary what="terminal"><Suspense fallback={<p role="status">Loading terminal…</p>}><PodTerminal key={`${pod.name}/${pod.uid ?? ''}`} base={base} pod={pod} scope={scope} /></Suspense></ChunkBoundary>
           : <EmptyNotice>The terminal needs a running pod on an active cluster.</EmptyNotice>}</PodPicker>}</section>}
       {tab === 'activity' && <Activity base={base} reference={`${namespace}/${kind}/${workload}`} cluster={endpointPath(org, endpoint)} />}
     </>}
