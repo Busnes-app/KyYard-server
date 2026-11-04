@@ -23,7 +23,7 @@ const operation = (state: string, steps: unknown[] = [], error: unknown = null) 
 
 type Post = { body: Record<string, unknown>; csrf: string | null };
 
-function serve(opts: { configured?: boolean; start?: Response; reads?: unknown[] } = {}) {
+function serve(opts: { configured?: boolean; start?: Response; reads?: unknown[]; me?: unknown } = {}) {
   const posts: Post[] = [];
   const reads = [...(opts.reads ?? [])];
   let opReads = 0;
@@ -35,6 +35,7 @@ function serve(opts: { configured?: boolean; start?: Response; reads?: unknown[]
     }
     if (url === '/api/suite/status') return json(opts.configured === false ? { configured: false } : status);
     if (url === '/api/suite/catalog') return json(catalog);
+    if (url === '/api/auth/me' && opts.me) return json(opts.me);
     if (url === `/api/suite/operations/${opID}`) { opReads++; return json(reads.length > 1 ? reads.shift() : reads[0]); }
     return json({ error: 'not found' }, 404);
   }));
@@ -128,4 +129,11 @@ it('polls the operation until it ends and shows its steps and diagnostics', asyn
   expect(await screen.findByText('image pull refused', {}, { timeout: 4000 })).toBeTruthy();
   expect(screen.getByText('hello.deploy failed (step_failed)')).toBeTruthy();
   expect(server.opReads()).toBe(2);
+});
+
+it('asks for the code when two-factor was turned on after the app loaded', async () => {
+  serve({ me: { user: { totp_enabled: true } } });
+  render(<Suite totp={false} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Install hello' }));
+  expect(await screen.findByLabelText('Authentication code')).toBeTruthy();
 });

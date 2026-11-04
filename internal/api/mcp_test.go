@@ -265,6 +265,23 @@ func TestMCPAccessMatrix(t *testing.T) {
 	if denied != len(operateTools) {
 		t.Fatalf("%d denial rows for %d refused operations", denied, len(operateTools))
 	}
+	// A looping agent's refusals are audited at the operations rate, with the environment
+	// it names bounded.
+	flood := map[string]any{"environment_id": strings.Repeat("e", 4096), "application_id": "x", "deployment_id": "x", "confirm": "x"}
+	for range 2 * api.MCPOperationsPerMinuteForTest {
+		if msg := callTool(t, cs, "apply_update", flood, nil); msg != "read-only token" {
+			t.Fatalf("apply_update with a read token: %q", msg)
+		}
+	}
+	rows := append(auditByActor(t, f.st, principal, string(permissions.ContainerOperate)), auditByActor(t, f.st, principal, string(permissions.ApplicationDeploy))...)
+	if len(rows) != api.MCPOperationsPerMinuteForTest {
+		t.Fatalf("%d denial rows in a minute of refusals, want %d", len(rows), api.MCPOperationsPerMinuteForTest)
+	}
+	for _, r := range rows {
+		if len(r.EnvironmentID) > 64 {
+			t.Fatalf("denial row kept a %d-byte environment ID", len(r.EnvironmentID))
+		}
+	}
 
 	operate := agentToken(t, f.st, "usr_execadmin", store.ScopeMCPOperate)
 	cs = mcpAgent(t, f.url, operate.Token)

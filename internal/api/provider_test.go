@@ -137,6 +137,53 @@ func TestProviderConfigurationSecretsAndPermissions(t *testing.T) {
 
 }
 
+// Disabling or removing a provider ends the sessions its sign-ins made: once it is gone its
+// back-channel logout cannot, and they would otherwise last their full TTL.
+func TestRemovingAProviderEndsItsSessions(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	ctx := context.Background()
+	admin := loginAs(t, srv, st, "provideradmin", "admin")
+	loginAs(t, srv, st, "ssouser", "user")
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(admin)
+		r.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "x"})
+		r.Header.Set(auth.HeaderCSRF, "x")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		return w
+	}
+	if w := send("POST", "/api/settings/sso", `{"name":"Corp","kind":"oidc","issuer":"https://identity.example.test","client_id":"yard","client_secret":"s","enabled":true}`); w.Code != 201 {
+		t.Fatal(w.Code, w.Body)
+	}
+	var configured []sso.Provider
+	if err := json.Unmarshal(do(t, srv, "GET", "/api/settings/sso", admin).Body.Bytes(), &configured); err != nil || len(configured) != 1 {
+		t.Fatal("missing configuration", err)
+	}
+	id := configured[0].ID
+	u, err := st.Users().GetUserByUsername(ctx, "ssouser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signIn := func(token string) {
+		if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: token, UserID: u.ID, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour), SSOProvider: id, SSOSID: token}, u.PasswordHash); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ended := func(token string) bool {
+		_, err := st.Sessions().GetSession(ctx, token)
+		return errors.Is(err, store.ErrNotFound)
+	}
+	signIn("before-disable")
+	if w := send("PUT", "/api/settings/sso/"+id, `{"enabled":false}`); w.Code != 200 || !ended("before-disable") {
+		t.Fatalf("disable: %d, session ended %t", w.Code, ended("before-disable"))
+	}
+	signIn("before-delete")
+	if w := send("DELETE", "/api/settings/sso/"+id, ""); w.Code != 200 || !ended("before-delete") {
+		t.Fatalf("delete: %d, session ended %t", w.Code, ended("before-delete"))
+	}
+}
+
 func TestOAuthProviderLoginBindsBrowserProviderAndConsumesState(t *testing.T) {
 	var challenge string
 	var exchanges int

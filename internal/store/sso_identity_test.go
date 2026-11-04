@@ -43,6 +43,10 @@ func TestSSOLinkKeepsLocalAccountAndRefusesStaleProof(t *testing.T) {
 	if err := st.Users().ResetAdminPassword(ctx, u.ID, "new"); err != nil {
 		t.Fatal(err)
 	}
+	// The operator reset is account recovery: a linked identity must not sign in past it.
+	if _, err := st.Users().GetUserBySSO(ctx, "idp_test", "subject"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("identity still linked after the operator reset", err)
+	}
 	if err := st.Users().LinkSSO(ctx, u.ID, "session", "old", "idp_other", "new", "127.0.0.1"); err == nil {
 		t.Fatal("reset proof accepted")
 	}

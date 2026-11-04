@@ -20,7 +20,7 @@ func (s *Server) configurationAllowed(r *http.Request, a store.TenantAccess, end
 // readConfiguration asks agent for target's full configuration, validated against target.
 func (s *Server) readConfiguration(ctx context.Context, agent *agentConn, actor, org string, target protocol.InspectionTarget, allowed func() bool) (protocol.ContainerConfiguration, error) {
 	// The agent refuses a grant past its own lifetime; leave room for clock skew.
-	answer, err := s.ask(ctx, agent, actor, org, target, askFrames{&s.configurations, protocol.TypeConfigurationOpen, protocol.TypeConfigurationCancel, protocol.ConfigurationLifetime - 2*time.Second}, allowed)
+	answer, err := s.ask(ctx, agent, actor, org, target, askFrames{&s.configurations, protocol.TypeConfigurationOpen, protocol.TypeConfigurationCancel, protocol.ConfigurationLifetime - grantSkew}, allowed)
 	if err != nil {
 		return protocol.ContainerConfiguration{}, err
 	}

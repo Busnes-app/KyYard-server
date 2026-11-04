@@ -96,7 +96,7 @@ func (f terminalFixture) open(t *testing.T) (*websocket.Conn, protocol.ExecOpen)
 	if err := json.Unmarshal(frame.Payload, &grant); err != nil {
 		t.Fatal(err)
 	}
-	if grant.Validate(time.Now()) != nil || grant.Actor != "usr_execadmin" || grant.Endpoint != f.ag.id || grant.Spec.User != "1000" {
+	if grant.Validate(time.Now().Add(-time.Second)) != nil || grant.Actor != "usr_execadmin" || grant.Endpoint != f.ag.id || grant.Spec.User != "1000" {
 		t.Fatalf("bad scope: %+v", grant)
 	}
 	writeEnvelope(t, f.ctx, f.ag.conn, protocol.TypeExecReady, protocol.ExecStream{Stream: grant.Stream})

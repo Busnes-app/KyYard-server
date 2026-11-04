@@ -3,8 +3,10 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './App';
 import { watchForUpdate } from './ky-ui/update.js';
+import { reloadOnStaleChunk } from './staleChunk';
 
 watchForUpdate({ name: 'KyYard' });
+reloadOnStaleChunk(window, () => window.location.reload(), () => window.sessionStorage);
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

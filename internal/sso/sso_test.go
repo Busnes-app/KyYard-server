@@ -51,6 +51,30 @@ func TestOAuthAuthorizationURLUsesDiscoveryAndPKCE(t *testing.T) {
 	}
 }
 
+// An issuer that names itself with a trailing slash (Auth0 does) signs in whether the operator
+// typed the slash or not: go-oidc compares the discovered issuer exactly.
+func TestOAuthDiscoveryAcceptsAnIssuerWithATrailingSlash(t *testing.T) {
+	var issuer string
+	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer": issuer, "authorization_endpoint": issuer + "authorize",
+			"token_endpoint": issuer + "token", "jwks_uri": issuer + "keys",
+		})
+	}))
+	defer idp.Close()
+	issuer = idp.URL + "/"
+	for _, configured := range []string{idp.URL, idp.URL + "/"} {
+		client := sso.NewGenericOIDCClient(config.SSOConfig{GenericOIDCIssuer: configured, GenericOIDCClientID: "client"}, nil)
+		if _, err := client.BuildAuthURL(oidc.ClientContext(context.Background(), idp.Client()), "https://app.example/callback", "state", "verifier", "nonce"); err != nil {
+			t.Errorf("issuer configured as %q: %v", configured, err)
+		}
+	}
+}
+
 func TestKySignOnWebhookSync(t *testing.T) {
 	st, err := store.Open(context.Background(), testdb.Config(t))
 	if err != nil {

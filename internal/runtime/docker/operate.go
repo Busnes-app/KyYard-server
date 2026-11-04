@@ -21,6 +21,33 @@ const operationBudget = 30 * time.Second
 // unbounded (negative): the ceiling an edit allows.
 const maxStopGrace = 3600
 
+// graceOf is the stop grace a container asked for, in seconds: Docker's default when it set none,
+// maxStopGrace when it set longer or forever (negative).
+func graceOf(t *int) int {
+	switch {
+	case t == nil:
+		return stopGrace
+	case *t < 0 || *t > maxStopGrace:
+		return maxStopGrace
+	}
+	return *t
+}
+
+// extraGrace is the time a stop with grace seconds needs past operationBudget, which covers
+// Docker's default.
+func extraGrace(grace int) time.Duration {
+	return time.Duration(max(0, grace-stopGrace)) * time.Second
+}
+
+// fitGrace cuts a grace longer than Docker's default so its extra time fits room: honoured as far
+// as a run's deadline allows, and never shorter than the default.
+func fitGrace(grace int, room time.Duration) int {
+	if grace <= stopGrace {
+		return grace
+	}
+	return min(grace, stopGrace+max(0, int(room/time.Second)))
+}
+
 // Operate runs one lifecycle action against one container, after checking that the container
 // is still what the operator was looking at. Docker has no universal resource version, so the
 // precondition is operation-specific identity read immediately before acting: the same image
@@ -85,13 +112,7 @@ func (c *Client) Operate(ctx context.Context, cmd protocol.Command) (outcome, de
 	// The container's own grace when it set one, Docker's default otherwise; negative is forever.
 	// The call waits out the grace and then operationBudget for the kill and a restart's start, so
 	// a slow shutdown is reported as it ended, not timed_out, and is never cut short.
-	grace := stopGrace
-	if t := inspected.Config.StopTimeout; t != nil {
-		grace = *t
-		if grace < 0 || grace > maxStopGrace {
-			grace = maxStopGrace
-		}
-	}
+	grace := graceOf(inspected.Config.StopTimeout)
 	var path string
 	switch cmd.Action {
 	case protocol.ActionStart:

@@ -161,7 +161,7 @@ Optional overlays are appended to the existing `COMPOSE_FILE` chain, preserving 
 bind and DNS overlays already in use:
 
 - `docker-compose.bind.yml`: existing host directory at `./data` instead of the named volume.
-- `docker-compose.postgres.yml` (Compose 2.24 or later): the pinned PostgreSQL 18
+- `docker-compose.postgres.yml` (Compose 2.24 or later): the pinned PostgreSQL 17
   image and KyYard on the private default Compose network, without a published database port. Set `KY_POSTGRES_PASSWORD`, `KY_POSTGRES_TLS_DIR` and `KY_DB_DSN`.
   The TLS directory contains `server.crt`, `server.key` and `ca.crt`; the overlay enables
   server TLS and mounts only the public CA file into KyYard at `/etc/kyyard-db-ca.crt`.
@@ -170,7 +170,7 @@ bind and DNS overlays already in use:
   A recycled IP then fails certificate verification before credentials are sent.
   The PostgreSQL image's `postgres` user must own/read the key with mode 0600; alternatively
   use root ownership, mode 0640 and that user's group. Prepare the files before starting;
-  missing or invalid certificates fail startup. See [PostgreSQL TLS setup](https://www.postgresql.org/docs/18/ssl-tcp.html).
+  missing or invalid certificates fail startup. See [PostgreSQL TLS setup](https://www.postgresql.org/docs/17/ssl-tcp.html).
   Existing database volumes need the same TLS setup before enabling this overlay. Capsule
   backups support SQLite only. A separately managed PostgreSQL server with a stable address
   and verified TLS is also supported by setting the server's database environment directly.

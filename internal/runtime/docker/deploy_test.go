@@ -2322,3 +2322,43 @@ func TestDeployRollbackRevivesWhenTheNameIsNotGivenBack(t *testing.T) {
 		t.Fatalf("stop calls:\n got %s\nwant suffix %s", calls, tail)
 	}
 }
+
+// A recreate stops the old container with the grace it asked for, as Stop does, cut to what the
+// deadline leaves but never below Docker's default.
+func TestDeployStopsWithTheContainersOwnGrace(t *testing.T) {
+	f := newFakeDeployEngine(t)
+	f.newStates = []string{healthy}
+	f.oldContainer["Config"].(map[string]any)["StopTimeout"] = 30
+	res := f.client().Deploy(context.Background(), request(webService()), func() {})
+	stop, ok := f.call("POST", "/containers/"+oldID+"/stop")
+	if res.Outcome != protocol.OutcomeSucceeded || !ok || stop.Query != "t=30" {
+		t.Fatalf("outcome %+v, stop %+v", res, stop)
+	}
+
+	f = newFakeDeployEngine(t)
+	f.newStates = []string{healthy}
+	f.oldContainer["Config"].(map[string]any)["StopTimeout"] = -1 // forever
+	res = f.client().Deploy(context.Background(), request(webService()), func() {})
+	stop, _ = f.call("POST", "/containers/"+oldID+"/stop")
+	grace, err := strconv.Atoi(strings.TrimPrefix(stop.Query, "t="))
+	if res.Outcome != protocol.OutcomeSucceeded || err != nil || grace <= 10 || grace >= 300 {
+		t.Fatalf("outcome %+v, stop %+v: want the grace cut to the five-minute deadline", res, stop)
+	}
+}
+
+// After an unanswered stop of a container with a grace past Docker's default, the rollback waits
+// that much longer for the daemon to finish stopping it, then starts it again: a wait cut at the
+// default budget would leave the daemon to stop it after the rollback gave up.
+func TestDeployUnansweredStopWaitsOutTheContainersGrace(t *testing.T) {
+	const budget, reserve = 600 * time.Millisecond, 200 * time.Millisecond
+	f := newFakeDeployEngine(t)
+	f.oldContainer["State"] = map[string]any{"Status": "running", "Running": true, "Paused": false}
+	f.oldContainer["Config"].(map[string]any)["StopTimeout"] = 11 // one second past the default
+	f.stopDelay, f.waitDelay = holdCall, 900*time.Millisecond
+	ctx, cancel := unanswered(false)
+	defer cancel()
+	f.client().WaitStopFor(2*holdCall).RestoreFor(budget).ReserveRestartFor(reserve).Deploy(ctx, explicitRequest(explicitService()), func() {})
+	if _, started := f.call("POST", "/containers/"+oldID+"/start"); !started {
+		t.Fatalf("the old container was not started again after the wait: %v", f.steps())
+	}
+}

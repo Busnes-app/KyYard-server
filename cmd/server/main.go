@@ -66,13 +66,36 @@ func main() {
 			runRestore(os.Args[2:])
 			return
 		case "version":
-			fmt.Println("kyyard-server v1.0.0 (KyYard control plane scaffold)")
+			fmt.Println("kyyard-server", appversion.String())
 			return
+		case "help", "-h", "-help", "--help":
+			fmt.Print(usage)
+			return
+		default:
+			// Anything else would start a second server on the live data directory, whose
+			// startup reconciliation settles the running server's in-flight commands.
+			fmt.Fprintf(os.Stderr, "kyyard-server: unknown command %q\n%s", os.Args[1], usage)
+			os.Exit(2)
 		}
 	}
 
 	runServer()
 }
+
+const usage = `usage: kyyard-server [command]
+
+With no command, runs the server.
+
+Commands:
+  apply-setup     apply an installer setup bundle to the running server
+  healthcheck     probe the running server's readiness
+  init-admin      create or reset an administrator (password on stdin)
+  backup-drill    check that a backup can be restored
+  export-capsule  write a sealed backup capsule
+  deposit         deposit a backup with KyRecovery now
+  restore         restore from a backup capsule
+  version         print the version
+`
 
 // shutdownTimeout drains in-flight HTTP requests. Short on purpose: it is spent before the
 // backup wait below, and both must fit inside the deployment's stop_grace_period.
@@ -99,6 +122,12 @@ func runServer() {
 	if cfg.Container.AllowPrivileged {
 		log.Printf("[CONTAINER] KY_CONTAINER_ALLOW_PRIVILEGED is on: organization admins may recreate or run containers with host-level settings, which is root on the host")
 	}
+
+	lock, err := lockDataDir(cfg.Database.DataDir)
+	if err != nil {
+		log.Fatalf("Data directory: %v", err)
+	}
+	defer lock.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

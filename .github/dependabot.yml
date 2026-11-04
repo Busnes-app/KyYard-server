@@ -69,12 +69,17 @@ updates:
     commit-message:
       prefix: "chore(deps)"
 
-  # docker-compose.postgres.yml pins PostgreSQL by digest; this moves the pin.
+  # docker-compose.postgres.yml pins PostgreSQL by digest; this moves the pin. A major bump
+  # needs a data migration and a new volume layout (18 refuses /var/lib/postgresql/data), so
+  # only minor and patch moves are proposed.
   - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly
     cooldown:
       default-days: 3
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"

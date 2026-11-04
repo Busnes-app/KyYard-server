@@ -378,3 +378,41 @@ func TestBackchannelLogoutFetchesProviderMetadataOnce(t *testing.T) {
 		t.Fatalf("40 logouts fetched discovery %d times and the JWKS %d times", d, k)
 	}
 }
+
+// A sign-in that straddles its provider being disabled cannot complete into a session: the
+// challenge here outlived the purge (as a consumed one would), and its completion re-checks the
+// provider under the lock the purge holds.
+func TestADisabledProviderFencesALateMFACompletion(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeIdP(t)
+	srv, st, cfg := setupTestServer(t)
+	seal := func(enabled bool) {
+		plain, _ := json.Marshal([]sso.Provider{{ID: "idp_a", Name: "A", Kind: "oidc", Issuer: f.issuer, ClientID: "yard-a", Enabled: enabled}})
+		sealed, _ := crypto.EncryptAESGCM(plain, crypto.DeriveKey(cfg.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+		if err := st.Settings().SetSetting(ctx, "sso_providers_enc", sealed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seal(true)
+	local := loginAs(t, srv, st, "dana", "user")
+	dana, err := st.Users().GetUserByUsername(ctx, "dana")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().LinkSSO(ctx, dana.ID, crypto.SHA256Hex([]byte(local.Value)), dana.PasswordHash, "idp_a", "dana-sub", ""); err != nil {
+		t.Fatal(err)
+	}
+	codes, hashed, err := auth.GenerateRecoveryCodes(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dana.TOTPEnabled, dana.RecoveryCodesHash = true, hashed
+	if err := st.Users().UpdateUser(ctx, dana); err != nil {
+		t.Fatal(err)
+	}
+	callback := ssoLogin(t, srv, f, "idp_a", "yard-a", "dana-sub", "sid-1")
+	seal(false)
+	if w := completeRecovery(t, srv, callback, codes[0]); w.Code != http.StatusUnauthorized || sessionCookie(w) != nil {
+		t.Fatalf("MFA completion for a disabled provider issued a session: %d %s", w.Code, w.Body.String())
+	}
+}

@@ -29,8 +29,12 @@ async function refusal(r: Response): Promise<string> {
   return `Request refused (${r.status}).`;
 }
 
-export function Suite({ totp }: { totp: boolean }) {
+export function Suite({ totp: atSignIn }: { totp: boolean }) {
   const status = useTenantResource<SuiteStatus>('/api/suite/status');
+  // Two-factor can be turned on or off in Settings after the app loaded: read it fresh, or the
+  // dialog asks for the wrong thing and the server refuses every action.
+  const me = useTenantResource<{ user?: { totp_enabled?: boolean } }>('/api/auth/me');
+  const totp = me.data?.user?.totp_enabled ?? atSignIn;
   return <div className="ky-page">
     <h1>Suite</h1>
     <p>Install, upgrade and remove Ky suite apps through the suite runner.</p>

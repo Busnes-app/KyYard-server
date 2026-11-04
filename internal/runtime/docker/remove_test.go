@@ -245,3 +245,13 @@ func TestRemoveCallsStartedBeforeTheFirstStop(t *testing.T) {
 		t.Fatalf("started=%v for a container already gone: %+v", called, res)
 	}
 }
+
+// Removal stops each container with the grace it asked for, as Stop does.
+func TestRemoveStopsWithTheContainersOwnGrace(t *testing.T) {
+	f := newFakeRemoveEngine(t)
+	f.containers[oldID]["Config"] = map[string]any{"StopTimeout": 120}
+	res := f.client().Remove(context.Background(), removal(oldID), func() {})
+	if res.Outcome != protocol.OutcomeSucceeded || len(f.calls) < 2 || f.calls[1].Query != "t=120" {
+		t.Fatalf("outcome %+v, calls %+v", res, f.calls)
+	}
+}

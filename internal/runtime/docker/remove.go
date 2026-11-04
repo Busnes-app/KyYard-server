@@ -21,8 +21,8 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, sta
 	ctx, cancel := context.WithDeadline(parent, req.Deadline)
 	defer cancel()
 	r := &deployRun{c: c, parent: parent, res: res, started: started}
-	for _, t := range req.Containers {
-		r.removeTarget(ctx, t, req.Deadline)
+	for i, t := range req.Containers {
+		r.removeTarget(ctx, t, req.Deadline, len(req.Containers)-1-i)
 	}
 	if r.res.Outcome == "" {
 		r.res.Outcome = protocol.OutcomeSucceeded
@@ -30,9 +30,14 @@ func (c *Client) Remove(parent context.Context, req protocol.RemovalRequest, sta
 	return r.res
 }
 
-func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, deadline time.Time) {
+// removeBudget is one target's stop and remove with its precondition, at Docker's default grace.
+const removeBudget = operationBudget + 2*callBudget
+
+// later is the number of targets after this one, whose budgets a long stop grace must leave.
+func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, deadline time.Time, later int) {
 	id := url.PathEscape(t.Target.ContainerID)
 	gone := false
+	grace := stopGrace // the container's own, as Stop honours it, as far as the deadline allows
 	r.step(t.Service, protocol.StepPrecondition, func() (string, string, string) {
 		if r.c.isSelf(t.Target.ContainerID) {
 			return deny(ErrSelfProtected.Error())
@@ -40,7 +45,10 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		cctx, cancel := context.WithTimeout(ctx, callBudget)
 		defer cancel()
 		var in struct {
-			Config  struct{ Labels map[string]string }
+			Config struct {
+				Labels      map[string]string
+				StopTimeout *int
+			}
 			ID      string `json:"Id"`
 			Image   string
 			Created time.Time
@@ -58,6 +66,7 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		if installerManaged(in.Config.Labels) {
 			return deny("application_managed")
 		}
+		grace = fitGrace(graceOf(in.Config.StopTimeout), time.Until(deadline)-time.Duration(1+later)*removeBudget)
 		return succeeded()
 	})
 	if gone {
@@ -67,13 +76,13 @@ func (r *deployRun) removeTarget(ctx context.Context, t protocol.RemovalTarget, 
 		return
 	}
 	r.step(t.Service, protocol.StepStop, func() (string, string, string) {
-		if time.Until(deadline) < operationBudget+2*callBudget {
+		if time.Until(deadline) < removeBudget {
 			return protocol.OutcomeTimedOut, "deadline", ""
 		}
 		r.begin()
-		cctx, cancel := context.WithTimeout(ctx, operationBudget)
+		cctx, cancel := context.WithTimeout(ctx, operationBudget+extraGrace(grace))
 		defer cancel()
-		status, err := r.c.post(cctx, "/containers/"+id+"/stop?t="+strconv.Itoa(stopGrace))
+		status, err := r.c.post(cctx, "/containers/"+id+"/stop?t="+strconv.Itoa(grace))
 		if err != nil || (status >= 400 && status != http.StatusNotModified) {
 			return r.outcomeFor(cctx, err, status)
 		}

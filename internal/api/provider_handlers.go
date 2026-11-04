@@ -165,8 +165,14 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, 404, "Provider not found")
 		return
 	}
+	// Its sign-ins would otherwise outlive it to their full TTL, beyond its back-channel logout.
+	// Ended first, so a failure leaves the provider in place to remove again.
+	err = s.store.Sessions().EndSSOProvider(r.Context(), id)
 	plain, _ := json.Marshal(saved)
-	blob, err := crypto.EncryptAESGCM(plain, crypto.DeriveKey(s.config.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	var blob string
+	if err == nil {
+		blob, err = crypto.EncryptAESGCM(plain, crypto.DeriveKey(s.config.Security.EncryptionKey, "kyyard/sso/providers/v1"))
+	}
 	if err == nil {
 		err = s.store.Settings().SetSetting(r.Context(), providerSetting, blob)
 	}
@@ -178,16 +184,30 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, 200, map[string]bool{"removed": true})
 }
 func (s *Server) provider(r *http.Request) (sso.Provider, bool) {
-	all, err := s.providers(r.Context())
+	return s.enabledProvider(r.Context(), r.PathValue("provider"))
+}
+
+func (s *Server) enabledProvider(ctx context.Context, id string) (sso.Provider, bool) {
+	all, err := s.providers(ctx)
 	if err != nil {
 		return sso.Provider{}, false
 	}
 	for _, p := range all {
-		if p.ID == r.PathValue("provider") && p.Enabled {
+		if p.ID == id && p.Enabled {
 			return p, true
 		}
 	}
 	return sso.Provider{}, false
+}
+
+// lockEnabledProvider takes providersMu and reports whether provider id is still configured and
+// enabled; the caller unlocks. A sign-in issues its session or MFA challenge under it, so one
+// whose token exchange straddled the provider's removal or disabling cannot outlive the
+// EndSSOProvider purge, which runs under the same lock.
+func (s *Server) lockEnabledProvider(ctx context.Context, id string) bool {
+	s.providersMu.Lock()
+	_, ok := s.enabledProvider(ctx, id)
+	return ok
 }
 func (s *Server) handleProviderLogin(w http.ResponseWriter, r *http.Request) {
 	s.startProviderLogin(w, r, nil)
@@ -410,6 +430,12 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	ok = s.lockEnabledProvider(ctx, p.ID)
+	defer s.providersMu.Unlock()
+	if !ok {
+		s.writeError(w, 404, "Sign-in provider unavailable")
+		return
+	}
 	if user.SSOProvider == "local" && user.TOTPEnabled {
 		token, err := s.beginMFA(ctx, user, p.ID, claims.SessionID, claims.IssuedAt)
 		if err != nil {
@@ -489,6 +515,12 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeError(w, 500, "Could not update provider")
 		return
+	}
+	if update.Enabled != nil && !*update.Enabled {
+		if err := s.store.Sessions().EndSSOProvider(r.Context(), id); err != nil {
+			s.writeError(w, 500, "Provider disabled, but its sessions could not be ended; disable it again")
+			return
+		}
 	}
 	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "sso.provider.update", Resource: id})
 	s.writeJSON(w, 200, map[string]bool{"updated": true})
