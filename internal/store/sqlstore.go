@@ -593,6 +593,17 @@ func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string
 
 func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expectedPasswordHash string) error {
 	err := s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, false, func(tx *sql.Tx) error {
+		if sess.SSOProvider != "" {
+			// A provider sign-in that resolved the account before an UnlinkSSO committed must not
+			// get a session after it: both hold this user row, so this sees the unlink.
+			var linked int
+			if err := tx.QueryRowContext(ctx, s.store.rebind(`SELECT COUNT(*) FROM users u WHERE u.id = ? AND (u.sso_provider = ? OR EXISTS (SELECT 1 FROM user_sso_identities i WHERE i.user_id = u.id AND i.provider = ?))`), sess.UserID, sess.SSOProvider, sess.SSOProvider).Scan(&linked); err != nil {
+				return err
+			}
+			if linked == 0 {
+				return ErrNotFound
+			}
+		}
 		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_provider, sso_sid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOProvider, sess.SSOSID)
 		return err
 	})

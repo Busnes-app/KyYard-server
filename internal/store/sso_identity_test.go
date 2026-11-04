@@ -80,3 +80,41 @@ func TestSSOIdentityHasOneOwnerAcrossConcurrentLinks(t *testing.T) {
 		t.Fatalf("%d links won", successes)
 	}
 }
+
+// A provider sign-in that resolved the account before an unlink cannot get a session after it:
+// the session write rechecks the link under the same user-row lock as UnlinkSSO.
+func TestNoProviderSessionAfterUnlink(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	u := &store.User{ID: "local", Username: "carol", PasswordHash: "hash", Role: "user", Status: "active", SSOProvider: "local"}
+	if err := st.Users().CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: "local", UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().LinkSSO(ctx, u.ID, "local", "hash", "idp_test", "intruder", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	via := func(token string) error {
+		return st.Sessions().CreateSession(ctx, &store.Session{TokenHash: token, UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), SSOProvider: "idp_test", SSOSID: token}, "hash")
+	}
+	if err := via("before"); err != nil {
+		t.Fatalf("a linked provider's session: %v", err)
+	}
+	if err := st.Users().UnlinkSSO(ctx, u.ID, "hash", "idp_test", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := via("after"); err == nil {
+		t.Fatal("an unlinked provider issued a session")
+	}
+	// The account's own provider needs no link row: a provisioned account still signs in.
+	p := &store.User{ID: "fed", Username: "dave", Role: "user", Status: "active", SSOProvider: "idp_test", SSOSubject: "dave"}
+	if err := st.Users().CreateUser(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: "fed", UserID: p.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), SSOProvider: "idp_test"}, ""); err != nil {
+		t.Fatalf("a provisioned account's provider session: %v", err)
+	}
+}
