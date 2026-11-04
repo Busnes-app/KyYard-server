@@ -64,6 +64,9 @@ const (
 	DownEndpointOffline = "endpoint_offline"
 	DownContainer       = "container"
 	DownNodeNotReady    = "node_not_ready"
+	// DownRuntimeUnreachable is a connected endpoint whose agent cannot read its runtime (the
+	// Docker daemon or the cluster API): its inventory lists nothing, which is not "all clear".
+	DownRuntimeUnreachable = "runtime_unreachable"
 )
 
 // DownItem is one thing a status feed reports as down. Key is stable for as long as the same
@@ -78,7 +81,7 @@ type DownItem struct {
 	EndpointID  string
 	// Subject is the container or node name; empty for an offline endpoint.
 	Subject string
-	// Condition is offline, not_ready, unhealthy, restarting, dead or exited.
+	// Condition is offline, runtime_unreachable, not_ready, unhealthy, restarting, dead or exited.
 	Condition string
 	// At is when KyYard last heard from the endpoint (offline) or last observed the condition.
 	At time.Time
@@ -254,6 +257,7 @@ func (t *tenancyStore) ReadStatusFeed(ctx context.Context, token, ip string, all
 // or dead, or it exited although its restart policy says it should be running.
 func downInSnapshot(endpoint DownItem, runtime string, observed time.Time, raw []byte) []DownItem {
 	var s struct {
+		Engine     protocol.Engine      `json:"engine"`
 		Containers []protocol.Container `json:"containers"`
 		Kubernetes *struct {
 			Nodes []protocol.Node `json:"nodes"`
@@ -261,6 +265,13 @@ func downInSnapshot(endpoint DownItem, runtime string, observed time.Time, raw [
 	}
 	if json.Unmarshal(raw, &s) != nil {
 		return nil
+	}
+	if s.Engine.Version == "" {
+		// The agent reported facts only: it could not read the runtime, so nothing below is known.
+		item := endpoint
+		item.Kind, item.Condition, item.At = DownRuntimeUnreachable, "runtime_unreachable", observed
+		item.Key = DownRuntimeUnreachable + ":" + endpoint.EndpointID
+		return []DownItem{item}
 	}
 	var out []DownItem
 	if runtime == protocol.RuntimeKubernetes {

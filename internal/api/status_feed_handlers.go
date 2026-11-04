@@ -167,6 +167,9 @@ func (s *Server) rssOf(report *store.StatusReport, now time.Time) rssDocument {
 		case store.DownEndpointOffline:
 			item.Title = "Offline: " + d.Endpoint
 			item.Description = "Endpoint " + where + " is offline"
+		case store.DownRuntimeUnreachable:
+			item.Title = "Runtime unreachable: " + d.Endpoint
+			item.Description = "The agent on " + where + " cannot read its container runtime, so KyYard cannot see what runs there"
 		case store.DownNodeNotReady:
 			item.Title = "Node not ready: " + d.Subject + " on " + d.Endpoint
 			item.Description = "Node " + d.Subject + " of cluster " + where + " is not ready"
