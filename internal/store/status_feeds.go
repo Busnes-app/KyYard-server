@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -81,7 +82,8 @@ type DownItem struct {
 	EndpointID  string
 	// Subject is the container or node name; empty for an offline endpoint.
 	Subject string
-	// Condition is offline, runtime_unreachable, not_ready, unhealthy, restarting, dead or exited.
+	// Condition is offline, runtime_unreachable, nodes_unreadable, not_ready, unhealthy,
+	// restarting, dead or exited.
 	Condition string
 	// At is when KyYard last heard from the endpoint (offline) or last observed the condition.
 	At time.Time
@@ -259,6 +261,7 @@ func downInSnapshot(endpoint DownItem, runtime string, observed time.Time, raw [
 	var s struct {
 		Engine     protocol.Engine      `json:"engine"`
 		Containers []protocol.Container `json:"containers"`
+		Truncated  []string             `json:"truncated"`
 		Kubernetes *struct {
 			Nodes     []protocol.Node   `json:"nodes"`
 			Workloads []json.RawMessage `json:"workloads"`
@@ -280,6 +283,14 @@ func downInSnapshot(endpoint DownItem, runtime string, observed time.Time, raw [
 	if runtime == protocol.RuntimeKubernetes {
 		if s.Kubernetes == nil {
 			return nil
+		}
+		// A node list the agent could not read is reported empty and marked truncated: no node
+		// is known to be ready, so the feed must not read as all clear.
+		if len(s.Kubernetes.Nodes) == 0 && slices.Contains(s.Truncated, "nodes") {
+			item := endpoint
+			item.Kind, item.Condition, item.At = DownRuntimeUnreachable, "nodes_unreadable", observed
+			item.Key = DownRuntimeUnreachable + ":nodes:" + endpoint.EndpointID
+			out = append(out, item)
 		}
 		for _, n := range s.Kubernetes.Nodes {
 			if n.Ready {

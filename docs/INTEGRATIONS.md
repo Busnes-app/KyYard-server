@@ -32,7 +32,8 @@ It has one item for each thing that is down now in that organization, across all
 - a Docker container that is unhealthy, restarting or dead, or that exited although its restart
   policy is `always` or `unless-stopped` (a container you stopped on purpose with that policy
   shows too);
-- a Kubernetes node that is not ready.
+- a Kubernetes node that is not ready, or a cluster whose agent cannot list its nodes (a timeout,
+  or a role without `list nodes`), so their readiness is unknown.
 
 Only a connected endpoint's containers and nodes are read; an offline endpoint is one item.
 Pending, never-connected and revoked endpoints are not monitored. An item's `guid` is opaque and stays the
