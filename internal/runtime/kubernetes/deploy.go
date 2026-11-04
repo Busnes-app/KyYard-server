@@ -34,8 +34,8 @@ const rolloutPoll = 2 * time.Second
 // is re-read and retried; a refused write is forbidden without the verb, admission_denied with
 // it) and start (the rollout, polled until available, a failure the cluster reports, or the
 // deadline: rollout_timeout; then drop a Service no longer published and prune, or restore the
-// template after a rollout_timeout; a failed create or start puts an updated Service's previous
-// ports back). The first step that is not a success ends the run and every later step is skipped. started is called once, before
+// template after a rollout_timeout; an updated Service gets its previous ports back when the
+// Deployment write was refused or never sent, or the template was restored). The first step that is not a success ends the run and every later step is skipped. started is called once, before
 // the first write.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
@@ -66,9 +66,12 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 		r.step(set.Service, protocol.StepCreate, func() (string, string, string) {
 			r.begin()
 			d, o, code, detail := r.apply(ctx, set, have[i])
-			if o == protocol.OutcomeSucceeded {
+			switch {
+			case o == protocol.OutcomeSucceeded:
 				r.res.Services = append(r.res.Services, protocol.DeploymentIdentity{Service: set.Service, Kind: protocol.KindDeployment, Namespace: d.Namespace, Name: d.Name, UID: string(d.UID), Generation: d.Generation, ImageDigest: req.Services[i].Pull.Digest})
-			} else {
+			case d == nil:
+				// The Deployment was not written, or the cluster refused it: the previous pods are
+				// still the ones serving.
 				r.restoreService(set, have[i])
 			}
 			return o, code, detail
@@ -84,10 +87,11 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 				}
 				return r.prune(ctx, set)
 			}
-			if code == "rollout_timeout" && have[i].deployment != nil {
-				r.restore(have[i].deployment)
+			// The ports go back only with the template: a rollout that may still finish (a
+			// cancelled or unreadable one) brings up pods on the new ports.
+			if code == "rollout_timeout" && have[i].deployment != nil && r.restore(have[i].deployment) {
+				r.restoreService(set, have[i])
 			}
-			r.restoreService(set, have[i])
 			return o, code, detail
 		})
 	}
@@ -423,6 +427,11 @@ func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.De
 	}
 	d, o, code, detail := upsert(ctx, r, "Deployment", apps.Deployments(r.namespace), set.Deployment, e.deployment, nil)
 	if o != protocol.OutcomeSucceeded {
+		if o != protocol.OutcomeDenied && code != "conflict" {
+			// Unanswered or failed: the write may have taken effect. A non-nil Deployment tells
+			// the caller not to put the Service's previous ports back.
+			return set.Deployment, o, code, detail
+		}
 		return nil, o, code, detail
 	}
 	return d, protocol.OutcomeSucceeded, "", ""
@@ -463,26 +472,30 @@ func (r *run) prune(ctx context.Context, set render.Set) (string, string, string
 // restore writes the pod template the precondition read back onto the Deployment, at its UID,
 // after a failed rollout: the Deployment returns to the ReplicaSet that kept serving (Recreate:
 // starts it again) rather than staying on the failed one, whose ConfigMap and Secret prune has not
-// touched. Best effort, past the request deadline: a failure is logged.
-func (r *run) restore(prev *appsv1.Deployment) {
+// touched. Best effort, past the request deadline: a failure is logged. It reports whether the
+// template was written back.
+func (r *run) restore(prev *appsv1.Deployment) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.parent), callBudget)
 	defer cancel()
 	api := r.c.cs.AppsV1().Deployments(r.namespace)
 	d, err := api.Get(ctx, prev.Name, metav1.GetOptions{})
 	if err == nil {
 		if d.UID != prev.UID || !r.owned(d) {
-			return
+			return false
 		}
 		d.Spec.Template = prev.Spec.Template
 		_, err = api.Update(ctx, d, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		r.c.log.Printf("kubernetes: deploy: Deployment %s/%s keeps its failed rollout: the previous pod template was not restored: %v", r.namespace, prev.Name, err)
+		return false
 	}
+	return true
 }
 
 // restoreService writes the ports the precondition read back onto an existing Service the run
-// updated, at its UID, after the run failed: the pods still serving are the previous revision's,
+// updated, at its UID, when the Deployment is known to be on the previous template (not written,
+// refused, or restored after a rollout_timeout): the pods serving are the previous revision's,
 // and the new ports would route to ones they do not listen on. Best effort, past the request
 // deadline, like restore.
 func (r *run) restoreService(set render.Set, e existing) {

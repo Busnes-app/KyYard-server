@@ -136,6 +136,19 @@ func writes(cs *fake.Clientset) []string {
 	return out
 }
 
+// keepServiceUID makes a Service update keep the object's UID, as the API server does.
+func keepServiceUID(cs *fake.Clientset) {
+	cs.PrependReactor("update", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		s := action.(k8stesting.UpdateAction).GetObject().(*corev1.Service)
+		old, err := cs.Tracker().Get(corev1.SchemeGroupVersion.WithResource("services"), s.Namespace, s.Name)
+		if err != nil {
+			return true, nil, err
+		}
+		s.UID = old.(*corev1.Service).UID
+		return false, nil, nil
+	})
+}
+
 func owned(service string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{Namespace: "shop", Labels: map[string]string{render.LabelInstance: testInstance, render.LabelService: service}}
 }
@@ -518,16 +531,7 @@ func TestDeployRestoresTheServicePortsAfterAFailedRollout(t *testing.T) {
 	svc := &corev1.Service{ObjectMeta: owned("web"), Spec: corev1.ServiceSpec{ClusterIP: "10.0.0.7", Ports: []corev1.ServicePort{{Name: "tcp-8080", Port: 8080, TargetPort: intstr.FromInt32(8000), Protocol: corev1.ProtocolTCP}}}}
 	svc.Name, svc.UID = "shop-web", "svc-uid"
 	c, cs := deployCluster(t, false, false, prev, svc)
-	cs.PrependReactor("update", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		// An update keeps the object's UID, as the API server does.
-		s := action.(k8stesting.UpdateAction).GetObject().(*corev1.Service)
-		old, err := cs.Tracker().Get(corev1.SchemeGroupVersion.WithResource("services"), s.Namespace, s.Name)
-		if err != nil {
-			return true, nil, err
-		}
-		s.UID = old.(*corev1.Service).UID
-		return false, nil, nil
-	})
+	keepServiceUID(cs)
 	res := c.Deploy(context.Background(), deployRequest(300*time.Millisecond), func() {})
 	if i := slices.IndexFunc(res.Steps, func(s protocol.DeploymentStep) bool { return s.Code != "" }); i < 0 || res.Steps[i].Code != "rollout_timeout" {
 		t.Fatalf("result %+v", res)
@@ -535,6 +539,26 @@ func TestDeployRestoresTheServicePortsAfterAFailedRollout(t *testing.T) {
 	got, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
 	if err != nil || len(got.Spec.Ports) != 1 || got.Spec.Ports[0].TargetPort.IntVal != 8000 || got.Spec.ClusterIP != "10.0.0.7" {
 		t.Fatalf("ports not restored: %+v %v", got, err)
+	}
+}
+
+// A rollout that may still finish (the agent stopping mid-rollout) leaves the Deployment on the new
+// template, so the Service keeps the new ports its pods will listen on.
+func TestDeployKeepsTheNewServicePortsWhenTheRolloutMayFinish(t *testing.T) {
+	prev := &appsv1.Deployment{ObjectMeta: owned("web"), Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: "ghcr.io/org/web@" + testDigest}}},
+	}}}
+	prev.Name, prev.UID = "shop-web", testUID
+	svc := &corev1.Service{ObjectMeta: owned("web"), Spec: corev1.ServiceSpec{ClusterIP: "10.0.0.7", Ports: []corev1.ServicePort{{Name: "tcp-8080", Port: 8080, TargetPort: intstr.FromInt32(8000), Protocol: corev1.ProtocolTCP}}}}
+	svc.Name, svc.UID = "shop-web", "svc-uid"
+	c, cs := deployCluster(t, false, false, prev, svc)
+	keepServiceUID(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	c.Deploy(ctx, deployRequest(time.Minute), func() {})
+	got, err := cs.CoreV1().Services("shop").Get(context.Background(), "shop-web", metav1.GetOptions{})
+	if err != nil || got.Spec.Ports[0].TargetPort.IntVal != 80 {
+		t.Fatalf("ports reverted under a rollout that may finish: %+v %v", got, err)
 	}
 }
 
