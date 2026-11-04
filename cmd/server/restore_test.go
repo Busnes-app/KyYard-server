@@ -61,6 +61,39 @@ func TestRestoreExtractsWithTwoShares(t *testing.T) {
 	}
 }
 
+// A capsule whose database travelled in parts restores as one data/ky_server.db.
+func TestRestoreJoinsADatabaseThatTravelledInParts(t *testing.T) {
+	priv, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, _ := recoverykey.Split(priv, 2, 3)
+	key := recoveryclient.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}
+	raw, _, err := recoveryclient.Seal(recoveryclient.Payload{ServiceName: "busnes_app", AppVersion: "1.0.0", Files: []recoveryclient.File{
+		{Path: "data/ky_server.db.part-000", Data: []byte("first-"), Mode: 0600},
+		{Path: "data/ky_server.db.part-001", Data: []byte("second"), Mode: 0600},
+	}, VerificationRecipe: map[string]any{"schema_version": 7}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "x.kycap")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	var out bytes.Buffer
+	if err := restore(path, target, "busnes_app", []string{shares[0].String(), shares[2].String()}, &out); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "data", "ky_server.db"))
+	if err != nil || string(got) != "first-second" {
+		t.Fatalf("restored database: %q %v", got, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(target, "data", "ky_server.db.part-*")); len(left) != 0 {
+		t.Fatalf("parts left behind: %v", left)
+	}
+}
+
 func TestRestoreRefusesAnotherService(t *testing.T) {
 	path, shares := sealFixture(t, "someone_else")
 	err := restore(path, t.TempDir(), "busnes_app", shares, &bytes.Buffer{})

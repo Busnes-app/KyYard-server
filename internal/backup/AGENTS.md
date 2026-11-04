@@ -45,6 +45,13 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   the database, settings and all three private keys; key encoding/permissions, SQLite integrity and required environment
   checks cannot be disabled. File checks accept only clean relative manifest members;
   SQLite opens read-only and missing/empty databases fail.
+- A snapshot over `capsule.MaxFileBytes` (64 MiB) travels as ordered members
+  `data/ky_server.db.part-000`, `-001`, ... (`split.go`, owner decision KyNotes Q8 A; the
+  library limit is never raised). `Checks` accepts the parts in place of the database member
+  and checks what `JoinDatabase` writes from them; the `restore` command joins them into
+  `data/ky_server.db` and deletes them. Parts must be numbered from 000 without a gap and never
+  sit beside a whole database. Single-member capsules stay valid. `Collect` logs a warning once
+  the payload reaches 80% of `capsule.MaxExpandedBytes` (256 MiB).
 - `Collect` pins `schema_version: migrations.Latest()` in the recipe. `Checks` requires it
   (int, or an integral JSON number, at least 1) and, right after the integrity check for
   `data/ky_server.db`, adds `Schema Version: data/ky_server.db`: `MAX(version)` from the

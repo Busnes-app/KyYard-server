@@ -620,6 +620,11 @@ func restore(capsulePath, targetDir, expectService string, shares []string, stdo
 	if err := recoveryclient.Restore(capsulePath, targetDir, expectService, shares, stdout); err != nil {
 		return err
 	}
+	if joined, err := backup.JoinDatabase(targetDir, true); err != nil {
+		return err
+	} else if joined {
+		fmt.Fprintln(stdout, "  joined the database from its capsule parts into data/ky_server.db")
+	}
 	m, err := capsule.ReadUnverifiedManifest(raw)
 	if err != nil {
 		fmt.Fprintf(stdout, "  capsule schema version unknown: %v\n", err)

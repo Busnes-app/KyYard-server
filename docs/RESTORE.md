@@ -32,7 +32,7 @@ Everything a fresh server needs to be the old one:
 
 | Path in the capsule | What it is |
 |---|---|
-| `data/ky_server.db` | Users, MFA enrolments, devices, organizations, environments, endpoints and their keys, commands, applications, deployments, registries, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
+| `data/ky_server.db` (a database over 64 MiB travels as `data/ky_server.db.part-000`, `-001`, …, which `restore` joins back into one file) | Users, MFA enrolments, devices, organizations, environments, endpoints and their keys, commands, applications, deployments, registries, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
 | `data/encryption.key` | 32 bytes. Every TOTP secret, registry credential, application environment value, SSO provider secret and the KyRecovery pairing token are encrypted under it |
 | `data/session.key` | 32-byte proof-of-work challenge key, including the active environment override |
 | `data/instance.key` | 32-byte Ed25519 identity seed; restore preserves the control-plane identity |
