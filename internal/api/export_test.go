@@ -20,6 +20,9 @@ func SetRecoveryClientForTest(s *Server, p recoveryClient) { s.recovery = p }
 // SetStoreForTest replaces the handlers' store, so a test can break one write. Test-only.
 func SetStoreForTest(s *Server, st store.Store) { s.store = st }
 
+// MCPOperationsPerMinuteForTest is one token's operations, or audited refusals, a minute.
+const MCPOperationsPerMinuteForTest = mcpOperationsPerMinute
+
 // AttemptsCapForTest is the limiter's hard bound on distinct keys.
 const AttemptsCapForTest = attemptsCap
 

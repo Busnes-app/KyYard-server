@@ -905,7 +905,8 @@ func deploymentView(d *store.Deployment) mcpDeployment {
 
 // refuseReadOnly answers a write tool called with a read token: a denied audit row, the same
 // way the store records any refused action, and msgReadOnly. An operator token spends one of
-// its operations for the minute.
+// its operations for the minute. A read token's refusals are audited at the same rate, with the
+// caller's environment ID bounded, so a looping agent cannot fill the audit log.
 func (t mcpTools) refuseReadOnly(ctx context.Context, action permissions.Action, environment, tool string) error {
 	if t.caller.canOperate() {
 		if !t.s.allowAttempt("mcp-operate:"+t.caller.token.ID, mcpOperationsPerMinute, time.Minute) {
@@ -913,8 +914,10 @@ func (t mcpTools) refuseReadOnly(ctx context.Context, action permissions.Action,
 		}
 		return nil
 	}
-	if err := t.s.store.Tenancy().DenyService(ctx, t.access(environment), action, "mcp:"+tool); err != nil {
-		log.Printf("[MCP] denial audit for %s: %v", t.caller.token.ID, err)
+	if t.s.allowAttempt("mcp-denied:"+t.caller.token.ID, mcpOperationsPerMinute, time.Minute) {
+		if err := t.s.store.Tenancy().DenyService(ctx, t.access(protocol.CleanText(environment, 64)), action, "mcp:"+tool); err != nil {
+			log.Printf("[MCP] denial audit for %s: %v", t.caller.token.ID, err)
+		}
 	}
 	return errors.New(msgReadOnly)
 }
