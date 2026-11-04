@@ -33,8 +33,9 @@ const rolloutPoll = 2 * time.Second
 // Secret, Deployment, each updated when it exists and is owned, created otherwise; one conflict
 // is re-read and retried; a refused write is forbidden without the verb, admission_denied with
 // it) and start (the rollout, polled until available, a failure the cluster reports, or the
-// deadline: rollout_timeout; then prune, or restore after a rollout_timeout). The first step that
-// is not a success ends the run and every later step is skipped. started is called once, before
+// deadline: rollout_timeout; then drop a Service no longer published and prune, or restore the
+// template after a rollout_timeout; a failed create or start puts an updated Service's previous
+// ports back). The first step that is not a success ends the run and every later step is skipped. started is called once, before
 // the first write.
 func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, started func()) protocol.DeploymentResult {
 	res := protocol.DeploymentResult{Deployment: req.Deployment, RequestID: req.RequestID, Steps: []protocol.DeploymentStep{}, Services: []protocol.DeploymentIdentity{}}
@@ -67,17 +68,26 @@ func (c *Client) Deploy(parent context.Context, req protocol.DeploymentRequest, 
 			d, o, code, detail := r.apply(ctx, set, have[i])
 			if o == protocol.OutcomeSucceeded {
 				r.res.Services = append(r.res.Services, protocol.DeploymentIdentity{Service: set.Service, Kind: protocol.KindDeployment, Namespace: d.Namespace, Name: d.Name, UID: string(d.UID), Generation: d.Generation, ImageDigest: req.Services[i].Pull.Digest})
+			} else {
+				r.restoreService(set, have[i])
 			}
 			return o, code, detail
 		})
 		r.step(set.Service, protocol.StepStart, func() (string, string, string) {
 			o, code, detail := r.rollout(ctx, set.Deployment.Name, func(d *appsv1.Deployment) string { return r.stalled(set, d) })
-			switch {
-			case o == protocol.OutcomeSucceeded:
+			if o == protocol.OutcomeSucceeded {
+				if set.Endpoint == nil && have[i].service != nil {
+					// The service published its last port: the stale Service must not keep it open.
+					if o, code, detail := r.drop(ctx, "Service", r.c.cs.CoreV1().Services(r.namespace).Delete, have[i].service); o != protocol.OutcomeSucceeded {
+						return o, code, detail
+					}
+				}
 				return r.prune(ctx, set)
-			case code == "rollout_timeout" && have[i].deployment != nil:
+			}
+			if code == "rollout_timeout" && have[i].deployment != nil {
 				r.restore(have[i].deployment)
 			}
+			r.restoreService(set, have[i])
 			return o, code, detail
 		})
 	}
@@ -415,12 +425,6 @@ func (r *run) apply(ctx context.Context, set render.Set, e existing) (*appsv1.De
 	if o != protocol.OutcomeSucceeded {
 		return nil, o, code, detail
 	}
-	if set.Endpoint == nil && e.service != nil {
-		// The service published its last port: the stale Service must not keep it open.
-		if o, code, detail := r.drop(ctx, "Service", core.Services(r.namespace).Delete, e.service); o != protocol.OutcomeSucceeded {
-			return nil, o, code, detail
-		}
-	}
 	return d, protocol.OutcomeSucceeded, "", ""
 }
 
@@ -474,6 +478,31 @@ func (r *run) restore(prev *appsv1.Deployment) {
 	}
 	if err != nil {
 		r.c.log.Printf("kubernetes: deploy: Deployment %s/%s keeps its failed rollout: the previous pod template was not restored: %v", r.namespace, prev.Name, err)
+	}
+}
+
+// restoreService writes the ports the precondition read back onto an existing Service the run
+// updated, at its UID, after the run failed: the pods still serving are the previous revision's,
+// and the new ports would route to ones they do not listen on. Best effort, past the request
+// deadline, like restore.
+func (r *run) restoreService(set render.Set, e existing) {
+	prev := e.service
+	if set.Endpoint == nil || prev == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.parent), callBudget)
+	defer cancel()
+	api := r.c.cs.CoreV1().Services(r.namespace)
+	s, err := api.Get(ctx, prev.Name, metav1.GetOptions{})
+	if err == nil {
+		if s.UID != prev.UID || !r.owned(s) {
+			return
+		}
+		s.Spec.Ports = prev.Spec.Ports
+		_, err = api.Update(ctx, s, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		r.c.log.Printf("kubernetes: deploy: Service %s/%s keeps the failed revision's ports: the previous ports were not restored: %v", r.namespace, prev.Name, err)
 	}
 }
 
