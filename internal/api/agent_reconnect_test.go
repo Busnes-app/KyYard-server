@@ -98,30 +98,6 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 	}
 	defer s.logs.release(orphan)
 
-	// A command the incumbent carried: its result died with the socket, and the evicted
-	// socket's unwind settles nothing because the successor holds the endpoint.
-	if ok, err := ts.AcceptInventory(ctx, e.ID, uint64(time.Now().Unix()), time.Now(), []byte(`{"containers":[]}`)); err != nil || !ok {
-		t.Fatalf("inventory: %t %v", ok, err)
-	}
-	carried, err := ts.CreateCommand(ctx, store.TenantAccess{ActorID: "admin", OrganizationID: "a", EnvironmentID: "env-a"}, e.ID, protocol.ActionRestart, "web", "", protocol.Expectation{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ts.MarkCommandDispatched(ctx, carried.ID); err != nil {
-		t.Fatal(err)
-	}
-	// One whose request went away as the frame left: its dispatch mark must still land, or the
-	// eviction's cutoff never finds it.
-	cancelled, err := ts.CreateCommand(ctx, store.TenantAccess{ActorID: "admin", OrganizationID: "a", EnvironmentID: "env-a"}, e.ID, protocol.ActionRestart, "web", "", protocol.Expectation{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	gone, stop := context.WithCancel(ctx)
-	stop()
-	if !s.sendCommand(gone, e.ID, cancelled.ID, protocol.Envelope{Type: protocol.TypeCommand}) {
-		t.Fatal("the incumbent did not take the command")
-	}
-
 	// Silent: the last frame is old and the ping goes unanswered. The newcomer is admitted,
 	// the eviction is audited against the evicted address, and no alarm is raised.
 	incumbent.lastFrame.Store(0)
@@ -137,11 +113,6 @@ func TestReconnectAfterSilentDropIsNotADuplicate(t *testing.T) {
 	case <-incumbent.closed:
 	default:
 		t.Fatal("dead incumbent was not evicted")
-	}
-	for _, id := range []string{carried.ID, cancelled.ID} {
-		if got, err := ts.ReadCommand(ctx, org, e.ID, id); err != nil || got.Outcome != protocol.OutcomeUnknown {
-			t.Fatalf("the evicted socket's command stayed in flight: %+v %v", got, err)
-		}
 	}
 	view, err := ts.ReadEndpoint(ctx, org, e.ID)
 	if err != nil {

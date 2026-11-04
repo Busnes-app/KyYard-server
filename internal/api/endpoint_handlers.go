@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Busnes-app/kyyard-server/internal/agent/protocol"
@@ -611,7 +610,7 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		Endpoint: cmd.EndpointID, Deadline: cmd.Deadline, Action: cmd.Action,
 		Container: cmd.ContainerID, Reference: cmd.Reference, Expects: cmd.Expects,
 	})
-	if !s.sendCommand(r.Context(), id, cmd.ID, frame) {
+	if !s.agents.deliver(id, frame) {
 		// Never sent, so nothing needs reconciling: say so plainly rather than leaving a row
 		// in flight that an operator would have to chase.
 		_ = s.store.Tenancy().SettleCommand(r.Context(), id, cmd.ID, protocol.OutcomeFailed, "the endpoint was not connected")
@@ -620,45 +619,10 @@ func (s *Server) handleDispatchCommand(w http.ResponseWriter, r *http.Request, a
 		s.writeJSON(w, http.StatusConflict, cmd)
 		return
 	}
+	if err := s.store.Tenancy().MarkCommandDispatched(r.Context(), cmd.ID); err != nil {
+		log.Printf("command %s: marking dispatched: %v", cmd.ID, err)
+	}
 	s.writeJSON(w, http.StatusAccepted, cmd)
-}
-
-// dispatchLock is the endpoint's dispatch lock; endpoints are registered rows, so the map stays
-// bounded.
-func (s *Server) dispatchLock(endpoint string) *sync.RWMutex {
-	lock, _ := s.dispatchLocks.LoadOrStore(endpoint, &sync.RWMutex{})
-	return lock.(*sync.RWMutex)
-}
-
-// markBudget bounds a dispatch mark, which holds the endpoint's dispatch lock.
-var markBudget = 10 * time.Second
-
-// sendCommand delivers a plain command and marks it dispatched under the endpoint's dispatch read
-// lock, so an eviction (the write lock) sees it either delivered and marked before its cutoff, or
-// sent to the successor and marked after. The mark outlives the request, so a caller that goes
-// away after the frame left does not skip it, and is bounded, so a stuck database cannot hold the
-// lock and with it the endpoint's reconnect. A command whose mark failed is settled unknown: no
-// sweep would find it.
-func (s *Server) sendCommand(ctx context.Context, endpoint, id string, frame protocol.Envelope) bool {
-	lock := s.dispatchLock(endpoint)
-	lock.RLock()
-	if !s.agents.deliver(endpoint, frame) {
-		lock.RUnlock()
-		return false
-	}
-	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markBudget)
-	err := s.store.Tenancy().MarkCommandDispatched(mctx, id)
-	cancel()
-	lock.RUnlock()
-	if err != nil {
-		log.Printf("command %s: marking dispatched: %v", id, err)
-		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markBudget)
-		defer cancel()
-		if err := s.store.Tenancy().SettleCommand(sctx, endpoint, id, protocol.OutcomeUnknown, "the server could not record that the command was sent"); err != nil {
-			log.Printf("command %s: settling an unrecorded dispatch: %v", id, err)
-		}
-	}
-	return true
 }
 
 func (s *Server) handleReadCommand(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {

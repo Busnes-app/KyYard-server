@@ -122,9 +122,6 @@ type UserStore interface {
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
 	LinkSSO(ctx context.Context, userID, sessionHash, passwordHash, provider, subject, ip string) error
-	ListSSOIdentities(ctx context.Context, userID string) ([]SSOIdentity, error)
-	// UnlinkSSO removes a local account's identity at provider under the proven password hash.
-	UnlinkSSO(ctx context.Context, userID, passwordHash, provider, ip string) error
 	// UpdateUser writes every column from u, credentials included: a trusted full-row write for
 	// fixtures. The identity provider writes through ApplyDirectoryEvent instead.
 	UpdateUser(ctx context.Context, u *User) error
@@ -415,9 +412,6 @@ type TenancyStore interface {
 	CheckWorkloadFrame(ctx context.Context, access TenantAccess, endpointID string, w WorkloadApply, create bool) error
 	FailDirectCommand(ctx context.Context, endpointID, id, detail string) error
 	AbandonCommands(ctx context.Context, endpointID string) (int64, error)
-	// AbandonCommandsDispatchedBefore settles as unknown the plain commands an evicted socket
-	// carried: dispatched to the endpoint before cutoff and unanswered.
-	AbandonCommandsDispatchedBefore(ctx context.Context, endpointID string, cutoff time.Time) (int64, error)
 	// ReconcileAfterStart settles every in-flight command as unknown, fails every open policy run
 	// and settles validations the previous process left; startup only.
 	ReconcileAfterStart(ctx context.Context) (int64, error)

@@ -34,22 +34,18 @@ type recoveryClient interface {
 }
 
 type Server struct {
-	// dispatchLocks holds one *sync.RWMutex per endpoint ID (dispatchLock): it makes a plain
-	// command's delivery and dispatch mark one step against an eviction of the socket it went to
-	// (sendCommand reads, the eviction writes), without one endpoint's slow mark holding another's.
-	dispatchLocks sync.Map
-	providersMu   sync.Mutex
-	loginMu       sync.Mutex
-	logins        map[string]loginAttempt
-	config        *config.Config
-	store         store.Store
-	sessions      *auth.SessionManager
-	kysignon      *sso.KySignOnClient
-	saml          *sso.SAMLServiceProvider
-	recovery      recoveryClient
-	mux           *http.ServeMux
-	attemptsMu    sync.Mutex
-	attempts      map[string]attemptWindow
+	providersMu sync.Mutex
+	loginMu     sync.Mutex
+	logins      map[string]loginAttempt
+	config      *config.Config
+	store       store.Store
+	sessions    *auth.SessionManager
+	kysignon    *sso.KySignOnClient
+	saml        *sso.SAMLServiceProvider
+	recovery    recoveryClient
+	mux         *http.ServeMux
+	attemptsMu  sync.Mutex
+	attempts    map[string]attemptWindow
 	// accounts holds windows keyed on a known account, apart from attempts, so flooding
 	// client keys cannot evict them. loginBackoff is keyed on the typed username (and device); both are
 	// guarded by attemptsMu.
@@ -533,8 +529,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sso/{provider}/callback", s.handleProviderCallback)
 	s.mux.HandleFunc("GET /api/auth/sso", s.handleSSOLinkOptions)
 	s.mux.HandleFunc("POST /api/sso/{provider}/link", s.handleLinkProvider)
-	s.mux.HandleFunc("GET /api/account/sso", s.handleAccountSSO)
-	s.mux.HandleFunc("POST /api/account/sso/{provider}/unlink", s.handleUnlinkSSO)
 	s.mux.HandleFunc("POST /api/sso/{provider}/backchannel-logout", s.handleBackchannelLogout)
 	s.mux.HandleFunc("/api/sso/kysignon/sync", s.handleKySignOnSyncWebhook)
 	s.mux.HandleFunc("POST /api/installer/directory", s.handleInstallerDirectory)
