@@ -167,3 +167,17 @@ func TestComposeForwardsServerSettingsFile(t *testing.T) {
 		}
 	}
 }
+
+// PostgreSQL 18's image refuses to start with a volume at /var/lib/postgresql/data, fresh or
+// not, and cannot open a 17 cluster without pg_upgrade. The overlay keeps 17 and that mount
+// until a migration is written, so a major bump fails here instead of on an operator's host.
+func TestPostgresOverlayKeepsAStartableMajor(t *testing.T) {
+	overlay := read(t, filepath.Join("..", "..", "docker-compose.postgres.yml"))
+	m := regexp.MustCompile(`(?m)^\s*image:\s*postgres:(\d+)-alpine@sha256:[0-9a-f]{64}\s*$`).FindStringSubmatch(overlay)
+	if m == nil {
+		t.Fatal("docker-compose.postgres.yml does not pin postgres:<major>-alpine by digest")
+	}
+	if m[1] != "17" || !strings.Contains(overlay, "- pgdata:/var/lib/postgresql/data\n") {
+		t.Errorf("postgres:%s with this data mount strands existing installations: write the major-version migration first", m[1])
+	}
+}
