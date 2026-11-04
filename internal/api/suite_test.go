@@ -238,6 +238,13 @@ func TestSuiteStartRefusals(t *testing.T) {
 		{"two apps", false, map[string]any{"kind": "uninstall", "apps": []string{"a", "b"}, "confirm": "a", "password": accountPassword}, 400, "invalid_request"},
 		{"acknowledgement off upgrade and install", false, map[string]any{"kind": "uninstall", "apps": []string{"hello"}, "confirm": "hello", "acknowledge_no_backup": true, "password": accountPassword}, 400, "invalid_request"},
 		{"unknown field", false, wrong("force", true), 400, "invalid_request"},
+		{"route without its port", false, func() map[string]any {
+			b := wrong("hostname", "hello.example.com")
+			b["forward_host"], b["certificate_id"] = "192.168.1.20", 3
+			return b
+		}(), 400, "invalid_request"},
+		{"route on uninstall", false, map[string]any{"kind": "uninstall", "apps": []string{"hello"}, "confirm": "hello", "hostname": "h.example.com", "forward_host": "10.0.0.2", "forward_port": 80, "certificate_id": 1, "password": accountPassword}, 400, "invalid_request"},
+		{"relative bundle", false, wrong("bundle", "setup.json"), 400, "invalid_request"},
 		{"missing TOTP", true, install("hello"), 401, "code_invalid"},
 		{"wrong TOTP", true, wrong("code", "abcdef"), 401, "code_invalid"},
 		{"right TOTP, wrong password", true, wrong("password", "not-the-password"), 401, "password_incorrect"},
@@ -389,4 +396,23 @@ func TestSuiteLostOperationBecomesUnknown(t *testing.T) {
 	}
 	want(t, call("GET", "/api/suite/operations/not-a-uuid", nil, false), 400)
 	want(t, call("GET", "/api/suite/operations/5a1e5b8e-4b7a-4c55-9a37-2f1c4f0e8b11", nil, false), 404)
+}
+
+// A routed install carries its route and setup bundle to the runner under the protocol's names.
+func TestSuiteInstallSendsTheRoute(t *testing.T) {
+	runner := startFakeRunner(t)
+	srv, st, cfg := suiteServer(t, runner.socket)
+	call := suiteCaller(t, srv, st, cfg, adminUser("usr_route"))
+	b := install("hello")
+	b["hostname"], b["forward_host"], b["forward_port"], b["certificate_id"], b["bundle"] = "hello.example.com", "192.168.1.20", 18443, 3, "/data/installer/abc/setup.json"
+	want(t, call("POST", "/api/suite/operations", b, true), 202)
+	got, _ := json.Marshal(runner.started()[0])
+	for _, field := range []string{`"hostname":"hello.example.com"`, `"forward_host":"192.168.1.20"`, `"forward_port":18443`, `"certificate_id":3`, `"bundle":"/data/installer/abc/setup.json"`} {
+		if !strings.Contains(string(got), field) {
+			t.Fatalf("runner request %s lacks %s", got, field)
+		}
+	}
+	if strings.Contains(string(got), "identity_client") {
+		t.Fatalf("an unset identity client was sent: %s", got)
+	}
 }

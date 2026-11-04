@@ -817,8 +817,11 @@ func (t mcpTools) updateRefusal(ctx context.Context, a store.TenantAccess, d *st
 		return "", err
 	}
 	running := instance.CurrentRevision
+	if running == 0 && instance.Namespace == "" {
+		running = instance.Revision // adopted on Docker and never deployed by KyYard
+	}
 	if running == 0 {
-		running = instance.Revision // adopted and never deployed by KyYard
+		return msgNotAnUpdate, nil // mapped to a cluster and never applied: a first deployment
 	}
 	if d.Revision != running {
 		return msgNotAnUpdate, nil

@@ -51,12 +51,12 @@ export const canManageServiceTokens = (role: string | undefined) => role === 'or
 
 // AI agent (MCP) tokens. The secret appears only in the creation response.
 export type AgentScope = 'mcp:read' | 'mcp:operate';
-export interface AgentToken { id: string; organization_id: string; name: string; created_by: string; created_at: string; last_used_at?: string; last_ip?: string; scope: AgentScope; revoke_after: string }
+export interface AgentToken { id: string; organization_id: string; name: string; created_by: string; created_by_name?: string; created_at: string; last_used_at?: string; last_ip?: string; scope: AgentScope; revoke_after: string }
 export interface AgentTokenIssue { token: string; agent_token: AgentToken; disclosure: string }
 // Mirrors permissions.Allows(role, AgentTokensManage): an operator-scope token acts unattended,
 // so only the organization administrator hands one out.
 export const canManageAgentTokens = (role: string | undefined) => role === 'organization_admin';
-export interface StatusFeed { id: string; organization_id: string; name: string; created_by: string; created_at: string; last_used_at?: string; last_ip?: string }
+export interface StatusFeed { id: string; organization_id: string; name: string; created_by: string; created_by_name?: string; created_at: string; last_used_at?: string; last_ip?: string }
 export interface StatusFeedIssue { url: string; status_feed: StatusFeed; disclosure: string }
 // Mirrors permissions.Allows(role, StatusFeedsManage): a feed URL is a bearer anyone can paste.
 export const canManageStatusFeeds = (role: string | undefined) => role === 'organization_admin';

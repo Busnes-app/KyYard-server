@@ -27,6 +27,12 @@ type suiteStartRequest struct {
 	Confirm             string   `json:"confirm"`
 	Password            string   `json:"password"`
 	Code                string   `json:"code"`
+	Hostname            string   `json:"hostname"`
+	ForwardHost         string   `json:"forward_host"`
+	ForwardPort         int      `json:"forward_port"`
+	CertificateID       int      `json:"certificate_id"`
+	Bundle              string   `json:"bundle"`
+	IdentityClient      string   `json:"identity_client"`
 }
 
 // suiteConfigured answers 404 not_configured when no runner socket is set.
@@ -116,6 +122,9 @@ func (s *Server) handleSuiteStart(w http.ResponseWriter, r *http.Request) {
 		if req.Target != "" {
 			d += " target=" + req.Target
 		}
+		if req.Hostname != "" {
+			d += " hostname=" + req.Hostname
+		}
 		return protocol.CleanText(d, 512)
 	}
 	refuse := func(status int, result, code, msg string) {
@@ -155,7 +164,8 @@ func (s *Server) handleSuiteStart(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusInternalServerError, "failure", "record_failed", "Failed to record the suite operation")
 		return
 	}
-	err = s.suite.Start(ctx, suite.Request{ID: id, Kind: req.Kind, Apps: apps, Target: req.Target, AcknowledgeNoBackup: req.AcknowledgeNoBackup, Actor: user.ID})
+	err = s.suite.Start(ctx, suite.Request{ID: id, Kind: req.Kind, Apps: apps, Target: req.Target, AcknowledgeNoBackup: req.AcknowledgeNoBackup, Actor: user.ID,
+		Hostname: req.Hostname, ForwardHost: req.ForwardHost, ForwardPort: req.ForwardPort, CertificateID: req.CertificateID, Bundle: req.Bundle, IdentityClient: req.IdentityClient})
 	var refusal *suite.Error
 	switch {
 	case errors.As(err, &refusal):
@@ -189,6 +199,14 @@ func validSuiteRequest(req suiteStartRequest) bool {
 			return false
 		}
 	default:
+		return false
+	}
+	// A route is all four fields or none; the runner checks the rest against its plan.
+	route := req.Hostname != "" || req.ForwardHost != "" || req.ForwardPort != 0 || req.CertificateID != 0
+	if route && (req.Kind != "install" || len(req.Hostname) > 253 || req.ForwardHost == "" || len(req.ForwardHost) > 253 || req.ForwardPort < 1 || req.ForwardPort > 65535 || req.CertificateID < 1 || req.Hostname == "") {
+		return false
+	}
+	if (req.Bundle != "" || req.IdentityClient != "") && (req.Kind != "install" || req.Bundle == "" || !strings.HasPrefix(req.Bundle, "/") || len(req.Bundle) > 4096 || (req.IdentityClient != "" && !suiteName.MatchString(req.IdentityClient))) {
 		return false
 	}
 	if len(req.Apps) > 1 || (len(req.Apps) == 0 && req.Kind != "upgrade") || (req.AcknowledgeNoBackup && req.Kind != "upgrade" && req.Kind != "install") {

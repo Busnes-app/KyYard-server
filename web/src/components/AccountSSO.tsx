@@ -30,6 +30,8 @@ export function AccountSSO() {
     } catch { setMessage('Could not reach the server.'); }
     finally { setBusy(false); }
   };
+  // An account the provider owns has nothing to link here: the server refuses the read.
+  if (providers.state === 'denied') return null;
   return <section className="panel"><h2>Connect single sign-on to your account</h2>
     <p>Enter your current KyYard password, then sign in to the provider as the identity you want to connect. Your account, permissions and local sign-in stay the same.</p>
     <StateNotice state={providers.state} onRetry={providers.reload} />

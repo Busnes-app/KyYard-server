@@ -43,8 +43,9 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 	if !ok || schemaVersion < 1 {
 		return recipeFailure("schema_version must be the latest migration number")
 	}
-	for _, name := range []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath, sessionKeyPath, instanceKeyPath} {
-		if !slices.Contains(required, name) {
+	split := slices.Contains(required, dbPartPrefix+"000")
+	for _, name := range []string{dbPath, "config/settings.json", encryptionKeyPath, sessionKeyPath, instanceKeyPath} {
+		if !slices.Contains(required, name) && (name != dbPath || !split) {
 			return recipeFailure("required_files omits " + name)
 		}
 	}
@@ -62,6 +63,14 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 		if !slices.Contains(required, file.Path) {
 			return recipeFailure("required_files omits a capsule member")
 		}
+	}
+	if split && !members[dbPath] {
+		// A database too large for one member travels as ordered parts; check what a restore
+		// joins from them.
+		if _, err := JoinDatabase(dir, false); err != nil {
+			return recipeFailure(err.Error())
+		}
+		members[dbPath] = true
 	}
 	for _, paths := range [][]string{required, sqlitePaths} {
 		for _, name := range paths {

@@ -192,7 +192,7 @@ func TestStatusFeedShowsOnlyEscapedNames(t *testing.T) {
 			Ports: []protocol.Port{{HostIP: "192.168.77.5", Host: 8443, Container: 443, Protocol: "tcp"}}, Networks: []string{"backnet"},
 			NetworkAttachments: []protocol.NetworkAttachment{{Name: "backnet", IP: "172.31.4.4"}}, Mounts: []protocol.Mount{{Kind: protocol.MountBind, Source: "/srv/MOUNT-SECRET", Target: "/data"}}})
 	}
-	raw, _ := json.Marshal(protocol.Snapshot{Generation: 1, Containers: containers, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}})
+	raw, _ := json.Marshal(protocol.Snapshot{Generation: 1, Engine: protocol.Engine{Version: "27.0"}, Containers: containers, Images: []protocol.Image{}, Networks: []protocol.Network{}, Volumes: []protocol.Volume{}})
 	if ok, err := ts.AcceptInventory(ctx, ag.id, 1, time.Now().UTC(), raw); err != nil || !ok {
 		t.Fatalf("inventory: %v %v", ok, err)
 	}

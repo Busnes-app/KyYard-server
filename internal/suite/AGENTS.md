@@ -20,7 +20,7 @@ reads `KY_SUITE_RUNNER_SOCKET` and refuses a bad path through `CheckSocketPath`.
 - Answers decode with unknown fields refused and no trailing data (`ErrInvalidResponse`). A 404
   is `ErrNotFound` whatever its body; any other unexpected status must carry
   `{"error":{"code","message"}}` and becomes `*Error` with the status.
-- `Request` always sends `apps` as a list and `target` only when set. `Start` requires the 202
+- `Request` always sends `apps` as a list and `target` only when set; the install route and setup fields (`hostname`, `forward_host`, `forward_port`, `certificate_id`, `bundle`, `identity_client`) only when set. `Start` requires the 202
   to echo the ID; `Operation` requires the asked ID and a kind and state from `Kinds`/`States`.
 - A transport failure is `ErrUnreachable`: the runner may or may not have seen the request.
 

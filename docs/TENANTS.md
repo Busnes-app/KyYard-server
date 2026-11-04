@@ -22,8 +22,10 @@ history under `/organizations/{organization}`. Links are deep-linkable and survi
 ### Organizations and accounts
 
 The first platform administrator is the bootstrap `admin` from first start, or one made with
-`kyyard-server init-admin [-username name]` (which also resets an existing local account's
-password, clears its MFA, unlinks its SSO identities and makes it a platform administrator). It reads the password from stdin, never argv: `docker compose exec -T --user kyyard kyyard
+`kyyard-server init-admin [-username name]` (which also resets an existing active local administrator's
+password, clears its MFA and unlinks its SSO identities; it prints the account's previous role and
+status, and refuses any other existing account unless `-promote` is given, which makes that
+account an active platform administrator that the UI cannot demote). It reads the password from stdin, never argv: `docker compose exec -T --user kyyard kyyard
 /app/kyyard-server init-admin < password-file`, or type it at the hidden prompt. Run it as the
 user the server runs as (`kyyard` in the standard image; root only on an install whose
 entrypoint logged that it kept root): any other user cannot read the server's keys. Everything

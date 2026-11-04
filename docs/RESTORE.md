@@ -32,7 +32,7 @@ Everything a fresh server needs to be the old one:
 
 | Path in the capsule | What it is |
 |---|---|
-| `data/ky_server.db` | Users, MFA enrolments, devices, organizations, environments, endpoints and their keys, commands, applications, deployments, registries, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
+| `data/ky_server.db` (a database over 64 MiB travels as `data/ky_server.db.part-000`, `-001`, …, which `restore` joins back into one file) | Users, MFA enrolments, devices, organizations, environments, endpoints and their keys, commands, applications, deployments, registries, audit log, settings and sealed KyRecovery token; sessions, pending MFA challenges and device pairings are removed from new snapshots |
 | `data/encryption.key` | 32 bytes. Every TOTP secret, registry credential, application environment value, SSO provider secret and the KyRecovery pairing token are encrypted under it |
 | `data/session.key` | 32-byte proof-of-work challenge key, including the active environment override |
 | `data/instance.key` | 32-byte Ed25519 identity seed; restore preserves the control-plane identity |
@@ -321,7 +321,8 @@ in `data/ky_server.db` as the README's upgrade notes show, then start again.
 
 The restore proves the service works. It does not make the restored state current or safe.
 Everything comes back as of the capsule's `created_at`: users, passwords, MFA enrolments,
-paired devices, organizations, endpoints, applications and registries. Anything
+paired devices, organizations, endpoints, applications, registries, AI agent (MCP) tokens,
+kyPulse tokens and status feed URLs. Anything
 you revoked or changed after that moment is undone. New capsules exclude sessions, pending MFA challenges and device pairings from
 the snapshot. Older capsules and external database dumps may still contain them.
 
@@ -338,7 +339,11 @@ the snapshot. Older capsules and external database dumps may still contain them.
 2. Walk the old audit log in `old-data/ky_server.db` from `created_at` to the moment the old
    server was lost (the restored server's log stops at `created_at`), and re-apply what
    happened after the capsule: disabled accounts, rotated passwords, removed devices, reset
-   MFA.
+   MFA, and every revoked or expired AI agent token, kyPulse token and status feed: each comes
+   back working, so revoke it again under Access. Their rows are `organization.agent_tokens.manage`
+   and `organization.service_tokens.manage` (these also record creations and scope changes;
+   the resource is the token ID), `agent_token.expired` and `status_feed.revoke`. If in doubt,
+   revoke and re-issue them all.
 3. Re-check endpoints. The audit walk lists every `endpoint.revoke` after `created_at`:
    a capsule from before a revocation brings that agent identity back, so revoke it again on
    the environment screen (Hosts, Revoke). Hosts enrolled after `created_at` are unknown to
@@ -370,6 +375,10 @@ the snapshot. Older capsules and external database dumps may still contain them.
      restore, and never copy it to another active installation.
    - The KyRecovery pairing token: ask the KyRecovery admin to revoke this service and pair
      again from the screen; the same key comes back, so the pairing is accepted.
+   - AI agent tokens, kyPulse tokens and status feed URLs: revoke every one under Access and
+     issue new ones, then update the agents, kyPulse and feed readers that used them. An
+     `mcp:operate` token that came back with the restore can restart containers and apply
+     updates.
 
    Then have every admin re-enrol their second factor, and confirm with a Back up now so the
    recovered server has a capsule that reflects the rotation.
@@ -393,7 +402,7 @@ capsule format restores; only this proves the cards do.
 The in-app drill and `backup-drill` CLI validate the recipe from the capsule actually opened,
 including required files, read-only SQLite integrity, the schema version and
 environment-variable presence.
-A malformed recipe fails the drill. Concurrent drills on one data directory are refused
+A malformed recipe fails the drill, and `backup-drill` exits 1 when any check fails. Concurrent drills on one data directory are refused
 (HTTP 409 or a CLI error); retry after the active drill finishes. The OS releases the lock
 if the process exits. Keep `data/drill.lock` in place; it holds no secret and must not be
 removed to bypass a running drill. Opened scratch data stays under `data/drill` with 0700

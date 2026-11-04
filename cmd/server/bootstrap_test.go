@@ -117,3 +117,46 @@ func TestInitAdminReadsThePasswordFromStdin(t *testing.T) {
 		t.Fatal("the stdin password, without its newline, does not sign in")
 	}
 }
+
+// Resetting an ordinary account would make it a platform administrator that nothing in the UI
+// demotes, so init-admin refuses it, and a disabled administrator, unless -promote is given.
+func TestInitAdminPromotesOnlyWhenAsked(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KY_DATA_DIR", dir)
+	t.Setenv("KY_DB_DRIVER", "sqlite")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(context.Background(), cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, u := range []*store.User{
+		{ID: "usr_alice", Username: "alice", Role: "user", Status: "active", SSOProvider: "local", PasswordHash: "x"},
+		{ID: "usr_ops", Username: "ops", Role: "admin", Status: "active", SSOProvider: "local", PasswordHash: "x"},
+	} {
+		if err := st.Users().CreateUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+	if err := initAdmin([]string{"-username", "alice"}, stdinWith(t, "OperatorResetPass789!\n")); err == nil || !strings.Contains(err.Error(), "-promote") {
+		t.Fatalf("an ordinary account was reset without -promote: %v", err)
+	}
+	if err := initAdmin([]string{"-username", "ops"}, stdinWith(t, "OperatorResetPass789!\n")); err != nil {
+		t.Fatalf("an active administrator's reset: %v", err)
+	}
+	if err := initAdmin([]string{"-username", "alice", "-promote"}, stdinWith(t, "OperatorResetPass789!\n")); err != nil {
+		t.Fatalf("-promote: %v", err)
+	}
+	st, err = store.Open(ctx, cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if u, err := st.Users().GetUserByUsername(ctx, "alice"); err != nil || u.Role != "admin" {
+		t.Fatalf("alice after -promote: %+v %v", u, err)
+	}
+}

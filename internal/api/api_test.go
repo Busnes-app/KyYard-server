@@ -399,9 +399,9 @@ func TestExportCapsuleRefusesAMismatchedRecoveryKey(t *testing.T) {
 	}
 }
 
-// A database that has outgrown the capsule's per-member cap must say so: an operator whose
-// backups have silently stopped working needs the limit, not a bare 500.
-func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
+// A database past the capsule's 64 MiB per-member cap still exports: it is split into parts
+// rather than refused (owner decision, KyNotes Q8 A).
+func TestExportCapsuleCarriesADatabaseOverOneMemberInParts(t *testing.T) {
 	srv, st, cfg := setupSQLiteServer(t)
 	ctx := context.Background()
 
@@ -437,11 +437,10 @@ func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
 
 	w := adminPost(t, srv, loginAs(t, srv, st, "alice", "admin"), "/api/backup/export-capsule")
 
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized export: got %d, want 413: %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "64 MiB per file") {
-		t.Errorf("body does not name the limit: %s", w.Body.String())
+	// The database no longer fits one member, so it travels as ordered parts
+	// (backup.TestALargeDatabaseTravelsInPartsAndPassesTheDrill checks the layout).
+	if w.Code != http.StatusOK {
+		t.Fatalf("oversized export: got %d, want 200: %.300s", w.Code, w.Body.String())
 	}
 }
 

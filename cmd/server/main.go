@@ -454,6 +454,7 @@ func runInitAdmin(args []string) {
 func initAdmin(args []string, stdin *os.File) error {
 	fs := flag.NewFlagSet("init-admin", flag.ContinueOnError)
 	username := fs.String("username", "admin", "Admin username")
+	promote := fs.Bool("promote", false, "Allow resetting an existing account that is not an active local administrator, making it one")
 	fs.String("password", "", "removed: pass the password on stdin")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -489,6 +490,15 @@ func initAdmin(args []string, stdin *os.File) error {
 
 	existing, err := st.Users().GetUserByUsername(ctx, *username)
 	if err == nil && existing != nil {
+		// A reset makes the account an active platform administrator, which nothing in the UI
+		// undoes: an ordinary account is changed only when the operator says so.
+		fmt.Fprintf(os.Stderr, "%q was role %s, status %s\n", existing.Username, existing.Role, existing.Status)
+		if existing.SSOProvider != "local" {
+			return fmt.Errorf("refusing: %q signs in through %s, not with a local password", existing.Username, existing.SSOProvider)
+		}
+		if !*promote && (existing.Role != "admin" || existing.Status != "active") {
+			return fmt.Errorf("refusing: %q is not an active administrator; check the username, or rerun with -promote to make it one", existing.Username)
+		}
 		if err := st.Users().ResetAdminPassword(ctx, existing.ID, hash); err != nil {
 			return fmt.Errorf("update admin: %w", err)
 		}
@@ -567,6 +577,11 @@ func runBackupDrill(args []string) {
 		fmt.Printf("  [%s] %s: %s\n", status, check.Name, check.Message)
 	}
 	fmt.Println("==================================================")
+	if !result.Passed {
+		// A failed drill is a failed command, so scripts and schedulers see it.
+		st.Close()
+		os.Exit(1)
+	}
 }
 
 func runExportCapsule(args []string) {
@@ -614,6 +629,11 @@ func restore(capsulePath, targetDir, expectService string, shares []string, stdo
 	}
 	if err := recoveryclient.Restore(capsulePath, targetDir, expectService, shares, stdout); err != nil {
 		return err
+	}
+	if joined, err := backup.JoinDatabase(targetDir, true); err != nil {
+		return err
+	} else if joined {
+		fmt.Fprintln(stdout, "  joined the database from its capsule parts into data/ky_server.db")
 	}
 	m, err := capsule.ReadUnverifiedManifest(raw)
 	if err != nil {

@@ -21,3 +21,11 @@ it('proves the local password with CSRF and clears it after a refused attempt', 
   if (!options) throw new Error('Missing request headers');
   expect(new Headers(options.headers).get('X-CSRF-Token')).toBe('proof');
 });
+
+it('shows nothing to an account the provider owns', async () => {
+  const fetcher = vi.fn(async () => new Response('{"error":"Linking requires a local account"}', { status: 403 }));
+  vi.stubGlobal('fetch', fetcher);
+  const { container } = render(<AccountSSO />);
+  await waitFor(() => expect(fetcher).toHaveBeenCalled());
+  await waitFor(() => expect(container.innerHTML).toBe(''));
+});

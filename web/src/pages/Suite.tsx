@@ -182,7 +182,11 @@ function ActionDialog({ action, totp, targets, onClose, onStarted }: { action: A
     const data = new FormData(form);
     const body: Record<string, unknown> = { kind: action.kind, apps: action.app ? [action.app] : [], confirm, password: String(data.get('password') ?? '') };
     if (totp) body.code = String(data.get('code') ?? '');
-    if (action.kind === 'install') body.target = target;
+    if (action.kind === 'install') {
+      body.target = target;
+      for (const name of ['hostname', 'forward_host', 'bundle', 'identity_client']) { const v = String(data.get(name) ?? '').trim(); if (v) body[name] = v; }
+      for (const name of ['forward_port', 'certificate_id']) { const v = Number(data.get(name) ?? ''); if (v) body[name] = v; }
+    }
     if (action.kind === 'upgrade' || action.kind === 'install') body.acknowledge_no_backup = ack;
     // The password and code never outlive the request.
     for (const name of ['password', 'code']) { const input = form.elements.namedItem(name); if (input instanceof HTMLInputElement) input.value = ''; }
@@ -199,6 +203,16 @@ function ActionDialog({ action, totp, targets, onClose, onStarted }: { action: A
       <h2 id="suite-dialog-title">{title}</h2>
       <p>{descriptions[action.kind](action.app)}</p>
       {action.kind === 'install' && <label>Target<select value={target} onChange={(e) => setTarget(e.target.value)} disabled={busy} required>{targets.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.kind})</option>)}</select></label>}
+      {action.kind === 'install' && <fieldset className="dr-stack" disabled={busy}>
+        <legend>Route and setup (apps served on a hostname)</legend>
+        <p>An app served through the target's edge needs its route; the runner refuses a routed app without one. Leave these empty for an app without a route. Fill all four route fields together.</p>
+        <label>Hostname<input name="hostname" placeholder="drive.example.com" maxLength={253} autoComplete="off" /></label>
+        <label>Forward host (an IP of the target)<input name="forward_host" placeholder="192.168.1.20" maxLength={253} autoComplete="off" /></label>
+        <label>Forward port<input name="forward_port" type="number" min={1} max={65535} /></label>
+        <label>Edge certificate ID<input name="certificate_id" type="number" min={1} /></label>
+        <label>Setup bundle path on the runner (optional)<input name="bundle" placeholder="/data/installer/…/setup.json" maxLength={4096} autoComplete="off" /></label>
+        <label>KyIdentity client (optional, defaults to the app's name)<input name="identity_client" maxLength={64} autoComplete="off" /></label>
+      </fieldset>}
       {(action.kind === 'upgrade' || action.kind === 'install') && <label><input type="checkbox" style={{ width: 'auto' }} checked={ack} onChange={(e) => setAck(e.target.checked)} disabled={busy} /> No backup acknowledgement: I accept upgrading without a verified backup{action.kind === 'install' ? ' if an older version of this app is still on the target' : ''}. Upgrades that migrate data are refused without a verified pre-upgrade backup; this does not override that.</label>}
       <label>Type <bdi>{expected}</bdi> to confirm<input value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={busy} autoComplete="off" /></label>
       <label>Current password<input name="password" type="password" autoComplete="current-password" required maxLength={1024} disabled={busy} /></label>

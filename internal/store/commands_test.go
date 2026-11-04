@@ -102,7 +102,7 @@ func activeEndpointWith(t *testing.T, ts TenancyStore, a TenantAccess, container
 		images = []protocol.Image{}
 	}
 	snap := protocol.Snapshot{
-		Generation: uint64(time.Now().Unix()),
+		Generation: uint64(time.Now().Unix()), Engine: protocol.Engine{Version: "27.0"},
 		Containers: containers, Images: images,
 		Networks: []protocol.Network{}, Volumes: []protocol.Volume{},
 	}

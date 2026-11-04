@@ -334,7 +334,7 @@ func (u *userStore) SpendTOTPCounter(ctx context.Context, userID string, counter
 }
 
 func (u *userStore) DeleteUser(ctx context.Context, id string) error {
-	tx, err := u.store.beginTx(ctx, false)
+	tx, err := u.store.beginTx(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -432,7 +432,8 @@ func (d directoryTx) DeleteUserSessions(userID string) error {
 // administered still has an active administrator. A local change is refused with ErrLastAdmin;
 // an external (identity provider) one always applies, because a removed person must lose access,
 // and records organization.last_admin_lost there instead. It locks the user row, then those
-// organizations in ID order, as membership writes do. A write touching no row is
+// organizations in ID order, as membership writes do, and revokes the agent tokens, status feeds
+// and pairing codes the user created in an organization they no longer administer. A write touching no row is
 // ErrInstallerOwned or ErrNotFound. An external write's tx must hold the audit lock.
 func (u *userStore) adminQuorum(ctx context.Context, tx *sql.Tx, userID string, external bool, write func(*sql.Tx) (sql.Result, error)) error {
 	if _, err := tx.ExecContext(ctx, u.store.rebind("UPDATE users SET id = id WHERE id = ?"), userID); err != nil {
@@ -475,7 +476,14 @@ func (u *userStore) adminQuorum(ctx context.Context, tx *sql.Tx, userID string, 
 		}
 		return ErrNotFound
 	}
+	actor := "system"
+	if external {
+		actor = "directory"
+	}
 	for _, org := range orgs {
+		if err := tenancy.revokeLostAdminCredentials(ctx, tx, org, userID, actor); err != nil {
+			return err
+		}
 		err := tenancy.requireActiveAdmin(ctx, tx, org)
 		if errorsIs(err, ErrLastAdmin) && external {
 			_, err = tx.ExecContext(ctx, u.store.rebind(`INSERT INTO audit_records (user_id,action,resource,details,created_at,scope,organization_id,environment_id,correlation_id,result) VALUES (?,?,?,?,?,?,?,?,?,?)`), "directory", "organization.last_admin_lost", userID, "repair: a platform administrator must grant a new organization administrator", time.Now().UTC(), "organization", org, "", "", "success")

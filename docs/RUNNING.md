@@ -86,7 +86,10 @@ Local password accounts manage their own sign-in in **Settings → Security**:
 Accounts provisioned by an SSO provider have no local password and manage these at the provider.
 Keep the recovery codes. An authenticator lost with every recovery code spent needs the host
 operator: `init-admin` for that username sets a new password and turns MFA off, and the
-account enrols again after signing in.
+account enrols again after signing in. `init-admin` only resets an active platform
+administrator unless you add `-promote`, which also makes the account a platform administrator,
+and nothing in the UI takes that back: use it for an ordinary account only if that is what you
+want.
 
 ## Transport and advanced deployment
 

@@ -291,10 +291,39 @@ func audited(t *testing.T, st *SQLStore, action, resource, result, token string)
 // A cluster reports each node that is not ready.
 func TestStatusFeedReportsNotReadyNodes(t *testing.T) {
 	observed := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
-	raw, _ := json.Marshal(protocol.Snapshot{Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "cp-1", Ready: true}, {Name: "worker-2", Ready: false}}}})
+	raw, _ := json.Marshal(protocol.Snapshot{Engine: protocol.Engine{Version: "v1.36.0"}, Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "cp-1", Ready: true}, {Name: "worker-2", Ready: false}}}})
 	items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw)
 	if len(items) != 1 || items[0].Subject != "worker-2" || items[0].Kind != DownNodeNotReady || !items[0].At.Equal(observed) {
 		t.Fatalf("items: %+v", items)
+	}
+}
+
+// An agent that cannot read its runtime reports facts only: an empty inventory with no engine.
+// That is one runtime_unreachable item, never an all-clear, for a Docker host and a cluster alike.
+func TestStatusFeedReportsAnUnreadableRuntime(t *testing.T) {
+	observed := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		runtime string
+		snap    protocol.Snapshot
+	}{
+		{protocol.RuntimeDocker, protocol.Snapshot{Containers: []protocol.Container{}}},
+		{protocol.RuntimeKubernetes, protocol.Snapshot{Containers: []protocol.Container{}, Kubernetes: &protocol.KubernetesInventory{}}},
+	} {
+		raw, _ := json.Marshal(c.snap)
+		items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "host"}, c.runtime, observed, raw)
+		if len(items) != 1 || items[0].Kind != DownRuntimeUnreachable || items[0].Condition != "runtime_unreachable" || !items[0].At.Equal(observed) {
+			t.Fatalf("%s items: %+v", c.runtime, items)
+		}
+	}
+	// Only the version read failed: the nodes are known, so they are reported, not hidden.
+	raw, _ := json.Marshal(protocol.Snapshot{Kubernetes: &protocol.KubernetesInventory{Nodes: []protocol.Node{{Name: "worker-2", Ready: false}}}})
+	if items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw); len(items) != 1 || items[0].Kind != DownNodeNotReady {
+		t.Fatalf("a cluster without a version: %+v", items)
+	}
+	// Nodes refused but workloads listed: the cluster was read, so it is not unreachable.
+	raw, _ = json.Marshal(protocol.Snapshot{Kubernetes: &protocol.KubernetesInventory{Workloads: []protocol.Workload{{Namespace: "shop", Kind: "deployment", Name: "web"}}}})
+	if items := downInSnapshot(DownItem{EndpointID: "ep", Endpoint: "cluster"}, protocol.RuntimeKubernetes, observed, raw); len(items) != 0 {
+		t.Fatalf("a read cluster without nodes: %+v", items)
 	}
 }
 

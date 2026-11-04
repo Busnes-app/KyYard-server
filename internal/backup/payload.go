@@ -44,8 +44,7 @@ func Collect(ctx context.Context, cfg *config.Config, appVersion string) (recove
 	if err != nil {
 		return recoveryclient.Payload{}, err
 	}
-	const dbPath = "data/ky_server.db"
-	files := []recoveryclient.File{{Path: dbPath, Data: dbBytes, Mode: 0600}}
+	files := databaseMembers(dbBytes)
 	sqlitePaths := []string{dbPath}
 
 	cfgJSON, _ := json.MarshalIndent(map[string]any{
@@ -83,6 +82,7 @@ func Collect(ctx context.Context, cfg *config.Config, appVersion string) (recove
 		}
 		files = append(files, credentials...)
 	}
+	warnNearCapsuleLimit(files)
 	payload := recoveryclient.Payload{
 		ServiceName: cfg.Server.AppName,
 		AppVersion:  appVersion,

@@ -54,11 +54,12 @@ export function StatusFeeds({ org }: { org: string }) {
       {feeds.state === 'ready' && feeds.data && (feeds.data.length === 0 ? <p>No status feeds.</p> : (
         <div style={{ overflowX: 'auto' }}>
           <table className="ky-table ky-responsive-table">
-            <thead><tr><th>Feed</th><th>Created</th><th>Last read</th><th><span className="sr-only">Actions</span></th></tr></thead>
+            <thead><tr><th>Feed</th><th>Created by</th><th>Created</th><th>Last read</th><th><span className="sr-only">Actions</span></th></tr></thead>
             <tbody>
               {feeds.data.map((f) => (
                 <tr key={f.id}>
                   <td data-label="Feed">{f.name}</td>
+                  <td data-label="Created by">{f.created_by_name || 'a removed account'}</td>
                   <td data-label="Created">{new Date(f.created_at).toLocaleDateString()}</td>
                   <td data-label="Last read">{f.last_used_at ? `${new Date(f.last_used_at).toLocaleString()}${f.last_ip ? ` from ${f.last_ip}` : ''}` : 'never'}</td>
                   <td data-label="Actions"><button className="btn-secondary" disabled={busy} aria-label={`Revoke ${f.name}`} onClick={() => void revoke(f)}>Revoke</button></td>

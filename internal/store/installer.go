@@ -379,6 +379,17 @@ func (s *SQLStore) installerAvailability(ctx context.Context, tx *sql.Tx, id str
 				return err
 			}
 		}
+		// An inactive account administers nothing: what it created there goes, as for any other.
+		tenancy := &tenancyStore{store: s}
+		orgs, err := tenancy.collectIDs(ctx, tx, `SELECT organization_id FROM organization_memberships WHERE user_id=? AND role='organization_admin'`, id)
+		if err != nil {
+			return err
+		}
+		for _, org := range orgs {
+			if err := tenancy.revokeLostAdminCredentials(ctx, tx, org, id, "directory"); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

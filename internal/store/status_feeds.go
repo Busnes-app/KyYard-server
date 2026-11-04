@@ -42,13 +42,15 @@ var ErrStatusFeedThrottled = errors.New("status feed read throttled")
 // StatusFeed is an organization's down-monitoring feed. The token is never stored:
 // token_hash is its SHA-256.
 type StatusFeed struct {
-	ID             string     `json:"id"`
-	OrganizationID string     `json:"organization_id"`
-	Name           string     `json:"name"`
-	CreatedBy      string     `json:"created_by"`
-	CreatedAt      time.Time  `json:"created_at"`
-	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
-	LastIP         string     `json:"last_ip,omitempty"`
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	Name           string `json:"name"`
+	CreatedBy      string `json:"created_by"`
+	// CreatedByName is the creator's username in the list, empty once the account is deleted.
+	CreatedByName string     `json:"created_by_name,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+	LastIP        string     `json:"last_ip,omitempty"`
 }
 
 // StatusFeedIssue is a created feed: the token, once.
@@ -62,6 +64,9 @@ const (
 	DownEndpointOffline = "endpoint_offline"
 	DownContainer       = "container"
 	DownNodeNotReady    = "node_not_ready"
+	// DownRuntimeUnreachable is a connected endpoint whose agent cannot read its runtime (the
+	// Docker daemon or the cluster API): its inventory lists nothing, which is not "all clear".
+	DownRuntimeUnreachable = "runtime_unreachable"
 )
 
 // DownItem is one thing a status feed reports as down. Key is stable for as long as the same
@@ -76,7 +81,7 @@ type DownItem struct {
 	EndpointID  string
 	// Subject is the container or node name; empty for an offline endpoint.
 	Subject string
-	// Condition is offline, not_ready, unhealthy, restarting, dead or exited.
+	// Condition is offline, runtime_unreachable, not_ready, unhealthy, restarting, dead or exited.
 	Condition string
 	// At is when KyYard last heard from the endpoint (offline) or last observed the condition.
 	At time.Time
@@ -129,7 +134,7 @@ func (t *tenancyStore) CreateStatusFeed(ctx context.Context, a TenantAccess, nam
 func (t *tenancyStore) ListStatusFeeds(ctx context.Context, a TenantAccess) ([]StatusFeed, error) {
 	out := []StatusFeed{}
 	err := t.readTenant(ctx, a, permissions.StatusFeedsManage, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT id,organization_id,name,created_by,created_at,last_used_at,last_ip FROM status_feeds WHERE organization_id=? AND revoked_at IS NULL ORDER BY created_at DESC, id LIMIT 200`), a.OrganizationID)
+		rows, err := tx.QueryContext(ctx, t.store.rebind(`SELECT f.id,f.organization_id,f.name,f.created_by,COALESCE(u.username,''),f.created_at,f.last_used_at,f.last_ip FROM status_feeds f LEFT JOIN users u ON u.id=f.created_by WHERE f.organization_id=? AND f.revoked_at IS NULL ORDER BY f.created_at DESC, f.id LIMIT 200`), a.OrganizationID)
 		if err != nil {
 			return err
 		}
@@ -137,7 +142,7 @@ func (t *tenancyStore) ListStatusFeeds(ctx context.Context, a TenantAccess) ([]S
 		for rows.Next() {
 			var f StatusFeed
 			var lastUsed sql.NullTime
-			if err := rows.Scan(&f.ID, &f.OrganizationID, &f.Name, &f.CreatedBy, &f.CreatedAt, &lastUsed, &f.LastIP); err != nil {
+			if err := rows.Scan(&f.ID, &f.OrganizationID, &f.Name, &f.CreatedBy, &f.CreatedByName, &f.CreatedAt, &lastUsed, &f.LastIP); err != nil {
 				return err
 			}
 			if lastUsed.Valid {
@@ -252,13 +257,24 @@ func (t *tenancyStore) ReadStatusFeed(ctx context.Context, token, ip string, all
 // or dead, or it exited although its restart policy says it should be running.
 func downInSnapshot(endpoint DownItem, runtime string, observed time.Time, raw []byte) []DownItem {
 	var s struct {
+		Engine     protocol.Engine      `json:"engine"`
 		Containers []protocol.Container `json:"containers"`
 		Kubernetes *struct {
-			Nodes []protocol.Node `json:"nodes"`
+			Nodes     []protocol.Node   `json:"nodes"`
+			Workloads []json.RawMessage `json:"workloads"`
+			Pods      []json.RawMessage `json:"pods"`
 		} `json:"kubernetes"`
 	}
 	if json.Unmarshal(raw, &s) != nil {
 		return nil
+	}
+	if s.Engine.Version == "" && len(s.Containers) == 0 && (s.Kubernetes == nil || len(s.Kubernetes.Nodes)+len(s.Kubernetes.Workloads)+len(s.Kubernetes.Pods) == 0) {
+		// The agent reported facts only: it could not read the runtime, so nothing below is known.
+		// A cluster whose version read alone failed still lists its nodes, and is read as usual.
+		item := endpoint
+		item.Kind, item.Condition, item.At = DownRuntimeUnreachable, "runtime_unreachable", observed
+		item.Key = DownRuntimeUnreachable + ":" + endpoint.EndpointID
+		return []DownItem{item}
 	}
 	var out []DownItem
 	if runtime == protocol.RuntimeKubernetes {

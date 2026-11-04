@@ -45,8 +45,19 @@ func TestInstallerDirectoryFenceAndAtomicRevocation(t *testing.T) {
 	if err := apply("https://foreign.example", "user.deactivated", "2", digest, false, false); err == nil {
 		t.Fatal("foreign issuer accepted")
 	}
+	// An organization the account administers, and an agent token it created there.
+	if err := s.Tenancy().CreateOrganizationWithAdmin(ctx, &Organization{ID: "org_x", Name: "X"}, id); err != nil {
+		t.Fatal(err)
+	}
+	token, err := s.Tenancy().CreateAgentToken(ctx, TenantAccess{ActorID: id, OrganizationID: "org_x"}, "agent", ScopeMCPOperate)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := apply(b.SSO.IssuerURL, "user.deactivated", "2", digest, false, false); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.Tenancy().LookupAgentToken(ctx, token.Token, now); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("a deactivated administrator's agent token still works: %v", err)
 	}
 	for _, table := range []string{"sessions", "mfa_challenges", "device_pairings"} {
 		var n int

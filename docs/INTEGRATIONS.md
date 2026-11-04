@@ -27,6 +27,8 @@ https://<your host>/api/feeds/kyy_feed_<64 hex>/down.rss
 It has one item for each thing that is down now in that organization, across all environments:
 
 - an endpoint that is offline (it had connected, and its agent stopped answering);
+- a connected endpoint whose agent cannot read its runtime (the Docker daemon or the cluster API
+  is unreachable), so nothing on it can be seen;
 - a Docker container that is unhealthy, restarting or dead, or that exited although its restart
   policy is `always` or `unless-stopped` (a container you stopped on purpose with that policy
   shows too);
