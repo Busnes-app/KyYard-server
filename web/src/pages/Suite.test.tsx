@@ -91,6 +91,22 @@ it('requires the typed app name, then posts the install with password, code and 
   expect(await screen.findByText('Operation')).toBeTruthy();
 });
 
+it('sends a routed app route and setup bundle with the install', async () => {
+  const { posts } = serve({ reads: [operation('running')] });
+  render(<Suite />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Install hello' }));
+  fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'hello.example.com' } });
+  fireEvent.change(screen.getByLabelText(/Forward host/), { target: { value: '192.168.1.20' } });
+  fireEvent.change(screen.getByLabelText('Forward port'), { target: { value: '18443' } });
+  fireEvent.change(screen.getByLabelText('Edge certificate ID'), { target: { value: '3' } });
+  fireEvent.change(screen.getByLabelText(/Setup bundle path/), { target: { value: '/data/installer/abc/setup.json' } });
+  fireEvent.change(screen.getByLabelText('Current password'), { target: { value: 'pw-123' } });
+  fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: 'hello' } });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Install hello' }).find((b) => b.getAttribute('type') === 'submit') as HTMLButtonElement);
+  await waitFor(() => expect(posts).toHaveLength(1));
+  expect(posts[0].body).toEqual({ kind: 'install', apps: ['hello'], confirm: 'hello', password: 'pw-123', target: 'nas', acknowledge_no_backup: false, hostname: 'hello.example.com', forward_host: '192.168.1.20', forward_port: 18443, certificate_id: 3, bundle: '/data/installer/abc/setup.json' });
+});
+
 it('upgrades the suite with the explicit no-backup acknowledgement and no code field without MFA', async () => {
   const { posts } = serve({ reads: [operation('running')] });
   render(<Suite totp={false} />);

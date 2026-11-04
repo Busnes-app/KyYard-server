@@ -124,6 +124,14 @@ type Request struct {
 	Target              string   `json:"target,omitempty"`
 	AcknowledgeNoBackup bool     `json:"acknowledge_no_backup"`
 	Actor               string   `json:"actor"`
+	// Install only, all optional: a routed app's one route (the four route fields together)
+	// and its setup bundle, the runner's names for KyQuickStart's install flags.
+	Hostname       string `json:"hostname,omitempty"`
+	ForwardHost    string `json:"forward_host,omitempty"`
+	ForwardPort    int    `json:"forward_port,omitempty"`
+	CertificateID  int    `json:"certificate_id,omitempty"`
+	Bundle         string `json:"bundle,omitempty"`
+	IdentityClient string `json:"identity_client,omitempty"`
 }
 
 type Step struct {
