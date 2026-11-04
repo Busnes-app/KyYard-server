@@ -93,7 +93,7 @@ it('requires the typed app name, then posts the install with password, code and 
 
 it('sends a routed app route and setup bundle with the install', async () => {
   const { posts } = serve({ reads: [operation('running')] });
-  render(<Suite />);
+  render(<Suite totp={false} />);
   fireEvent.click(await screen.findByRole('button', { name: 'Install hello' }));
   fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'hello.example.com' } });
   fireEvent.change(screen.getByLabelText(/Forward host/), { target: { value: '192.168.1.20' } });
