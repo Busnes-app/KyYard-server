@@ -644,7 +644,9 @@ func (r *deployRun) replace(ctx context.Context, p prepared, later int) {
 		paused = state.State != nil && state.State.Paused
 		wasRunning = state.State != nil && state.State.Running
 		if state.Config != nil {
-			grace = fitGrace(graceOf(state.Config.StopTimeout), time.Until(r.req.Deadline)-time.Duration(1+later)*budget)
+			// The extra grace is spent twice at worst: by the stop, then by the wait an unanswered
+			// stop's rollback makes for the container to go before starting it again.
+			grace = fitGrace(graceOf(state.Config.StopTimeout), (time.Until(r.req.Deadline)-time.Duration(1+later)*budget)/2)
 		}
 		return succeeded()
 	})
@@ -1031,7 +1033,8 @@ const stopWait = stopGrace*time.Second + callBudget
 // running. The wait is cut to leave the restart operationBudget; one still running when it ends,
 // or with no time left to wait, is left running.
 func (r *deployRun) reviveIfStopped(ctx context.Context, p prepared, paused bool, grace int) bool {
-	rctx, cancel := r.restoring(ctx)
+	// A longer grace keeps the daemon stopping the container longer: wait it out before the restart.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(r.c.restoreBudget, rollbackBudget)+extraGrace(grace))
 	defer cancel()
 	cctx, ccancel := context.WithTimeout(rctx, callBudget)
 	now, err := r.current(cctx, p.s.Replaces.ContainerID)
