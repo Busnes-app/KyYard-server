@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
@@ -61,7 +61,7 @@ func JoinDatabase(dir string, remove bool) (bool, error) {
 	}
 	slices.Sort(parts)
 	for i, p := range parts {
-		if strings.TrimPrefix(filepath.ToSlash(p), filepath.ToSlash(dir)+"/") != fmt.Sprintf("%s%03d", dbPartPrefix, i) {
+		if filepath.Base(p) != fmt.Sprintf("%s%03d", path.Base(dbPartPrefix), i) {
 			return false, errors.New("backup: database parts are not numbered 000 onwards without a gap")
 		}
 	}
