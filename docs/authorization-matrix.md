@@ -16,7 +16,7 @@
 | Agent reader (`mcp:read` agent token) | organization | read-only over MCP: organization, environments, endpoints, inventory, samples, applications and their update checks and plans, bounded container and pod logs; no audit feed, no mutation, no exec, no secrets |
 | Agent operator (`mcp:operate` agent token) | organization | the agent reader's reads plus `container.operate` and `application.deploy`, which the MCP tools use only to restart a container or workload and to apply an image-update plan someone else made; no stop, delete, exec, configuration, volumes or secrets |
 
-The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing local account's password and clears its MFA; neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
+The first platform administrator comes from first start (the bootstrap `admin`) or `kyyard-server init-admin`, which also resets an existing active local administrator's password and clears its MFA (another existing account only with `-promote`, which makes it a platform administrator); neither needs a signed-in administrator. Every later local account and organization comes from Settings → Administration. Disabling or deleting accounts and organizations, and administrator password resets for other accounts, have no UI or API yet.
 
 Per-environment grants (`role_bindings`) are not introduced; the handoff allows them only if fixed organization roles prove insufficient.
 
