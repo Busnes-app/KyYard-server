@@ -6,6 +6,7 @@ import { containerPath } from '../router';
 import { RESULT_CODES, StepTable } from './ApplicationDeploymentPlan';
 import { diff, needsAck, toSpec, unsupportedLabel } from './containerConfiguration';
 import { CommandGroup, HealthGroup, ImageGroup, MiscGroup, ResourcesGroup, RestartGroup } from './configurationGroups/basics';
+import { argv } from './configurationGroups/fields';
 import { EnvironmentGroup } from './configurationGroups/environment';
 import { NetworkGroup, PortsGroup, VolumesGroup } from './configurationGroups/mounts';
 import { LoggingGroup, SecurityGroup } from './configurationGroups/security';
@@ -30,21 +31,21 @@ export const EMPTY_SPEC: ExplicitSpec = {
 
 const sortedMap = (entries: [string, string][]) => Object.fromEntries([...entries].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
 const list = (items: string[]) => items.map((s) => s.trim()).filter(Boolean);
-const argv = (items: string[]) => { const out = [...items]; while (out.length && out[out.length - 1] === '') out.pop(); return out; };
 
 // buildSpec is the one canonical shape: the read and the draft both pass through it, so diff()
 // compares like with like (key order included) and a form nobody touched has no changes.
-export function buildSpec(s: ExplicitSpec, logOptions: [string, string][]): ExplicitSpec {
+// read is the configuration as read, so its own trailing empty arguments survive (argv).
+export function buildSpec(s: ExplicitSpec, logOptions: [string, string][], read?: ExplicitSpec): ExplicitSpec {
   const spec: ExplicitSpec = {
     name: s.name.trim(), image: { reference: s.image.reference.trim(), digest: s.image.digest, ...(s.image.tag !== undefined ? { tag: s.image.tag } : {}) }, image_id: s.image_id,
-    command: argv(s.command), entrypoint: argv(s.entrypoint), user: s.user, working_dir: s.working_dir, hostname: s.hostname,
+    command: argv(s.command, read?.command), entrypoint: argv(s.entrypoint, read?.entrypoint), user: s.user, working_dir: s.working_dir, hostname: s.hostname,
     env: s.env.map((e) => ({ name: e.name, value: e.value })), labels: sortedMap(Object.entries(s.labels)),
     restart: s.restart, restart_retries: s.restart === 'on-failure' ? s.restart_retries : 0,
     ports: s.ports.map((p) => p.host_ip ? { host_ip: p.host_ip, host: p.host, container: p.container, protocol: p.protocol } : { host: p.host, container: p.container, protocol: p.protocol }),
     mounts: s.mounts.map((m) => ({ kind: m.kind, source: m.kind === 'tmpfs' ? '' : m.source, target: m.target, read_only: m.read_only })),
     network_mode: s.network_mode, networks: s.networks.map((n) => ({ name: n.name, aliases: list(n.aliases), ip: n.ip })),
     resources: { ...s.resources },
-    healthcheck: s.healthcheck && { test: argv(s.healthcheck.test), interval_seconds: s.healthcheck.interval_seconds, timeout_seconds: s.healthcheck.timeout_seconds, start_period_seconds: s.healthcheck.start_period_seconds, retries: s.healthcheck.retries },
+    healthcheck: s.healthcheck && { test: argv(s.healthcheck.test, read?.healthcheck?.test), interval_seconds: s.healthcheck.interval_seconds, timeout_seconds: s.healthcheck.timeout_seconds, start_period_seconds: s.healthcheck.start_period_seconds, retries: s.healthcheck.retries },
     privileged: s.privileged, read_only_rootfs: s.read_only_rootfs, init: s.init, tty: s.tty, stdin_open: s.stdin_open,
     cap_add: list(s.cap_add), cap_drop: list(s.cap_drop), security_opt: list(s.security_opt), extra_hosts: list(s.extra_hosts), dns: list(s.dns),
     devices: s.devices.map((d) => ({ host: d.host, container: d.container, permissions: d.permissions })),
@@ -116,8 +117,8 @@ export function ContainerConfigurationForm({ base, mode, initial, container, see
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const run = mode === 'run';
-  const before = buildSpec(start, Object.entries(start.log.options));
-  const spec = buildSpec(draft, logOptions);
+  const before = buildSpec(start, Object.entries(start.log.options), start);
+  const spec = buildSpec(draft, logOptions, start);
   const changes = diff(before, spec);
   const known = run ? [] : start.mounts;
   const newBinds = [...new Set(spec.mounts.filter((m) => needsAck(known, m)).map((m) => m.source))];

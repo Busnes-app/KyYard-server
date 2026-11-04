@@ -4,7 +4,7 @@ import { dnsLabel } from '../router';
 import type { DirectCommand, WorkloadConfiguration, WorkloadContainer, WorkloadRef } from '../tenant';
 import { RESULT_CODES, StepTable } from './ApplicationDeploymentPlan';
 import { diffWorkload, parseWorkloadConfiguration, toWorkloadSpec, tracksTag, workloadUnsupportedLabel, type WorkloadSpec } from './workloadConfiguration';
-import { Group, int, Lines, Num, Text } from './configurationGroups/fields';
+import { argv, Group, int, Lines, Num, Text } from './configurationGroups/fields';
 import { EnvRows } from './configurationGroups/environment';
 import { displayName } from './Endpoints';
 import { NOT_FOUND, NOT_GRANTED, RUN_NOT_FOUND, UPGRADE_CLUSTER, WORKLOAD_STEPS, workloadRefusal } from './workloadTexts';
@@ -12,13 +12,16 @@ import { NOT_FOUND, NOT_GRANTED, RUN_NOT_FOUND, UPGRADE_CLUSTER, WORKLOAD_STEPS,
 export const KIND_NAMES: Record<string, string> = { deployment: 'Deployment', statefulset: 'StatefulSet', daemonset: 'DaemonSet' };
 export const workloadURL = (base: string, t: WorkloadRef) => `${base}/workloads/${encodeURIComponent(t.namespace)}/${encodeURIComponent(t.kind)}/${encodeURIComponent(t.name)}`;
 
-const argv = (items: string[]) => { const out = [...items]; while (out.length && out[out.length - 1] === '') out.pop(); return out; };
-const canonical = (c: WorkloadContainer): WorkloadContainer => ({
-  ...c, command: argv(c.command), args: argv(c.args), resources: { ...c.resources },
+const canonical = (c: WorkloadContainer, read?: WorkloadContainer): WorkloadContainer => ({
+  ...c, command: argv(c.command, read?.command), args: argv(c.args, read?.args), resources: { ...c.resources },
   env: c.env.map((e) => e.secret_ref ? { name: e.name, secret_ref: e.secret_ref } : e.config_map_ref ? { name: e.name, config_map_ref: e.config_map_ref } : { name: e.name, value: e.value ?? '' }),
 });
-// build is the one canonical shape, so the read and an untouched draft have no diff.
-const build = (s: WorkloadSpec): WorkloadSpec => ({ ...s, containers: s.containers.map(canonical), init_containers: s.init_containers.map(canonical) });
+// build is the one canonical shape, so the read and an untouched draft have no diff; read keeps
+// each container's own trailing empty arguments (argv).
+const build = (s: WorkloadSpec, read?: WorkloadSpec): WorkloadSpec => {
+  const of = (list: WorkloadContainer[] | undefined, c: WorkloadContainer) => list?.find((r) => r.name === c.name);
+  return { ...s, containers: s.containers.map((c) => canonical(c, of(read?.containers, c))), init_containers: s.init_containers.map((c) => canonical(c, of(read?.init_containers, c))) };
+};
 const RESOURCES = [['cpu_request', 'CPU request'], ['cpu_limit', 'CPU limit'], ['memory_request', 'Memory request'], ['memory_limit', 'Memory limit']] as const;
 const MAX_CONTAINERS = 16;
 const BLANK: WorkloadContainer = { name: '', image: '', image_id: '', command: [], args: [], env: [], resources: { cpu_request: '', cpu_limit: '', memory_request: '', memory_limit: '' } };
@@ -39,7 +42,8 @@ export function WorkloadConfigurationForm(props: FormProps) {
   const namespaces = props.mode === 'run' ? props.namespaces : [];
   const run = !initial;
   const seed = props.mode === 'run' ? props.seed : undefined;
-  const start = build(initial ? toWorkloadSpec(initial) : seed ? toWorkloadSpec(seed) : NEW_SPEC);
+  const read = initial ? toWorkloadSpec(initial) : seed ? toWorkloadSpec(seed) : NEW_SPEC;
+  const start = build(read, read);
   const [draft, setDraft] = useState<WorkloadSpec>(start);
   const [namespace, setNamespace] = useState(seed?.target.namespace ?? (namespaces.length === 1 ? namespaces[0] ?? '' : ''));
   const [name, setName] = useState(seed?.target.name ?? '');
@@ -52,7 +56,7 @@ export function WorkloadConfigurationForm(props: FormProps) {
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const target: WorkloadRef = initial ? initial.target : { namespace, kind: 'deployment', name };
-  const spec = build(draft);
+  const spec = build(draft, read);
   const pull = spec.containers.filter((c, i) => pins.has(run ? String(i) : c.name) && tracksTag(c.image)).map((c) => c.name);
   const changes = [...diffWorkload(start, spec), ...(run ? [] : pull.map((n) => `containers.${n}.pin`))];
   const badReplicas = spec.replicas !== undefined && !(Number.isInteger(spec.replicas) && spec.replicas >= 0 && spec.replicas <= 1000);
