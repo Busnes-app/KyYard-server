@@ -47,8 +47,8 @@ type agentConn struct {
 	lastFrame      atomic.Int64 // unix nanoseconds of the last frame the reader delivered
 	carriedMu      sync.Mutex
 	carried        map[string]struct{} // command IDs this socket took and has not answered
-	lastMetrics    time.Time    // last metrics frame handed to the store; loop goroutine only
-	skewRaised     bool         // generation_rejected raised this session; loop goroutine only
+	lastMetrics    time.Time           // last metrics frame handed to the store; loop goroutine only
+	skewRaised     bool                // generation_rejected raised this session; loop goroutine only
 }
 
 func (c *agentConn) carry(id string) {
