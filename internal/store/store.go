@@ -122,6 +122,9 @@ type UserStore interface {
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
 	LinkSSO(ctx context.Context, userID, sessionHash, passwordHash, provider, subject, ip string) error
+	ListSSOIdentities(ctx context.Context, userID string) ([]SSOIdentity, error)
+	// UnlinkSSO removes a local account's identity at provider under the proven password hash.
+	UnlinkSSO(ctx context.Context, userID, passwordHash, provider, ip string) error
 	// UpdateUser writes every column from u, credentials included: a trusted full-row write for
 	// fixtures. The identity provider writes through ApplyDirectoryEvent instead.
 	UpdateUser(ctx context.Context, u *User) error
