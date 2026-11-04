@@ -49,6 +49,8 @@ export function AccountSSO() {
     finally { setBusy(false); }
   };
   const identities = Array.isArray(linked.data) ? linked.data : [];
+  // An account the provider owns has nothing to link here: the server refuses both reads.
+  if (providers.state === 'denied') return null;
   return <section className="panel"><h2>Connect single sign-on to your account</h2>
     {identities.length > 0 && <>
       <h3>Linked sign-in</h3>

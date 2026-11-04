@@ -42,3 +42,11 @@ it('lists a linked identity and unlinks it with the password and CSRF', async ()
   expect(new Headers(request[1].headers).get('X-CSRF-Token')).toBe('proof');
   await waitFor(() => expect(screen.queryByText(/stranger/)).toBeNull());
 });
+
+it('shows nothing to an account the provider owns', async () => {
+  const fetcher = vi.fn(async () => new Response('{"error":"Linking requires a local account"}', { status: 403 }));
+  vi.stubGlobal('fetch', fetcher);
+  const { container } = render(<AccountSSO />);
+  await waitFor(() => expect(fetcher).toHaveBeenCalled());
+  await waitFor(() => expect(container.innerHTML).toBe(''));
+});
