@@ -131,8 +131,7 @@ func TestExecGrantRefusalBeforeRuntime(t *testing.T) {
 	for name, change := range map[string]func(*protocol.ExecOpen){
 		"wrong endpoint":      func(r *protocol.ExecOpen) { r.Endpoint = "other" },
 		"previous connection": func(r *protocol.ExecOpen) { r.Connection = bytes.Repeat([]byte{1}, 32) },
-		"expired":             func(r *protocol.ExecOpen) { r.Expires = time.Now().Add(-time.Second) },
-		"long lived":          func(r *protocol.ExecOpen) { r.Expires = time.Now().Add(time.Hour) },
+		"missing expiry":      func(r *protocol.ExecOpen) { r.Expires = time.Time{} },
 		"no actor":            func(r *protocol.ExecOpen) { r.Actor = "" },
 		"no user":             func(r *protocol.ExecOpen) { r.Spec.User = "" },
 		"no image":            func(r *protocol.ExecOpen) { r.Spec.ImageID = "" },
@@ -428,16 +427,22 @@ func TestExecConsumedGrantCacheIsBounded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out := make(chan outFrame, 8)
-	s := newExecStreams(ctx, "endpoint", make([]byte, 32), &execBudget{}, &Options{Exec: func(context.Context, protocol.ExecSpec) (ExecSession, error) { return nil, errors.New("secret argv") }}, out)
-	for i := 0; i < 1024; i++ {
-		s.seen[fmt.Sprint(i)] = time.Now().Add(time.Minute)
+	opts := &Options{Exec: func(context.Context, protocol.ExecSpec) (ExecSession, error) { return nil, errors.New("secret argv") }}
+	s := newExecStreams(ctx, "endpoint", make([]byte, 32), &execBudget{}, opts, out)
+	for i := 0; i < maxSessionGrantIDs; i++ {
+		s.seen[fmt.Sprint(i)] = struct{}{}
 	}
 	req := execRequest()
-	if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); !errors.Is(err, errExecCapacity) {
-		t.Fatal("replay cache grew past ceiling", err)
+	if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); !errors.Is(err, errExecProtocol) || len(s.seen) != maxSessionGrantIDs {
+		t.Fatal("full connection history must end the session without eviction", err)
 	}
-	// Only expired records may be evicted. A runtime failure still consumes its grant.
-	s.seen["0"] = time.Now().Add(-time.Second)
+	// A new connection has fresh replay space, but the previous nonce cannot use it.
+	nonce := bytes.Repeat([]byte{1}, 32)
+	s = newExecStreams(ctx, "endpoint", nonce, s.budget, opts, out)
+	if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); !errors.Is(err, errExecProtocol) {
+		t.Fatal("old nonce accepted after reconnect", err)
+	}
+	req.Connection = nonce
 	if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); err != nil {
 		t.Fatal(err)
 	}
@@ -446,8 +451,10 @@ func TestExecConsumedGrantCacheIsBounded(t *testing.T) {
 		t.Fatal(closed)
 	}
 	waitExecBudget(t, s.budget, 0)
+	// Expiry cannot erase the fact that this ID was consumed on this connection.
+	req.Expires = time.Now().Add(-time.Second)
 	if err := s.handle(execFrame(protocol.TypeExecOpen, req), true); !errors.Is(err, errExecProtocol) {
-		t.Fatal("failed start replay accepted", err)
+		t.Fatal("expired failed-start replay accepted", err)
 	}
 }
 

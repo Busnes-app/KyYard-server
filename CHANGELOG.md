@@ -4,6 +4,8 @@
 
 ### Changed on upgrade
 
+- Agent exec, inspection and configuration grants refused only for expiry now return a refusal without losing the authenticated connection. Malformed grants, wrong scope/nonce/runtime and all replays still end it. Consumed IDs remain for the socket lifetime, with a reconnect at the existing 1,024-ID bound instead of evicting replay evidence.
+
 - **SQLite retention budget is now 192 MiB (was 2 GiB).** One backup capsule holds 256 MiB, so a
   database kept to the old budget could grow past what any backup can carry. Existing SQLite
   installs that did not set `KY_RETENTION_DISK_BUDGET` prune older history on upgrade: metrics

@@ -548,7 +548,9 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 			case protocol.TypeExecOpen, protocol.TypeExecInput, protocol.TypeExecResize, protocol.TypeExecCancel:
 				if err := terminals.handle(f, hello.State == "active" || hello.State == "approved" || hello.State == "offline"); err != nil {
 					reason := "exec stream limit reached; not started"
-					if errors.Is(err, errExecUnavailable) {
+					if errors.Is(err, protocol.ErrGrantExpiry) {
+						reason = "exec grant expiry refused; not started"
+					} else if errors.Is(err, errExecUnavailable) {
 						reason = errExecUnavailable.Error()
 					} else if !errors.Is(err, errExecCapacity) {
 						return err

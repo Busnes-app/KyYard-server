@@ -140,10 +140,16 @@ func (r InspectionOpen) ValidateFor(now time.Time, runtime string) error {
 
 // ValidateWithin is ValidateFor for a frame with its own grant lifetime.
 func (r InspectionOpen) ValidateWithin(now time.Time, lifetime time.Duration, runtime string) error {
-	if !execStreamID.MatchString(r.Request) || !execStreamID.MatchString(r.Actor) || !execStreamID.MatchString(r.Endpoint) || len(r.Connection) != 32 || !r.Expires.After(now) || r.Expires.After(now.Add(lifetime)) {
+	if !execStreamID.MatchString(r.Request) || !execStreamID.MatchString(r.Actor) || !execStreamID.MatchString(r.Endpoint) || len(r.Connection) != 32 || r.Expires.IsZero() {
 		return errors.New("invalid inspection grant")
 	}
-	return r.Target.ValidateFor(runtime)
+	if err := r.Target.ValidateFor(runtime); err != nil {
+		return err
+	}
+	if !r.Expires.After(now) || r.Expires.After(now.Add(lifetime)) {
+		return ErrGrantExpiry
+	}
+	return nil
 }
 
 type InspectionCancel struct {

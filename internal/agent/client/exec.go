@@ -59,9 +59,9 @@ type execStream struct {
 type execStreams struct {
 	mu   sync.Mutex
 	live map[string]*execStream
-	// Consumed grants remain until expiry, even after their worker ends. At the
-	// fixed ceiling new opens are refused, rather than evicting replay protection.
-	seen     map[string]time.Time
+	// Remember consumed IDs for this connection, including refused expiries.
+	// Reconnect at the ceiling rather than forgetting replay evidence.
+	seen     map[string]struct{}
 	budget   *execBudget
 	endpoint string
 	nonce    []byte
@@ -71,7 +71,7 @@ type execStreams struct {
 }
 
 func newExecStreams(ctx context.Context, endpoint string, nonce []byte, b *execBudget, opts *Options, out chan<- outFrame) *execStreams {
-	return &execStreams{live: make(map[string]*execStream), seen: make(map[string]time.Time), budget: b, endpoint: endpoint, nonce: nonce, ctx: ctx, opts: opts, out: out}
+	return &execStreams{live: make(map[string]*execStream), seen: make(map[string]struct{}), budget: b, endpoint: endpoint, nonce: nonce, ctx: ctx, opts: opts, out: out}
 }
 
 // runtime is the target shape this agent opens: a pod on a cluster, a container on Docker.
@@ -81,6 +81,8 @@ func (s *execStreams) runtime() string {
 	}
 	return protocol.RuntimeDocker
 }
+
+const maxSessionGrantIDs = 1024
 
 var errExecProtocol = errors.New("invalid exec frame")
 var errExecCapacity = errors.New("exec stream limit reached")
@@ -95,27 +97,25 @@ func (s *execStreams) handle(f protocol.Envelope, active bool) error {
 	switch f.Type {
 	case protocol.TypeExecOpen:
 		var req protocol.ExecOpen
-		if json.Unmarshal(f.Payload, &req) != nil || req.Validate(time.Now()) != nil || req.Spec.ValidateFor(s.runtime()) != nil || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
+		if json.Unmarshal(f.Payload, &req) != nil {
+			return errExecProtocol
+		}
+		validation := req.Validate(time.Now())
+		if (validation != nil && !errors.Is(validation, protocol.ErrGrantExpiry)) || req.Spec.ValidateFor(s.runtime()) != nil || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) || !active {
 			return errExecProtocol
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		now := time.Now()
-		for id, expiry := range s.seen {
-			if !expiry.After(now) {
-				delete(s.seen, id)
-			}
-		}
 		if _, used := s.seen[req.Stream]; used || s.live[req.Stream] != nil {
 			return errExecProtocol
 		}
-		if !active {
+		if len(s.seen) >= maxSessionGrantIDs {
 			return errExecProtocol
 		}
-		if len(s.seen) >= 1024 {
-			return errExecCapacity
+		s.seen[req.Stream] = struct{}{}
+		if validation != nil {
+			return validation
 		}
-		s.seen[req.Stream] = req.Expires
 		if s.opts.Exec == nil {
 			return errExecUnavailable
 		}
