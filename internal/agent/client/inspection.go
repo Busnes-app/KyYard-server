@@ -16,7 +16,7 @@ import (
 type inspections struct {
 	mu       sync.Mutex
 	live     map[string]context.CancelFunc
-	seen     map[string]time.Time
+	seen     map[string]struct{}
 	slots    chan struct{}
 	ctx      context.Context
 	endpoint string
@@ -38,7 +38,7 @@ type frameFamily struct {
 }
 
 func newInspections(ctx context.Context, endpoint string, nonce []byte, opts *Options, out chan<- outFrame) *inspections {
-	s := &inspections{live: map[string]context.CancelFunc{}, seen: map[string]time.Time{}, slots: opts.inspectionSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
+	s := &inspections{live: map[string]context.CancelFunc{}, seen: map[string]struct{}{}, slots: opts.inspectionSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
 	s.frames = frameFamily{
 		cancel: protocol.TypeInspectionCancel, result: protocol.TypeInspectionResult,
 		maxBytes: protocol.MaxInspectionFrameBytes, lifetime: protocol.InspectionLifetime, ready: opts.Inspect != nil,
@@ -59,7 +59,7 @@ func newInspections(ctx context.Context, endpoint string, nonce []byte, opts *Op
 // a container's configuration on Docker, a workload's pod template on a cluster (an
 // object-shaped target only; the UID shape is inspection's).
 func newConfigurations(ctx context.Context, endpoint string, nonce []byte, opts *Options, out chan<- outFrame) *inspections {
-	s := &inspections{live: map[string]context.CancelFunc{}, seen: map[string]time.Time{}, slots: opts.configurationSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
+	s := &inspections{live: map[string]context.CancelFunc{}, seen: map[string]struct{}{}, slots: opts.configurationSlots, ctx: ctx, endpoint: endpoint, nonce: nonce, opts: opts, out: out}
 	ready := opts.Configure != nil
 	if opts.Kubernetes {
 		ready = opts.ReadWorkload != nil
@@ -114,25 +114,24 @@ func (s *inspections) handle(f protocol.Envelope, active bool) error {
 		return nil
 	}
 	var req protocol.InspectionOpen
-	if json.Unmarshal(f.Payload, &req) != nil || req.ValidateWithin(time.Now(), s.frames.lifetime, s.runtime()) != nil || !active || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
+	if json.Unmarshal(f.Payload, &req) != nil {
+		return invalid
+	}
+	validation := req.ValidateWithin(time.Now(), s.frames.lifetime, s.runtime())
+	if (validation != nil && !errors.Is(validation, protocol.ErrGrantExpiry)) || !active || req.Endpoint != s.endpoint || !bytes.Equal(req.Connection, s.nonce) {
 		return invalid
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, expiry := range s.seen {
-		if !expiry.After(time.Now()) {
-			delete(s.seen, id)
-		}
-	}
 	if _, seen := s.seen[req.Request]; seen || s.live[req.Request] != nil {
 		return invalid
 	}
-	if len(s.seen) >= 1024 {
+	if len(s.seen) >= maxSessionGrantIDs {
 		return errors.New("inspection grant limit reached")
 	}
-	s.seen[req.Request] = req.Expires
+	s.seen[req.Request] = struct{}{}
 	status := ""
-	if !s.frames.ready {
+	if validation != nil || !s.frames.ready {
 		status = "unavailable"
 	} else {
 		select {

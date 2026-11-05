@@ -54,7 +54,7 @@ func TestConfigurationAnswersOnlyValidGrants(t *testing.T) {
 	for name, mutate := range map[string]func(*protocol.ConfigurationOpen){
 		"wrong nonce":    func(r *protocol.ConfigurationOpen) { r.Connection = []byte("wrong") },
 		"wrong endpoint": func(r *protocol.ConfigurationOpen) { r.Endpoint = "other" },
-		"22 s grant":     func(r *protocol.ConfigurationOpen) { r.Expires = time.Now().Add(22 * time.Second) },
+		"missing expiry": func(r *protocol.ConfigurationOpen) { r.Expires = time.Time{} },
 	} {
 		bad := configurationRequest(15 * time.Second)
 		mutate(&bad)
@@ -68,6 +68,19 @@ func TestConfigurationAnswersOnlyValidGrants(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Fatal("ignored grants were answered")
+	}
+	// The family-specific 20 s bound is still refused, without losing the session.
+	long := configurationRequest(22 * time.Second)
+	s = newConfigurationsFor(long, opts, out)
+	if err := s.handle(execFrame(protocol.TypeConfigurationOpen, long), true); err != nil {
+		t.Fatal(err)
+	}
+	refused := nextExecFrame(t, out, protocol.TypeConfigurationResult).Payload.(protocol.ConfigurationResult)
+	if refused.Status != "unavailable" || refused.Result != nil {
+		t.Fatal("overlong grant reached runtime", refused)
+	}
+	if err := s.handle(execFrame(protocol.TypeConfigurationOpen, long), true); err == nil {
+		t.Fatal("refused grant replay accepted")
 	}
 }
 

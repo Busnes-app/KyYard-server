@@ -37,7 +37,7 @@ func TestInspectionTransportRedactionAndGrantChecks(t *testing.T) {
 	if err := s.handle(execFrame(protocol.TypeInspectionOpen, req), true); err == nil {
 		t.Fatal("replay accepted")
 	}
-	for _, mutate := range []func(*protocol.InspectionOpen){func(r *protocol.InspectionOpen) { r.Endpoint = "other" }, func(r *protocol.InspectionOpen) { r.Connection = []byte("wrong") }, func(r *protocol.InspectionOpen) { r.Expires = time.Now().Add(-time.Second) }, func(r *protocol.InspectionOpen) { r.Target.ContainerID = "name" }} {
+	for _, mutate := range []func(*protocol.InspectionOpen){func(r *protocol.InspectionOpen) { r.Endpoint = "other" }, func(r *protocol.InspectionOpen) { r.Connection = []byte("wrong") }, func(r *protocol.InspectionOpen) { r.Expires = time.Time{} }, func(r *protocol.InspectionOpen) { r.Target.ContainerID = "name" }} {
 		bad := inspectionRequest()
 		mutate(&bad)
 		s := newInspections(context.Background(), req.Endpoint, req.Connection, opts, out)

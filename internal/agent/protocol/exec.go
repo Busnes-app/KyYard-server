@@ -145,19 +145,29 @@ type ExecOpen struct {
 	Size       TerminalSize `json:"size"`
 }
 
+// ErrGrantExpiry identifies an otherwise valid grant outside its start window.
+// A transport may refuse it without treating malformed or replayed grants alike.
+var ErrGrantExpiry = errors.New("grant expiry outside accepted start window")
+
 var execStreamID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 func (r ExecOpen) Validate(now time.Time) error {
 	if !execStreamID.MatchString(r.Stream) || !execStreamID.MatchString(r.Actor) || !execStreamID.MatchString(r.Endpoint) || len(r.Connection) != 32 {
 		return errors.New("invalid exec scope")
 	}
-	if !r.Expires.After(now) || r.Expires.After(now.Add(ExecGrantLifetime)) {
-		return errors.New("invalid exec grant expiry")
+	if r.Expires.IsZero() {
+		return errors.New("missing exec grant expiry")
 	}
 	if err := r.Spec.Validate(); err != nil {
 		return err
 	}
-	return r.Size.Validate()
+	if err := r.Size.Validate(); err != nil {
+		return err
+	}
+	if !r.Expires.After(now) || r.Expires.After(now.Add(ExecGrantLifetime)) {
+		return ErrGrantExpiry
+	}
+	return nil
 }
 
 // Data uses JSON base64 encoding to preserve arbitrary PTY bytes, including UTF-8
