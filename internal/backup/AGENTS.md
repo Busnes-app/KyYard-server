@@ -76,7 +76,13 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   plaintext `kyrecovery_token`; the filter drops every key with the `kyrecovery_token`
   prefix, so a rename in the lib cannot leak. An admin sees the paired `kyrecovery_url`,
   never the credential.
-- Pairing, the write-once key pin, `Run` (one seal, every destination), the schedule, local
+- `Run` (`run.go`) is the only caller of `recoveryclient.Run` in the server, scheduler and
+  CLI. Cancelling its context aborts the snapshot and the upload; settings writes use
+  `context.WithoutCancel`, so a receipt already returned is recorded. An interrupted run
+  restores the previous `backup_last_attempt` row (or deletes it when there was none) and
+  returns `ErrInterrupted`. A run that fails for another reason keeps its stamp.
+  `backup_last_attempt` is the lib's unexported key; `run_test.go` fails if it changes.
+- Pairing, the write-once key pin, the lib's `Run` (one seal, every destination), the schedule, local
   copies and their pruning, drill mechanics, restore and the decrypt guard are the lib's;
   their contracts are in the `recoveryclient` README. `client_test.go` pins only what this
   package's wiring buys: `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` admits RFC1918 and CGNAT and

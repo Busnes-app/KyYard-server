@@ -4,6 +4,14 @@
 
 ### Changed on upgrade
 
+- **Stopping no longer waits up to 17 minutes for a backup.** On SIGTERM a backup in flight is
+  interrupted: the snapshot and the upload to KyRecovery are cancelled, the interruption is
+  audited, and the scheduled backup runs again about a minute after the next start. An
+  interrupted `POST /api/backup/deposit` answers 503. An update-policy run in flight still
+  finishes, so shutdown takes seconds without one and up to 3 minutes with one.
+  `docker-compose.yml` lowers `stop_grace_period` from 20m to 4m; a Kubernetes
+  `terminationGracePeriodSeconds` of 240 is enough.
+
 - Agent exec, inspection and configuration grants refused only for expiry now return a refusal without losing the authenticated connection. Malformed grants, wrong scope/nonce/runtime and all replays still end it. Consumed IDs remain for the socket lifetime, with a reconnect at the existing 1,024-ID bound instead of evicting replay evidence.
 
 - **SQLite retention budget is now 192 MiB (was 2 GiB).** One backup capsule holds 256 MiB, so a

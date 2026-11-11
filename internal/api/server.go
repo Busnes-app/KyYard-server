@@ -58,12 +58,16 @@ type Server struct {
 	// detached counts the requests running on a context deliberately separated from their
 	// connection. http.Server.Shutdown does not know about them, so runServer waits on this
 	// before the store closes.
-	detached    detachedCounter
-	stopping    atomic.Bool
-	agents      agentRegistry
-	logs        *logRegistry
-	execs       execRegistry
-	inspections inspectionRegistry
+	detached detachedCounter
+	// stopCtx carries the slow legs of detached backup work: the database snapshot, the
+	// upload and the pairing claim. StopDetached cancels it; a dropped connection does not.
+	stopCtx      context.Context
+	stopDetached context.CancelFunc
+	stopping     atomic.Bool
+	agents       agentRegistry
+	logs         *logRegistry
+	execs        execRegistry
+	inspections  inspectionRegistry
 	// configurations admits configuration reads.
 	configurations inspectionRegistry
 	// imageChecks holds "org/env/app" while an update check runs; one process is the supported
@@ -92,6 +96,12 @@ type Server struct {
 	// suite is the suite runner client; nil when KY_SUITE_RUNNER_SOCKET is unset.
 	suite *suite.Client
 }
+
+// StopDetached aborts the slow legs of every detached handler in flight: a backup's snapshot
+// or upload, a pairing claim. cmd/server calls it on SIGTERM so WaitDetached takes seconds.
+// The handlers' own writes (key pin, receipt, audit row) still finish, and an aborted deposit
+// is due again on the next start.
+func (s *Server) StopDetached() { s.stopDetached() }
 
 // detachedCounter is a WaitGroup that tolerates a registration arriving while the wait is
 // already running. sync.WaitGroup panics on an Add from zero concurrent with Wait, and there is
@@ -208,6 +218,7 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		s.suite = suite.New(cfg.Suite.RunnerSocket)
 	}
 
+	s.stopCtx, s.stopDetached = context.WithCancel(context.Background())
 	s.routes()
 	return s
 }

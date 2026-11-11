@@ -9,7 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"bytes"
+	"fmt"
+	"strings"
+
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/kyyard-server/internal/backup"
 	"github.com/Busnes-app/kyyard-server/internal/config"
+	"github.com/Busnes-app/kyyard-server/internal/store"
 )
 
 // A deployment key that cannot seal is a configuration fault, not a run that might succeed
@@ -22,7 +30,7 @@ func TestBackupLoopStopsWhenTheSealerCannotBeBuilt(t *testing.T) {
 
 	done := make(chan struct{})
 	// A nil store is safe only because the loop must return before it reads one.
-	go backupLoop(context.Background(), cfg, nil, done)
+	go backupLoop(context.Background(), cfg, nil, nil, time.Minute, done)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -31,9 +39,7 @@ func TestBackupLoopStopsWhenTheSealerCannotBeBuilt(t *testing.T) {
 }
 
 // Shutdown waits on done before the store closes, so the loop must close it: a loop that
-// never signalled would hang the process, and one that signalled early would put us back to
-// killing a deposit mid-flight. done is closed only where the loop returns, which is between
-// runs.
+// never signalled would spend the whole backup wait on every stop.
 func TestBackupLoopClosesDoneOnCancel(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Security.EncryptionKey = make([]byte, 32)
@@ -41,7 +47,7 @@ func TestBackupLoopClosesDoneOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan struct{})
-	go backupLoop(ctx, cfg, nil, done)
+	go backupLoop(ctx, cfg, nil, nil, time.Minute, done)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -49,31 +55,34 @@ func TestBackupLoopClosesDoneOnCancel(t *testing.T) {
 	}
 }
 
-// The shutdown guarantee is only as good as the grace period the deployment grants: the HTTP
-// drain and the backup wait both have to finish inside it, or the supervisor's SIGKILL lands on
-// a capsule mid-upload -- the exact outcome the wait exists to prevent. This holds the compose
-// file and the two constants in step.
-func TestComposeGracePeriodCoversTheShutdownBudget(t *testing.T) {
+// Stopping must fit the grace period the deployment grants, or SIGKILL lands on a policy run
+// mid-apply or on an interrupted backup before its outcome is recorded. The budget here is a
+// policy run's worst case, not the suite's usual 10s, so the compose file must grant more than
+// it and a Kubernetes deployment needs terminationGracePeriodSeconds above it too.
+func TestShutdownBudgetFitsTheGracePeriods(t *testing.T) {
+	budget := shutdownTimeout + backupWaitTimeout
+	if limit := 4 * time.Minute; budget >= limit {
+		t.Errorf("shutdownTimeout+backupWaitTimeout is %s; keep it under %s", budget, limit)
+	}
 	raw, err := os.ReadFile(filepath.Join("..", "..", "docker-compose.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := regexp.MustCompile(`(?m)^\s*stop_grace_period:\s*(\S+)\s*$`).FindSubmatch(raw)
 	if m == nil {
-		t.Fatal("docker-compose.yml sets no stop_grace_period, so Docker's default 10s kills an in-flight deposit")
+		t.Fatal("docker-compose.yml sets no stop_grace_period, and Docker's default 10s is shorter than the shutdown budget")
 	}
 	grace, err := time.ParseDuration(string(m[1]))
 	if err != nil {
 		t.Fatalf("stop_grace_period %q: %v", m[1], err)
 	}
-	if budget := shutdownTimeout + backupWaitTimeout; grace <= budget {
+	if grace <= budget {
 		t.Errorf("stop_grace_period %s does not cover shutdownTimeout+backupWaitTimeout (%s)", grace, budget)
 	}
 }
 
 // Both wait phases share one context, not one timer channel: a timer channel delivers its value
-// once, so a scheduler wait that consumed it would leave the handler wait unbounded -- the stuck
-// deposit this whole path exists to bound. Neither channel here ever closes, so the only way out
+// once, so a scheduler wait that consumed it would leave the handler wait unbounded. Neither channel here ever closes, so the only way out
 // is the deadline, twice.
 func TestWaitForBackupWorkIsBoundedInBothPhases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -106,5 +115,85 @@ func TestWaitForBackupWorkWaitsBothAtOnce(t *testing.T) {
 	})
 	if !finished.Load() {
 		t.Fatal("the detached-handler wait had not run when waitForBackupWork returned; a hung scheduled deposit consumed its whole budget")
+	}
+}
+
+// stalledDepositor is an upload that never completes on its own: like the real client's HTTP
+// request, it returns only when its context ends.
+type stalledDepositor struct{ entered chan struct{} }
+
+func (d stalledDepositor) Deposit(ctx context.Context, _, _ string, _ []byte) (recoveryclient.Receipt, error) {
+	close(d.entered)
+	<-ctx.Done()
+	return recoveryclient.Receipt{}, fmt.Errorf("%w: %w", recoveryclient.ErrRemote, ctx.Err())
+}
+
+// SIGTERM during a scheduled deposit: the loop stops within seconds, not after the upload
+// budget, the interruption is audited before done closes (the store closes next), and the
+// run is due again for the next start.
+func TestBackupLoopInterruptsAScheduledDepositOnCancel(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	cfg.Server.AppName = "busnes_app"
+	cfg.Database.Driver = "sqlite"
+	cfg.Database.DataDir = dir
+	cfg.Database.DSN = filepath.Join(dir, "ky_server.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	cfg.Security.EncryptionKey = bytes.Repeat([]byte{1}, 32)
+	cfg.Security.SessionSecret = strings.Repeat("02", 32)
+	cfg.Security.InstanceKey = bytes.Repeat([]byte{3}, 32)
+	cfg.Backup.DepositInterval = time.Hour
+	st, err := store.Open(context.Background(), cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	settings := backup.Settings(context.Background(), st.Settings())
+	priv, _ := recoverykey.Generate()
+	if err := recoveryclient.StoreRecoveryKey(dir, settings, recoveryclient.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := backup.NewSealer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recoveryclient.StorePairing(settings, sealer, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	depositor := stalledDepositor{entered: make(chan struct{})}
+	done := make(chan struct{})
+	go backupLoop(ctx, cfg, st, depositor, 10*time.Millisecond, done)
+	select {
+	case <-depositor.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the scheduler never started the due deposit")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("backupLoop was still running two seconds after cancel; shutdown would wait out the upload")
+	}
+
+	records, _, err := st.Audit().ListAuditRecords(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var audited bool
+	for _, rec := range records {
+		if rec.UserID == "system" && rec.Action == "admin.backup_run" && strings.Contains(rec.Details, "interrupted by shutdown") {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Error("the interrupted scheduled deposit left no audit row")
+	}
+	if _, ok, _ := recoveryclient.LastDeposit(settings); ok {
+		t.Error("an interrupted deposit recorded a receipt")
+	}
+	if next, on, err := recoveryclient.NextRun(cfg.Backup.DepositInterval, settings); err != nil || !on || time.Now().Before(next) {
+		t.Errorf("after the interruption the next run is at %v (on=%v err=%v), want due now", next, on, err)
 	}
 }
