@@ -232,7 +232,8 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 
 	// The service name sent here is what kyrecovery pins for the token and what every
 	// capsule's manifest is checked against, so it is the same AppName the collector seals under.
-	result, err := s.recovery.ClaimPairing(ctx, req.RecoveryURL, req.PairingCode, s.config.Server.AppName, s.config.Server.AppName)
+	// Only shutdown cancels the claim; nothing has been written this side while it is in flight.
+	result, err := s.recovery.ClaimPairing(s.stopCtx, req.RecoveryURL, req.PairingCode, s.config.Server.AppName, s.config.Server.AppName)
 	if err != nil {
 		s.auditBackup(ctx, actor, r, "backup.pair_failed", target, "error="+err.Error())
 		s.writeError(w, http.StatusBadRequest, "Recovery pairing failed")
@@ -276,8 +277,9 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 // the local directory and, when paired, to KyRecovery. The receipt it returns is what a
 // restore is later checked against.
 //
-// The run uses a context that outlives the request: once bytes are on their way, a closed
-// tab must not leave KyRecovery holding a capsule this instance has no receipt for.
+// The run outlives the request: once bytes are on their way, a closed tab must not leave
+// KyRecovery holding a capsule this instance has no receipt for. Only shutdown interrupts it
+// (StopDetached), and then the answer is 503 and the scheduler runs the backup again.
 // The route wraps it in `tracked`, so it is counted as detached from the moment ServeHTTP
 // dispatches, before requireAdmin authenticates.
 func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
@@ -297,10 +299,7 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "Failed to prepare backup configuration")
 		return
 	}
-	settings := backup.Settings(ctx, s.store.Settings())
-	res, err := recoveryclient.Run(ctx, rc, settings, func() (recoveryclient.Payload, error) {
-		return backup.Collect(ctx, s.config, appversion.String())
-	}, s.recovery)
+	res, err := backup.Run(s.stopCtx, s.config, rc, s.store.Settings(), s.recovery)
 
 	action, _, details := BackupOutcome(res, err)
 	s.auditBackup(ctx, actor, r, action, res.Manifest.CapsuleID, AuditDetails(details))
@@ -317,6 +316,8 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		switch {
+		case errors.Is(err, backup.ErrInterrupted):
+			s.writeError(w, http.StatusServiceUnavailable, "The server is shutting down; the backup did not finish")
 		case errors.Is(err, recoveryclient.ErrKeyPinMissing):
 			s.writeError(w, http.StatusPreconditionFailed, "Paired, but recovery.pub is missing or does not match the pin")
 		case errors.Is(err, recoveryclient.ErrNotPaired):

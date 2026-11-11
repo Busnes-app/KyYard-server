@@ -44,9 +44,9 @@ services:
     container_name: kyyard
     restart: unless-stopped
     network_mode: bridge
-    # Covers cmd/server's shutdownTimeout (5s HTTP drain) plus backupWaitTimeout (17m for a
-    # deposit already on the wire), so SIGKILL cannot land on a capsule mid-upload.
-    stop_grace_period: 20m
+    # Covers cmd/server's shutdownTimeout (5s HTTP drain) plus backupWaitTimeout (3m for an
+    # update-policy run in flight to finish; a backup is interrupted and takes seconds).
+    stop_grace_period: 4m
     ports:
       - "127.0.0.1:9273:9273"
     environment:

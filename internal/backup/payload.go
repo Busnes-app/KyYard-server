@@ -44,6 +44,10 @@ func Collect(ctx context.Context, cfg *config.Config, appVersion string) (recove
 	if err != nil {
 		return recoveryclient.Payload{}, err
 	}
+	// Cancelled once the snapshot was whole: stop here so nothing is sealed for a run nobody waits for.
+	if err := ctx.Err(); err != nil {
+		return recoveryclient.Payload{}, err
+	}
 	files := databaseMembers(dbBytes)
 	sqlitePaths := []string{dbPath}
 

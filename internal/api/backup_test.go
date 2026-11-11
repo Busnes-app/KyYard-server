@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
@@ -821,5 +822,70 @@ func TestDetachedTrackingCoversADepositInFlight(t *testing.T) {
 	}
 	if _, ok, _ := recoveryclient.LastDeposit(backupSettings(ctx, st)); !ok {
 		t.Error("the wait returned but no receipt was recorded: it did not cover the write it exists for")
+	}
+}
+
+// stalledDepositor is an upload that never completes on its own: like the real client's HTTP
+// request, it returns only when its context ends.
+type stalledDepositor struct {
+	fakePairer
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (d *stalledDepositor) Deposit(ctx context.Context, _, _ string, _ []byte) (recoveryclient.Receipt, error) {
+	d.once.Do(func() { close(d.entered) })
+	<-ctx.Done()
+	return recoveryclient.Receipt{}, fmt.Errorf("%w: %w", recoveryclient.ErrRemote, ctx.Err())
+}
+
+// SIGTERM during an admin's deposit: StopDetached ends the upload, the request answers 503
+// with its audit row written, WaitDetached returns in seconds rather than after the upload
+// budget, no receipt is invented, and the schedule runs the backup again after the restart.
+func TestStopDetachedInterruptsADepositInFlight(t *testing.T) {
+	srv, st, cfg := setupSQLiteServer(t)
+	cfg.Backup.DepositInterval = time.Hour
+	ctx := context.Background()
+	priv, _ := recoverykey.Generate()
+	if err := recoveryclient.StoreRecoveryKey(cfg.Database.DataDir, backupSettings(ctx, st), recoveryclient.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storePairing(t, cfg, st, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+		t.Fatal(err)
+	}
+	depositor := &stalledDepositor{entered: make(chan struct{})}
+	api.SetRecoveryClientForTest(srv, depositor)
+	session := loginAs(t, srv, st, "alice", "admin")
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- adminPost(t, srv, session, "/api/backup/deposit") }()
+	<-depositor.entered // the capsule is on its way to KyRecovery
+
+	srv.StopDetached()
+	waited := make(chan struct{})
+	go func() { defer close(waited); srv.WaitDetached() }()
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitDetached was still blocked two seconds after StopDetached; shutdown would wait out the upload")
+	}
+	if w := <-answered; w.Code != http.StatusServiceUnavailable {
+		t.Errorf("interrupted deposit answered %d: %s", w.Code, w.Body.String())
+	}
+	if _, ok, _ := recoveryclient.LastDeposit(backupSettings(ctx, st)); ok {
+		t.Error("an interrupted deposit recorded a receipt")
+	}
+	var audited bool
+	for _, rec := range auditRows(t, st, "admin.backup_run") {
+		if rec.UserID == "usr_alice" && strings.Contains(rec.Details, `outcome="failure"`) && strings.Contains(rec.Details, "interrupted by shutdown") {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Error("no admin.backup_run failure row says the deposit was interrupted by shutdown")
+	}
+	next, on, err := recoveryclient.NextRun(cfg.Backup.DepositInterval, backupSettings(ctx, st))
+	if err != nil || !on || time.Now().Before(next) {
+		t.Errorf("after the interruption the next run is at %v (on=%v err=%v), want due now", next, on, err)
 	}
 }

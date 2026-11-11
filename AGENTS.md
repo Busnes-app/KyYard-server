@@ -182,16 +182,19 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 
 `cmd/server` supervises the built-in local agent with jittered exponential retry (1s to 60s base delay); disabled configuration and persisted authority refusal stop the loop. Transient socket/store failures retry. Shutdown cancels and waits for this loop before the detached-handler wait and store close. Its private authenticated WebSocket handler joins the existing detached counter.
 
-`cmd/server` owns the scheduler: `backupLoop` builds the `RunConfig` and client once and
-returns with `scheduler disabled: ...` if that fails, because a run that never stamps its
-attempt would log and audit the same failure every minute forever. It closes its `done` channel
-only where it returns, between runs, and `runServer` cancels and waits on that channel after
-`httpServer.Shutdown` and before the store closes, then waits on `api.Server.WaitDetached()` for
-the pair, pin-key and deposit handlers, which detach from their requests and so outlive
-`Shutdown`. `api.Server.RunPolicies`, the update-policy scheduler, starts beside `backupLoop` and
+`cmd/server` owns the scheduler: `backupLoop` builds the `RunConfig` once and returns with
+`scheduler disabled: ...` if that fails, because a run that never stamps its attempt would log
+and audit the same failure every minute forever. Shutdown interrupts backup work instead of
+waiting it out. On SIGTERM `runServer` cancels the loop's context and calls
+`api.Server.StopDetached()` before `httpServer.Shutdown`; `backup.Run` aborts the snapshot or
+upload, hands the attempt stamp back so the run is due again on the next start, and returns
+`backup.ErrInterrupted`, which is audited. `runServer` then waits on the loop's `done` channel
+and on `api.Server.WaitDetached()` for the pair, pin-key and deposit handlers, so the receipt,
+key pin and audit writes land before the store closes.
+`api.Server.RunPolicies`, the update-policy scheduler, starts beside `backupLoop` and
 closes its own `done` only when its loop has stopped and no policy run is in flight; `runServer`
-waits on it inside the same handler wait (a run's worst case is under 3 minutes, so the budget is
-unchanged). `api.Server.RunValidations`, the health-validation loop, starts beside it and closes
+waits on it inside the same handler wait. A policy run is not interrupted: it finishes rather
+than cut an apply in half, and its worst case (under 3 minutes) is what sets the wait budget. `api.Server.RunValidations`, the health-validation loop, starts beside it and closes
 its `done` only between ticks, a rollback in flight included (under `context.WithoutCancel`);
 `runServer` waits on it in the same handler wait (`TestServerRunsAndAwaitsTheValidationLoop`).
 `api.Server.RunServiceReadSummaries`, the service-token read-summary loop, starts beside it and
@@ -199,13 +202,13 @@ closes its `done` only after a final flush on a context detached from the loop; 
 waits on it in the same handler wait (`TestServerRunsAndAwaitsTheServiceReadSummaryLoop`).
 `main.go` blank-imports `time/tzdata` so policy zones load the same on every host
 (`TestServerEmbedsTheTimeZoneDatabase`). Nothing writes into a closed store. Both waits run under
-one `backupWaitTimeout`
-context (17m, the lib's 15m deposit ceiling plus sealing) -- a context, not a timer channel,
-which delivers once and would leave the second wait unbounded; the HTTP drain is `shutdownTimeout`
-(5s). `docker-compose.yml` grants a `stop_grace_period` above their sum, so the guarantee holds
-in the shipped deployment instead of assuming a supervisor grace period;
-`TestComposeGracePeriodCoversTheShutdownBudget` keeps the three in step. Past the deadline the
-work is abandoned with a log line rather than killed silently.
+one `backupWaitTimeout` context (3m, a policy run's worst case; with none in flight shutdown
+takes seconds) -- a context, not a timer channel, which delivers once and would leave the second
+wait unbounded; the HTTP drain is `shutdownTimeout` (5s). `docker-compose.yml` grants a
+`stop_grace_period` above their sum (4m), and a Kubernetes deployment needs a
+`terminationGracePeriodSeconds` above it too (240); `TestShutdownBudgetFitsTheGracePeriods`
+keeps the constants and the compose file in step. Past the deadline the work is abandoned with a
+log line rather than killed silently.
 
 The KyRecovery wire contract is `kyrecovery-server/zero_code_pairing_handoff_spec.md` (v2.0.0, sealed-capsule deposit); the product half is `ky-primitives/recoveryclient`, wired through `internal/backup` and `internal/api` so every server built on this base inherits it. Operator documents: `docs/RECOVERY.md` (disaster recovery and every `KY_BACKUP_*` variable) and `docs/RUNNING.md` (deployment and the LAN DNS override), `docs/RESTORE.md` (the restore runbook, proven against a scratch 2-of-3 kit) and `docs/ACCEPTANCE.md` (the plan's section 7 acceptance script as a runbook against the current UI; its Known gaps list must track UI changes) and `docs/acceptance-runs/<date>.md` (one record per run: results table, per-step notes, defects; the 2026-09-26 run was an agent-driven mechanics run, not the human gate).
 
