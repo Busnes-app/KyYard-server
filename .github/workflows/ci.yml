@@ -317,6 +317,7 @@ jobs:
           go test -race ./internal/registry -run '^TestResolveDockerHubAlpine$' -count=1
 
       - run: shellcheck scripts/*.sh
+      - run: scripts/check-no-binaries.sh
       - run: make build
       - name: Installer and verified OIDC regression
         timeout-minutes: 5

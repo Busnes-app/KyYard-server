@@ -1,5 +1,8 @@
 # Binaries
 kyyard-server
+/agent
+/server
+/soak
 *.exe
 *.dll
 *.so
