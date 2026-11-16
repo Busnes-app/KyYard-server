@@ -73,3 +73,12 @@ kyyard-server is released under the [MIT License](LICENSE.txt).
 - [Assurance case](docs/ASSURANCE-CASE.md) — Threat model summary, trust boundaries, and why the security requirements are met.
 
 - [Contributing and verification](CONTRIBUTING.md#verification) — Local checks and desktop/phone browser regressions.
+
+## User manual
+
+Read the [online manual](https://busnes.app/manuals/kyyard-server/) or browse its
+[Markdown sources](docs/src/introduction.md).
+
+Build and check it with `mdbook build docs` and `python3 docs/check-links.py`,
+then open `docs/book/index.html`. The documentation workflow also provides a
+downloadable `documentation-book` artifact.

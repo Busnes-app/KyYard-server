@@ -157,6 +157,8 @@ Run the same checks locally with `make ci` (`tidy-check lint test-race test-web 
 
 ## Child DOX Index
 
+- `docs/AGENTS.md` — mdBook manual, chapter ownership and documentation checks.
+
 - [tests/browser/AGENTS.md](tests/browser/AGENTS.md): Real-server Chromium regressions, disposable fixture lifecycle and test-only tooling.
 
 - [internal/applications/AGENTS.md](internal/applications/AGENTS.md): Bounded Compose import and transient secret separation.
