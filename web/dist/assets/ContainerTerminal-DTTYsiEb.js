@@ -1,4 +1,4 @@
-import{r as Ee,j as K,c as Gr}from"./index-B0mVQksD.js";/**
+import{r as Ee,j as K,c as Gr}from"./index-Ce2iAjDy.js";/**
  * Copyright (c) 2014-2024 The xterm.js authors. All rights reserved.
  * @license MIT
  *

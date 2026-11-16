@@ -223,3 +223,25 @@ it('checks the namespace list before enrolling a cluster, by the rule the server
   }
   expect(fetcher.mock.calls.every(([, init]) => init?.method !== 'POST')).toBe(true);
 });
+
+it('deletes a revoked endpoint after confirmation and explains a refusal', async () => {
+  const revoked = { ...pending, state: 'revoked', fingerprint: '' };
+  let deleted = false, refuse = true;
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'DELETE') {
+      expect(String(input)).toBe('/api/organizations/a/endpoints/ep_1');
+      if (refuse) { refuse = false; return json({ error: 'x', code: 'endpoint_in_use' }, 409); }
+      deleted = true;
+      return new Response(null, { status: 204 });
+    }
+    return json(deleted ? [] : [revoked]);
+  }));
+  vi.stubGlobal('confirm', vi.fn((msg: string) => { expect(msg).toContain('host-1'); return true; }));
+  document.cookie = 'ky_csrf=csrf-test';
+  render(<Endpoints org="a" env="env-a" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('An application or migration still uses this endpoint. Release or remove it first.');
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  await waitFor(() => expect(screen.queryByText('host-1')).toBeNull());
+  expect(screen.queryByRole('alert')).toBeNull();
+});

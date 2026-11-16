@@ -393,6 +393,32 @@ func (t *tenancyStore) RevokeEndpoint(ctx context.Context, a TenantAccess, id st
 	})
 }
 
+// DeleteEndpoint removes a revoked endpoint, freeing its name; the audit trail keeps its history.
+// An application instance or migration still naming it is ErrInUse.
+func (t *tenancyStore) DeleteEndpoint(ctx context.Context, a TenantAccess, id string) error {
+	return t.runAs(ctx, a, permissions.EndpointRevoke, "endpoint.delete", &id, nil, true, func(tx *sql.Tx) error {
+		var state string
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT state FROM endpoints WHERE organization_id=? AND id=?`), a.OrganizationID, id).Scan(&state); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if state != "revoked" {
+			return ErrInvalid
+		}
+		var refs int
+		if err := tx.QueryRowContext(ctx, t.store.rebind(`SELECT (SELECT COUNT(*) FROM application_instances WHERE endpoint_id=?)+(SELECT COUNT(*) FROM application_migrations WHERE destination_endpoint_id=?)`), id, id).Scan(&refs); err != nil {
+			return err
+		}
+		if refs > 0 {
+			return ErrInUse
+		}
+		result, err := tx.ExecContext(ctx, t.store.rebind(`DELETE FROM endpoints WHERE organization_id=? AND id=? AND state='revoked'`), a.OrganizationID, id)
+		return tenantChangeResult(result, err)
+	})
+}
+
 // terminate is the one transition into the terminal state; keys retire with it.
 func (t *tenancyStore) terminate(ctx context.Context, tx *sql.Tx, org, id, condition string) error {
 	now := time.Now().UTC()

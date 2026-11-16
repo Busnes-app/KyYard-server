@@ -144,6 +144,9 @@ func TestEnrollmentRoutes(t *testing.T) {
 	check(admin, "PATCH", one, `{"name":"renamed"}`, 204)
 	check(viewer, "POST", one+"/revoke", "", 403)
 	check(admin, "DELETE", "/api/organizations/a/environments/env-a", "", 409)
+	if w := check(admin, "DELETE", one, "", 409); !strings.Contains(w.Body.String(), `"endpoint_not_revoked"`) {
+		t.Fatalf("live endpoint delete: %s", w.Body.String())
+	}
 	check(admin, "POST", one+"/revoke", "", 204)
 	check(admin, "POST", one+"/revoke", "", 404)
 	w = check(admin, "GET", one, "", 200)
@@ -152,6 +155,12 @@ func TestEnrollmentRoutes(t *testing.T) {
 	if got.State != "revoked" || got.Name != "renamed" {
 		t.Fatalf("final state: %+v", got)
 	}
+	check(viewer, "DELETE", one, "", 403)
+	if w := tenantRequest(s, admin, "DELETE", one, "", false); w.Code != 403 {
+		t.Fatal("deletion bypassed CSRF")
+	}
+	check(admin, "DELETE", one, "", 204)
+	check(admin, "GET", one, "", 404)
 	check(admin, "GET", "/api/agent/v1/anything", "", 404)
 }
 

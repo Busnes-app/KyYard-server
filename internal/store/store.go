@@ -371,6 +371,7 @@ type TenancyStore interface {
 	ApproveEndpoint(ctx context.Context, access TenantAccess, endpointID, fingerprint string) error
 	RejectEndpoint(ctx context.Context, access TenantAccess, endpointID string) error
 	RevokeEndpoint(ctx context.Context, access TenantAccess, endpointID string) error
+	DeleteEndpoint(ctx context.Context, access TenantAccess, endpointID string) error
 	RenameEndpoint(ctx context.Context, access TenantAccess, endpointID, name string) error
 
 	// Agent-facing lifecycle: authenticated by endpoint identity, never by a session.
