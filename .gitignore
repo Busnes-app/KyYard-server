@@ -37,3 +37,6 @@ kyyard-agent
 # Local agent tooling
 .playwright-mcp/
 .superpowers/
+
+# Generated mdBook manual
+/docs/book/
