@@ -312,6 +312,24 @@ func (s *Server) endpointTransition(op func(context.Context, store.TenantAccess,
 	}
 }
 
+func (s *Server) handleDeleteEndpoint(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
+	id, err := endpointID(r)
+	if err != nil {
+		s.tenantError(w, err)
+		return
+	}
+	switch err := s.store.Tenancy().DeleteEndpoint(r.Context(), a, id); {
+	case errors.Is(err, store.ErrInvalid):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "Revoke the endpoint before deleting it", "code": "endpoint_not_revoked"})
+	case errors.Is(err, store.ErrInUse):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "An application or migration still uses this endpoint; release or remove it first", "code": "endpoint_in_use"})
+	case err != nil:
+		s.tenantError(w, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func (s *Server) handleRenameEndpoint(w http.ResponseWriter, r *http.Request, a store.TenantAccess) {
 	id, err := endpointID(r)
 	if err != nil {

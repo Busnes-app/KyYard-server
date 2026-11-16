@@ -109,6 +109,17 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
     if (!err && action === 'approve') setFollowUntil(Date.now() + FOLLOW_FOR_MS);
     if (!err) endpoints.reload();
   };
+  const remove = async (e: Endpoint) => {
+    if (!window.confirm(`Delete "${displayName(e.name)}"? It leaves the list and its name becomes free to enroll again. The audit log keeps its history.`)) return;
+    setBusy(true);
+    const err = await tenantWrite(`${base}/endpoints/${encodeURIComponent(e.id)}`, 'DELETE', undefined, { conflict: {
+      endpoint_not_revoked: 'Revoke the endpoint before deleting it.',
+      endpoint_in_use: 'An application or migration still uses this endpoint. Release or remove it first.',
+    } });
+    setBusy(false);
+    setMessage(err);
+    if (!err) endpoints.reload();
+  };
 
   return (
     <section className="panel" aria-labelledby="endpoints-heading">
@@ -178,6 +189,7 @@ export const Endpoints: React.FC<{ org: string; env: string }> = ({ org, env }) 
                     </>}
                     {e.pending_fingerprint && <><button disabled={busy} onClick={() => void acknowledgeKey(e)}>Acknowledge rotation</button>{' '}</>}
                     {!terminal(e.state) && e.state !== 'pending' && <button className="btn-danger" disabled={busy} onClick={() => void act(e, 'revoke')}>Revoke</button>}
+                    {e.state === 'revoked' && <button className="btn-danger" disabled={busy} onClick={() => void remove(e)}>Delete</button>}
                   </td>
                 </tr>
               ))}

@@ -501,6 +501,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/manifest", s.tenantRoute(s.handleEndpointManifest))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/reject", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RejectEndpoint)))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/revoke", s.tenantRoute(s.endpointTransition(s.store.Tenancy().RevokeEndpoint)))
+	s.mux.HandleFunc("DELETE /api/organizations/{organization}/endpoints/{endpoint}", s.tenantRoute(s.handleDeleteEndpoint))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/keys/{fingerprint}/acknowledge", s.tenantRoute(s.handleAcknowledgeKey))
 	s.mux.HandleFunc("POST /api/organizations/{organization}/endpoints/{endpoint}/events/{event}/acknowledge", s.tenantRoute(s.handleAcknowledgeEvent))
 	s.mux.HandleFunc("POST /api/agent/v1/enroll", s.handleAgentEnroll)
