@@ -16,6 +16,7 @@ jobs:
   compat:
     name: Build against ky-primitives default branch
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # Both checkouts use persist-credentials: false -- nothing after this runs git
       # against a remote, so leaving an auth header in .git/config would only widen what
