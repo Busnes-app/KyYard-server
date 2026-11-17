@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X github.com/Busnes-app/kyyard-server/internal/appversion.release=${VERSION}" -o kyyard-agent ./cmd/agent
 
 # Stage 2: Minimal Production Container
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 # No USER: the entrypoint starts as root only to hand /data and the Docker socket's group to
 # kyyard (uid 10001), then runs the server as kyyard. /app stays root-owned.
 RUN apk --no-cache add ca-certificates tzdata su-exec \
