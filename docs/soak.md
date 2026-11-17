@@ -29,6 +29,18 @@ Every knob has a flag: `-endpoints`, `-containers`, `-cadence`, `-retention-inte
 `-budget`, `-dir`, `-report`, `-quiet`. With no `-dir` it works in a temporary directory and
 removes it afterwards.
 
+## Functional tests and performance qualification
+
+`make ci` runs the short fixture with race instrumentation to check storage, retention,
+pressure and authorization. It records read timings but reports **latency not evaluated**:
+a few reads competing with unrelated test packages cannot qualify the 500 ms target.
+Deterministic tests check acceptance at 500 ms, refusal above it and missing measurements.
+
+The `cmd/soak` command always evaluates the 500 ms p95 target, including a short command
+run, and exits nonzero when it fails or no read completed. Run it without race
+instrumentation on the selected, otherwise idle host; retain its report and the host
+resources. A short successful run does not replace the 24-hour capacity gate.
+
 ## What it asserts
 
 | Question | How |

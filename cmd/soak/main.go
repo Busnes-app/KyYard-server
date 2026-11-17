@@ -69,6 +69,7 @@ type report struct {
 	OldestSample    time.Duration
 	OldestRollup    time.Duration
 	ReadP95         time.Duration
+	LatencyChecked  bool
 	Failures        []string
 }
 
@@ -91,9 +92,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("soak: %v", err)
 	}
+	r.checkReadLatency()
 	fmt.Print(r.String())
 	if len(r.Failures) > 0 {
 		os.Exit(1)
+	}
+}
+
+// The command evaluates wall-clock performance on the selected host. Functional
+// harness tests check this verdict with fixed measurements instead of racing
+// unrelated test packages for a share of a CI runner's CPU.
+func (r *report) checkReadLatency() {
+	r.LatencyChecked = true
+	if r.Ticks == 0 {
+		r.Failures = append(r.Failures, "no list reads completed, so read latency was not measured")
+	} else if r.ReadP95 > 500*time.Millisecond {
+		r.Failures = append(r.Failures, fmt.Sprintf("p95 on the list screens was %s, past the 500ms target", r.ReadP95.Round(time.Millisecond)))
 	}
 }
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The short soak regression checks functional bounds under race instrumentation
+  without treating shared-runner scheduling delays as a capacity result. Its report
+  explicitly marks latency unqualified. The soak command retains the 500 ms p95
+  gate, now also refusing a run with no completed reads; deterministic tests cover
+  its boundary. **Upgrade impact:** no server behavior or resource limit changes.
+
 ### Changed on upgrade
 
 - **Stopping no longer waits up to 17 minutes for a backup.** On SIGTERM a backup in flight is

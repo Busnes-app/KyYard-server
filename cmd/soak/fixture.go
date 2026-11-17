@@ -186,10 +186,6 @@ func check(ctx context.Context, st store.Store, f *fixture, r *report) error {
 		r.Failures = append(r.Failures, "no refusal was exercised, so the denial path proves nothing")
 	}
 
-	if r.ReadP95 > 500*time.Millisecond {
-		r.Failures = append(r.Failures, fmt.Sprintf("p95 on the list screens was %s, past the 500ms target", r.ReadP95.Round(time.Millisecond)))
-	}
-
 	// The member refused for the whole run must still be removable, or a tenant could be
 	// locked out of tidying up by the very traffic the refusals were protecting it from.
 	if err := ts.RemoveMembership(ctx, f.readAdmin, "usr_viewer"); err != nil {
@@ -224,10 +220,17 @@ func (r *report) String() string {
 	fmt.Fprintf(&b, "  oldest summary       %s\n", r.OldestRollup.Round(time.Second))
 	fmt.Fprintf(&b, "  usage                %d peak, %d final, of %d bytes\n", r.PeakUsage, r.FinalUsage, r.Budget)
 	fmt.Fprintf(&b, "  p95 list read        %s over %d reads (%d failed)\n", r.ReadP95.Round(time.Millisecond), r.Ticks, r.ReadFailures)
+	if !r.LatencyChecked {
+		fmt.Fprintf(&b, "  latency verdict      not evaluated (functional harness run)\n")
+	}
 	fmt.Fprintf(&b, "  probes unevaluated   %d\n", r.ProbeErrors)
 	fmt.Fprintf(&b, "  not covered here     log-client memory (M5), the per-actor denial budget and per-organization audit ceiling (both still proposed)\n")
 	if len(r.Failures) == 0 {
-		fmt.Fprintf(&b, "  result               every bound held\n")
+		if r.LatencyChecked {
+			fmt.Fprintf(&b, "  result               every bound held\n")
+		} else {
+			fmt.Fprintf(&b, "  result               functional bounds held; latency not evaluated\n")
+		}
 		return b.String()
 	}
 	fmt.Fprintf(&b, "  result               %d failed\n", len(r.Failures))

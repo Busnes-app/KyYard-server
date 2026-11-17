@@ -14,8 +14,8 @@ import (
 )
 
 // The 24-hour run is not something CI can hold, so a compressed one runs the same driver and
-// the same checks here. It proves the harness still works and still asks real questions; it
-// does not prove the day-long bounds, which is what the command exists for.
+// functional checks here. Wall-clock capacity is evaluated by the command, outside the
+// contended race-test suite. This does not prove the day-long bounds.
 func TestSoakDriverHoldsItsBoundsInMiniature(t *testing.T) {
 	if testing.Short() {
 		t.Skip("soak driver runs for seconds")
@@ -53,6 +53,34 @@ func TestSoakDriverHoldsItsBoundsInMiniature(t *testing.T) {
 	}
 	if !strings.Contains(r.String(), "not covered here") {
 		t.Fatal("the report must name what it does not cover")
+	}
+	if r.LatencyChecked || !strings.Contains(r.String(), "latency not evaluated") {
+		t.Fatal("the functional fixture claimed performance qualification")
+	}
+}
+
+func TestReadLatencyGate(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ticks int
+		p95   time.Duration
+		want  string
+	}{
+		{"below target", 100, 499 * time.Millisecond, ""},
+		{"at target", 100, 500 * time.Millisecond, ""},
+		{"over target", 100, 501 * time.Millisecond, "past the 500ms target"},
+		{"not measured", 0, 0, "no list reads completed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &report{Ticks: tc.ticks, ReadP95: tc.p95}
+			r.checkReadLatency()
+			if !r.LatencyChecked || tc.want == "" && len(r.Failures) != 0 || tc.want != "" && (len(r.Failures) != 1 || !strings.Contains(r.Failures[0], tc.want)) {
+				t.Fatalf("latency verdict: %+v", r)
+			}
+			if strings.Contains(r.String(), "not evaluated") {
+				t.Fatal("evaluated latency reported as unchecked")
+			}
+		})
 	}
 }
 
