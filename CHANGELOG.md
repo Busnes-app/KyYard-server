@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh compatible dependency versions and lockfiles. Rebuild or install the updated application; no database, configuration, account or key migration is required.
+
 - The short soak regression checks functional bounds under race instrumentation
   without treating shared-runner scheduling delays as a capacity result. Its report
   explicitly marks latency unqualified. The soak command retains the 500 ms p95
