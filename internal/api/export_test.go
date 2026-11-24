@@ -20,6 +20,13 @@ func SetRecoveryClientForTest(s *Server, p recoveryClient) { s.recovery = p }
 // SetStoreForTest replaces the handlers' store, so a test can break one write. Test-only.
 func SetStoreForTest(s *Server, st store.Store) { s.store = st }
 
+// TerminalSlotsForTest counts the terminals holding a capacity slot. Test-only.
+func TerminalSlotsForTest(s *Server) int {
+	s.execs.mu.Lock()
+	defer s.execs.mu.Unlock()
+	return len(s.execs.streams)
+}
+
 // MCPOperationsPerMinuteForTest is one token's operations, or audited refusals, a minute.
 const MCPOperationsPerMinuteForTest = mcpOperationsPerMinute
 

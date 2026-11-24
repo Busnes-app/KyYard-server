@@ -58,10 +58,15 @@ func (r *execRegistry) open(c *agentConn, actor, organization string, cancel con
 	return s
 }
 func (r *execRegistry) release(s *browserExec) {
+	r.forget(s)
+	s.cancel()
+}
+
+// forget frees s's slot without ending its request, so the close can still reach the browser.
+func (r *execRegistry) forget(s *browserExec) {
 	r.mu.Lock()
 	delete(r.streams, s.id)
 	r.mu.Unlock()
-	s.cancel()
 }
 
 // closeActor revokes one person's terminals in one organization only.
