@@ -157,6 +157,7 @@ func (s *Server) serveExec(w http.ResponseWriter, r *http.Request, a store.Tenan
 	a.CorrelationID = stream.id
 	environment, err := s.store.Tenancy().OpenExecTarget(ctx, a, endpoint, stream.id, start.Confirm, start.Spec)
 	if err != nil {
+		s.execs.forget(stream)
 		_ = writeExecBrowser(ctx, conn, envelope(protocol.TypeExecClose, protocol.ExecClose{Stream: stream.id, Reason: "Terminal authorization or target confirmation refused; not started"}))
 		return
 	}
@@ -292,6 +293,10 @@ func (s *Server) serveExec(w http.ResponseWriter, r *http.Request, a store.Tenan
 			agentEnded = f.Type == protocol.TypeExecClose
 			if f.Type == protocol.TypeExecReady {
 				ready.Stop()
+			}
+			if agentEnded {
+				// A browser told the terminal closed may open the next one at once.
+				s.execs.forget(stream)
 			}
 			if err := writeExecBrowser(ctx, conn, f); err != nil {
 				return
