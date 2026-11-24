@@ -542,7 +542,7 @@ func TestPodExecOpenCloseAndUIDMismatch(t *testing.T) {
 }
 
 // The agent's close reason reaches the browser only when it is a fixed exec refusal; any other
-// text is replaced by the fixed notice.
+// text is replaced by the fixed notice. The slot is free by the time the browser reads the close.
 func TestPodExecCloseReasonPassesOnlyFixedRefusals(t *testing.T) {
 	f := newWorkloadFleet(t, workloadCaps...)
 	for reason, want := range map[string]string{"forbidden": "forbidden", "pod_security": "pod_security", "token=secret": "terminal attachment ended; process state may be unknown"} {
@@ -564,6 +564,9 @@ func TestPodExecCloseReasonPassesOnlyFixedRefusals(t *testing.T) {
 		var closed protocol.ExecClose
 		if e.Type != protocol.TypeExecClose || json.Unmarshal(e.Payload, &closed) != nil || closed.Reason != want {
 			t.Fatalf("%s: %s %s", reason, e.Type, e.Payload)
+		}
+		if n := api.TerminalSlotsForTest(f.s); n != 0 {
+			t.Fatalf("%s: %d terminal slots still held after the close reached the browser", reason, n)
 		}
 		c.CloseNow()
 	}
