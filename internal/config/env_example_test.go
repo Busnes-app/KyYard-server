@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -168,16 +170,44 @@ func TestComposeForwardsServerSettingsFile(t *testing.T) {
 	}
 }
 
-// PostgreSQL 18's image refuses to start with a volume at /var/lib/postgresql/data, fresh or
-// not, and cannot open a 17 cluster without pg_upgrade. The overlay keeps 17 and that mount
-// until a migration is written, so a major bump fails here instead of on an operator's host.
-func TestPostgresOverlayKeepsAStartableMajor(t *testing.T) {
-	overlay := read(t, filepath.Join("..", "..", "docker-compose.postgres.yml"))
-	m := regexp.MustCompile(`(?m)^\s*image:\s*postgres:(\d+)-alpine@sha256:[0-9a-f]{64}\s*$`).FindStringSubmatch(overlay)
-	if m == nil {
-		t.Fatal("docker-compose.postgres.yml does not pin postgres:<major>-alpine by digest")
+// The kit's postgres-17-to-18.sh, vendored byte-identical so every Ky repo diffs against it.
+const postgresMoveScriptSHA256 = "a800e026af73d9304aa970c2c3919caecd4c52eb8d9b702f3447e632bdc21214"
+
+// PostgreSQL 18's image refuses a mount at /var/lib/postgresql/data and cannot open 17 data.
+// The overlay moves existing installs: a 17 one-shot dumps the old pgdata volume into the new
+// volume, which 18 mounts at /var/lib/postgresql and restores from. Losing any piece strands
+// an operator's database, so each one is pinned here.
+func TestPostgresOverlayMovesSeventeenToEighteen(t *testing.T) {
+	root := filepath.Join("..", "..")
+	overlay := read(t, filepath.Join(root, "docker-compose.postgres.yml"))
+	for _, want := range []string{
+		"  postgres-17-dump:\n    image: postgres:17.12-alpine3.24@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73\n    network_mode: none\n    restart: \"no\"\n    entrypoint: [\"bash\", \"/ky/postgres-17-to-18.sh\", \"dump\"]\n",
+		"      POSTGRES_USER: kyyard\n      OLD: /var/lib/postgresql/data\n      NEW: /pg18\n",
+		"      - pgdata:/var/lib/postgresql/data\n      - postgres:/pg18\n      - ./scripts/postgres-17-to-18.sh:/ky/postgres-17-to-18.sh:ro\n",
+		"  postgres:\n    image: postgres:18.7-alpine3.24@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71\n    restart: unless-stopped\n    entrypoint: [\"bash\", \"/ky/postgres-17-to-18.sh\", \"restore\"]\n    command: [\"postgres\", ",
+		"      - postgres:/var/lib/postgresql\n      - ${KY_POSTGRES_TLS_DIR:?Set the absolute PostgreSQL TLS directory}:/tls:ro\n      - ./scripts/postgres-17-to-18.sh:/ky/postgres-17-to-18.sh:ro\n",
+		"      postgres-17-dump:\n        condition: service_completed_successfully\n",
+		"      start_period: 1h\n",
+		"volumes:\n  # PostgreSQL 17's data, kept for rollback; only postgres-17-dump reads it.\n  pgdata:\n  postgres:\n",
+	} {
+		if !strings.Contains(overlay, want) {
+			t.Errorf("docker-compose.postgres.yml lost:\n%s", want)
+		}
 	}
-	if m[1] != "17" || !strings.Contains(overlay, "- pgdata:/var/lib/postgresql/data\n") {
-		t.Errorf("postgres:%s with this data mount strands existing installations: write the major-version migration first", m[1])
+	if n := strings.Count(overlay, ":/var/lib/postgresql/data"); n != 1 {
+		t.Errorf("%d mounts at /var/lib/postgresql/data; only the 17 dump may have one", n)
+	}
+	if strings.Contains(overlay, "PGDATA") {
+		t.Error("the overlay sets PGDATA; 18 must keep its default under /var/lib/postgresql")
+	}
+	script, err := os.ReadFile(filepath.Join(root, "scripts", "postgres-17-to-18.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(script)); got != postgresMoveScriptSHA256 {
+		t.Errorf("scripts/postgres-17-to-18.sh is %s, not the kit's %s: fix the kit, then vendor it", got, postgresMoveScriptSHA256)
+	}
+	if info, err := os.Stat(filepath.Join(root, "scripts", "postgres-17-to-18.sh")); err != nil || info.Mode().Perm() != 0o755 {
+		t.Errorf("scripts/postgres-17-to-18.sh must be mode 0755: %v %v", info, err)
 	}
 }

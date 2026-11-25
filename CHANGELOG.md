@@ -16,6 +16,11 @@
 
 ### Changed on upgrade
 
+- **The PostgreSQL overlay moves to PostgreSQL 18.** The next `docker compose up` dumps the 17
+  database once and restores it into a new `postgres` volume; the 17 `pgdata` volume is kept for
+  rollback and removed only by you. It needs about twice the data size free. See
+  [PostgreSQL 17 to 18](docs/RUNNING.md#postgresql-17-to-18). SQLite installs are unaffected.
+
 - **Stopping no longer waits up to 17 minutes for a backup.** On SIGTERM a backup in flight is
   interrupted: the snapshot and the upload to KyRecovery are cancelled, the interruption is
   audited, and the scheduled backup runs again about a minute after the next start. An

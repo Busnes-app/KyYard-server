@@ -129,7 +129,7 @@ socket, and a malicious platform administrator.
 
 ## Evidence
 
-- **Tests:** the Go suite runs under the race detector on SQLite and again on PostgreSQL 17 in CI,
+- **Tests:** the Go suite runs under the race detector on SQLite and again on PostgreSQL 18 in CI,
   with real-Docker regressions for exec, inspection, deploy, recreate and rollback; Vitest for the
   frontend; and an end-to-end smoke test that enrolls, approves, connects and revokes a real agent.
   The Go statement coverage is printed in each CI run's summary.

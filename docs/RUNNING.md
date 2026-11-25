@@ -164,8 +164,8 @@ Optional overlays are appended to the existing `COMPOSE_FILE` chain, preserving 
 bind and DNS overlays already in use:
 
 - `docker-compose.bind.yml`: existing host directory at `./data` instead of the named volume.
-- `docker-compose.postgres.yml` (Compose 2.24 or later): the pinned PostgreSQL 17
-  image and KyYard on the private default Compose network, without a published database port. Set `KY_POSTGRES_PASSWORD`, `KY_POSTGRES_TLS_DIR` and `KY_DB_DSN`.
+- `docker-compose.postgres.yml` (Compose 2.24 or later): the pinned PostgreSQL 18
+  image (an existing 17 database moves on the next `up`, see [PostgreSQL 17 to 18](#postgresql-17-to-18)) and KyYard on the private default Compose network, without a published database port. Set `KY_POSTGRES_PASSWORD`, `KY_POSTGRES_TLS_DIR` and `KY_DB_DSN`.
   The TLS directory contains `server.crt`, `server.key` and `ca.crt`; the overlay enables
   server TLS and mounts only the public CA file into KyYard at `/etc/kyyard-db-ca.crt`.
   Use `sslmode=verify-full&sslrootcert=/etc/kyyard-db-ca.crt` in the DSN. Its host must match
@@ -173,7 +173,7 @@ bind and DNS overlays already in use:
   A recycled IP then fails certificate verification before credentials are sent.
   The PostgreSQL image's `postgres` user must own/read the key with mode 0600; alternatively
   use root ownership, mode 0640 and that user's group. Prepare the files before starting;
-  missing or invalid certificates fail startup. See [PostgreSQL TLS setup](https://www.postgresql.org/docs/17/ssl-tcp.html).
+  missing or invalid certificates fail startup. See [PostgreSQL TLS setup](https://www.postgresql.org/docs/18/ssl-tcp.html).
   Existing database volumes need the same TLS setup before enabling this overlay. Capsule
   backups support SQLite only. A separately managed PostgreSQL server with a stable address
   and verified TLS is also supported by setting the server's database environment directly.
@@ -201,6 +201,36 @@ bind and DNS overlays already in use:
 the database with a two-second deadline and returns 503 during shutdown or database failure.
 They expose only `status`, never connection strings, keys or backend errors. The image
 healthcheck calls readiness using the binary, without loading keys or creating data.
+
+### PostgreSQL 17 to 18
+
+The PostgreSQL overlay runs PostgreSQL 18. Its data lives in a new volume, `postgres`, mounted
+at `/var/lib/postgresql`; PostgreSQL 17's `pgdata` volume is kept and never written. On the
+first `docker compose up` after the update:
+
+1. `postgres-17-dump`, a one-shot PostgreSQL 17 container without a network, starts 17 on
+   `pgdata` and dumps every database and role into `postgres` (`upgrade-from-17/dump.sql`).
+   Starting 17 may replay its log, as any start does; nothing else touches `pgdata`.
+2. `postgres` restores the dump into a fresh 18 cluster, then starts normally. Passwords,
+   roles and the `kyyard` database come across; the TLS settings are unchanged. KyYard waits
+   until PostgreSQL is healthy.
+
+Later starts skip both steps. On a new installation there is nothing to move and 18
+initialises an empty database (an empty `pgdata` volume is still created).
+
+- **Space:** about twice the size of the 17 data, free on the Docker volume filesystem. The
+  dump refuses and changes nothing when it is short: free space, then `up` again.
+- **Time:** the restore runs at the speed of loading the dump; minutes for most installations.
+  The healthcheck allows an hour; follow it with `docker compose logs -f postgres`.
+- **Failure:** a dump that cannot be restored leaves no 18 cluster, so PostgreSQL never comes
+  up empty; it retries on each restart. Fix the cause and start again.
+- **Rollback:** stop the stack, check out the previous release's compose files, and `up`
+  again: 17 starts on the untouched `pgdata` volume. Changes written under 18 are not in it.
+- **Clean-up**, once you are satisfied with 18 and only if you choose to: remove the 17 volume
+  (`docker volume rm <project>_pgdata`, where `<project>` is the Compose project name, by
+  default this directory's name) and the dump (`docker compose exec postgres rm -r
+  /var/lib/postgresql/upgrade-from-17`). Neither is done for you; removing `pgdata` ends the
+  rollback path. Keep the `pgdata:` declaration in the overlay; the dump step needs it.
 
 ### Server settings
 
