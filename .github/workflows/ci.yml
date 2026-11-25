@@ -172,7 +172,7 @@ jobs:
             godebug: fips140=on
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18.7-alpine3.24@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71
         env:
           POSTGRES_USER: ci
           POSTGRES_PASSWORD: ci
@@ -345,6 +345,16 @@ jobs:
         env:
           KY_SMOKE_REQUIRE_EDIT: "1"
 
+  postgres-upgrade:
+    name: PostgreSQL 17 to 18 upgrade (Compose)
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Seeds 17 data with the previous overlay, then upgrades it with docker-compose.postgres.yml.
+      - run: scripts/test-postgres-17-to-18.sh
+
   docker:
     name: Docker image build & run
     if: github.event.pull_request.draft != true
@@ -437,7 +447,7 @@ jobs:
   # the pushed bytes are the tested bytes. A pull request from a fork must
   # never reach this job or write a package.
   publish:
-    needs: [go, postgres, web, browser, security, smoke, docker]
+    needs: [go, postgres, postgres-upgrade, web, browser, security, smoke, docker]
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 10

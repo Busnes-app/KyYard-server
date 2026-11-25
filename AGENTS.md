@@ -131,13 +131,15 @@ Beyond what the tools check: keep to the naming and comment density of the file 
 
 ## Verification
 
+- `scripts/test-postgres-17-to-18.sh` (CI job `PostgreSQL 17 to 18 upgrade (Compose)`): seeds PostgreSQL 17 data with the previous `docker-compose.postgres.yml` (pinned commit), checks a dump beside the live 17 refuses, runs this overlay's `up -d` over the running 17 stack and asserts rows, roles and passwords survive (checked from another container, wrong password refused), rerun is a no-op, rollback to 17 works, a bad dump never yields a cluster and a fresh install initialises. `scripts/postgres-17-to-18.sh` is the Ky kit's script, vendored byte-identical (checksum held by `TestPostgresOverlayMovesSeventeenToEighteen`); fix the kit, never only this copy.
+
 - `python3 scripts/check-proxy-compose.py` renders the container-proxy profile with and without PostgreSQL, checking exact IPv4/IPv6 address trust, no host publish, external network ownership and database DNS/TLS configuration. It starts no containers.
 
 - `KY_INSTALLER_TEST_BINARY=/absolute/path/to/kyyard-server python3 scripts/installer-oidc-test.py`: disposable built-process setup and certificate-verified TLS OIDC regression (Python 3 and OpenSSL). Checks explicit owner/everyday/unassigned admission, PKCE, global-role rejection, app-role loss and durable session revocation. CI runs it in the existing `smoke` job after `make build`; main publication and release-image validation require this job.
 
 CI (`.github/workflows/ci.yml`) runs on every push and every non-draft pull request (drafts skip until marked ready):
 - `make lint` equivalent: gofmt, `go vet`, `go mod tidy`/`verify`
-- `go test -race` with coverage on SQLite, and the same suite against PostgreSQL 17; the `GODEBUG=fips140=on` repeats run as parallel legs. The required checks `Go build, vet & tests (SQLite)` and `Go tests (PostgreSQL)` are gate jobs that pass only when their legs (and, for SQLite, `smoke`) did
+- `go test -race` with coverage on SQLite, and the same suite against PostgreSQL 18; the `GODEBUG=fips140=on` repeats run as parallel legs. The required checks `Go build, vet & tests (SQLite)` and `Go tests (PostgreSQL)` are gate jobs that pass only when their legs (and, for SQLite, `smoke`) did
 - Bounded fuzzing in the `security` job, one step per target with a fixed execution count: `FuzzParseReference` (`internal/registry`), `FuzzParseCompose` (`internal/applications`), `FuzzSnapshotDecodeClamp` and `FuzzCleanText` (`internal/agent/protocol`). Each target's corpus seeds also run in the normal `go test`; a crasher found later is committed under the package's `testdata/fuzz/<Target>/`.
 - Frontend vitest suite, then typecheck/build plus a check that committed `web/dist` matches source (it is embedded in the binary). Generated bundles and TypeScript build metadata use non-text diffs so review input includes source; the build comparison (`git status --porcelain`) still fails on any changed, deleted or untracked file under `web/dist` or in `web/tsconfig.tsbuildinfo`.
 - Browser regressions run the committed bundle against a fresh real SQLite server on desktop and phone Chromium, with real cookies, CSRF, tenant writes and revocation. `tests/browser/AGENTS.md` owns fixture isolation and scope; both publication and release images require this job.

@@ -11,21 +11,48 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+  # One-shot move from PostgreSQL 17 (docs/RUNNING.md): dumps the old pgdata volume once into
+  # the new one, which postgres restores on its next start. The 17 data is only read.
+  postgres-17-dump:
+    image: postgres:17.12-alpine3.24@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+    network_mode: none
+    restart: "no"
+    # Long enough for 17 to stop cleanly; a SIGKILL leaves postmaster.pid, which the dump refuses.
+    stop_grace_period: 2m
+    entrypoint: ["bash", "/ky/postgres-17-to-18.sh", "dump"]
+    environment:
+      POSTGRES_USER: kyyard
+      OLD: /var/lib/postgresql/data
+      NEW: /pg18
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - postgres:/pg18
+      - ./scripts/postgres-17-to-18.sh:/ky/postgres-17-to-18.sh:ro
   postgres:
-    image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:18.7-alpine3.24@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71
     restart: unless-stopped
+    stop_grace_period: 2m
+    entrypoint: ["bash", "/ky/postgres-17-to-18.sh", "restore"]
     command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/tls/server.crt", "-c", "ssl_key_file=/tls/server.key"]
     environment:
       POSTGRES_USER: kyyard
       POSTGRES_PASSWORD: ${KY_POSTGRES_PASSWORD:?Set a database password}
       POSTGRES_DB: kyyard
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres:/var/lib/postgresql
       - ${KY_POSTGRES_TLS_DIR:?Set the absolute PostgreSQL TLS directory}:/tls:ro
+      - ./scripts/postgres-17-to-18.sh:/ky/postgres-17-to-18.sh:ro
+    depends_on:
+      postgres-17-dump:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kyyard -d kyyard"]
       interval: 5s
       timeout: 3s
       retries: 10
+      # The first start after the move restores the dump; that takes time with the data size.
+      start_period: 1h
 volumes:
+  # PostgreSQL 17's data, kept for rollback; only postgres-17-dump reads it.
   pgdata:
+  postgres:

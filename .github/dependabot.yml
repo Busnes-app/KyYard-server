@@ -57,6 +57,10 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    # ci.yml's PostgreSQL service tracks the overlay's major; it moves only with a data move.
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(ci)"
 
@@ -69,9 +73,9 @@ updates:
     commit-message:
       prefix: "chore(deps)"
 
-  # docker-compose.postgres.yml pins PostgreSQL by digest; this moves the pin. A major bump
-  # needs a data migration and a new volume layout (18 refuses /var/lib/postgresql/data), so
-  # only minor and patch moves are proposed.
+  # docker-compose.postgres.yml pins PostgreSQL 18 and the 17 image its one-shot move dumps
+  # with, by digest; this moves the pins. A major bump needs a new data move (the 17 dump image
+  # must stay 17), so only minor and patch moves are proposed.
   - package-ecosystem: docker-compose
     directory: /
     schedule:
