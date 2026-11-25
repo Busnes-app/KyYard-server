@@ -1,3 +1,0 @@
-# postgres-17-to-18.sh is vendored byte-identical from the Ky kit and sources the postgres
-# image's entrypoint, which exists only inside that image.
-disable=SC1091

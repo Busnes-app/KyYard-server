@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Proves docker-compose.postgres.yml moves a real PostgreSQL 17 install to 18 on the next `up`:
 # 17 data seeded with the previous overlay comes back with its rows, roles and passwords; the
-# 17 volume still starts under the previous overlay; a rerun is a no-op; a dump that cannot be
-# restored never yields an empty cluster; a fresh install initialises. Needs Docker, git and
+# 17 volume still starts under the previous overlay; a dump beside a live 17 refuses; `up -d` over
+# the running 17 stack moves it; a rerun is a no-op; a dump that cannot be restored never yields
+# an empty cluster; a fresh install initialises. Needs Docker, git and
 # openssl; starts only the postgres services, under throwaway compose projects.
 # usage: scripts/test-postgres-17-to-18.sh
 set -Eeuo pipefail
@@ -50,8 +51,12 @@ dc() {
 }
 up() { dc "$1" up -d --wait --wait-timeout 300 postgres >/dev/null 2>&1; }
 down() { dc "$1" down -t 30 >/dev/null 2>&1; }
-# q <compose> <user> <password> <db> <sql>: over TCP, so the password is what logs in.
-q() { dc "$1" exec -T -e PGPASSWORD="$3" postgres psql -h 127.0.0.1 -U "$2" -d "$4" -XAtc "$5"; }
+# q <compose> <user> <password> <db> <sql>: from another container on the project network, so
+# pg_hba's scram-sha-256 line applies (loopback inside the server container is trust).
+q() {
+  local p=$proj; [ "$1" = fresh ] && p=$fresh
+  docker run --rm --network "${p}_default" -e PGPASSWORD="$3" "$P18" psql -h postgres -U "$2" -d "$4" -XAtc "$5"
+}
 in_vol() { docker run --rm -v "$1:/v" --entrypoint sh "$P18" -c "$2"; }
 
 # 1. Real 17 data, written by the previous overlay.
@@ -65,13 +70,20 @@ create database cdb owner reader locale 'C' encoding 'UTF8' template template0;
 create table c(x text collate "C" primary key);
 insert into c values ('a'), ('B'), ('é');
 SQL
-down old
 
-# 2. The next `up` with this overlay moves it.
+# 1b. A dump run by hand beside the live 17 refuses and writes nothing.
+out=$(dc new run --rm postgres-17-dump 2>&1) && fail "the dump ran beside a live 17: $out"
+grep -q postmaster.pid <<<"$out" || fail "no live-server message: $out"
+in_vol "${proj}_postgres" 'test ! -e /v/upgrade-from-17' || fail "the dump wrote beside a live 17"
+[ "$(q old kyyard oldpass kyyard 'select count(*) from t')" = 20000 ] || fail "17 hurt by the refused dump"
+
+# 2. The next `up -d` with this overlay, over the running 17 stack (no `down`), moves it.
 up new || fail "18 did not start after the move"
+dc new logs --no-color postgres-17-dump | grep -q 'postgres-17-to-18: dumped' || fail "the dump did not run"
 [ "$(q new kyyard oldpass kyyard 'show server_version_num' | cut -c1-2)" = 18 ] || fail "not 18"
 [ "$(q new kyyard oldpass kyyard "select count(*) || ',' || max(s) from t")" = "20000,row9999" ] || fail "rows"
 [ "$(q new reader readerpass cdb "select string_agg(x, ',' order by x) from c")" = "B,a,é" ] || fail "reader login or C collation"
+q new kyyard wrongpass kyyard 'select 1' >/dev/null 2>&1 && fail "a wrong password logged in"
 [ "$(q new kyyard oldpass kyyard 'show data_directory')" = /var/lib/postgresql/18/docker ] || fail "data directory"
 [ "$(q new kyyard oldpass kyyard 'show ssl')" = on ] || fail "the overlay's TLS flags were lost"
 in_vol "${proj}_pgdata" 'grep -qx 17 /v/PG_VERSION' || fail "the 17 volume changed"
@@ -107,4 +119,4 @@ down new
 up fresh || fail "a fresh install did not start"
 dc fresh logs --no-color postgres-17-dump | grep -q 'nothing to move' || fail "a fresh install dumped something"
 [ "$(q fresh kyyard oldpass kyyard 'show data_directory')" = /var/lib/postgresql/18/docker ] || fail "fresh data directory"
-echo "PASS: 17 -> 18 through docker-compose.postgres.yml: upgrade, rerun, rollback, bad dump, fresh install"
+echo "PASS: 17 -> 18 through docker-compose.postgres.yml: live-17 dump refused, up over running 17, rerun, rollback, bad dump, fresh install"

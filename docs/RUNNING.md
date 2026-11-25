@@ -215,6 +215,11 @@ first `docker compose up` after the update:
    roles and the `kyyard` database come across; the TLS settings are unchanged. KyYard waits
    until PostgreSQL is healthy.
 
+A running 17 stack needs no `down` first: `up -d` stops the 17 `postgres` container before
+the dump starts. The dump refuses while 17 is running on `pgdata`, or if 17 did not stop cleanly
+(`postmaster.pid` left behind): start the stack once with the previous compose files, stop it,
+then `up` again.
+
 Later starts skip both steps. On a new installation there is nothing to move and 18
 initialises an empty database (an empty `pgdata` volume is still created).
 

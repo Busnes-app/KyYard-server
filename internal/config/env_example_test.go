@@ -171,7 +171,7 @@ func TestComposeForwardsServerSettingsFile(t *testing.T) {
 }
 
 // The kit's postgres-17-to-18.sh, vendored byte-identical so every Ky repo diffs against it.
-const postgresMoveScriptSHA256 = "a800e026af73d9304aa970c2c3919caecd4c52eb8d9b702f3447e632bdc21214"
+const postgresMoveScriptSHA256 = "2992644109716cd34297fbcb76eba8907f4a5e3031a12c05aade010e5ea2b571"
 
 // PostgreSQL 18's image refuses a mount at /var/lib/postgresql/data and cannot open 17 data.
 // The overlay moves existing installs: a 17 one-shot dumps the old pgdata volume into the new
@@ -181,10 +181,10 @@ func TestPostgresOverlayMovesSeventeenToEighteen(t *testing.T) {
 	root := filepath.Join("..", "..")
 	overlay := read(t, filepath.Join(root, "docker-compose.postgres.yml"))
 	for _, want := range []string{
-		"  postgres-17-dump:\n    image: postgres:17.12-alpine3.24@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73\n    network_mode: none\n    restart: \"no\"\n    entrypoint: [\"bash\", \"/ky/postgres-17-to-18.sh\", \"dump\"]\n",
+		"  postgres-17-dump:\n    image: postgres:17.12-alpine3.24@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73\n    network_mode: none\n    restart: \"no\"\n    # Long enough for 17 to stop cleanly; a SIGKILL leaves postmaster.pid, which the dump refuses.\n    stop_grace_period: 2m\n    entrypoint: [\"bash\", \"/ky/postgres-17-to-18.sh\", \"dump\"]\n",
 		"      POSTGRES_USER: kyyard\n      OLD: /var/lib/postgresql/data\n      NEW: /pg18\n",
 		"      - pgdata:/var/lib/postgresql/data\n      - postgres:/pg18\n      - ./scripts/postgres-17-to-18.sh:/ky/postgres-17-to-18.sh:ro\n",
-		"  postgres:\n    image: postgres:18.7-alpine3.24@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71\n    restart: unless-stopped\n    entrypoint: [\"bash\", \"/ky/postgres-17-to-18.sh\", \"restore\"]\n    command: [\"postgres\", ",
+		"  postgres:\n    image: postgres:18.7-alpine3.24@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71\n    restart: unless-stopped\n    stop_grace_period: 2m\n    entrypoint: [\"bash\", \"/ky/postgres-17-to-18.sh\", \"restore\"]\n    command: [\"postgres\", ",
 		"      - postgres:/var/lib/postgresql\n      - ${KY_POSTGRES_TLS_DIR:?Set the absolute PostgreSQL TLS directory}:/tls:ro\n      - ./scripts/postgres-17-to-18.sh:/ky/postgres-17-to-18.sh:ro\n",
 		"      postgres-17-dump:\n        condition: service_completed_successfully\n",
 		"      start_period: 1h\n",

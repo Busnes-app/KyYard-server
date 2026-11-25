@@ -131,7 +131,7 @@ Beyond what the tools check: keep to the naming and comment density of the file 
 
 ## Verification
 
-- `scripts/test-postgres-17-to-18.sh` (CI job `PostgreSQL 17 to 18 upgrade (Compose)`): seeds PostgreSQL 17 data with the previous `docker-compose.postgres.yml` (pinned commit), brings up this overlay's postgres services and asserts rows, roles and passwords survive, rerun is a no-op, rollback to 17 works, a bad dump never yields a cluster and a fresh install initialises. `scripts/postgres-17-to-18.sh` is the Ky kit's script, vendored byte-identical (checksum held by `TestPostgresOverlayMovesSeventeenToEighteen`); fix the kit, never only this copy.
+- `scripts/test-postgres-17-to-18.sh` (CI job `PostgreSQL 17 to 18 upgrade (Compose)`): seeds PostgreSQL 17 data with the previous `docker-compose.postgres.yml` (pinned commit), checks a dump beside the live 17 refuses, runs this overlay's `up -d` over the running 17 stack and asserts rows, roles and passwords survive (checked from another container, wrong password refused), rerun is a no-op, rollback to 17 works, a bad dump never yields a cluster and a fresh install initialises. `scripts/postgres-17-to-18.sh` is the Ky kit's script, vendored byte-identical (checksum held by `TestPostgresOverlayMovesSeventeenToEighteen`); fix the kit, never only this copy.
 
 - `python3 scripts/check-proxy-compose.py` renders the container-proxy profile with and without PostgreSQL, checking exact IPv4/IPv6 address trust, no host publish, external network ownership and database DNS/TLS configuration. It starts no containers.
 
