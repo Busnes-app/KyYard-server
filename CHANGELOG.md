@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **PostgreSQL 17 to 18: a return to 18 after a rollback is refused, not silent.** The
+  vendored move script is the Ky kit v4. After a rollback that started 17 again, the next `up`
+  with the PostgreSQL overlay no longer starts the older 18 cluster, which lacks what 17 wrote.
+  `postgres-17-dump` exits with an error that names two choices: move 17 again or keep 18
+  ([Back to 18 after a rollback](docs/RUNNING.md#postgresql-17-to-18)). Removing
+  `upgrade-from-17` stays safe. **Upgrade impact:** none for installs that never rolled back.
+
 - Keep SQLite `v1.62.0` with its upstream-required libc `v1.80.1` and memory `v1.12.1`; defer independent updates of those runtime dependencies.
 
 - Prepare application version `0.6.1` (from `0.6.0`) for the compatible dependency refresh. Rebuild or install the updated application; this version bump requires no additional data, account, key or configuration migration.

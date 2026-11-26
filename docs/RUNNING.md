@@ -231,11 +231,26 @@ initialises an empty database (an empty `pgdata` volume is still created).
   up empty; it retries on each restart. Fix the cause and start again.
 - **Rollback:** stop the stack, check out the previous release's compose files, and `up`
   again: 17 starts on the untouched `pgdata` volume. Changes written under 18 are not in it.
-- **Clean-up**, once you are satisfied with 18 and only if you choose to: remove the 17 volume
-  (`docker volume rm <project>_pgdata`, where `<project>` is the Compose project name, by
-  default this directory's name) and the dump (`docker compose exec postgres rm -r
-  /var/lib/postgresql/upgrade-from-17`). Neither is done for you; removing `pgdata` ends the
-  rollback path. Keep the `pgdata:` declaration in the overlay; the dump step needs it.
+- **Back to 18 after a rollback:** any start of 17 changes its data, so 18 no longer has
+  everything (the dump records 17's checkpoint in `18/moved-from-17.checkpoint`). The next `up`
+  with this overlay then stops: `postgres-17-dump` exits with an error and `postgres` does not
+  start. `docker compose logs postgres-17-dump` names two choices, and nothing is deleted:
+  - **Move 17 again** (18 gets what 17 wrote): `docker compose down`, rename the old 18 cluster
+    and the dump with a suffix, then `up`:
+    `docker compose run --rm --no-deps --entrypoint sh postgres -c 'cd /var/lib/postgresql && mv 18 18.replaced && { [ ! -e upgrade-from-17 ] || mv upgrade-from-17 upgrade-from-17.replaced; }'`.
+    Remove `18.replaced` yourself once satisfied.
+  - **Keep 18 as it is** (what was written on 17 since stays only in `pgdata`):
+    `docker compose run --rm --no-deps --entrypoint rm postgres /var/lib/postgresql/18/moved-from-17.checkpoint`, then `up`.
+- **Clean-up**, once you are satisfied with 18 and only if you choose to. Two separate steps,
+  neither done for you:
+  - The dump: `docker compose exec postgres rm -r /var/lib/postgresql/upgrade-from-17`. Safe at
+    any time; later starts and the rollback check above go on working.
+  - The 17 volume: `docker volume rm <project>_pgdata`, where `<project>` is the Compose project
+    name, by default this directory's name. This ends the rollback path. Keep the `pgdata:`
+    declaration in the overlay; the dump step needs it.
+- **`docker compose ps -a`** lists `postgres-17-dump` as exited with code 0 after every start:
+  that is its normal, healthy state (it has `restart: "no"`, so KyYard's own status feeds do not
+  report it as down). Only a non-zero exit is a problem.
 
 ### Server settings
 

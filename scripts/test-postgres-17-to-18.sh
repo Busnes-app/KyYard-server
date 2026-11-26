@@ -2,8 +2,9 @@
 # Proves docker-compose.postgres.yml moves a real PostgreSQL 17 install to 18 on the next `up`:
 # 17 data seeded with the previous overlay comes back with its rows, roles and passwords; the
 # 17 volume still starts under the previous overlay; a dump beside a live 17 refuses; `up -d` over
-# the running 17 stack moves it; a rerun is a no-op; a dump that cannot be restored never yields
-# an empty cluster; a fresh install initialises. Needs Docker, git and
+# the running 17 stack moves it; a rerun is a no-op; after a rollback that ran 17, 18 is refused
+# until the operator moves 17 again or keeps 18, also after the documented clean-up; a dump that
+# cannot be restored never yields an empty cluster; a fresh install initialises. Needs Docker, git and
 # openssl; starts only the postgres services, under throwaway compose projects.
 # usage: scripts/test-postgres-17-to-18.sh
 set -Eeuo pipefail
@@ -95,10 +96,56 @@ dc new logs --no-color postgres | grep -q 'postgres-17-to-18: restored' && fail 
 [ "$(q new kyyard oldpass kyyard 'select count(*) from t')" = 20000 ] || fail "rows after rerun"
 down new
 
-# 4. Rollback: the previous overlay still starts 17 on the kept volume.
+# 4. Rollback: the previous overlay still starts 17 on the kept volume, and takes a write.
 up old || fail "17 no longer starts on its data"
 [ "$(q old kyyard oldpass kyyard 'select count(*) from t')" = 20000 ] || fail "17 data changed"
+q old kyyard oldpass kyyard "insert into t(s) values ('written on 17 after the move')" >/dev/null
 down old
+
+# 4b. Back to this overlay after that rollback: 18 lacks the new row, so the stack refuses to
+# start it and the dump says why and what the two choices are.
+up new && fail "18 started although 17 ran after the move"
+out=$(dc new logs --no-color postgres-17-dump)
+grep -q 'has run on' <<<"$out" || fail "no rollback message: $out"
+grep -q 'To move 17 again' <<<"$out" || fail "the message lacks the move-again choice: $out"
+grep -q 'To keep 18' <<<"$out" || fail "the message lacks the keep-18 choice: $out"
+[ -z "$(dc new ps -q postgres)" ] || fail "postgres runs after the refusal"
+down new
+
+# 4c. "Move 17 again": rename 18/ and the dump with a suffix; the new row reaches 18 and the
+# replaced cluster is kept.
+# The commands docs/RUNNING.md gives.
+dc new run --rm --no-deps --entrypoint sh postgres -c 'cd /var/lib/postgresql && mv 18 18.replaced && { [ ! -e upgrade-from-17 ] || mv upgrade-from-17 upgrade-from-17.replaced; }' >/dev/null 2>&1 || fail "the documented move-again rename failed"
+up new || fail "18 did not start after moving 17 again"
+[ "$(q new kyyard oldpass kyyard 'select count(*) from t')" = 20001 ] || fail "moving again lost the row written on 17"
+in_vol "${proj}_postgres" 'test -s /v/18.replaced/docker/PG_VERSION' || fail "the replaced 18 cluster is gone"
+down new
+
+# 4d. "Keep 18": after another rollback start, deleting the checkpoint is accepted.
+up old || fail "17 did not start for the keep-18 check"
+down old
+up new && fail "18 started although 17 ran after the move (keep-18 check)"
+down new
+dc new run --rm --no-deps --entrypoint rm postgres /var/lib/postgresql/18/moved-from-17.checkpoint >/dev/null 2>&1 || fail "the documented keep-18 delete failed"
+up new || fail "keep 18 was not accepted"
+dc new logs --no-color postgres-17-dump | grep -q 'already done' || fail "keep 18 dumped again"
+down new
+
+# 4e. The documented clean-up (the dump removed, 17 kept): later starts go on, and a rollback
+# that writes on 17 after it is still refused on the way back.
+in_vol "${proj}_postgres" 'mv /v/upgrade-from-17 /v/upgrade-from-17.kept'
+up new || fail "the stack did not start after the documented clean-up"
+down new
+up old || fail "17 did not start for the clean-up check"
+q old kyyard oldpass kyyard "insert into t(s) values ('written on 17 after the clean-up')" >/dev/null
+down old
+up new && fail "after the clean-up, 18 started although 17 ran after the move"
+dc new logs --no-color postgres-17-dump | grep -q 'has run on' || fail "no rollback message after the clean-up"
+down new
+# Keep 18 again and put the dump back for step 5.
+in_vol "${proj}_postgres" 'rm /v/18/moved-from-17.checkpoint && mv /v/upgrade-from-17.kept /v/upgrade-from-17'
+up new || fail "keep 18 after the clean-up check"
+down new
 
 # 5. A dump that cannot be restored never yields a cluster, however often postgres restarts.
 in_vol "${proj}_postgres" 'mv /v/18/docker /v/18/docker.saved && cp /v/upgrade-from-17/dump.sql /v/dump.good && echo "THIS IS NOT SQL;" >> /v/upgrade-from-17/dump.sql'
@@ -119,4 +166,4 @@ down new
 up fresh || fail "a fresh install did not start"
 dc fresh logs --no-color postgres-17-dump | grep -q 'nothing to move' || fail "a fresh install dumped something"
 [ "$(q fresh kyyard oldpass kyyard 'show data_directory')" = /var/lib/postgresql/18/docker ] || fail "fresh data directory"
-echo "PASS: 17 -> 18 through docker-compose.postgres.yml: live-17 dump refused, up over running 17, rerun, rollback, bad dump, fresh install"
+echo "PASS: 17 -> 18 through docker-compose.postgres.yml: live-17 dump refused, up over running 17, rerun, rollback refused, move again, keep 18, clean-up, bad dump, fresh install"
