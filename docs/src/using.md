@@ -2,7 +2,7 @@
 
 ## Inspect first
 
-Select the intended host and container, then inspect state, image and logs. A health issue may come from the application rather than the container runtime. Pair kyPulse when you need cross-application health and alerting.
+Select the intended host and container, then inspect state, image and logs. A health issue may come from the application rather than the container runtime. Pair KyPulse when you need cross-application health and alerting.
 
 ## Lifecycle operations
 
