@@ -1,9 +1,10 @@
-# kyyard-server
-
-Supported cryptographic configuration and migration: [Key strength and TLS](docs/STRONG-CRYPTO.md).
+# KyYard
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15935/badge)](https://www.bestpractices.dev/projects/15935)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/KyYard-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/KyYard-server)
+[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyYard-server/branch/master)](https://octocounts.com/github/Busnes-app/KyYard-server/tree/master)
+
+Supported cryptographic configuration and migration: [Key strength and TLS](docs/STRONG-CRYPTO.md).
 
 **Start here:** [Standalone installation](INSTALL.md). Local accounts and MFA work without KyIdentity. The default Docker installation connects the local Docker host and grants KyYard host-level authority through the mounted Docker socket. Remote hosts and Kubernetes clusters need separate enrollment; suite management needs a KyQuickStart runner handoff.
 
@@ -11,7 +12,7 @@ The simple control plane for your container fleet.
 
 KyYard provides a Go backend, embedded React PWA,
 SQLite/PostgreSQL, local authentication with self-service TOTP MFA and recovery codes, configurable OAuth 2/OIDC (including KyIdentity) and KyRecovery.
-The standard installation automatically shows the local Docker host, with container inventory, lifecycle controls, image operations and logs. [Connect additional hosts](docs/CONTAINERS.md#show-containers-after-installation) when needed. Remaining milestones are tracked in [KyYard-Implementation-Plan.md](KyYard-Implementation-Plan.md).
+The standard installation automatically shows the local Docker host, with container inventory, lifecycle controls, image operations and logs. [Connect additional hosts](docs/CONTAINERS.md#show-containers-after-installation) when needed.
 SAML metadata is inherited; SAML login is not yet implemented.
 
 Fresh installations only: KyYard uses its own recovery service identity and token-sealing
@@ -47,31 +48,26 @@ secrets. The page shows the token once, with config for both agents that reads i
 `KYYARD_TOKEN`, and the command to install the KyYard skill (served at
 `/agent/skills/kyyard/SKILL.md`), which teaches the agent the tools and when to ask you first.
 You can change an agent's access there later. An agent token unused for 90 days is revoked; an
-agent token never works as a kyPulse service token, nor the reverse. Every operation, log read and
+agent token never works as a KyPulse service token, nor the reverse. Every operation, log read and
 refusal is in the audit history. Details: [Integrations](docs/INTEGRATIONS.md#connect-an-ai-agent).
 
 Container logs are written by the software you run, and an agent may treat them as instructions.
 Give an agent operator access only if you trust everyone who can message it and every workload
 whose logs it reads.
 
-## License
-
-kyyard-server is released under the [MIT License](LICENSE.txt).
-
-[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyYard-server/branch/master)](https://octocounts.com/github/Busnes-app/KyYard-server/tree/master)
-
 ## Documentation
 
 - [Running](docs/RUNNING.md) — Start KyYard, First sign-in, Account security, Transport and advanced deployment, and related procedures. <a id="start-kyyard"></a><a id="first-sign-in"></a><a id="account-security"></a><a id="transport-and-advanced-deployment"></a><a id="server-settings"></a>
 - [Tenants](docs/TENANTS.md) — Initial organization, Organizations and accounts, Tenant API. <a id="initial-organization"></a><a id="organizations-and-accounts"></a><a id="tenant-api"></a>
-- [Integrations](docs/INTEGRATIONS.md) — Pair kyPulse, Down-monitoring RSS feed, Connect an AI agent, Suite management. <a id="pair-kypulse"></a><a id="suite-management"></a>
+- [Integrations](docs/INTEGRATIONS.md) — Pair KyPulse, Down-monitoring RSS feed, Connect an AI agent, Suite management. <a id="pair-kypulse"></a><a id="suite-management"></a>
 - [Containers](docs/CONTAINERS.md) — Show containers after installation, Container user, Static internal IPs for proxy backends, Compose projects, and related procedures. <a id="show-containers-after-installation"></a><a id="container-user"></a><a id="static-internal-ips-for-proxy-backends"></a><a id="compose-projects"></a><a id="container-terminals"></a><a id="edit-or-run-a-container"></a><a id="import-a-compose-draft"></a><a id="update-policies"></a><a id="fleet-image-runs-and-yaml"></a>
 - [Agents and Kubernetes](docs/AGENTS-AND-KUBERNETES.md) — Agent, Kubernetes endpoints, Migrating a Docker application to a cluster. <a id="agent"></a><a id="kubernetes-endpoints"></a><a id="migrating-a-docker-application-to-a-cluster"></a>
 - [Recovery](docs/RECOVERY.md) — Persistent keys, Disaster recovery, Two ways to get a key, Why TLS matters here, and related procedures. <a id="persistent-keys"></a><a id="disaster-recovery"></a><a id="two-ways-to-get-a-key"></a><a id="why-tls-matters-here"></a><a id="one-run-every-destination"></a><a id="environment"></a><a id="restoring"></a>
+- [Restore](docs/RESTORE.md) — Restore a KyYard control plane from a sealed capsule.
 - [Updates](docs/UPDATES.md) — Upgrading. <a id="upgrading"></a>
+- [Installer setup](docs/INSTALLER_SETUP.md) — Non-interactive installer setup and managed OIDC integration.
 - [Verifying releases](docs/VERIFYING-RELEASES.md) — Check a release image's signature and source commit, and rebuild its binaries to the same bytes.
 - [Assurance case](docs/ASSURANCE-CASE.md) — Threat model summary, trust boundaries, and why the security requirements are met.
-
 - [Contributing and verification](CONTRIBUTING.md#verification) — Local checks and desktop/phone browser regressions.
 
 ## User manual
@@ -82,3 +78,7 @@ Read the [online manual](https://busnes.app/manuals/kyyard-server/) or browse it
 Build and check it with `mdbook build docs` and `python3 docs/check-links.py`,
 then open `docs/book/index.html`. The documentation workflow also provides a
 downloadable `documentation-book` artifact.
+
+## License
+
+KyYard is released under the [MIT License](LICENSE.txt).

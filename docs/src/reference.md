@@ -15,7 +15,7 @@ The links below open repository documents and need network access.
 
 - [Standalone installation](https://github.com/Busnes-app/KyYard-server/blob/master/INSTALL.md)
 - [Key strength and TLS](https://github.com/Busnes-app/KyYard-server/blob/master/docs/STRONG-CRYPTO.md)
-- [Connect additional hosts](https://github.com/Busnes-app/KyYard-server/blob/master/docs/CONTAINERS.md)
+- [Containers](https://github.com/Busnes-app/KyYard-server/blob/master/docs/CONTAINERS.md)
 - [Integrations](https://github.com/Busnes-app/KyYard-server/blob/master/docs/INTEGRATIONS.md)
 - [Running](https://github.com/Busnes-app/KyYard-server/blob/master/docs/RUNNING.md)
 - [Tenants](https://github.com/Busnes-app/KyYard-server/blob/master/docs/TENANTS.md)

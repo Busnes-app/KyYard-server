@@ -92,7 +92,7 @@ Owns user interface components, service worker caching, PWA installation manifes
 - Every status badge renders through `components/Status.tsx`, ky-ui's `.ky-status` pill: a sentence-case word and a dot, `data-ky-status` danger, warning or success, or neutral. Status never uses the accent. `.badge` remains only for neutral tags (`ro`, a workload kind).
 - `src/main.tsx` starts ky-ui's `watchForUpdate` (the update notice) and `reloadOnStaleChunk` (`src/staleChunk.ts`): a lazy chunk an upgrade removed (`vite:preloadError`, a pre-upgrade tab opening a Terminal) reloads into the current build, at most once a minute per tab (sessionStorage, read only when a chunk fails; with storage blocked nothing reloads, since a page loading the chunk at once could loop), instead of blanking the app. When no reload happens (storage blocked, or a second failure inside the minute), `components/ChunkBoundary.tsx` around each lazy terminal shows "could not load" with a Reload button in place of the terminal, so the rest of the page stays. `web/embed.go` sends `index.html`, other HTML entries and the SPA fallback with `Cache-Control: no-cache` (a stricter header set earlier stays), so the notice and Reload see the current build; `web/embed_test.go` checks it.
 - `public/sw.js` lets a `cache: 'no-store'` request (the update check of `/`) reach the network; `tests/browser/core.spec.mjs` checks it.
-- Verify vendored files with `node src/ky-ui/check-vendor.mjs` from this document's directory. Builds/CI run that check. Rendered evidence and capture limitations are recorded in the repository-root `UI-VERIFICATION.md`.
+- Verify vendored files with `node src/ky-ui/check-vendor.mjs` from this document's directory. Builds/CI run that check.
 
 ## Child DOX Index
 None.

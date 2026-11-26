@@ -1,14 +1,11 @@
 # 0.1 acceptance runbook
 
-The human acceptance script from `KyYard-Implementation-Plan.md` section 7, expanded against
-the current UI. A preparer sets the stage and observes; an operator who knows containers but
-not KyYard does the work through the UI. The operator gets only the operator card below. This
-runbook is for the preparer: what to set up, where each task lives, what passes, and what to
-record.
+The human acceptance script for KyYard, written against the current UI. A preparer sets the
+stage and observes; an operator who knows containers but not KyYard does the work through
+the UI. The operator gets only the operator card below. This runbook is for the preparer:
+what to set up, where each task lives, what passes, and what to record.
 
 ## Release-defect rule
-
-Copied from the plan, section 7:
 
 > Record success/failure, confusing steps and recovery outcomes. Any required documentation lookup, cross-tenant exposure, unexplained unknown action, lost secret, or unusable recovery is a release defect. Fix and repeat affected paths before calling 0.1 ready for internal use.
 

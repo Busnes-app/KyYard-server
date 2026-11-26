@@ -61,15 +61,18 @@ precedence. See the [transport and deployment guide](docs/RUNNING.md#transport-a
 The named `kyyard-data` volume at `/data` keeps accounts, keys and capsules. Existing bind
 mount installations must retain `docker-compose.bind.yml`; do not start an empty named
 volume over them. Source builds retain `docker-compose.build.yml` in `COMPOSE_FILE` and
-use `docker compose up -d --build`. SAML metadata does not provide SAML login. Additional
-host enrollment, suite runner handoff and recovery are separate README procedures.
+use `docker compose up -d --build`. SAML metadata does not provide SAML login. See
+[Agents and Kubernetes](docs/AGENTS-AND-KUBERNETES.md) for additional host enrollment,
+[Integrations](docs/INTEGRATIONS.md#suite-management) for suite runner handoff, and
+[Recovery](docs/RECOVERY.md) for backup configuration.
 
 ## Keep it recoverable
 
 Preserve the database **and deployment keys**, not just the image. Configure recovery using
-the linked restore runbook, retain an independent copy, and complete a scratch restore with
-custodian cards before treating recovery as verified. A synthetic drill uses a throwaway
-key and does not prove that the real cards are available or correct.
+[Recovery](docs/RECOVERY.md) and the [restore runbook](docs/RESTORE.md), retain an
+independent copy, and complete a scratch restore with custodian cards before treating
+recovery as verified. A synthetic drill uses a throwaway key and does not prove that the
+real cards are available or correct.
 
 For upgrades, back up first, read the chosen release’s migration notes, and reuse the same
 Compose project, volume mounts and overlay selection for every command. `docker compose
