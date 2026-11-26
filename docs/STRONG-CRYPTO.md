@@ -105,7 +105,18 @@ P-256+ certificate chain. For a host Nginx/OpenSSL proxy, relevant policy is:
 ```nginx
 ssl_protocols TLSv1.2 TLSv1.3;
 ssl_ciphers 'DEFAULT@SECLEVEL=2';
+# OpenSSL 3.5+ only; older OpenSSL refuses the first group name at startup.
+ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1;
 ```
+
+Agents offer the hybrid post-quantum key exchange X25519MLKEM768 (ML-KEM-768
+with X25519) first, with and without `fips140=on`
+(`TestAgentClientNegotiatesHybridKeyExchange`), and fall back to a classical
+group only when the edge lacks it. Agent traffic carries registry credentials
+and Compose secrets, so give the edge X25519MLKEM768 (nginx/OpenSSL 3.5+ with the
+line above; Caddy and other Go 1.24+ proxies offer it by default) and do not set
+`GODEBUG=tlsmlkem=0`. The agent does not refuse a classical edge: the server end
+of its TLS is the operator's proxy, not KyYard.
 
 Set actual certificate/key paths and routes and verify the deployed edge. Go's
 setting does not configure the proxy, browsers, Docker daemon or other products.
