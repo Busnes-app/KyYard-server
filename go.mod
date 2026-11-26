@@ -5,7 +5,7 @@ go 1.26.9
 toolchain go1.27.4
 
 require (
-	github.com/Busnes-app/ky-primitives v0.10.2-0.20261026050236-bae5c14dba4c
+	github.com/Busnes-app/ky-primitives v0.11.0
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.9

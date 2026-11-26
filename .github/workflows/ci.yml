@@ -98,6 +98,8 @@ jobs:
 
       - run: go mod verify
       - run: go vet ./...
+      - name: PQC TLS guard
+        run: scripts/check-pqc-tls.sh
       # The release binaries must not depend on where they are built: build them the way the
       # Dockerfile does (no .git in the context, -trimpath) from two directories and require
       # identical bytes. docs/VERIFYING-RELEASES.md tells users how to repeat this.
