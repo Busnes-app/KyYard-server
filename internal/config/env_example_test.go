@@ -171,7 +171,7 @@ func TestComposeForwardsServerSettingsFile(t *testing.T) {
 }
 
 // The kit's postgres-17-to-18.sh, vendored byte-identical so every Ky repo diffs against it.
-const postgresMoveScriptSHA256 = "2992644109716cd34297fbcb76eba8907f4a5e3031a12c05aade010e5ea2b571"
+const postgresMoveScriptSHA256 = "195ae8684e34dd515158a88b1f76b918cf6e3f3c854ce83fe4fb190a5178cf06"
 
 // PostgreSQL 18's image refuses a mount at /var/lib/postgresql/data and cannot open 17 data.
 // The overlay moves existing installs: a 17 one-shot dumps the old pgdata volume into the new
