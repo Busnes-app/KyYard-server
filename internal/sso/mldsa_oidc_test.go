@@ -227,4 +227,3 @@ func TestRemoteJWKSKeySetFallsBackToCachedKeysOnRefreshOutage(t *testing.T) {
 		t.Fatalf("verify during provider outage after cache expiry failed: %v", err)
 	}
 }
-
