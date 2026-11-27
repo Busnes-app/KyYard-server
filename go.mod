@@ -1,6 +1,8 @@
 module github.com/Busnes-app/kyyard-server
 
-go 1.27.4
+go 1.27.0
+
+toolchain go1.27.4
 
 require (
 	github.com/Busnes-app/ky-primitives v0.12.0
