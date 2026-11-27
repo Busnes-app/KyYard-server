@@ -58,7 +58,7 @@ func TestOIDCMLDSA65AndMixedJWKS(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{mlJWK, rsaJWK}})
 	})
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewTLSServer(mux)
 	defer srv.Close()
 	issuer = srv.URL
 
