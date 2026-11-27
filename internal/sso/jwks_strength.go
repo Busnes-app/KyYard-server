@@ -155,6 +155,12 @@ func newRemoteJWKSKeySet(jwksURL string, client *http.Client, supportedAlgs []st
 	}
 }
 
+func (r *remoteJWKSKeySet) cachedKeys() []jose.JSONWebKey {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.keys
+}
+
 func (r *remoteJWKSKeySet) VerifySignature(ctx context.Context, jwt string) ([]byte, error) {
 	jws, err := jose.ParseSigned(jwt, r.algs)
 	if err != nil {
@@ -169,6 +175,13 @@ func (r *remoteJWKSKeySet) VerifySignature(ctx context.Context, jwt string) ([]b
 
 	keys, err := r.getKeys(ctx, false)
 	if err != nil {
+		// If the cache expired during a temporary provider outage, fall back to
+		// verifying against the last accepted keys before failing sign-in.
+		if cached := r.cachedKeys(); len(cached) > 0 {
+			if payload, ok := verifyWithKeys(jws, cached, kid, alg); ok {
+				return payload, nil
+			}
+		}
 		return nil, err
 	}
 	if payload, ok := verifyWithKeys(jws, keys, kid, alg); ok {

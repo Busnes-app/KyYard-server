@@ -171,3 +171,60 @@ func TestStrongJWKSTransportRejectsMalformedMLDSA65(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteJWKSKeySetFallsBackToCachedKeysOnRefreshOutage(t *testing.T) {
+	mlKey, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Fatalf("generate ML-DSA-65 key: %v", err)
+	}
+	const kid = "mldsa-outage-1"
+
+	var down bool
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if down {
+			http.Error(w, "provider temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{
+			Keys: []jose.JSONWebKey{
+				{Key: mlKey.PublicKey(), KeyID: kid, Algorithm: string(jose.MLDSA65), Use: "sig"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.MLDSA65, Key: mlKey},
+		(&jose.SignerOptions{}).WithHeader("kid", kid),
+	)
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	jwsObj, err := signer.Sign([]byte(`{"sub":"alice"}`))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	tok, err := jwsObj.CompactSerialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+
+	client := &http.Client{Transport: &strongJWKSTransport{base: srv.Client().Transport}}
+	ks := newRemoteJWKSKeySet(srv.URL, client, []string{string(jose.MLDSA65)})
+
+	// Warm the cache while provider is healthy.
+	if _, err := ks.VerifySignature(context.Background(), tok); err != nil {
+		t.Fatalf("initial verify: %v", err)
+	}
+
+	// Expire cache and simulate provider outage: verification must still succeed via cached keys.
+	ks.mu.Lock()
+	ks.expiry = time.Now().Add(-time.Minute)
+	ks.mu.Unlock()
+	down = true
+
+	if _, err := ks.VerifySignature(context.Background(), tok); err != nil {
+		t.Fatalf("verify during provider outage after cache expiry failed: %v", err)
+	}
+}
+
