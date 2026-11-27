@@ -106,7 +106,7 @@ func connect(t *testing.T, ctx context.Context, base string, ag enrolledAgent, p
 	u, _ := url.Parse(base)
 	agentNonce := make([]byte, 32)
 	_, _ = rand.Read(agentNonce)
-	c, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect?agent_nonce="+base64.RawURLEncoding.EncodeToString(agentNonce), nil)
+	c, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect?agent_nonce="+base64.RawURLEncoding.EncodeToString(agentNonce)+"&"+protocol.InstanceFPParam+"="+ag.inst, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestAgentShutdownClosesSockets(t *testing.T) {
 // An agent older than the proof sends no nonce: it still authenticates, against an unsigned
 // challenge that names the instance. A malformed nonce is refused before the upgrade.
 func TestAgentConnectNonce(t *testing.T) {
-	s, st, _ := setupTestServer(t)
+	s, st, cfg := setupTestServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	ts := st.Tenancy()
@@ -330,7 +330,8 @@ func TestAgentConnectNonce(t *testing.T) {
 	defer c.CloseNow()
 	var ch protocol.Challenge
 	_ = json.Unmarshal(readEnvelope(t, ctx, c).Payload, &ch)
-	if ch.InstanceFingerprint != ag.inst || ch.Signature != nil || ch.InstanceKey != nil {
+	legacyInstFP := protocol.Fingerprint(ed25519.NewKeyFromSeed(cfg.Security.InstanceKey).Public().(ed25519.PublicKey))
+	if ch.InstanceFingerprint != legacyInstFP || ch.Signature != nil || ch.InstanceKey != nil {
 		t.Fatalf("old agent challenge: %+v", ch)
 	}
 	sig := ed25519.Sign(ag.priv, protocol.AuthPreimage(ag.id, ch.Nonce, u.Host, protocol.Version))

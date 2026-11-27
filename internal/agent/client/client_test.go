@@ -558,7 +558,7 @@ func backdatePendingKey(t *testing.T, fingerprint string, createdAt time.Time) {
 var (
 	fakeInstance            = ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	fakeInstanceFingerprint = protocol.Fingerprint(fakeInstance.Public().(ed25519.PublicKey))
-	serverInstance          ed25519.PrivateKey
+	serverInstance          []byte
 )
 
 func approvedAgent(t *testing.T) (*httptest.Server, store.Store, cookies, *client.Identity, string) {
@@ -579,7 +579,10 @@ func approvedAgent(t *testing.T) (*httptest.Server, store.Store, cookies, *clien
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	serverInstance = ed25519.NewKeyFromSeed(cfg.Security.InstanceKey)
+	_, serverInstance, err = protocol.DeriveInstanceHybridKey(cfg.Security.InstanceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	httpSrv := httptest.NewServer(api.NewServer(cfg, st))
 	t.Cleanup(httpSrv.Close)
 	ts := st.Tenancy()

@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"crypto/ed25519"
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -258,7 +257,11 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 		return err
 	}
 	dialURL := *u
-	dialURL.RawQuery = url.Values{protocol.AgentNonceParam: {base64.RawURLEncoding.EncodeToString(agentNonce)}}.Encode()
+	q := url.Values{protocol.AgentNonceParam: {base64.RawURLEncoding.EncodeToString(agentNonce)}}
+	if id.InstanceFingerprint != "" {
+		q.Set(protocol.InstanceFPParam, id.InstanceFingerprint)
+	}
+	dialURL.RawQuery = q.Encode()
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	conn, _, err := websocket.Dial(dctx, dialURL.String(), &websocket.DialOptions{HTTPClient: opts.HTTPClient})
 	cancel()
@@ -292,7 +295,10 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 	if !ch.Proven(agentNonce, u.Host, id.InstanceFingerprint) {
 		return errors.New("the server's identity proof failed; refusing to authenticate")
 	}
-	sig := ed25519.Sign(id.signingKey(), protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
+	sig, err := protocol.Sign(id.signingKey(), protocol.ContextAuth, protocol.AuthPreimage(id.EndpointID, ch.Nonce, u.Host, protocol.Version))
+	if err != nil {
+		return err
+	}
 	if err := write(hctx, conn, protocol.TypeAuth, protocol.Auth{EndpointID: id.EndpointID, Fingerprint: id.fingerprint(), Version: protocol.Version, Signature: sig}); err != nil {
 		return err
 	}
@@ -475,7 +481,7 @@ func session(ctx context.Context, id *Identity, target string, opts *Options, co
 				if ack.Code != "" || ack.Fingerprint != id.PendingFingerprint {
 					opts.Log.Printf("rotation not recorded (%s); keeping the current key", ack.Code)
 					id.PendingPrivateKey, id.PendingFingerprint, id.PendingRecorded = nil, "", false
-					if ack.Code == "rotation_pending" && len(id.LapsedPrivateKey) == ed25519.PrivateKeySize {
+					if ack.Code == "rotation_pending" && protocol.ValidPrivateKey(id.LapsedPrivateKey) {
 						// The server still holds the offer we gave up on: it is the live one again,
 						// and saying so is the server confirming it holds that key.
 						id.PendingPrivateKey = id.LapsedPrivateKey
@@ -691,7 +697,14 @@ func offerRotation(ctx context.Context, conn *websocket.Conn, id *Identity, opts
 		id.PendingPrivateKey, id.PendingFingerprint = nil, ""
 		return fmt.Errorf("rotation not offered: %w", err)
 	}
-	sig := ed25519.Sign(current, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(current.Public().(ed25519.PublicKey)), pub))
+	currentPub, err := protocol.PublicKeyFromPrivate(current)
+	if err != nil {
+		return err
+	}
+	sig, err := protocol.Sign(current, protocol.ContextRotate, protocol.Preimage(protocol.ContextRotate, protocol.RawFingerprint(currentPub), pub))
+	if err != nil {
+		return err
+	}
 	return write(ctx, conn, protocol.TypeRotate, protocol.Rotate{PublicKey: pub, Signature: sig})
 }
 

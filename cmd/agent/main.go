@@ -9,7 +9,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -166,7 +165,9 @@ func main() {
 	} else if *server != "" && *server != id.Server {
 		log.Fatalf("identity is enrolled with %s, not %s; remove %s to re-enroll", id.Server, *server, where)
 	}
-	log.Printf("agent key fingerprint: %s", protocol.Fingerprint(ed25519.PrivateKey(id.PrivateKey).Public().(ed25519.PublicKey)))
+	if pub, err := protocol.PublicKeyFromPrivate(id.PrivateKey); err == nil {
+		log.Printf("agent key fingerprint: %s", protocol.Fingerprint(pub))
+	}
 	if *enrollOnly {
 		return
 	}

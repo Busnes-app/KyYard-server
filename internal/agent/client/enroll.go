@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -45,9 +44,13 @@ func Enroll(ctx context.Context, httpClient *http.Client, server string, store I
 	if err != nil {
 		return nil, err
 	}
+	proof, err := protocol.Sign(priv, protocol.ContextEnroll, protocol.Preimage(protocol.ContextEnroll, token))
+	if err != nil {
+		return nil, err
+	}
 	body, _ := json.Marshal(map[string]any{
 		"token": strings.TrimSpace(tokenB64), "public_key": base64.RawURLEncoding.EncodeToString(pub),
-		"proof": base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, protocol.Preimage(protocol.ContextEnroll, token))),
+		"proof": base64.RawURLEncoding.EncodeToString(proof),
 		"name":  name, "facts": facts,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server, "/")+"/api/agent/v1/enroll", bytes.NewReader(body))

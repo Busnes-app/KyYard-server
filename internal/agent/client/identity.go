@@ -3,8 +3,6 @@
 package client
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,7 +50,7 @@ type Identity struct {
 
 // Promote makes the acknowledged pending key the current one.
 func (id *Identity) Promote() {
-	if len(id.PendingPrivateKey) == ed25519.PrivateKeySize {
+	if protocol.ValidPrivateKey(id.PendingPrivateKey) {
 		id.PrivateKey = id.PendingPrivateKey
 		id.RotatedAt = time.Now().UTC()
 	}
@@ -76,8 +74,8 @@ type candidate struct {
 // reading the answer leaves a key the server may never have recorded, and an unknown key draws
 // exactly the refusal a revoked endpoint draws. An unconfirmed key is still worth a try, last.
 func (id *Identity) candidates() []candidate {
-	pending := len(id.PendingPrivateKey) == ed25519.PrivateKeySize
-	lapsed := len(id.LapsedPrivateKey) == ed25519.PrivateKeySize
+	pending := protocol.ValidPrivateKey(id.PendingPrivateKey)
+	lapsed := protocol.ValidPrivateKey(id.LapsedPrivateKey)
 	var out []candidate
 	for _, want := range []bool{true, false} {
 		if pending && id.PendingRecorded == want {
@@ -109,11 +107,11 @@ func (id *Identity) recovering() bool { return id.RecoveryAttempt > 0 }
 
 // signingKey is the key this session authenticates with: the candidate under trial, or the
 // identity's own key when not recovering.
-func (id *Identity) signingKey() ed25519.PrivateKey {
+func (id *Identity) signingKey() []byte {
 	if c := id.currentCandidate(); c != nil {
-		return ed25519.PrivateKey(c.key)
+		return c.key
 	}
-	return ed25519.PrivateKey(id.PrivateKey)
+	return id.PrivateKey
 }
 
 func (id *Identity) currentCandidate() *candidate {
@@ -140,20 +138,25 @@ func (id *Identity) commitCandidate() {
 
 // promotable reports whether a refusal of the current key has somewhere to go.
 func (id *Identity) promotable() bool {
-	return len(id.PendingPrivateKey) == ed25519.PrivateKeySize || len(id.LapsedPrivateKey) == ed25519.PrivateKeySize
+	return protocol.ValidPrivateKey(id.PendingPrivateKey) || protocol.ValidPrivateKey(id.LapsedPrivateKey)
 }
 
 // pendingFingerprint derives the fingerprint from the retained pending key, so an offer whose
 // bookkeeping lapsed can still be matched against the server's acknowledgement.
 func (id *Identity) pendingFingerprint() string {
-	if len(id.PendingPrivateKey) != ed25519.PrivateKeySize {
+	pub, err := protocol.PublicKeyFromPrivate(id.PendingPrivateKey)
+	if err != nil {
 		return ""
 	}
-	return protocol.Fingerprint(ed25519.PrivateKey(id.PendingPrivateKey).Public().(ed25519.PublicKey))
+	return protocol.Fingerprint(pub)
 }
 
 func (id *Identity) fingerprint() string {
-	return protocol.Fingerprint(id.signingKey().Public().(ed25519.PublicKey))
+	pub, err := protocol.PublicKeyFromPrivate(id.signingKey())
+	if err != nil {
+		return ""
+	}
+	return protocol.Fingerprint(pub)
 }
 
 func identityPath(dir string) string { return filepath.Join(dir, "identity.json") }
@@ -190,7 +193,7 @@ func DecodeIdentity(raw []byte) (*Identity, error) {
 	if err := json.Unmarshal(raw, &id); err != nil {
 		return nil, fmt.Errorf("identity file: %w", err)
 	}
-	if len(id.PrivateKey) != ed25519.PrivateKeySize || id.EndpointID == "" {
+	if !protocol.ValidPrivateKey(id.PrivateKey) || id.EndpointID == "" {
 		return nil, errors.New("identity file: incomplete")
 	}
 	return &id, nil
@@ -241,6 +244,6 @@ func writeDurable(path string, raw []byte) error {
 	return d.Sync()
 }
 
-func newKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {
-	return ed25519.GenerateKey(rand.Reader)
+func newKey() ([]byte, []byte, error) {
+	return protocol.GenerateHybridKey()
 }

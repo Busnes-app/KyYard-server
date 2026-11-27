@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -103,6 +102,11 @@ type Challenge struct {
 // base64url, so the server's proof covers a value the server could not have seen before.
 const AgentNonceParam = "agent_nonce"
 
+// InstanceFPParam is the optional dial query parameter carrying the agent's pinned
+// instance fingerprint (64 hex chars), allowing the server to select its matching
+// hybrid or legacy Ed25519 instance key during zero-downtime migration.
+const InstanceFPParam = "instance_fp"
+
 // AgentNonce reads the agent's nonce from the dial query: nil when absent, an error unless it
 // is exactly one value decoding to 32 bytes.
 func AgentNonce(q url.Values) ([]byte, error) {
@@ -120,6 +124,25 @@ func AgentNonce(q url.Values) ([]byte, error) {
 	return n, nil
 }
 
+// InstanceFP reads the optional pinned instance fingerprint from the dial query: empty when
+// absent, or validated as 64 lowercase hex characters.
+func InstanceFP(q url.Values) (string, error) {
+	v, ok := q[InstanceFPParam]
+	if !ok {
+		return "", nil
+	}
+	if len(v) != 1 || len(v[0]) != 64 {
+		return "", errors.New("instance_fp: want one 64-char hex fingerprint")
+	}
+	for i := 0; i < len(v[0]); i++ {
+		c := v[0][i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return "", errors.New("instance_fp: want lowercase hex")
+		}
+	}
+	return v[0], nil
+}
+
 // ChallengePreimage binds the instance key's signature to both nonces, the host the agent
 // dialed and the fingerprint it pins, so a signature cannot be replayed for another socket, a
 // later handshake or another name.
@@ -127,21 +150,28 @@ func ChallengePreimage(nonce, agentNonce []byte, serverHost, instanceFingerprint
 	return Preimage(ContextServer, nonce, agentNonce, []byte(serverHost), []byte(instanceFingerprint))
 }
 
-// SignChallenge is the server's challenge for nonce, signed by its instance key over the
-// agent's nonce.
-func SignChallenge(instance ed25519.PrivateKey, nonce, agentNonce []byte, serverHost string) Challenge {
-	pub := instance.Public().(ed25519.PublicKey)
+// SignChallenge is the server's challenge for nonce, signed by its instance key (hybridsig or
+// legacy Ed25519 private key bytes) over the agent's nonce.
+func SignChallenge(instance []byte, nonce, agentNonce []byte, serverHost string) Challenge {
+	pub, err := PublicKeyFromPrivate(instance)
+	if err != nil {
+		return Challenge{Nonce: nonce, Versions: []int{Version}}
+	}
 	fp := Fingerprint(pub)
-	return Challenge{Nonce: nonce, InstanceFingerprint: fp, Versions: []int{Version}, InstanceKey: pub, Signature: ed25519.Sign(instance, ChallengePreimage(nonce, agentNonce, serverHost, fp))}
+	sig, err := Sign(instance, ContextServer, ChallengePreimage(nonce, agentNonce, serverHost, fp))
+	if err != nil {
+		return Challenge{Nonce: nonce, InstanceFingerprint: fp, Versions: []int{Version}}
+	}
+	return Challenge{Nonce: nonce, InstanceFingerprint: fp, Versions: []int{Version}, InstanceKey: pub, Signature: sig}
 }
 
 // Proven reports whether the challenge was signed, for serverHost and the agent's outstanding
 // nonce, by the instance key whose fingerprint the agent pinned.
 func (c Challenge) Proven(agentNonce []byte, serverHost, pinned string) bool {
-	if len(c.InstanceKey) != ed25519.PublicKeySize || len(c.Nonce) != 32 || len(agentNonce) != 32 || len(c.Signature) != ed25519.SignatureSize || Fingerprint(c.InstanceKey) != pinned {
+	if !ValidPublicKey(c.InstanceKey) || len(c.Nonce) != 32 || len(agentNonce) != 32 || Fingerprint(c.InstanceKey) != pinned {
 		return false
 	}
-	return ed25519.Verify(ed25519.PublicKey(c.InstanceKey), ChallengePreimage(c.Nonce, agentNonce, serverHost, pinned), c.Signature)
+	return Verify(c.InstanceKey, ContextServer, ChallengePreimage(c.Nonce, agentNonce, serverHost, pinned), c.Signature)
 }
 
 // Auth is the agent's reply, signed under ContextAuth by its endpoint key.
@@ -231,10 +261,10 @@ func AuthPreimage(endpointID string, nonce []byte, serverHost string, version in
 }
 
 func VerifyAuth(publicKey []byte, endpointID string, nonce []byte, serverHost string, version int, signature []byte) bool {
-	if len(publicKey) != ed25519.PublicKeySize || len(nonce) != 32 || len(signature) != ed25519.SignatureSize {
+	if !ValidPublicKey(publicKey) || len(nonce) != 32 {
 		return false
 	}
-	return ed25519.Verify(ed25519.PublicKey(publicKey), AuthPreimage(endpointID, nonce, serverHost, version), signature)
+	return Verify(publicKey, ContextAuth, AuthPreimage(endpointID, nonce, serverHost, version), signature)
 }
 
 // Command is one instruction for one endpoint. ID is a ULID minted by the server and is the

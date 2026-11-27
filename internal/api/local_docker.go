@@ -39,12 +39,31 @@ func (s *Server) RunLocalDocker(ctx context.Context) error {
 	}
 	// Domain-separated identity from a key already covered by capsule recovery.
 	// Only the public key is stored in SQL; no new recoverable secret is introduced.
-	mac := hmac.New(sha256.New, s.config.Security.InstanceKey)
-	_, _ = mac.Write([]byte("kyyard/local-docker-agent/v1"))
-	key := ed25519.NewKeyFromSeed(mac.Sum(nil))
-	generation, err := s.store.Tenancy().InitializeLocalDocker(ctx, key.Public().(ed25519.PublicKey))
+	// Fresh installs initialize with a hybridsig (ML-DSA-65 + Ed25519) key; pre-upgrade
+	// installs that already approved the legacy Ed25519 key fall back cleanly without
+	// bypassing an administrator's revocation.
+	hybridPub, hybridPriv, err := protocol.DeriveHybridKey(s.config.Security.InstanceKey, "kyyard/local-docker-agent/v2")
 	if err != nil {
-		return fmt.Errorf("local Docker initialization refused: %w", err)
+		return fmt.Errorf("local Docker key derivation failed: %w", err)
+	}
+	key := hybridPriv
+	generation, err := s.store.Tenancy().InitializeLocalDocker(ctx, hybridPub)
+	if errors.Is(err, store.ErrForbidden) {
+		mac := hmac.New(sha256.New, s.config.Security.InstanceKey)
+		_, _ = mac.Write([]byte("kyyard/local-docker-agent/v1"))
+		legacyKey := ed25519.NewKeyFromSeed(mac.Sum(nil))
+		legacyGen, legacyErr := s.store.Tenancy().InitializeLocalDocker(ctx, legacyKey.Public().(ed25519.PublicKey))
+		if legacyErr == nil {
+			key = legacyKey
+			generation = legacyGen
+		}
+		err = legacyErr
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrForbidden) {
+			return fmt.Errorf("local Docker initialization refused: %w", err)
+		}
+		return fmt.Errorf("local Docker initialization failed: %w", err)
 	}
 	// A private loopback listener lets the built-in agent use the same handshake,
 	// commands, logs and revocation as remote agents, independent of proxy settings.
