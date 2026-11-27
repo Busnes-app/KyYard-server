@@ -52,14 +52,18 @@ func (s *Server) RunLocalDocker(ctx context.Context) error {
 		mac := hmac.New(sha256.New, s.config.Security.InstanceKey)
 		_, _ = mac.Write([]byte("kyyard/local-docker-agent/v1"))
 		legacyKey := ed25519.NewKeyFromSeed(mac.Sum(nil))
-		if legacyGen, legacyErr := s.store.Tenancy().InitializeLocalDocker(ctx, legacyKey.Public().(ed25519.PublicKey)); legacyErr == nil {
+		legacyGen, legacyErr := s.store.Tenancy().InitializeLocalDocker(ctx, legacyKey.Public().(ed25519.PublicKey))
+		if legacyErr == nil {
 			key = legacyKey
 			generation = legacyGen
-			err = nil
 		}
+		err = legacyErr
 	}
 	if err != nil {
-		return fmt.Errorf("local Docker initialization refused: %w", err)
+		if errors.Is(err, store.ErrForbidden) {
+			return fmt.Errorf("local Docker initialization refused: %w", err)
+		}
+		return fmt.Errorf("local Docker initialization failed: %w", err)
 	}
 	// A private loopback listener lets the built-in agent use the same handshake,
 	// commands, logs and revocation as remote agents, independent of proxy settings.
