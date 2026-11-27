@@ -1,11 +1,11 @@
 module github.com/Busnes-app/kyyard-server
 
-go 1.26.9
+go 1.27.0
 
 toolchain go1.27.4
 
 require (
-	github.com/Busnes-app/ky-primitives v0.11.0
+	github.com/Busnes-app/ky-primitives v0.12.0
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.9

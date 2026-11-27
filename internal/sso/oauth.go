@@ -77,7 +77,9 @@ func (f *oauthFlow) discover(ctx context.Context) (*oidc.Provider, error) {
 		return nil, err
 	}
 	var metadata struct {
-		JWKS string `json:"jwks_uri"`
+		Issuer                           string   `json:"issuer"`
+		JWKS                             string   `json:"jwks_uri"`
+		IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
 	}
 	if err := provider.Claims(&metadata); err != nil {
 		return nil, err
@@ -87,6 +89,10 @@ func (f *oauthFlow) discover(ctx context.Context) (*oidc.Provider, error) {
 		if err := requireOIDCHTTPS(provider.Endpoint().AuthURL, provider.Endpoint().TokenURL, metadata.JWKS); err != nil {
 			return nil, err
 		}
+	}
+	algs, err := supportedSigningAlgs(metadata.IDTokenSigningAlgValuesSupported)
+	if err != nil {
+		return nil, err
 	}
 	client := http.DefaultClient
 	if configured, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
@@ -101,10 +107,56 @@ func (f *oauthFlow) discover(ctx context.Context) (*oidc.Provider, error) {
 	if jwksClient.Timeout == 0 {
 		jwksClient.Timeout = 10 * time.Second
 	}
-	// Keep maintained signature/claim verification, key caching and rotation.
-	f.verifier = provider.VerifierContext(oidc.ClientContext(ctx, &jwksClient), &oidc.Config{ClientID: f.clientID})
+	issuer := metadata.Issuer
+	if issuer == "" {
+		issuer = f.issuer
+	}
+	// Keep maintained signature/claim verification, throttled key caching and
+	// rotation while retaining RFC 9964 ML-DSA-65 AKP keys skipped by go-oidc v3.21.0.
+	keySet := newRemoteJWKSKeySet(metadata.JWKS, &jwksClient, algs)
+	f.verifier = oidc.NewVerifier(issuer, keySet, &oidc.Config{
+		ClientID:             f.clientID,
+		SupportedSigningAlgs: algs,
+	})
 	f.provider = provider
 	return provider, nil
+}
+
+// allowedOIDCSigningAlgs mirrors coreos/go-oidc's asymmetric allowlist plus RFC 9964 ML-DSA-65.
+var allowedOIDCSigningAlgs = map[string]bool{
+	"ML-DSA-65": true,
+	oidc.RS256:  true,
+	oidc.RS384:  true,
+	oidc.RS512:  true,
+	oidc.ES256:  true,
+	oidc.ES384:  true,
+	oidc.ES512:  true,
+	oidc.PS256:  true,
+	oidc.PS384:  true,
+	oidc.PS512:  true,
+	oidc.EdDSA:  true,
+}
+
+func supportedSigningAlgs(advertised []string) ([]string, error) {
+	if len(advertised) == 0 {
+		return []string{oidc.RS256}, nil
+	}
+	seen := make(map[string]struct{}, len(advertised))
+	out := make([]string, 0, len(advertised))
+	for _, alg := range advertised {
+		if !allowedOIDCSigningAlgs[alg] {
+			continue
+		}
+		if _, dup := seen[alg]; dup {
+			continue
+		}
+		seen[alg] = struct{}{}
+		out = append(out, alg)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("OIDC provider advertises no supported asymmetric signing algorithms")
+	}
+	return out, nil
 }
 
 func (f *oauthFlow) config(ctx context.Context, redirectURI string) (*oauth2.Config, *oidc.Provider, error) {
