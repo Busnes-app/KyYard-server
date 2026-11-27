@@ -171,8 +171,50 @@ func TestAgentLegacyEd25519CompatAndUpgradeRotation(t *testing.T) {
 		t.Fatalf("malformed instance_fp: err=%v resp=%v, want 400", err, resp)
 	}
 
-	// Legacy agent pinning the pre-upgrade Ed25519 instance fingerprint dials with instance_fp.
+	// Pre-upgrade remote agent dials with ONLY agent_nonce (no instance_fp parameter),
+	// pins the legacy Ed25519 instance fingerprint, and verifies using Ed25519 only.
+	preAg := enrollAgent(t, s, st, admin, "pre-upgrade-host")
+	wPre := tenantRequest(s, admin, "POST", "/api/organizations/a/endpoints/"+preAg.id+"/approve", `{"fingerprint":"`+preAg.fp+`"}`, true)
+	if wPre.Code != http.StatusNoContent {
+		t.Fatalf("approve pre-upgrade host: %d %s", wPre.Code, wPre.Body.String())
+	}
 	legacyInstFP := protocol.Fingerprint(ed25519.NewKeyFromSeed(cfg.Security.InstanceKey).Public().(ed25519.PublicKey))
+	preUpgradeQ := url.Values{
+		protocol.AgentNonceParam: {base64.RawURLEncoding.EncodeToString(agentNonce)},
+	}
+	preConn, _, err := websocket.Dial(ctx, "ws://"+u.Host+"/api/agent/v1/connect?"+preUpgradeQ.Encode(), nil)
+	if err != nil {
+		t.Fatalf("pre-upgrade dial: %v", err)
+	}
+	defer preConn.CloseNow()
+	preConn.SetReadLimit(4 << 20)
+	preChEnv := readEnvelope(t, ctx, preConn)
+	var preCh protocol.Challenge
+	if err := json.Unmarshal(preChEnv.Payload, &preCh); err != nil {
+		t.Fatal(err)
+	}
+	if len(preCh.InstanceKey) != ed25519.PublicKeySize || preCh.InstanceFingerprint != legacyInstFP {
+		t.Fatalf("pre-upgrade dial without instance_fp: got key=%d fp=%q, want Ed25519 (%d) fp=%q",
+			len(preCh.InstanceKey), preCh.InstanceFingerprint, ed25519.PublicKeySize, legacyInstFP)
+	}
+	if protocol.Fingerprint(preCh.InstanceKey) != legacyInstFP {
+		t.Fatalf("pre-upgrade instance key fingerprint mismatch")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(preCh.InstanceKey), protocol.ChallengePreimage(preCh.Nonce, agentNonce, u.Host, legacyInstFP), preCh.Signature) {
+		t.Fatal("pre-upgrade Ed25519 challenge signature did not verify")
+	}
+	preSig := ed25519.Sign(preAg.priv, protocol.AuthPreimage(preAg.id, preCh.Nonce, u.Host, protocol.Version))
+	writeEnvelope(t, ctx, preConn, protocol.TypeAuth, protocol.Auth{
+		EndpointID:  preAg.id,
+		Fingerprint: preAg.fp,
+		Version:     protocol.Version,
+		Signature:   preSig,
+	})
+	if env := readEnvelope(t, ctx, preConn); env.Type != protocol.TypeHello {
+		t.Fatalf("after pre-upgrade auth got %q, want %q", env.Type, protocol.TypeHello)
+	}
+
+	// Upgraded agent still pinning the legacy Ed25519 instance fingerprint dials with instance_fp.
 	goodQ := url.Values{
 		protocol.AgentNonceParam: {base64.RawURLEncoding.EncodeToString(agentNonce)},
 		protocol.InstanceFPParam: {legacyInstFP},

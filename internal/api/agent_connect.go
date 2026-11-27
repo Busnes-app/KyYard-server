@@ -349,11 +349,13 @@ func (s *Server) agentHandshake(ctx context.Context, conn *websocket.Conn, r *ht
 	defer cancel()
 	// Signed for the host the agent dialed, as the agent's auth is: a proxy must keep Host. An
 	// agent older than the proof sends no nonce and ignores the proof, so it gets none.
-	// Agents enrolled before the hybridsig upgrade pin legacyInstanceFingerprint and pass it
-	// via instance_fp so the server answers with the matching legacy Ed25519 challenge; all
-	// other connections receive the ML-DSA-65 + Ed25519 hybridsig instance challenge.
+	// Pre-upgrade remote agents omit instance_fp and pin legacyInstanceFingerprint; upgraded
+	// agents always pass their pinned fingerprint via instance_fp. Answer with the legacy
+	// Ed25519 challenge when instance_fp is omitted or matches legacyInstanceFingerprint so
+	// existing agents reconnect seamlessly across a server-only upgrade; upgraded agents
+	// pinning the hybridsig fingerprint receive the ML-DSA-65 + Ed25519 hybridsig challenge.
 	legacyFP := s.legacyInstanceFingerprint()
-	useLegacy := instanceFP != "" && legacyFP != "" && instanceFP == legacyFP
+	useLegacy := legacyFP != "" && (instanceFP == "" || instanceFP == legacyFP)
 	fp := s.instanceFingerprint()
 	if useLegacy {
 		fp = legacyFP
