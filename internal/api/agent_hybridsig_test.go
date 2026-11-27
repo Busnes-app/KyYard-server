@@ -179,6 +179,9 @@ func TestAgentLegacyEd25519CompatAndUpgradeRotation(t *testing.T) {
 		t.Fatalf("approve pre-upgrade host: %d %s", wPre.Code, wPre.Body.String())
 	}
 	legacyInstFP := protocol.Fingerprint(ed25519.NewKeyFromSeed(cfg.Security.InstanceKey).Public().(ed25519.PublicKey))
+	if preAg.inst != legacyInstFP {
+		t.Fatalf("pre-upgrade enrollment instance_fingerprint = %q, want legacy %q", preAg.inst, legacyInstFP)
+	}
 	preUpgradeQ := url.Values{
 		protocol.AgentNonceParam: {base64.RawURLEncoding.EncodeToString(agentNonce)},
 	}

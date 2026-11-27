@@ -239,7 +239,13 @@ func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "Enrollment refused")
 		return
 	}
-	s.writeJSON(w, http.StatusCreated, map[string]any{"endpoint_id": e.ID, "state": e.State, "fingerprint": e.Fingerprint, "instance_fingerprint": s.instanceFingerprint()})
+	instFP := s.instanceFingerprint()
+	if len(key) == ed25519.PublicKeySize {
+		if legacyFP := s.legacyInstanceFingerprint(); legacyFP != "" {
+			instFP = legacyFP
+		}
+	}
+	s.writeJSON(w, http.StatusCreated, map[string]any{"endpoint_id": e.ID, "state": e.State, "fingerprint": e.Fingerprint, "instance_fingerprint": instFP})
 }
 
 func endpointID(r *http.Request) (string, error) {
