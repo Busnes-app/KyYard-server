@@ -40,6 +40,14 @@ const manifestNote = "Apply it with a cluster-admin kubeconfig: kubectl apply -f
 const clusterNote = "Save the manifest and apply it with a cluster-admin kubeconfig. Run kubectl -n kyyard-agent logs deploy/kyyard-agent and compare the agent key fingerprint before approving. Once approved, delete the spent enrollment Secret: kubectl -n kyyard-agent delete secret kyyard-agent-enrollment. Uninstall with kubectl delete -f on the same file."
 
 func (s *Server) instanceFingerprint() string {
+	pub, _, err := protocol.DeriveInstanceHybridKey(s.config.Security.InstanceKey)
+	if err != nil {
+		return ""
+	}
+	return protocol.Fingerprint(pub)
+}
+
+func (s *Server) legacyInstanceFingerprint() string {
 	if len(s.config.Security.InstanceKey) != ed25519.SeedSize {
 		return ""
 	}

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/ed25519"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -19,7 +18,7 @@ const LocalDockerEndpointID = "ep_local_docker"
 // The durable marker prevents restart (or deletion of a revoked endpoint's
 // environment) from silently restoring authority an administrator removed.
 func (t *tenancyStore) InitializeLocalDocker(ctx context.Context, publicKey []byte) (uint64, error) {
-	if len(publicKey) != ed25519.PublicKeySize {
+	if !protocol.ValidPublicKey(publicKey) {
 		return 0, ErrInvalid
 	}
 	tx, err := t.store.beginTx(ctx, true)

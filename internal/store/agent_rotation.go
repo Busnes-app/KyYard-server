@@ -20,7 +20,7 @@ const pendingKeyLife = 7 * 24 * time.Hour
 // until an operator acknowledges it; only one may be pending, and rotation is refused while an
 // unacknowledged duplicate connection stands (docs/agent-protocol.md section 3 step 4).
 func (t *tenancyStore) RotateEndpointKey(ctx context.Context, endpointID string, newPublicKey, signature []byte, ip string) (string, error) {
-	if len(newPublicKey) != 32 {
+	if !protocol.ValidPublicKey(newPublicKey) {
 		return "", ErrInvalid
 	}
 	now := time.Now().UTC()
