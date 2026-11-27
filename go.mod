@@ -2,8 +2,6 @@ module github.com/Busnes-app/kyyard-server
 
 go 1.27.4
 
-toolchain go1.27.4
-
 require (
 	github.com/Busnes-app/ky-primitives v0.12.0
 	github.com/coder/websocket v1.8.15
