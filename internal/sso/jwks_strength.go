@@ -296,9 +296,21 @@ func (r *remoteJWKSKeySet) fetchKeys(ctx context.Context) ([]jose.JSONWebKey, er
 	if len(raw) > maxJWKSBytes {
 		return nil, errors.New("OIDC JWKS exceeds 1 MiB")
 	}
-	var set jose.JSONWebKeySet
-	if err := json.Unmarshal(raw, &set); err != nil {
+	var rawSet struct {
+		Keys []json.RawMessage `json:"keys"`
+	}
+	if err := json.Unmarshal(raw, &rawSet); err != nil {
 		return nil, fmt.Errorf("invalid OIDC JWKS: %w", err)
 	}
-	return set.Keys, nil
+	keys := make([]jose.JSONWebKey, 0, len(rawSet.Keys))
+	for _, rawKey := range rawSet.Keys {
+		var key jose.JSONWebKey
+		if err := json.Unmarshal(rawKey, &key); err != nil {
+			// Match go-oidc's RemoteKeySet: skip entries using unsupported key types
+			// or curves (e.g. secp256k1) so valid advertised keys still verify.
+			continue
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
 }

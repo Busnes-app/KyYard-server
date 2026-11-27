@@ -227,3 +227,50 @@ func TestRemoteJWKSKeySetFallsBackToCachedKeysOnRefreshOutage(t *testing.T) {
 		t.Fatalf("verify during provider outage after cache expiry failed: %v", err)
 	}
 }
+
+func TestRemoteJWKSKeySetSkipsUnsupportedKeys(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	const kid = "rsa-valid-1"
+	validJWK, err := json.Marshal(jose.JSONWebKey{
+		Key:       rsaKey.Public(),
+		KeyID:     kid,
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	})
+	if err != nil {
+		t.Fatalf("marshal valid JWK: %v", err)
+	}
+	unsupportedJWK := `{"kty":"EC","crv":"secp256k1","kid":"unsupported-ec","use":"sig","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","y":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`
+	jwksBody := `{"keys":[` + unsupportedJWK + `,` + string(validJWK) + `]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(jwksBody))
+	}))
+	defer srv.Close()
+
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: rsaKey},
+		(&jose.SignerOptions{}).WithHeader("kid", kid),
+	)
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	jwsObj, err := signer.Sign([]byte(`{"sub":"bob"}`))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	tok, err := jwsObj.CompactSerialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+
+	client := &http.Client{Transport: &strongJWKSTransport{base: srv.Client().Transport}}
+	ks := newRemoteJWKSKeySet(srv.URL, client, []string{string(jose.RS256)})
+	if _, err := ks.VerifySignature(context.Background(), tok); err != nil {
+		t.Fatalf("verify with unsupported sibling JWK failed: %v", err)
+	}
+}
